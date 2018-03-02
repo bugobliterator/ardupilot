@@ -554,6 +554,17 @@ class Node(object):
 			self.cache_abspath = val
 			return val
 
+	def relpath(self):
+		"""
+		Returns the relative path. This is used in place of abspath() to keep paths short
+                for environments like cygwin where path lengths to file operations are severely limited
+                (for example, when cross-compiling for arm-none-eabi on cygwin)
+
+		:rtype: string
+		"""
+		return os.path.relpath(self.abspath())
+
+
 	def is_child_of(self, node):
 		"""
 		Returns whether the object belongs to a subtree of the input node::
