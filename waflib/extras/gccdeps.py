@@ -137,7 +137,7 @@ def post_run(self):
 			node = path_to_node(base_node, path, cached_nodes)
 
 		if not node:
-			raise ValueError('could not find %r for %r' % (path, self))
+			continue
 
 		if id(node) == id(self.inputs[0]):
 			# ignore the source file, it is already in the dependencies
