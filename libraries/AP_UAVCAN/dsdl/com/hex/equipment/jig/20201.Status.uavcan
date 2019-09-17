@@ -1,0 +1,17 @@
+uint16     id
+uint16     max_id
+uint8 HEATER_STATE_HEATING = 1
+uint8 HEATER_STATE_COOLING = 2
+uint8 HEATER_STATE_HOLDING = 3
+uint8 heater_state
+
+uint8 ACCEL_HEALTH_OFF = 0
+uint8 GYRO_HEALTH_OFF  = 3
+uint8 BARO_HEALTH_OFF  = 6
+uint16 sensor_health_mask
+
+uint8 MESSAGE_TYPE_FORWARD = 0
+uint8 MESSAGE_TYPE_PRIMARY = 1
+uint8 message_type
+
+int8 temperature

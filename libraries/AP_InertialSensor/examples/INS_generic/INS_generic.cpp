@@ -54,6 +54,7 @@ void loop(void)
     // wait for user input
     while (!hal.console->available()) {
         hal.scheduler->delay(20);
+        hal.scheduler->watchdog_pat();
     }
 
     // read in user input
@@ -164,6 +165,7 @@ static void run_test()
             auto temp = ins.get_temperature(ii);
             hal.console->printf("   t:%6.2f\n", (double)temp);
         }
+        hal.scheduler->watchdog_pat();
     }
 
     // clear user input

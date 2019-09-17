@@ -44,6 +44,9 @@ else
   DADEFS += -DCORTEX_USE_FPU=FALSE
 endif
 
+DDEFS  += -DCORTEX_ENABLE_WFI_IDLE=TRUE
+DADEFS += -DCORTEX_ENABLE_WFI_IDLE=TRUE
+
 # Process stack size
 ifeq ($(USE_PROCESS_STACKSIZE),)
   LDOPT := $(LDOPT),--defsym=__process_stack_size__=0x400
