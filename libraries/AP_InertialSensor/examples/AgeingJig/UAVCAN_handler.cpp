@@ -36,7 +36,12 @@ static void cb_JigStatus(const uavcan::ReceivedDataStructure<com::hex::equipment
         }
     } else if (src_nodeid ==  9) {
         max_id = msg.max_id;
-        uavcan_handle[0].forward_status_message(msg);
+        //uavcan_handle[0].forward_status_message(msg);
+    }
+    if (msg.getSrcNodeID().get() > 9) {
+        _jig_status_count[0]++;
+    } else {
+        _jig_status_count[1]++;
     }
     if (msg.getSrcNodeID().get() > 9) {
         _jig_status_count[0]++;
