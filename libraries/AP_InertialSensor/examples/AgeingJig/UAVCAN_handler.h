@@ -17,48 +17,41 @@ public:
 
     void init(uint8_t interface);
     static void init();
-    static void loop(void);
+    void loop(void);
+    static void loop_all(void);
     void send_own_status_message();
     void forward_status_message(const uavcan::ReceivedDataStructure<com::hex::equipment::jig::Status>& msg);
+    static void set_sensor_states(uint16_t sensor_health_mask, uint8_t heater_state);
 private:
     uint8_t _interface;
-    static int8_t _heater_target_temp;
-    static uint16_t sensor_health_mask;
-    static uint32_t _hold_start_ms;
+    char _thread_name[9];
+
+    static uint16_t _sensor_health_mask;
     static uint8_t _heater_state;
+
     class SystemClock: public uavcan::ISystemClock, uavcan::Noncopyable {
-        SystemClock()
-        {
-        }
-
-        uavcan::UtcDuration utc_adjustment;
-        virtual void adjustUtc(uavcan::UtcDuration adjustment)
-        {
-            utc_adjustment = adjustment;
-        }
-
     public:
-        virtual uavcan::MonotonicTime getMonotonic() const
-        {
-            uavcan::uint64_t usec = 0;
-            usec = AP_HAL::micros64();
-            return uavcan::MonotonicTime::fromUSec(usec);
-        }
-        virtual uavcan::UtcTime getUtc() const
-        {
-            uavcan::UtcTime utc;
-            uavcan::uint64_t usec = 0;
-            usec = AP_HAL::micros64();
-            utc.fromUSec(usec);
-            utc += utc_adjustment;
-            return utc;
+        SystemClock() = default;
+
+        void adjustUtc(uavcan::UtcDuration adjustment) override {
+            utc_adjustment_usec = adjustment.toUSec();
         }
 
-        static SystemClock& instance()
-        {
+        uavcan::MonotonicTime getMonotonic() const override {
+            return uavcan::MonotonicTime::fromUSec(AP_HAL::micros64());
+        }
+
+        uavcan::UtcTime getUtc() const override {
+            return uavcan::UtcTime::fromUSec(AP_HAL::micros64() + utc_adjustment_usec);
+        }
+
+        static SystemClock& instance() {
             static SystemClock inst;
             return inst;
         }
+
+    private:
+        int64_t utc_adjustment_usec;
     };
 
     uavcan::Node<0> *_node;
@@ -77,6 +70,7 @@ private:
         {
         }
     };
-
+    uint32_t last_msg_sent_time;
+    uavcan::Publisher<com::hex::equipment::jig::Status> *_status_pub;
     uavcan::HeapBasedPoolAllocator<UAVCAN_NODE_POOL_BLOCK_SIZE, UAVCAN_handler::RaiiSynchronizer> _node_allocator;
 };
