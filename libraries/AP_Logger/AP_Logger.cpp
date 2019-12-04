@@ -64,7 +64,7 @@ const AP_Param::GroupInfo AP_Logger::var_info[] = {
     // @Description: If LOG_DISARMED is set to 1 then logging will be enabled while disarmed. This can make for very large logfiles but can help a lot when tracking down startup issues
     // @Values: 0:Disabled,1:Enabled
     // @User: Standard
-    AP_GROUPINFO("_DISARMED",  2, AP_Logger, _params.log_disarmed,       0),
+    AP_GROUPINFO("_DISARMED",  2, AP_Logger, _params.log_disarmed,       1),
 
     // @Param: _REPLAY
     // @DisplayName: Enable logging of information needed for Replay

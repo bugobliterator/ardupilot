@@ -104,6 +104,19 @@ void AP_BoardConfig::set_imu_temp(float current)
             // tell IOMCU to setup heater
             iomcu->set_heater_duty_cycle(heater.output);
         }
+
+        if (now - heater.last_log_ms >= 1000) {
+            AP::logger().Write("HEAT", "TimeUS,Temp,Targ,P,I,Out", "Qfbfff",
+                            AP_HAL::micros64(),
+                            avg, target,
+                            heater.pi_controller.get_P(),
+                            heater.pi_controller.get_I(),
+                            heater.output);
+            heater.last_log_ms = now;
+            hal.console->printf("Heater: P=%.1f I=%.1f Out=%.1f Temp=%.1f Target:%d\n", heater.pi_controller.get_P(),
+                            heater.pi_controller.get_I(), heater.output, avg, target);
+
+        }
     }
 #endif
 }

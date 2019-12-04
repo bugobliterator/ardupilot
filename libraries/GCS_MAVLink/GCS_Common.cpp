@@ -808,7 +808,7 @@ ap_message GCS_MAVLINK::mavlink_id_to_ap_message_id(const uint32_t mavlink_id) c
         { MAVLINK_MSG_ID_AUTOPILOT_VERSION,     MSG_AUTOPILOT_VERSION},
         { MAVLINK_MSG_ID_EFI_STATUS,            MSG_EFI_STATUS},
         { MAVLINK_MSG_ID_GENERATOR_STATUS,      MSG_GENERATOR_STATUS},
-        { MAVLINK_MSG_ID_WINCH_STATUS,          MSG_WINCH_STATUS},
+        //{ MAVLINK_MSG_ID_WINCH_STATUS,          MSG_WINCH_STATUS},
             };
 
     for (uint8_t i=0; i<ARRAY_SIZE(map); i++) {
@@ -1761,17 +1761,20 @@ void GCS_MAVLINK::send_scaled_pressure_instance(uint8_t instance, void (*send_fn
 
 void GCS_MAVLINK::send_scaled_pressure()
 {
-    send_scaled_pressure_instance(0, mavlink_msg_scaled_pressure_send);
+    //send_scaled_pressure_instance(0, mavlink_msg_scaled_pressure_send);
+    return;
 }
 
 void GCS_MAVLINK::send_scaled_pressure2()
 {
-    send_scaled_pressure_instance(1, mavlink_msg_scaled_pressure2_send);
+    //send_scaled_pressure_instance(1, mavlink_msg_scaled_pressure2_send);
+    return;
 }
 
 void GCS_MAVLINK::send_scaled_pressure3()
 {
-    send_scaled_pressure_instance(2, mavlink_msg_scaled_pressure3_send);
+    //send_scaled_pressure_instance(2, mavlink_msg_scaled_pressure3_send);
+    return;
 }
 
 void GCS_MAVLINK::send_sensor_offsets()
@@ -3192,9 +3195,9 @@ void GCS_MAVLINK::handle_common_message(const mavlink_message_t &msg)
         handle_set_gps_global_origin(msg);
         break;
 
-    case MAVLINK_MSG_ID_DEVICE_OP_READ:
-        handle_device_op_read(msg);
-        break;
+    //case MAVLINK_MSG_ID_DEVICE_OP_READ:
+    //    handle_device_op_read(msg);
+    //    break;
     case MAVLINK_MSG_ID_DEVICE_OP_WRITE:
         handle_device_op_write(msg);
         break;
@@ -3451,11 +3454,11 @@ void GCS_MAVLINK::send_banner()
     }
 
     // output any fast sampling status messages
-    for (uint8_t i = 0; i < INS_MAX_BACKENDS; i++) {
-        if (AP::ins().get_output_banner(i, banner_msg, sizeof(banner_msg))) {
-            send_text(MAV_SEVERITY_INFO, "%s", banner_msg);
-        }
-    }
+    //for (uint8_t i = 0; i < INS_MAX_BACKENDS; i++) {
+    //    if (AP::ins().get_output_banner(i, banner_msg, sizeof(banner_msg))) {
+    //        send_text(MAV_SEVERITY_INFO, "%s", banner_msg);
+    //    }
+    //}
 }
 
 
@@ -4766,10 +4769,10 @@ bool GCS_MAVLINK::try_send_message(const enum ap_message id)
         break;
     }
 
-    case MSG_WINCH_STATUS:
-        CHECK_PAYLOAD_SIZE(WINCH_STATUS);
-        send_winch_status();
-        break;
+    //case MSG_WINCH_STATUS:
+    //    CHECK_PAYLOAD_SIZE(WINCH_STATUS);
+    //    send_winch_status();
+    //    break;
 
     default:
         // try_send_message must always at some stage return true for

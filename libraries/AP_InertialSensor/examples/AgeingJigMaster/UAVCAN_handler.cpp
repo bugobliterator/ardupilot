@@ -13,17 +13,7 @@ static int max_id = 0;
 
 static int _node_status_count[2], _jig_status_count[2];
 
-static void cb_NodeStatus(const uavcan::ReceivedDataStructure<uavcan::protocol::NodeStatus>& msg) 
-{
-    if ((msg.getSrcNodeID() == 127) && selfid == -1) {
-        selfid = 0;
-    }
-    if (msg.getSrcNodeID().get() > 9) {
-        _node_status_count[0]++;
-    } else {
-        _node_status_count[1]++;
-    }
-}
+bool UAVCAN_handler::_failed;
 
 static void cb_JigStatus(const uavcan::ReceivedDataStructure<com::hex::equipment::jig::Status>& msg)
 {
@@ -38,6 +28,11 @@ static void cb_JigStatus(const uavcan::ReceivedDataStructure<com::hex::equipment
         max_id = msg.max_id;
         uavcan_handle[0].forward_status_message(msg);
     }
+
+    if (msg.sensor_health_mask != 0x3FF) {
+        UAVCAN_handler::set_failed();
+    }
+
     if (msg.getSrcNodeID().get() > 9) {
         _jig_status_count[0]++;
     } else {
@@ -152,7 +147,7 @@ void UAVCAN_handler::init(uint8_t interface)
         return;
     }
 
-    uavcan::NodeID self_node_id(9 + interface);
+    uavcan::NodeID self_node_id(127);
     _node->setNodeID(self_node_id);
 
     char ndname[20];
@@ -184,7 +179,6 @@ void UAVCAN_handler::init(uint8_t interface)
 
 #define START_CB(mtype, cbname) (new uavcan::Subscriber<mtype>(*_node))->start(cb_ ## cbname)
 
-    START_CB(uavcan::protocol::NodeStatus, NodeStatus);
     START_CB(com::hex::equipment::jig::Status, JigStatus);
 
     /*

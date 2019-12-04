@@ -69,22 +69,22 @@ void AP_Winch_PWM::control_winch()
 void AP_Winch_PWM::send_status(const GCS_MAVLINK &channel)
 {
     // prepare status bitmask
-    uint32_t status_bitmask = 0;
-    if (healthy()) {
-        status_bitmask |= MAV_WINCH_STATUS_HEALTHY;
-    }
+    //uint32_t status_bitmask = 0;
+    //if (healthy()) {
+    //    status_bitmask |= MAV_WINCH_STATUS_HEALTHY;
+    //}
 
     // send status
-    mavlink_msg_winch_status_send(
-        channel.get_chan(),
-        AP_HAL::micros64(),     // time_usec
-        line_length,            // line_length
-        config.rate_desired,    // speed
-        std::numeric_limits<double>::quiet_NaN(),   // tension
-        std::numeric_limits<double>::quiet_NaN(),   // voltage
-        std::numeric_limits<double>::quiet_NaN(),   // current
-        INT16_MAX,              // temperature
-        status_bitmask);        // status flags
+    //mavlink_msg_winch_status_send(
+    //    channel.get_chan(),
+    //    AP_HAL::micros64(),     // time_usec
+    //    line_length,            // line_length
+    //    config.rate_desired,    // speed
+    //    std::numeric_limits<double>::quiet_NaN(),   // tension
+    //    std::numeric_limits<double>::quiet_NaN(),   // voltage
+    //    std::numeric_limits<double>::quiet_NaN(),   // current
+    //    INT16_MAX,              // temperature
+    //    status_bitmask);        // status flags
 }
 
 // write log

@@ -177,6 +177,7 @@ public:
 
 #if HAL_HAVE_IMU_HEATER
     void set_imu_temp(float current_temp_c);
+    void set_target_temp(uint8_t temp_c) { heater.imu_target_temperature.set(temp_c); }
 #endif
 
 private:

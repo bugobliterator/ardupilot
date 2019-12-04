@@ -45,35 +45,35 @@ void AP_Winch_Daiwa::update()
 void AP_Winch_Daiwa::send_status(const GCS_MAVLINK &channel)
 {
     // prepare status bitmask
-    uint32_t status_bitmask = 0;
-    if (healthy()) {
-        status_bitmask |= MAV_WINCH_STATUS_HEALTHY;
-    }
-    if (latest.thread_end) {
-        status_bitmask |= MAV_WINCH_STATUS_FULLY_RETRACTED;
-    }
-    if (latest.moving > 0) {
-        status_bitmask |= MAV_WINCH_STATUS_MOVING;
-    }
-    if (latest.clutch > 0) {
-        status_bitmask |= MAV_WINCH_STATUS_CLUTCH_ENGAGED;
-    }
+    //uint32_t status_bitmask = 0;
+    //if (healthy()) {
+    //    status_bitmask |= MAV_WINCH_STATUS_HEALTHY;
+    //}
+    //if (latest.thread_end) {
+    //    status_bitmask |= MAV_WINCH_STATUS_FULLY_RETRACTED;
+    //}
+    //if (latest.moving > 0) {
+    //    status_bitmask |= MAV_WINCH_STATUS_MOVING;
+    //}
+    //if (latest.clutch > 0) {
+    //    status_bitmask |= MAV_WINCH_STATUS_CLUTCH_ENGAGED;
+    //}
 
     // convert speed percentage to absolute speed
-    const float speed_ms = fabsf(config.rate_max) * (float)latest.speed_pct;
+    //const float speed_ms = fabsf(config.rate_max) * (float)latest.speed_pct;
 
     // send status
-    mavlink_msg_winch_status_send(
-        channel.get_chan(),
-        AP_HAL::micros64(),
-        latest.line_length,
-        speed_ms,
-        (float)latest.tension_corrected * 0.01f,
-        latest.voltage,
-        latest.current,
-        latest.motor_temp,
-        status_bitmask);
-}
+    //mavlink_msg_winch_status_send(
+    //    channel.get_chan(),
+    //    AP_HAL::micros64(),
+    //    latest.line_length,
+    //    speed_ms,
+    //    (float)latest.tension_corrected * 0.01f,
+    //    latest.voltage,
+    //    latest.current,
+    //    latest.motor_temp,
+    //    status_bitmask);
+}//
 
 // write log
 void AP_Winch_Daiwa::write_log()

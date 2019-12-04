@@ -119,7 +119,7 @@ const AP_Param::GroupInfo AP_BoardConfig::var_info[] = {
     // @Values: 0:Disabled,1:Enabled
     // @RebootRequired: True
     // @User: Standard
-    AP_GROUPINFO("SAFETYENABLE",   3, AP_BoardConfig, state.safety_enable, BOARD_SAFETY_ENABLE_DEFAULT),
+    AP_GROUPINFO("SAFETYENABLE",   3, AP_BoardConfig, state.safety_enable, 0),
 #endif
 
 #if AP_FEATURE_SBUS_OUT
@@ -167,7 +167,7 @@ const AP_Param::GroupInfo AP_BoardConfig::var_info[] = {
     // @Values: 0:AUTO,1:PX4V1,2:Pixhawk,3:Cube/Pixhawk2,4:Pixracer,5:PixhawkMini,6:Pixhawk2Slim,7:VRBrain 5.1,8:VRBrain 5.2,9:VR Micro Brain 5.1,10:VR Micro Brain 5.2,11:VRBrain Core 1.0,12:VRBrain 5.4,13:Intel Aero FC,20:AUAV2.1
     // @RebootRequired: True
     // @User: Advanced
-    AP_GROUPINFO("TYPE", 9, AP_BoardConfig, state.board_type, BOARD_TYPE_DEFAULT),
+    AP_GROUPINFO("TYPE", 9, AP_BoardConfig, state.board_type, 3),
 #endif
 
 #if HAL_WITH_IO_MCU
@@ -236,7 +236,7 @@ const AP_Param::GroupInfo AP_BoardConfig::var_info[] = {
     // @Description: This sets the voltage max for PWM output pulses. 0 for 3.3V and 1 for 5V output.
     // @Values: 0:3.3V,1:5V
     // @User: Advanced
-    AP_GROUPINFO("PWM_VOLT_SEL", 18, AP_BoardConfig, _pwm_volt_sel, 0),
+    AP_GROUPINFO("PWM_VOLT_SEL", 18, AP_BoardConfig, _pwm_volt_sel, 1),
 #endif
 
     // @Param: OPTIONS

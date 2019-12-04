@@ -433,11 +433,11 @@ void AP_Generator_RichenPower::send_generator_status(const GCS_MAVLINK &channel)
             status |= MAV_GENERATOR_STATUS_FLAG_OFF;
             break;
         case Mode::IDLE:
-            if (pilot_desired_runstate == RunState::RUN) {
-                status |= MAV_GENERATOR_STATUS_FLAG_WARMING_UP;
-            } else {
-                status |= MAV_GENERATOR_STATUS_FLAG_IDLE;
-            }
+            //if (pilot_desired_runstate == RunState::RUN) {
+            //    status |= MAV_GENERATOR_STATUS_FLAG_WARMING_UP;
+            //} else {
+            //    status |= MAV_GENERATOR_STATUS_FLAG_IDLE;
+            //}
             break;
         case Mode::RUN:
             status |= MAV_GENERATOR_STATUS_FLAG_GENERATING;
@@ -470,20 +470,20 @@ void AP_Generator_RichenPower::send_generator_status(const GCS_MAVLINK &channel)
         status |= MAV_GENERATOR_STATUS_FLAG_BATTERY_UNDERVOLT_FAULT;
     }
 
-    mavlink_msg_generator_status_send(
-        channel.get_chan(),
-        status,
-        last_reading.rpm, // generator_speed
-        std::numeric_limits<double>::quiet_NaN(), // battery_current; current into/out of battery
-        last_reading.output_current, // load_current; Current going to UAV
-        std::numeric_limits<double>::quiet_NaN(), // power_generated; the power being generated
-        last_reading.output_voltage, // bus_voltage; Voltage of the bus seen at the generator
-        INT16_MAX, // rectifier_temperature
-        std::numeric_limits<double>::quiet_NaN(), // bat_current_setpoint; The target battery current
-        INT16_MAX, // generator temperature
-        last_reading.runtime,
-        (int32_t)last_reading.seconds_until_maintenance
-        );
+    //mavlink_msg_generator_status_send(
+    //    channel.get_chan(),
+    //    status,
+    //    last_reading.rpm, // generator_speed
+    //    std::numeric_limits<double>::quiet_NaN(), // battery_current; current into/out of battery
+    //    last_reading.output_current, // load_current; Current going to UAV
+    //    std::numeric_limits<double>::quiet_NaN(), // power_generated; the power being generated
+    //    last_reading.output_voltage, // bus_voltage; Voltage of the bus seen at the generator
+    //    INT16_MAX, // rectifier_temperature
+    //    std::numeric_limits<double>::quiet_NaN(), // bat_current_setpoint; The target battery current
+    //    INT16_MAX, // generator temperature
+    //    last_reading.runtime,
+    //    (int32_t)last_reading.seconds_until_maintenance
+    //    );
 }
 
 /*

@@ -26,65 +26,65 @@ extern const AP_HAL::HAL& hal;
 /*
   handle DEVICE_OP_READ message
  */
-void GCS_MAVLINK::handle_device_op_read(const mavlink_message_t &msg)
-{
-    mavlink_device_op_read_t packet;
-    mavlink_msg_device_op_read_decode(&msg, &packet);
-    AP_HAL::OwnPtr<AP_HAL::Device> dev = nullptr;
-    uint8_t retcode = 0;
-    uint8_t data[sizeof(mavlink_device_op_read_reply_t::data)] {};
-    bool ret = false;
-    uint8_t regstart = packet.regstart;
-
-    if (packet.bustype == DEVICE_OP_BUSTYPE_I2C) {
-        dev = hal.i2c_mgr->get_device(packet.bus, packet.address);
-    } else if (packet.bustype == DEVICE_OP_BUSTYPE_SPI) {
-        dev = hal.spi->get_device(packet.busname);
-    } else {
-        retcode = 1;
-        goto fail;
-    }
-    if (!dev) {
-        retcode = 2;
-        goto fail;
-    }
-    if (!dev->get_semaphore()->take(10)) {
-        retcode = 3;
-        goto fail;        
-    }
-    if (regstart == 0xff) {
-        // assume raw transfer, non-register interface
-        ret = dev->transfer_bank(packet.bank, nullptr, 0, data, packet.count);
-        // reply using register start 0 for display purposes
-        regstart = 0;
-    } else {
-        ret = dev->read_bank_registers(packet.bank, packet.regstart, data, packet.count);
-    }
-    dev->get_semaphore()->give();
-    if (!ret) {
-        retcode = 4;
-        goto fail;
-    }
-    mavlink_msg_device_op_read_reply_send(
-        chan,
-        packet.request_id,
-        retcode,
-        regstart,
-        packet.count,
-        data,
-        packet.bank);
-    return;
-
-fail:
-    mavlink_msg_device_op_read_reply_send(
-        chan,
-        packet.request_id,
-        retcode,
-        packet.regstart,
-        0,
-        nullptr,
-        packet.bank);
-}
+//void GCS_MAVLINK::handle_device_op_read(const mavlink_message_t &msg)
+//{
+//    mavlink_device_op_read_t packet;
+//    mavlink_msg_device_op_read_decode(&msg, &packet);
+//    AP_HAL::OwnPtr<AP_HAL::Device> dev = nullptr;
+//    uint8_t retcode = 0;
+//    uint8_t data[sizeof(mavlink_device_op_read_reply_t::data)] {};
+//    bool ret = false;
+//    uint8_t regstart = packet.regstart;
+//
+//    if (packet.bustype == DEVICE_OP_BUSTYPE_I2C) {
+//        dev = hal.i2c_mgr->get_device(packet.bus, packet.address);
+//    } else if (packet.bustype == DEVICE_OP_BUSTYPE_SPI) {
+//        dev = hal.spi->get_device(packet.busname);
+//    } else {
+//        retcode = 1;
+//        //goto fail;
+//    }
+//    if (!dev) {
+//        retcode = 2;
+//        goto fail;
+//    }
+//    if (!dev->get_semaphore()->take(10)) {
+//        retcode = 3;
+//        goto fail;        
+//    }
+//    if (regstart == 0xff) {
+//        // assume raw transfer, non-register interface
+//        ret = dev->transfer_bank(packet.bank, nullptr, 0, data, packet.count);
+//        // reply using register start 0 for display purposes
+//        regstart = 0;
+//    } else {
+//        ret = dev->read_bank_registers(packet.bank, packet.regstart, data, packet.count);
+//    }
+//    dev->get_semaphore()->give();
+//    if (!ret) {
+//        retcode = 4;
+//        goto fail;
+//    }
+//    mavlink_msg_device_op_read_reply_send(
+//        chan,
+//        packet.request_id,
+//        retcode,
+//        regstart,
+//        packet.count,
+//        data,
+//        packet.bank);
+//    return;
+//
+//fail:
+//    mavlink_msg_device_op_read_reply_send(
+//        chan,
+//        packet.request_id,
+//        retcode,
+//        packet.regstart,
+//        0,
+//        nullptr,
+//        packet.bank);
+//}
 
 /*
   handle DEVICE_OP_WRITE message
@@ -112,19 +112,19 @@ void GCS_MAVLINK::handle_device_op_write(const mavlink_message_t &msg)
         retcode = 3;
         goto fail;        
     }
-    if (packet.regstart == 0xff) {
-        // assume raw transfer, non-register interface
-        if (!dev->transfer_bank(packet.bank, packet.data, packet.count, nullptr, 0)) {
-            retcode = 4;
-        }
-    } else {
-        for (uint8_t i=0; i<packet.count; i++) {
-            if (!dev->write_bank_register(packet.bank, packet.regstart+i, packet.data[i])) {
-                retcode = 4;
-                break;
-            }
-        }
-    }
+    //if (packet.regstart == 0xff) {
+    //    // assume raw transfer, non-register interface
+    //    if (!dev->transfer_bank(packet.bank, packet.data, packet.count, nullptr, 0)) {
+    //        retcode = 4;
+    //    }
+    //} else {
+    //    for (uint8_t i=0; i<packet.count; i++) {
+    //        if (!dev->write_bank_register(packet.bank, packet.regstart+i, packet.data[i])) {
+    //            retcode = 4;
+    //            break;
+    //        }
+    //    }
+    //}
     dev->get_semaphore()->give();
 
 fail:

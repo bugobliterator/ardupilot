@@ -188,6 +188,10 @@ PE2 SPI4_SCK  SPI4
 PE5 SPI4_MISO SPI4
 PE6 SPI4_MOSI SPI4
 
+PF7 SPI5_SCK  SPI5
+PF8 SPI5_MISO SPI5
+PF9 SPI5_MOSI SPI5
+
 # This is the pin to enable the sensors rail. It can be used to power
 # cycle sensors to recover them in case there are problems with power on
 # timing affecting sensor stability. We pull it high by default.
