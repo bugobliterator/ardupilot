@@ -1028,7 +1028,7 @@ def get_cc_version(conf, cc, gcc=False, icc=False, clang=False):
 	cmd = cc + ['-dM', '-E', '-']
 	env = conf.env.env or None
 	try:
-		out, err = conf.cmd_and_log(cmd, output=0, input='\n'.encode(), env=env)
+		out, err = conf.cmd_and_log(cmd, output=0, stdin=open('/dev/null','r'), env=env)
 	except Errors.WafError:
 		conf.fatal('Could not determine the compiler version %r' % cmd)
 
