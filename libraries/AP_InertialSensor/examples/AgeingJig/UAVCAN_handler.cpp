@@ -76,6 +76,7 @@ void UAVCAN_handler::loop(void)
             send_own_status_message();
         }
         hal.console->printf("CAN%d NodeStatus: %d JigStatus: %d\n", _interface, _node_status_count[_interface] ,_jig_status_count[_interface]);
+        hal.uartC->printf("CAN%d NodeStatus: %d JigStatus: %d\n", _interface, _node_status_count[_interface] ,_jig_status_count[_interface]);
         _node_status_count[_interface] = 0;
         _jig_status_count[_interface] = 0;
     }
@@ -110,6 +111,7 @@ void UAVCAN_handler::forward_status_message(const uavcan::ReceivedDataStructure<
     }
     com::hex::equipment::jig::Status status;
     hal.console->printf("Forwarding Jig Status %d\n", _node->getNodeID().get());
+    hal.uartC->printf("Forwarding Jig Status %d\n", _node->getNodeID().get());
     // loop and print each sensor
     status.id = msg.id;
     status.max_id = msg.max_id;
