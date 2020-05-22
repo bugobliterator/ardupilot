@@ -115,6 +115,8 @@ void AP_BoardConfig::set_imu_temp(float current)
             heater.last_log_ms = now;
             hal.console->printf("Heater: P=%.1f I=%.1f Out=%.1f Temp=%.1f Target:%d\n", heater.pi_controller.get_P(),
                             heater.pi_controller.get_I(), heater.output, avg, target);
+            hal.uartC->printf("Heater: P=%.1f I=%.1f Out=%.1f Temp=%.1f Target:%d\n", heater.pi_controller.get_P(),
+                            heater.pi_controller.get_I(), heater.output, avg, target);
 
         }
     }
