@@ -24,13 +24,15 @@ public:
         k_param_format_version = 0,
         k_param_num_cycles,
         k_param_num_fails,
-        k_param_sensor_health
+        k_param_loop_sensor_health,
+        k_param_setup_sensor_health
     };
 
     static AP_Int16 format_version;
     static AP_Int16 num_cycles;
     static AP_Int16 num_fails;
-    static AP_Int16 sensor_health;
+    static AP_Int16 loop_sensor_health;
+    static AP_Int16 setup_sensor_health;
 
     Parameters() {}
     void load_parameters(void);
