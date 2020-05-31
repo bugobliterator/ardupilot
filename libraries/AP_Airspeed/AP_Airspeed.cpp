@@ -31,7 +31,7 @@
 #include "AP_Airspeed_DLVR.h"
 #include "AP_Airspeed_analog.h"
 #include "AP_Airspeed_Backend.h"
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
 #include "AP_Airspeed_UAVCAN.h"
 #endif
 
@@ -302,7 +302,7 @@ void AP_Airspeed::init()
 #endif // !HAL_MINIMIZE_FEATURES
             break;
         case TYPE_UAVCAN:
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
             sensor[i] = AP_Airspeed_UAVCAN::probe(*this, i);
 #endif
             break;
