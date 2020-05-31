@@ -27,9 +27,9 @@
 
 #include <AP_BoardConfig/AP_BoardConfig.h>
 
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
 
-#include "CAN.h"
+#include "CANSocketIface.h"
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -38,19 +38,20 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <linux/can/raw.h>
-
+#include <cstring>
+#include "Scheduler.h"
+#include <AP_CANManager/AP_CANManager.h>
 extern const AP_HAL::HAL& hal;
 
 using namespace Linux;
 
-uavcan::MonotonicTime getMonotonic()
-{
-    return uavcan::MonotonicTime::fromUSec(AP_HAL::micros64());
-}
+#define Debug(fmt, args...) do { AP::can().log_text(AP_CANManager::LOG_DEBUG, "CANLinuxIface", fmt, ##args); } while (0)
 
-static can_frame makeSocketCanFrame(const uavcan::CanFrame& uavcan_frame)
+CANIface::CANSocketEventSource CANIface::evt_can_socket[HAL_NUM_CAN_IFACES];
+
+static can_frame makeSocketCanFrame(const AP_HAL::CANFrame& uavcan_frame)
 {
-    can_frame sockcan_frame { uavcan_frame.id& uavcan::CanFrame::MaskExtID, uavcan_frame.dlc, { } };
+    can_frame sockcan_frame { uavcan_frame.id& AP_HAL::CANFrame::MaskExtID, uavcan_frame.dlc, { } };
     std::copy(uavcan_frame.data, uavcan_frame.data + uavcan_frame.dlc, sockcan_frame.data);
     if (uavcan_frame.isExtended()) {
         sockcan_frame.can_id |= CAN_EFF_FLAG;
@@ -64,76 +65,27 @@ static can_frame makeSocketCanFrame(const uavcan::CanFrame& uavcan_frame)
     return sockcan_frame;
 }
 
-static uavcan::CanFrame makeUavcanFrame(const can_frame& sockcan_frame)
+static AP_HAL::CANFrame makeUavcanFrame(const can_frame& sockcan_frame)
 {
-    uavcan::CanFrame uavcan_frame(sockcan_frame.can_id & CAN_EFF_MASK, sockcan_frame.data, sockcan_frame.can_dlc);
+    AP_HAL::CANFrame uavcan_frame(sockcan_frame.can_id & CAN_EFF_MASK, sockcan_frame.data, sockcan_frame.can_dlc);
     if (sockcan_frame.can_id & CAN_EFF_FLAG) {
-        uavcan_frame.id |= uavcan::CanFrame::FlagEFF;
+        uavcan_frame.id |= AP_HAL::CANFrame::FlagEFF;
     }
     if (sockcan_frame.can_id & CAN_ERR_FLAG) {
-        uavcan_frame.id |= uavcan::CanFrame::FlagERR;
+        uavcan_frame.id |= AP_HAL::CANFrame::FlagERR;
     }
     if (sockcan_frame.can_id & CAN_RTR_FLAG) {
-        uavcan_frame.id |= uavcan::CanFrame::FlagRTR;
+        uavcan_frame.id |= AP_HAL::CANFrame::FlagRTR;
     }
     return uavcan_frame;
 }
 
-bool CAN::begin(uint32_t bitrate)
-{
-    if (_initialized) {
-        return _initialized;
-    }
-
-    // TODO: Add possibility change bitrate
-    _fd = openSocket(HAL_BOARD_CAN_IFACE_NAME);
-    if (_fd > 0) {
-        _bitrate = bitrate;
-        _initialized = true;
-    } else {
-        _initialized = false;
-    }
-    return _initialized;
-}
-
-void CAN::reset()
-{
-    if (_initialized && _bitrate != 0) {
-        close(_fd);
-        begin(_bitrate);
-    }
-}
-
-void CAN::end()
-{
-    _initialized = false;
-    close(_fd);
-}
-
-bool CAN::is_initialized()
+bool CANIface::is_initialized() const
 {
     return _initialized;
 }
 
-int32_t CAN::tx_pending()
-{
-    if (_initialized) {
-        return _tx_queue.size();
-    } else {
-        return -1;
-    }
-}
-
-int32_t CAN::available()
-{
-    if (_initialized) {
-        return _rx_queue.size();
-    } else {
-        return -1;
-    }
-}
-
-int CAN::openSocket(const std::string& iface_name)
+int CANIface::_openSocket(const std::string& iface_name)
 {
     errno = 0;
 
@@ -197,84 +149,103 @@ int CAN::openSocket(const std::string& iface_name)
     return ret;
 }
 
-int16_t CAN::send(const uavcan::CanFrame& frame, const uavcan::MonotonicTime tx_deadline,
-                       const uavcan::CanIOFlags flags)
+int16_t CANIface::send(const AP_HAL::CANFrame& frame, const uint64_t tx_deadline,
+                       const CANIface::CanIOFlags flags)
 {
-    _tx_queue.emplace(frame, tx_deadline, flags, _tx_frame_counter);
+    CanTxItem tx_item {};
+    tx_item.frame = frame;
+    if (flags & Loopback) {
+        tx_item.loopback = true;
+    }
+    if (flags & AbortOnError) {
+        tx_item.abort_on_error = true;
+    }
+    tx_item.setup = true;
+    tx_item.index = _tx_frame_counter;
+    tx_item.deadline = tx_deadline;
+    _tx_queue.emplace(tx_item);
     _tx_frame_counter++;
-    _pollRead();     // Read poll is necessary because it can release the pending TX flag
+    if (_pollRead()) {     // Read poll is necessary because it can release the pending TX flag
+        Debug("TIME %ld -- CAN%d rcvd frame from send\n",
+                    AP_HAL::native_micros64(), _self_index);
+    }
     _pollWrite();
     return 1;
 }
 
-int16_t CAN::receive(uavcan::CanFrame& out_frame, uavcan::MonotonicTime& out_ts_monotonic,
-                          uavcan::UtcTime& out_ts_utc, uavcan::CanIOFlags& out_flags)
+int16_t CANIface::receive(AP_HAL::CANFrame& out_frame, uint64_t& out_timestamp_us,
+                          CANIface::CanIOFlags& out_flags)
 {
     if (_rx_queue.empty()) {
-        _pollRead();            // This allows to use the socket not calling poll() explicitly.
+        if (_pollRead()) {            // This allows to use the socket not calling poll() explicitly.
+            Debug("TIME %ld -- CAN%d rcvd frame from receive\n",
+                    AP_HAL::native_micros64(), _self_index);
+        }
         if (_rx_queue.empty()) {
             return 0;
         }
     }
     {
-        const RxItem& rx = _rx_queue.front();
+        const CanRxItem& rx = _rx_queue.front();
         out_frame        = rx.frame;
-        out_ts_monotonic = rx.ts_mono;
-        out_ts_utc       = rx.ts_utc;
+        out_timestamp_us = rx.timestamp_us;
         out_flags        = rx.flags;
     }
     _rx_queue.pop();
     return 1;
 }
 
-bool CAN::hasReadyTx() const
+bool CANIface::_hasReadyTx() const
 {
     return !_tx_queue.empty() && (_frames_in_socket_tx_queue < _max_frames_in_socket_tx_queue);
 }
 
-bool CAN::hasReadyRx() const
+bool CANIface::_hasReadyRx() const
 {
     return !_rx_queue.empty();
 }
 
-void CAN::poll(bool read, bool write)
+void CANIface::_poll(bool read, bool write)
 {
     if (read) {
-        _pollRead();  // Read poll must be executed first because it may decrement _frames_in_socket_tx_queue
+        if (_pollRead()) {  // Read poll must be executed first because it may decrement _frames_in_socket_tx_queue
+            Debug("TIME %ld -- CAN%d rcvd frame from poll\n",
+                    AP_HAL::native_micros64(), _self_index);
+        }
     }
     if (write) {
         _pollWrite();
     }
 }
 
-int16_t CAN::configureFilters(const uavcan::CanFilterConfig* const filter_configs,
+bool CANIface::configureFilters(const CanFilterConfig* const filter_configs,
                               const std::uint16_t num_configs)
 {
     if (filter_configs == nullptr) {
-        return -1;
+        return false;
     }
     _hw_filters_container.clear();
     _hw_filters_container.resize(num_configs);
 
     for (unsigned i = 0; i < num_configs; i++) {
-        const uavcan::CanFilterConfig& fc = filter_configs[i];
-        _hw_filters_container[i].can_id   = fc.id   & uavcan::CanFrame::MaskExtID;
-        _hw_filters_container[i].can_mask = fc.mask & uavcan::CanFrame::MaskExtID;
-        if (fc.id & uavcan::CanFrame::FlagEFF) {
+        const CanFilterConfig& fc = filter_configs[i];
+        _hw_filters_container[i].can_id   = fc.id   & AP_HAL::CANFrame::MaskExtID;
+        _hw_filters_container[i].can_mask = fc.mask & AP_HAL::CANFrame::MaskExtID;
+        if (fc.id & AP_HAL::CANFrame::FlagEFF) {
             _hw_filters_container[i].can_id |= CAN_EFF_FLAG;
         }
-        if (fc.id & uavcan::CanFrame::FlagRTR) {
+        if (fc.id & AP_HAL::CANFrame::FlagRTR) {
             _hw_filters_container[i].can_id |= CAN_RTR_FLAG;
         }
-        if (fc.mask & uavcan::CanFrame::FlagEFF) {
+        if (fc.mask & AP_HAL::CANFrame::FlagEFF) {
             _hw_filters_container[i].can_mask |= CAN_EFF_FLAG;
         }
-        if (fc.mask & uavcan::CanFrame::FlagRTR) {
+        if (fc.mask & AP_HAL::CANFrame::FlagRTR) {
             _hw_filters_container[i].can_mask |= CAN_RTR_FLAG;
         }
     }
 
-    return 0;
+    return true;
 }
 
 /**
@@ -282,25 +253,25 @@ int16_t CAN::configureFilters(const uavcan::CanFilterConfig* const filter_config
  * This method returns a constant value.
  */
 static constexpr unsigned NumFilters = CAN_FILTER_NUMBER;
-uint16_t CAN::getNumFilters() const { return NumFilters; }
+uint16_t CANIface::getNumFilters() const { return NumFilters; }
 
-uint64_t CAN::getErrorCount() const
+uint32_t CANIface::getErrorCount() const
 {
-    uint64_t ec = 0;
+    uint32_t ec = 0;
     for (auto& kv : _errors) { ec += kv.second; }
     return ec;
 }
 
-void CAN::_pollWrite()
+void CANIface::_pollWrite()
 {
-    while (hasReadyTx()) {
-        const TxItem tx = _tx_queue.top();
+    while (_hasReadyTx()) {
+        const CanTxItem tx = _tx_queue.top();
 
-        if (tx.deadline >= getMonotonic()) {
+        if (tx.deadline >= AP_HAL::native_micros64()) {
             const int res = _write(tx.frame);
             if (res == 1) {                   // Transmitted successfully
                 _incrementNumFramesInSocketTxQueue();
-                if (tx.flags & uavcan::CanIOFlagLoopback) {
+                if (tx.loopback) {
                     _pending_loopback_ids.insert(tx.frame.id);
                 }
             } else if (res == 0) {            // Not transmitted, nor is it an error
@@ -317,25 +288,26 @@ void CAN::_pollWrite()
     }
 }
 
-void CAN::_pollRead()
+bool CANIface::_pollRead()
 {
     uint8_t iterations_count = 0;
     while (iterations_count < CAN_MAX_POLL_ITERATIONS_COUNT)
     {
         iterations_count++;
-        RxItem rx;
-        rx.ts_mono = getMonotonic();  // Monotonic timestamp is not required to be precise (unlike UTC)
+        CanRxItem rx;
+        rx.timestamp_us = AP_HAL::native_micros64();  // Monotonic timestamp is not required to be precise (unlike UTC)
         bool loopback = false;
-        const int res = _read(rx.frame, rx.ts_utc, loopback);
+        const int res = _read(rx.frame, rx.timestamp_us, loopback);
         if (res == 1) {
             bool accept = true;
             if (loopback) {           // We receive loopback for all CAN frames
                 _confirmSentFrame();
-                rx.flags |= uavcan::CanIOFlagLoopback;
+                rx.flags |= Loopback;
                 accept = _wasInPendingLoopbackSet(rx.frame);
             }
             if (accept) {
                 _rx_queue.push(rx);
+                return true;
             }
         } else if (res == 0) {
             break;
@@ -344,9 +316,10 @@ void CAN::_pollRead()
             break;
         }
     }
+    return false;
 }
 
-int CAN::_write(const uavcan::CanFrame& frame) const
+int CANIface::_write(const AP_HAL::CANFrame& frame) const
 {
     errno = 0;
 
@@ -366,7 +339,7 @@ int CAN::_write(const uavcan::CanFrame& frame) const
 }
 
 
-int CAN::_read(uavcan::CanFrame& frame, uavcan::UtcTime& ts_utc, bool& loopback) const
+int CANIface::_read(AP_HAL::CANFrame& frame, uint64_t& timestamp_us, bool& loopback) const
 {
     auto iov = iovec();
     auto sockcan_frame = can_frame();
@@ -400,30 +373,38 @@ int CAN::_read(uavcan::CanFrame& frame, uavcan::UtcTime& ts_utc, bool& loopback)
     /*
      * Timestamp
      */
-    const cmsghdr* const cmsg = CMSG_FIRSTHDR(&msg);
-    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMP) {
-        auto tv = timeval();
-        std::memcpy(&tv, CMSG_DATA(cmsg), sizeof(tv));  // Copy to avoid alignment problems
-        ts_utc = uavcan::UtcTime::fromUSec(std::uint64_t(tv.tv_sec) * 1000000ULL + tv.tv_usec);
-    } else {
-        return -1;
-    }
+    timestamp_us = AP_HAL::native_micros64();
     return 1;
 }
 
-void CAN::_incrementNumFramesInSocketTxQueue()
+void CANIface::flush_tx()
+{
+    while (_frames_in_socket_tx_queue && !_down) {
+        _updateDownStatusFromPollResult(_pollfd);
+        _poll(true, true);
+    }
+}
+
+void CANIface::clear_rx()
+{
+    // Clean Rx Queue
+    std::queue<CanRxItem> empty;
+    std::swap( _rx_queue, empty );
+}
+
+void CANIface::_incrementNumFramesInSocketTxQueue()
 {
     _frames_in_socket_tx_queue++;
 }
 
-void CAN::_confirmSentFrame()
+void CANIface::_confirmSentFrame()
 {
     if (_frames_in_socket_tx_queue > 0) {
         _frames_in_socket_tx_queue--;
     }
 }
 
-bool CAN::_wasInPendingLoopbackSet(const uavcan::CanFrame& frame)
+bool CANIface::_wasInPendingLoopbackSet(const AP_HAL::CANFrame& frame)
 {
     if (_pending_loopback_ids.count(frame.id) > 0) {
         _pending_loopback_ids.erase(frame.id);
@@ -432,7 +413,7 @@ bool CAN::_wasInPendingLoopbackSet(const uavcan::CanFrame& frame)
     return false;
 }
 
-bool CAN::_checkHWFilters(const can_frame& frame) const
+bool CANIface::_checkHWFilters(const can_frame& frame) const
 {
     if (!_hw_filters_container.empty()) {
         for (auto& f : _hw_filters_container) {
@@ -446,150 +427,138 @@ bool CAN::_checkHWFilters(const can_frame& frame) const
     }
 }
 
-void CANManager::IfaceWrapper::updateDownStatusFromPollResult(const pollfd& pfd)
+void CANIface::_updateDownStatusFromPollResult(const pollfd& pfd)
 {
-    if (!_down&& (pfd.revents & POLLERR)) {
+    if (!_down && (pfd.revents & POLLERR)) {
         int error = 0;
         socklen_t errlen = sizeof(error);
         getsockopt(pfd.fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<void*>(&error), &errlen);
 
         _down= error == ENETDOWN || error == ENODEV;
 
-        hal.console->printf("Iface %d is dead; error %d", this->getFileDescriptor(), error);
+        Debug("Iface %d is dead; error %d", _fd, error);
     }
 }
 
-bool CANManager::begin(uint32_t bitrate, uint8_t can_number)
+bool CANIface::init(const uint32_t bitrate, const OperatingMode mode)
 {
-    if (init(can_number) >= 0) {
-        _initialized = true;
-    }
-    return _initialized;
-}
-
-bool CANManager::is_initialized()
-{
-    return _initialized;
-}
-
-void CANManager::initialized(bool val)
-{
-    _initialized = val;
-}
-
-CAN* CANManager::getIface(uint8_t iface_index)
-{
-    return (iface_index >= _ifaces.size()) ? nullptr : _ifaces[iface_index].get();
-}
-
-int CANManager::init(uint8_t can_number)
-{
-    int res = -1;
     char iface_name[16];
-    sprintf(iface_name, "can%u", can_number);
+    sprintf(iface_name, "can%u", _self_index);
 
-    res = addIface(iface_name);
-    if (res < 0) {
-        hal.console->printf("CANManager: init %s failed\n", iface_name);
+    if (_initialized) {
+        return _initialized;
     }
 
-    return res;
+    // TODO: Add possibility change bitrate
+    _fd = _openSocket(iface_name);
+    if (_fd > 0) {
+        _bitrate = bitrate;
+        _initialized = true;
+    } else {
+        _initialized = false;
+    }
+    return _initialized;
 }
 
-int16_t CANManager::select(uavcan::CanSelectMasks& inout_masks,
-                    const uavcan::CanFrame* (&)[uavcan::MaxCanIfaces],
-                    uavcan::MonotonicTime blocking_deadline)
+bool CANIface::select(bool &read_select, bool &write_select,
+                        const AP_HAL::CANFrame* const pending_tx, uint64_t blocking_deadline)
 {
     // Detecting whether we need to block at all
-    bool need_block = (inout_masks.write == 0);    // Write queue is infinite
+    bool need_block = !write_select;    // Write queue is infinite
 
-    for (unsigned i = 0; need_block && (i < _ifaces.size()); i++) {
-        const bool need_read = inout_masks.read  & (1 << i);
-        if (need_read && _ifaces[i]->hasReadyRx()) {
-            need_block = false;
-        }
+    if (read_select && _hasReadyRx()) {
+        need_block = false;
     }
 
     if (need_block) {
-        // Poll FD set setup
-        pollfd pollfds[uavcan::MaxCanIfaces] = {};
-        unsigned num_pollfds = 0;
-        IfaceWrapper* pollfd_index_to_iface[uavcan::MaxCanIfaces] = {};
-
-        for (unsigned i = 0; i < _ifaces.size(); i++) {
-            if (_ifaces[i]->isDown()) {
-                continue;
+        if (_down) {
+            return false;
+        } else {
+            _pollfd.fd = _fd;
+            _pollfd.events |= POLLIN;
+            if (_hasReadyTx() && write_select) {
+                _pollfd.events |= POLLOUT;
             }
-            pollfds[num_pollfds].fd = _ifaces[i]->getFileDescriptor();
-            pollfds[num_pollfds].events = POLLIN;
-            if (_ifaces[i]->hasReadyTx() || (inout_masks.write & (1U << i))) {
-                pollfds[num_pollfds].events |= POLLOUT;
-            }
-            pollfd_index_to_iface[num_pollfds] = _ifaces[i].get();
-            num_pollfds++;
         }
-
-        if (num_pollfds == 0) {
-            return 0;
-        }
-
-        // Timeout conversion
-        const std::int64_t timeout_usec = (blocking_deadline - getMonotonic()).toUSec();
-        auto ts = timespec();
-        if (timeout_usec > 0) {
-            ts.tv_sec = timeout_usec / 1000000LL;
-            ts.tv_nsec = (timeout_usec % 1000000LL) * 1000;
-        }
-
-        // Blocking here
-        const int res = ppoll(pollfds, num_pollfds, &ts, nullptr);
-        if (res < 0) {
-            return res;
-        }
-
-        // Handling poll output
-        for (unsigned i = 0; i < num_pollfds; i++) {
-            pollfd_index_to_iface[i]->updateDownStatusFromPollResult(pollfds[i]);
-
-            const bool poll_read  = pollfds[i].revents & POLLIN;
-            const bool poll_write = pollfds[i].revents & POLLOUT;
-            pollfd_index_to_iface[i]->poll(poll_read, poll_write);
+        if (_evt_handle != nullptr && blocking_deadline > AP_HAL::native_micros64()) {
+            _evt_handle->wait(blocking_deadline - AP_HAL::native_micros64());
         }
     }
 
     // Writing the output masks
-    inout_masks = uavcan::CanSelectMasks();
-    for (unsigned i = 0; i < _ifaces.size(); i++) {
-        if (!_ifaces[i]->isDown()) {
-            inout_masks.write |= std::uint8_t(1U << i);     // Always ready to write if not down
-        }
-        if (_ifaces[i]->hasReadyRx()) {
-            inout_masks.read |= std::uint8_t(1U << i);      // Readability depends only on RX buf, even if down
-        }
+    if (!_down) {
+        write_select = true;     // Always ready to write if not down
+    } else {
+        write_select = false;
+    }
+    if (_hasReadyRx()) {
+        read_select = true;      // Readability depends only on RX buf, even if down
+    } else {
+        read_select = false;
     }
 
     // Return value is irrelevant as long as it's non-negative
-    return _ifaces.size();
+    return true;
 }
 
-int CANManager::addIface(const std::string& iface_name)
+bool CANIface::set_event_handle(AP_HAL::EventHandle* handle) {
+    _evt_handle = handle;
+    evt_can_socket[_self_index]._ifaces[_self_index] = this;
+    _evt_handle->set_source(&evt_can_socket[_self_index]);
+    return true;
+}
+
+
+bool CANIface::CANSocketEventSource::wait(uint64_t duration, AP_HAL::EventHandle* evt_handle)
 {
-    if (_ifaces.size() >= uavcan::MaxCanIfaces) {
-        return -1;
+    if (evt_handle == nullptr) {
+        return false;
+    }
+    pollfd pollfds[HAL_NUM_CAN_IFACES] {};
+    uint8_t pollfd_iface_map[HAL_NUM_CAN_IFACES] {};
+    unsigned long int num_pollfds = 0;
+    
+    // Poll FD set setup
+    for (unsigned i = 0; i < HAL_NUM_CAN_IFACES; i++) {
+        if (_ifaces[i] == nullptr) {
+            continue;
+        }
+        if (_ifaces[i]->_down) {
+            continue;
+        }
+        pollfds[num_pollfds] = _ifaces[i]->_pollfd;
+        pollfd_iface_map[num_pollfds] = i;
+        num_pollfds++;
     }
 
-    // Open the socket
-    const int fd = CAN::openSocket(iface_name);
-    if (fd < 0) {
-        return fd;
+    if (num_pollfds == 0) {
+        return true;
     }
 
-    // Construct the iface - upon successful construction the iface will take ownership of the fd.
-    _ifaces.emplace_back(new IfaceWrapper(fd));
+    // Timeout conversion
+    auto ts = timespec();
+    ts.tv_sec = duration / 1000000LL;
+    ts.tv_nsec = (duration % 1000000LL) * 1000;
 
-    hal.console->printf("New iface '%s' fd %d\n", iface_name.c_str(), fd);
+    // Blocking here
+    const int res = ppoll(pollfds, num_pollfds, &ts, nullptr);
 
-    return _ifaces.size() - 1;
+    if (res < 0) {
+        return false;
+    }
+
+    // Handling poll output
+    for (unsigned i = 0; i < num_pollfds; i++) {
+        if (_ifaces[pollfd_iface_map[i]] == nullptr) {
+            continue;
+        }
+        _ifaces[pollfd_iface_map[i]]->_updateDownStatusFromPollResult(pollfds[i]);
+
+        const bool poll_read  = pollfds[i].revents & POLLIN;
+        const bool poll_write = pollfds[i].revents & POLLOUT;
+        _ifaces[pollfd_iface_map[i]]->_poll(poll_read, poll_write);
+    }
+    return true;
 }
 
 #endif
