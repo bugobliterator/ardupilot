@@ -42,7 +42,7 @@ class AP_ToshibaCAN : public AP_CANDriver {
     // processing definitions
     static constexpr uint16_t TOSHIBACAN_OUTPUT_MIN = 6300;
     static constexpr uint16_t TOSHIBACAN_OUTPUT_MAX = 32000;
-    static constexpr uint16_t TOSHIBACAN_SEND_TIMEOUT_US = 500;
+    static const uint16_t TOSHIBACAN_SEND_TIMEOUT_US;
     static constexpr uint8_t CAN_IFACE_INDEX = 0;
 
     // telemetry definitions

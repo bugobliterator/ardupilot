@@ -33,6 +33,11 @@ extern const AP_HAL::HAL& hal;
 
 #define debug_can(level_debug, fmt, args...) do { AP::can().log_text(level_debug, "ToshibaCAN",  fmt, #args); } while (0)
 
+
+// stupid compiler is not able to optimise this under gnu++11
+// move this back when moving to gnu++17
+const uint16_t AP_ToshibaCAN::TOSHIBACAN_SEND_TIMEOUT_US = 500;
+
 AP_ToshibaCAN::AP_ToshibaCAN()
 {
     debug_can(AP_CANManager::LOG_INFO, "ToshibaCAN: constructed\n\r");
