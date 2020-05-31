@@ -516,7 +516,7 @@ void RangeFinder::detect_instance(uint8_t instance, uint8_t& serial_instance)
         }
         break;
 
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
     case Type::UAVCAN:
         /*
           the UAVCAN driver gets created when we first receive a
