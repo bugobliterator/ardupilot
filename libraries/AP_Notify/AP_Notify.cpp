@@ -283,9 +283,9 @@ void AP_Notify::add_backends(void)
 #endif
                 break;
             case Notify_LED_UAVCAN:
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
                 ADD_BACKEND(new UAVCAN_RGB_LED(0));
-#endif // HAL_WITH_UAVCAN
+#endif // HAL_NUM_CAN_IFACES
                 break;
 
         }
