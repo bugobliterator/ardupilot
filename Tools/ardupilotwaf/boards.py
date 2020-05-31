@@ -288,7 +288,8 @@ class Board:
             env.DEFINES.update(
                 UAVCAN_CPP_VERSION = 'UAVCAN_CPP03',
                 UAVCAN_NO_ASSERTIONS = 1,
-                UAVCAN_NULLPTR = 'nullptr'
+                UAVCAN_NULLPTR = 'nullptr',
+                MAX_NUMBER_OF_CAN_DRIVERS= '2'
             )
 
             env.INCLUDES += [
