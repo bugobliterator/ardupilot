@@ -20,6 +20,7 @@
 #include "SITL_State.h"
 #include "Util.h"
 #include "DSP.h"
+#include "CANSocketIface.h"
 
 #include <AP_BoardConfig/AP_BoardConfig.h>
 #include <AP_HAL_Empty/AP_HAL_Empty.h>
@@ -56,6 +57,11 @@ static UARTDriver sitlUart7Driver(7, &sitlState);
 
 static Util utilInstance(&sitlState);
 
+
+#if HAL_NUM_CAN_IFACES
+static HALSITL::CANIface* canDrivers[HAL_NUM_CAN_IFACES];
+#endif
+
 HAL_SITL::HAL_SITL() :
     AP_HAL::HAL(
         &sitlUart0Driver,   /* uartA */
@@ -79,7 +85,12 @@ HAL_SITL::HAL_SITL() :
         &emptyOpticalFlow,  /* onboard optical flow */
         &emptyFlash,        /* flash driver */
         &dspDriver,         /* dsp driver */
-        nullptr),           /* CAN */
+#if HAL_NUM_CAN_IFACES
+        (AP_HAL::CANIface**)canDrivers
+#else
+        nullptr
+#endif
+        ),           /* CAN */
     _sitl_state(&sitlState)
 {}
 
