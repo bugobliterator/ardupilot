@@ -111,6 +111,17 @@ AP_CANManager::AP_CANManager()
 
 void AP_CANManager::init()
 {
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    if (AP::sitl() != nullptr) {
+        if (AP::sitl()->speedup > 1) {
+            log_text(AP_CANManager::LOG_ERROR, LOG_TAG, "CAN is not supported under speedup.");
+
+            return;
+        }
+    } else{
+        AP_HAL::panic("CANManager: SITL not initialised!");
+    }
+#endif
     // We only allocate log buffer only when under debug
     if (_loglevel != AP_CANManager::LOG_NONE) {
         _log_buf = new char[LOG_BUFFER_SIZE];
