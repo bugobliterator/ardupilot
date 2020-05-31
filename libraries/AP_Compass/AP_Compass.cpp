@@ -20,7 +20,7 @@
 #include "AP_Compass_LIS3MDL.h"
 #include "AP_Compass_AK09916.h"
 #include "AP_Compass_QMC5883L.h"
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
 #include "AP_Compass_UAVCAN.h"
 #endif
 #include "AP_Compass_MMC3416.h"
@@ -1244,7 +1244,7 @@ void Compass::_detect_backends(void)
 #endif
 
 
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
     if (_driver_enabled(DRIVER_UAVCAN)) {
         for (uint8_t i=0; i<COMPASS_MAX_BACKEND; i++) {
             AP_Compass_Backend* _uavcan_backend = AP_Compass_UAVCAN::probe(i);
@@ -1266,7 +1266,7 @@ void Compass::_detect_backends(void)
 void
 Compass::_detect_runtime(void)
 {
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
     //Don't try to add device while armed
     if (hal.util->get_soft_armed()) {
         return;
