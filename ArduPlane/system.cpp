@@ -33,8 +33,9 @@ void Plane::init_ardupilot()
 
     // setup any board specific drivers
     BoardConfig.init();
-#if HAL_WITH_UAVCAN
-    BoardConfig_CAN.init();
+
+#if HAL_NUM_CAN_IFACES
+    can_mgr.init();
 #endif
 
     // initialise rc channels including setting mode
