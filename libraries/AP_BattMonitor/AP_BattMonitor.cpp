@@ -14,7 +14,7 @@
 
 #include <AP_HAL/AP_HAL.h>
 
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
 #include "AP_BattMonitor_UAVCAN.h"
 #endif
 
@@ -155,7 +155,7 @@ AP_BattMonitor::init()
 #endif
                 break;
             case AP_BattMonitor_Params::BattMonitor_TYPE_UAVCAN_BatteryInfo:
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
                 drivers[instance] = new AP_BattMonitor_UAVCAN(*this, state[instance], AP_BattMonitor_UAVCAN::UAVCAN_BATTERY_INFO, _params[instance]);
 #endif
                 break;
