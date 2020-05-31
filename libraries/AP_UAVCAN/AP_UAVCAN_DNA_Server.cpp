@@ -18,7 +18,7 @@
 
 #include <AP_HAL/AP_HAL.h>
 
-#if HAL_WITH_UAVCAN
+#if HAL_NUM_CAN_IFACES
 
 #include "AP_UAVCAN_DNA_Server.h"
 #include "AP_UAVCAN.h"
@@ -27,14 +27,14 @@
 #include <AP_Math/AP_Math.h>
 #include <uavcan/protocol/dynamic_node_id/Allocation.hpp>
 #include <GCS_MAVLink/GCS.h>
-
+#include "AP_UAVCAN_Clock.h"
 extern const AP_HAL::HAL& hal;
 
 #define NODEDATA_MAGIC 0xAC01
 #define NODEDATA_MAGIC_LEN 2
 #define MAX_NODE_ID    125
 
-#define debug_uavcan(fmt, args...) do { hal.console->printf(fmt, ##args); } while (0)
+#define debug_uavcan(level_debug, fmt, args...) do { AP::can().log_text(level_debug, "UAVCAN", fmt, ##args); } while (0)
 
 //Callback Object Definitions
 UC_REGISTRY_BINDER(AllocationCb, uavcan::protocol::dynamic_node_id::Allocation);
@@ -422,7 +422,7 @@ void AP_UAVCAN_DNA_Server::verify_nodes(AP_UAVCAN *ap_uavcan)
 {
     WITH_SEMAPHORE(sem);
 
-    uint32_t now = AP_HAL::millis();
+    uint32_t now = uavcan::SystemClock::instance().getMonotonic().toMSec();
     if ((now - last_verification_request) < 5000) {
         return;
     }
@@ -569,7 +569,7 @@ void AP_UAVCAN_DNA_Server::handleAllocation(uint8_t driver_index, uint8_t node_i
         //Ignore Allocation messages that are not DNA requests
         return;
     }
-    uint32_t now = AP_HAL::millis();
+    uint32_t now = uavcan::SystemClock::instance().getMonotonic().toMSec();
     if (driver_index == current_driver_index) {
         last_activity_ms = now;
     } else if ((now - last_activity_ms) > 500) {
@@ -674,4 +674,4 @@ AP_UAVCAN_DNA_Server& uavcan_dna_server()
     return _server;
 }
 }
-#endif //HAL_WITH_UAVCAN
+#endif //HAL_NUM_CAN_IFACES
