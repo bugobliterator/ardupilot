@@ -6,12 +6,11 @@
 
 #include <AP_Param/AP_Param.h>
 #include "AP_SLCANIface.h"
-
+#include "AP_CANDriver.h"
 #ifndef MAX_NUMBER_OF_CAN_DRIVERS
 #define MAX_NUMBER_OF_CAN_DRIVERS HAL_NUM_CAN_IFACES
 #endif
 
-class AP_CANDriver;
 class AP_CANManager
 {
 public:

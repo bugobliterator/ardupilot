@@ -21,13 +21,13 @@ const AP_Param::GroupInfo CANTester::var_info[] = {
     // @DisplayName: CAN Test Index
     // @Description: Selects the Index of Test that needs to be run recursively, this value gets reset to 0 at boot.
     // @Range: 0 4
-    // @Values: 0: TEST_NONE, 1: TEST_LOOPBACK,2: TEST_BUSOFF_RECOVERY,3: TEST_UAVCAN_DNA,4: TEST_TOSHIBA_CAN,
+    // @Values: 0: TEST_NONE, 1: TEST_LOOPBACK,2: TEST_BUSOFF_RECOVERY,3: TEST_UAVCAN_DNA,4: TEST_TOSHIBA_CAN
     // @User: Advanced
     AP_GROUPINFO("ID", 1, CANTester, _test_id, 0),
     // @Param: LPR8
     // @DisplayName: CANTester LoopRate
     // @Description: Selects the Looprate of Test methods
-    // @Units: microseconds
+    // @Units: us
     // @User: Advanced
     AP_GROUPINFO("LPR8", 2, CANTester, _loop_rate, 1000),
 

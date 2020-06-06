@@ -60,7 +60,7 @@ const AP_Param::GroupInfo SLCAN::CANIface::var_info[] = {
     // @DisplayName: SLCAN MODE
     // @Description: SLCAN Mode to be selected, Passthrough mode routes all can drivers to and from SLCAN. Interface Mode puts selected driver on SLCAN instead of CAN bus, and Silent mode routes all packets on the selected CAN Bus
     // @Range: 0 2
-    // @Values: 0: Passthrough Mode 1: Interface Mode 2: Silent Mode
+    // @Values: 0: Passthrough Mode, 1: Interface Mode, 2: Silent Mode
     // @User: Standard
     AP_GROUPINFO("MODE", 4, SLCAN::CANIface, _slcan_mode, 0),
 

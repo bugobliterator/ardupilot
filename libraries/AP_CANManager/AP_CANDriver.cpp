@@ -23,10 +23,7 @@
 #include <AP_ToshibaCAN/AP_ToshibaCAN.h>
 #include <AP_PiccoloCAN/AP_PiccoloCAN.h>
 #include "AP_CANTester.h"
-// To be replaced with macro saying if KDECAN library is included
-#if APM_BUILD_TYPE(APM_BUILD_ArduCopter) || APM_BUILD_TYPE(APM_BUILD_ArduPlane) || APM_BUILD_TYPE(APM_BUILD_ArduSub)
 #include <AP_KDECAN/AP_KDECAN.h>
-#endif
 
 
 // table of user settable CAN bus parameters
@@ -45,9 +42,11 @@ const AP_Param::GroupInfo AP_CANManager::CANDriver_Params::var_info[] = {
     // @Path: ../AP_UAVCAN/AP_UAVCAN.cpp
     AP_SUBGROUPPTR(_uavcan, "UC_", 2, AP_CANManager::CANDriver_Params, AP_UAVCAN),
 
+#if (APM_BUILD_TYPE(APM_BUILD_ArduCopter) || APM_BUILD_TYPE(APM_BUILD_ArduPlane) || APM_BUILD_TYPE(APM_BUILD_ArduSub))
     // @Group: KDE_
     // @Path: ../AP_KDECAN/AP_KDECAN.cpp
     AP_SUBGROUPPTR(_kdecan, "KDE_", 3, AP_CANManager::CANDriver_Params, AP_KDECAN),
+#endif
 
 #if HAL_NUM_CAN_IFACES > 1
     // @Group: TST_

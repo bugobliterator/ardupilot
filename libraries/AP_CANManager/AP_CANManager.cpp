@@ -47,42 +47,42 @@ const AP_Param::GroupInfo AP_CANManager::var_info[] = {
 
 #if HAL_NUM_CAN_IFACES > 0
     // @Group: P1_
-    // @Path: ../AP_CANManager/canbus_interface.cpp
+    // @Path: ../AP_CANManager/AP_CANIfaceParams.cpp
     AP_SUBGROUPINFO(_interfaces[0], "P1_", 1, AP_CANManager, AP_CANManager::CANIface_Params),
 #endif
 
 #if HAL_NUM_CAN_IFACES > 1
     // @Group: P2_
-    // @Path: ../AP_CANManager/canbus_interface.cpp
+    // @Path: ../AP_CANManager/AP_CANIfaceParams.cpp
     AP_SUBGROUPINFO(_interfaces[1], "P2_", 2, AP_CANManager, AP_CANManager::CANIface_Params),
 #endif
 
 #if HAL_NUM_CAN_IFACES > 2
     // @Group: P3_
-    // @Path: ../AP_CANManager/canbus_interface.cpp
+    // @Path: ../AP_CANManager/AP_CANIfaceParams.cpp
     AP_SUBGROUPINFO(_interfaces[2], "P3_", 3, AP_CANManager, AP_CANManager::CANIface_Params),
 #endif
 
 #if MAX_NUMBER_OF_CAN_DRIVERS > 0
     // @Group: D1_
-    // @Path: ../AP_CANManager/canbus_driver.cpp
+    // @Path: ../AP_CANManager/AP_CANDriver.cpp
     AP_SUBGROUPINFO(_drv_param[0], "D1_", 4, AP_CANManager, AP_CANManager::CANDriver_Params),
 #endif
 
 #if MAX_NUMBER_OF_CAN_DRIVERS > 1
     // @Group: D2_
-    // @Path: ../AP_CANManager/canbus_driver.cpp
+    // @Path: ../AP_CANManager/AP_CANDriver.cpp
     AP_SUBGROUPINFO(_drv_param[1], "D2_", 5, AP_CANManager, AP_CANManager::CANDriver_Params),
 #endif
 
 #if MAX_NUMBER_OF_CAN_DRIVERS > 2
     // @Group: D3_
-    // @Path: ../AP_CANManager/canbus_driver.cpp
+    // @Path: ../AP_CANManager/AP_CANDriver.cpp
     AP_SUBGROUPINFO(_drv_param[2], "D3_", 6, AP_CANManager, AP_CANManager::CANDriver_Params),
 #endif
 
     // @Group: SLCAN_
-    // @Path: ../AP_CANManager/canbus_driver.cpp
+    // @Path: ../AP_CANManager/AP_SLCANIface.cpp
     AP_SUBGROUPINFO(_slcan_interface, "SLCAN_", 7, AP_CANManager, SLCAN::CANIface),
 
     // @Param: LOGLEVEL
@@ -200,6 +200,7 @@ void AP_CANManager::init()
 
             AP_Param::load_object_from_eeprom((AP_UAVCAN*)_drivers[drv_num], AP_UAVCAN::var_info);
         } else if (drv_type == Driver_Type_KDECAN) {
+#if (APM_BUILD_TYPE(APM_BUILD_ArduCopter) || APM_BUILD_TYPE(APM_BUILD_ArduPlane) || APM_BUILD_TYPE(APM_BUILD_ArduSub))
             // To be replaced with macro saying if KDECAN library is included
             _drivers[drv_num] = _drv_param[drv_num]._kdecan = new AP_KDECAN;
 
@@ -209,6 +210,7 @@ void AP_CANManager::init()
             }
 
             AP_Param::load_object_from_eeprom((AP_KDECAN*)_drivers[drv_num], AP_KDECAN::var_info);
+#endif
         } else if (drv_type == Driver_Type_ToshibaCAN) {
             _drivers[drv_num] = new AP_ToshibaCAN;
 
