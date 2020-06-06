@@ -19,14 +19,7 @@
  */
 
 #include <AP_HAL/AP_HAL.h>
-
-#if HAL_NUM_CAN_IFACES
-
-#include <AP_BoardConfig/AP_BoardConfig.h>
-#include <AP_CANManager/AP_CANManager.h>
-
 #include <AP_Common/AP_Common.h>
-
 #include <AP_HAL/utility/sparse-endian.h>
 
 #include <SRV_Channel/SRV_Channel.h>
@@ -35,10 +28,11 @@
 #include <AP_Math/AP_Math.h>
 #include <AP_Motors/AP_Motors.h>
 #include <AP_Logger/AP_Logger.h>
-
-#include "AP_KDECAN.h"
 #include <stdio.h>
+#include "AP_KDECAN.h"
+#include <AP_CANManager/AP_CANManager.h>
 
+#if HAL_NUM_CAN_IFACES
 extern const AP_HAL::HAL& hal;
 
 #define debug_can(level_debug, fmt, args...) do { AP::can().log_text(level_debug, "KDECAN", fmt, ##args); } while (0)

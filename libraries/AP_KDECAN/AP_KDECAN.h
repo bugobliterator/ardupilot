@@ -21,6 +21,9 @@
 #pragma once
 
 #include <AP_CANManager/AP_CANDriver.h>
+
+#if HAL_NUM_CAN_IFACES
+
 #include <AP_HAL/Semaphores.h>
 
 #include <AP_Param/AP_Param.h>
@@ -135,3 +138,4 @@ private:
     static const uint16_t TELEMETRY_TIMEOUT_US = 500;
     static const uint16_t ENUMERATION_TIMEOUT_MS = 30000;
 };
+#endif //HAL_NUM_CAN_IFACES
