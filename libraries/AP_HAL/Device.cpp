@@ -85,6 +85,30 @@ void AP_HAL::Device::set_checked_register(uint8_t bank, uint8_t reg, uint8_t val
     _checked.n_set++;
 }
 
+void AP_HAL::Device::set_checked_register(uint8_t bank, uint8_t reg, uint8_t val)
+{
+    if (_checked.regs == nullptr) {
+        return;
+    }
+    struct checkreg *regs = _checked.regs;
+    for (uint8_t i=0; i<_checked.n_set; i++) {
+        if (regs[i].regnum == reg && regs[i].bank == bank) {
+            regs[i].bank = bank;
+            regs[i].value = val;
+            return;
+        }
+    }
+    if (_checked.n_set == _checked.n_allocated) {
+        printf("Not enough checked registers for reg 0x%02x on device 0x%x\n",
+               (unsigned)reg, (unsigned)get_bus_id());
+        return;
+    }
+    regs[_checked.n_set].bank = reg;
+    regs[_checked.n_set].regnum = reg;
+    regs[_checked.n_set].value = val;
+    _checked.n_set++;
+}
+
 /*
   check one register value
  */
