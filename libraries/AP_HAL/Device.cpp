@@ -93,7 +93,6 @@ void AP_HAL::Device::set_checked_register(uint8_t bank, uint8_t reg, uint8_t val
     struct checkreg *regs = _checked.regs;
     for (uint8_t i=0; i<_checked.n_set; i++) {
         if (regs[i].regnum == reg && regs[i].bank == bank) {
-            regs[i].bank = bank;
             regs[i].value = val;
             return;
         }
@@ -103,7 +102,7 @@ void AP_HAL::Device::set_checked_register(uint8_t bank, uint8_t reg, uint8_t val
                (unsigned)reg, (unsigned)get_bus_id());
         return;
     }
-    regs[_checked.n_set].bank = reg;
+    regs[_checked.n_set].bank = bank;
     regs[_checked.n_set].regnum = reg;
     regs[_checked.n_set].value = val;
     _checked.n_set++;
