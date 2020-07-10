@@ -277,7 +277,7 @@ void AP_BoardConfig::board_autodetect(void)
     //    return;
     //}
 #endif
-
+    return;
     if (state.board_type != PX4_BOARD_AUTO) {
         validate_board_type();
         // user has chosen a board type
