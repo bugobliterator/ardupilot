@@ -112,7 +112,7 @@ void setup(void)
 
     //setup test
     hal.scheduler->delay(3000);
-    AP::logger().Write_Message("Setup Test Started");
+    //AP::logger().Write_Message("Setup Test Started");
     AP::ins().update();
     AP::baro().update();
     AP::compass().read();
