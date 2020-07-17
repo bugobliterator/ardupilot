@@ -112,7 +112,7 @@ void setup(void)
 
     //setup test
     hal.scheduler->delay(3000);
-    //AP::logger().Write_Message("Setup Test Started");
+    AP::logger().Write_Message("Setup Test Started");
     AP::ins().update();
     AP::baro().update();
     AP::compass().read();
@@ -151,6 +151,9 @@ void setup(void)
         }
     }
     log_sensor_health(_setup_sensor_health_mask);
+
+    //Write IMU Data to Log
+    logger.Write_IMU();
 
     hal.console->printf("Log: %d\n", AP::logger().find_last_log());
     hal.uartC->printf("Log: %d\n", AP::logger().find_last_log());
