@@ -152,9 +152,6 @@ void setup(void)
     }
     log_sensor_health(_setup_sensor_health_mask);
 
-    //Write IMU Data to Log
-    logger.Write_IMU();
-
     hal.console->printf("Log: %d\n", AP::logger().find_last_log());
     hal.uartC->printf("Log: %d\n", AP::logger().find_last_log());
     
@@ -183,6 +180,7 @@ void loop()
 
     for (uint8_t i = 0; i < 3; i++) {
         if (!AP::ins().get_accel_health(i)) {
+            hal.uartC->printf("\tnot healthy\n");
             _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << i);
             _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << i);
             

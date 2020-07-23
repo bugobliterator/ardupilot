@@ -197,6 +197,12 @@ public:
     // update gyro and accel values from accumulated samples
     void update(void);
 
+    // reset update gyro values from backends
+    void reset_gyro_health(uint8_t instance);
+
+    // reset update accel values from backends
+    void reset_accel_health(uint8_t instance);
+
     // wait for a sample to be available
     void wait_for_sample(void);
 

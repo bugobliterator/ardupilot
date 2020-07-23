@@ -1415,8 +1415,28 @@ void AP_InertialSensor::update(void)
     }
 
     _last_update_usec = AP_HAL::micros();
-    
+
     _have_sample = false;
+}
+
+/*
+ reset update gyro values from backends
+*/
+void AP_InertialSensor::reset_gyro_health(uint8_t instance)
+{
+    _gyro_healthy[instance] = true;
+    _gyro_error_count[instance] = 0;
+    //hal.uartC->printf("gyro%d reset\n", instance);
+}
+
+/*
+ reset update accel values from backends
+*/
+void AP_InertialSensor::reset_accel_health(uint8_t instance)
+{
+    _accel_healthy[instance] = true;
+    _accel_error_count[instance] = 0;
+    //hal.uartC->printf("accel%d reset\n", instance);
 }
 
 /*
