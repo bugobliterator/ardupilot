@@ -1420,7 +1420,7 @@ void AP_InertialSensor::update(void)
 }
 
 /*
- reset update gyro values from backends
+ reset gyro values from backends
 */
 void AP_InertialSensor::reset_gyro_health(uint8_t instance)
 {
@@ -1430,7 +1430,7 @@ void AP_InertialSensor::reset_gyro_health(uint8_t instance)
 }
 
 /*
- reset update accel values from backends
+ reset accel values from backends
 */
 void AP_InertialSensor::reset_accel_health(uint8_t instance)
 {
