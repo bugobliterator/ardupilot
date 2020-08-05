@@ -89,7 +89,7 @@ void AP_BoardConfig::set_imu_temp(float current)
                            heater.pi_controller.get_P(),
                            heater.pi_controller.get_I(),
                            heater.output);
-        heater.last_log_ms = now;
+        //heater.last_log_ms = now;
     }
 #if 0
     gcs().send_text(MAV_SEVERITY_INFO, "Heater: Out=%.1f Temp=%.1f",
