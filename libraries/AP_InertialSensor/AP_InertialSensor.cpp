@@ -1439,6 +1439,16 @@ void AP_InertialSensor::reset_accel_health(uint8_t instance)
     //hal.uartC->printf("accel%d reset\n", instance);
 }
 
+uint32_t AP_InertialSensor::get_accel_id(uint8_t i)
+{
+    return _accel_id[i];
+}
+
+uint32_t AP_InertialSensor::get_gyro_id(uint8_t i)
+{
+    return _gyro_id[i];
+}
+
 /*
   wait for a sample to be available. This is the function that
   determines the timing of the main loop in ardupilot.

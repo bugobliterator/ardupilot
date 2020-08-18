@@ -879,6 +879,18 @@ uint8_t AP_Baro::register_sensor(void)
     return _num_sensors++;
 }
 
+// get the bus number of working barometers. Supports Cubes only.
+uint8_t AP_Baro::get_baro_bus(uint8_t instance)
+{
+    if (instance == 0)
+        return std::move(hal.spi->get_device(HAL_BARO_MS5611_SPI_EXT_NAME))->bus_num();
+    else if (instance == 1)
+        return std::move(hal.spi->get_device(HAL_BARO_MS5611_NAME))->bus_num();
+    else 
+        return 0;
+    //hal.uartC->printf("working on bus %u address 0x%02x\n", std::move(hal.spi->get_device(HAL_BARO_MS5611_SPI_EXT_NAME))->bus_num(), std::move(hal.spi->get_device(HAL_BARO_MS5611_SPI_EXT_NAME))->get_bus_address());
+    //hal.uartC->printf("working on bus %u address 0x%02x\n", std::move(hal.spi->get_device(HAL_BARO_MS5611_NAME))->bus_num(), std::move(hal.spi->get_device(HAL_BARO_MS5611_NAME))->get_bus_address());   
+}
 
 /*
   check if all barometers are healthy

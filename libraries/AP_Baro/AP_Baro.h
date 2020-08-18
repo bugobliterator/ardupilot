@@ -52,6 +52,9 @@ public:
     bool healthy(void) const { return healthy(_primary); }
     bool healthy(uint8_t instance) const { return sensors[instance].healthy && sensors[instance].alt_ok && sensors[instance].calibrated; }
 
+    // get the bus number of working barometers. Supports Cubes only.
+    uint8_t get_baro_bus(uint8_t instance);
+    
     // check if all baros are healthy - used for SYS_STATUS report
     bool all_healthy(void) const;
 

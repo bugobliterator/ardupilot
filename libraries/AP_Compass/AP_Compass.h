@@ -190,6 +190,9 @@ public:
     bool healthy(void) const { return healthy(0); }
     uint8_t get_healthy_mask() const;
 
+    /// Return compass id
+    int32_t get_dev_id(uint8_t i) const { return _get_state(Priority(i)).detected_dev_id; }
+
     /// Returns the current offset values
     ///
     /// @returns                    The current compass offsets in milligauss.

@@ -203,6 +203,9 @@ public:
     // reset update accel values from backends
     void reset_accel_health(uint8_t instance);
 
+    uint32_t get_accel_id(uint8_t i);
+    uint32_t get_gyro_id(uint8_t i);
+
     // wait for a sample to be available
     void wait_for_sample(void);
 
