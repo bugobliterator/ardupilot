@@ -243,10 +243,19 @@ void loop()
             hal.uartC->printf("Fail sensor changed in this run. Log: %d\n", AP::logger().find_last_log());
         }
 
-        hal.uartC->printf("com order: [0]%lu [1]%lu [2]%lu ", AP::compass().get_dev_id(0), AP::compass().get_dev_id(1), AP::compass().get_dev_id(2));
-        hal.uartC->printf("gyr order: [0]%lu [1]%lu [2]%lu ", AP::ins().get_accel_id(0), AP::ins().get_accel_id(1), AP::ins().get_accel_id(2));
-        hal.uartC->printf("acc order: [0]%lu [1]%lu [2]%lu \n", AP::ins().get_gyro_id(0), AP::ins().get_gyro_id(1), AP::ins().get_gyro_id(2));
-        //hal.uartC->printf("Baro1(fmu) on %u; Baro0(imu)0 on %u\n", AP::baro().get_baro_bus(1), AP::baro().get_baro_bus(0));
+        hal.uartC->printf("com order: [0]0x%x [1]0x%x ", AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(0)), 
+                                                        AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(1)));
+        hal.uartC->printf("baro order: [1] on bus %u:0x%x; [0] on bus %u:0x%x ", AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(1)), 
+                                                                                AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(1)), 
+                                                                                AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(0)), 
+                                                                                AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(0)));
+        hal.uartC->printf("gyr order: [0]0x%x [1]0x%x [2]0x%x ", AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(0)), 
+                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(1)), 
+                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(2)));
+        hal.uartC->printf("acc order: [0]0x%x [1]0x%x [2]0x%x \n", AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(0)), 
+                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(1)), 
+                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(2)));
+
         hal.console->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         hal.uartC->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         hal.uartC->printf("INSTANT SENSOR_MASK: 0x%x\n", _instant_sensor_health_mask);
