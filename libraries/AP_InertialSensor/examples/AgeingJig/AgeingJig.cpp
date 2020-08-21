@@ -163,7 +163,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                     }
             }
         case 2:
-            return 10;
+            return 16;
         case 3:     //GYR
             switch (bus)
             {
