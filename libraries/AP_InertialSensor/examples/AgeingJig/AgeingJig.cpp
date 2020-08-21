@@ -43,14 +43,19 @@ static AP_Logger logger{unused};
 static AP_GPS gps;
 static AP_AHRS_DCM ahrs;
 
+enum stype{T_COM, T_BAR, T_INS, T_GYR, T_ACC};
+
 void log_sensor_health(uint16_t sensor_health);
+char* get_sensor_name(enum stype type, uint8_t devtype);
+uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus);
 void setup(void);
 void loop(void);
 
-static uint16_t _setup_sensor_health_mask = SENSOR_MASK;
-static uint16_t _loop_sensor_health_mask = SENSOR_MASK;
-static uint16_t _last_sensor_health_mask = SENSOR_MASK;
-static uint16_t _instant_sensor_health_mask = SENSOR_MASK;
+static uint16_t _setup_sensor_health_mask;
+static uint16_t _loop_sensor_health_mask;
+static uint16_t _last_sensor_health_mask;
+static uint16_t _instant_sensor_health_mask;
+static uint16_t _local_sensor_health_mask = SENSOR_MASK;
 static uint32_t _last_accel_error_count[3];
 static uint32_t _last_gyro_error_count[3];
 static bool fault_recorded;
@@ -86,6 +91,119 @@ void log_sensor_health(uint16_t sensor_health)
                                             (sensor_health) & 1);
 }
 
+char* get_sensor_name(enum stype type, uint8_t devtype) 
+{
+   switch (type) 
+   {
+        case 0: 
+            switch (devtype) 
+            {
+                case 0x02:  return (char*)"LSM303D";
+                case 0x04:  return (char*)"AK8963";
+                case 0x09:  return (char*)"AK09916";
+                case 0x0B:  return (char*)"ICM20948";
+                default:    return (char*)"none";
+            }
+        case 1:
+            switch (devtype) 
+            {
+                case 0x0B:  return (char*)"MS5611";
+                default:    return (char*)"none";
+            }
+        case 2:
+            switch (devtype) 
+            {
+                case 0x11:  return (char*)"LSM303D";
+                case 0x16:  return (char*)"MPU9250";
+                case 0x22:  return (char*)"L3GD20";
+                case 0x24:  return (char*)"MPU9250";
+                case 0x2C:  return (char*)"ICM20948";
+                case 0x2E:  return (char*)"ICM20649";
+                case 0x2F:  return (char*)"ICM20602";
+                case 0x31:  return (char*)"ADIS1647X";
+                default:    return (char*)"none";
+            }
+        default:
+            return (char*)"none";
+        
+   }
+}
+
+uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
+{
+    switch (type) 
+    {
+        case 0:     //COM
+            switch (bus)
+            {
+                case 1:
+                    switch (devtype)
+                    {
+                        case 0x04:  return 1;   //AK8963
+                    }
+                case 4:
+                    switch (devtype)
+                    {
+                        case 0x02:  return 0;   //LSM303D
+                        case 0x09:  return 0;   //AK09916
+                    }
+            }
+        case 1:     //BAR
+            switch (bus)
+            {
+                case 1:
+                    switch (devtype)
+                    {
+                        case 0x0B:  return 1;   //MS5611
+                    }
+                case 4:
+                    switch (devtype)
+                    {
+                        case 0x0B:  return 0;   //MS5611
+                    }
+            }
+        case 2:
+            return 10;
+        case 3:     //GYR
+            switch (bus)
+            {
+                case 1:
+                    switch (devtype)
+                    {
+                        case 0x16:  return 2;   //MPU9250
+                        case 0x2E:  return 2;   //ICM20649
+                    }
+                case 4:
+                    switch (devtype)
+                    {
+                        case 0x16:  return 0;   //MPU9250
+                        case 0x22:  return 1;   //L3GD20
+                        case 0x2C:  return 1;   //ICM20948
+                        case 0x2F:  return 0;   //ICM20602
+                    }
+            }
+        case 4:     //ACC
+            switch (bus)
+            {
+                case 1:
+                    switch (devtype)
+                    {
+                        case 0x16:  return 2;   //MPU9250
+                        case 0x2E:  return 2;   //ICM20649
+                    }
+                case 4:
+                    switch (devtype)
+                    {
+                        case 0x16:  return 0;   //MPU9250
+                        case 0x11:  return 1;   //LSM303D
+                        case 0x2C:  return 1;   //ICM20948
+                        case 0x2F:  return 0;   //ICM20602
+                    }
+            }
+    }
+    return 16;
+}
+
 void setup(void)
 {
     unused = -1;
@@ -116,22 +234,41 @@ void setup(void)
     AP::ins().update();
     AP::baro().update();
     AP::compass().read();
+
+    //turn off the bit for sensors missing on boot
+    for (uint8_t i = 0; i < 3; i++) {
+            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
+            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
+    }
+    for (uint8_t i = 0; i < 2; i++) {
+            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
+    }
+    for (uint8_t i = 0; i < 2; i++) {
+            _local_sensor_health_mask &= ~(1 << 8 << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
+    }
+    _local_sensor_health_mask ^= SENSOR_MASK;
+
+    _setup_sensor_health_mask = _local_sensor_health_mask;
+    _loop_sensor_health_mask = _local_sensor_health_mask;
+    _last_sensor_health_mask = _local_sensor_health_mask;
+    _instant_sensor_health_mask = _local_sensor_health_mask;
+
     for (uint8_t i = 0; i < 3; i++) {
         if (!AP::ins().get_accel_health(i)) {
-            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << i);
+            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
         }
         if (!AP::ins().get_gyro_health(i)) {
-            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << i);
+            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::baro().healthy(i)) {
-            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << i);
+            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::compass().healthy(i)) {
-            _setup_sensor_health_mask &= ~((1 << 8) << i);
+            _setup_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
         }
     }
 
@@ -176,29 +313,29 @@ void loop()
     AP::baro().update();
     AP::compass().read();
 
-    _instant_sensor_health_mask = SENSOR_MASK;
+    _instant_sensor_health_mask = _local_sensor_health_mask;
 
     for (uint8_t i = 0; i < 3; i++) {
         if (!AP::ins().get_accel_health(i)) {
-            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << i);
-            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << i);
+            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
+            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
             
         }
         if (!AP::ins().get_gyro_health(i)) {
-            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << i);
-            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << i);
+            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
+            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::baro().healthy(i)) {
-            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << i);
-            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << i);
+            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
+            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::compass().healthy(i)) {
-            _loop_sensor_health_mask &= ~((1 << 8) << i);
-            _instant_sensor_health_mask &= ~((1 << 8) << i);
+            _loop_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
+            _instant_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
         }
     }
 
@@ -243,23 +380,33 @@ void loop()
             hal.uartC->printf("Fail sensor changed in this run. Log: %d\n", AP::logger().find_last_log());
         }
 
-        hal.uartC->printf("com order: [0]0x%x [1]0x%x ", AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(0)), 
-                                                        AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(1)));
-        hal.uartC->printf("baro order: [1] on bus %u:0x%x; [0] on bus %u:0x%x ", AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(1)), 
-                                                                                AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(1)), 
-                                                                                AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(0)), 
-                                                                                AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(0)));
-        hal.uartC->printf("gyr order: [0]0x%x [1]0x%x [2]0x%x ", AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(0)), 
-                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(1)), 
-                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(2)));
-        hal.uartC->printf("acc order: [0]0x%x [1]0x%x [2]0x%x \n", AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(0)), 
-                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(1)), 
-                                                                AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(2)));
-
         hal.console->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         hal.uartC->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
-        hal.uartC->printf("INSTANT SENSOR_MASK: 0x%x\n", _instant_sensor_health_mask);
         
+        //hal.uartC->printf("_local_sensor_health_mask: 0x%x \n", _local_sensor_health_mask);
+        //hal.uartC->printf("INSTANT SENSOR_MASK: 0x%x\n", _instant_sensor_health_mask);
+        
+        //hal.uartC->printf("com order: [1]%s on bus %u; [0]%s on bus %u \n", get_sensor_name(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(1))), 
+        //                                                                    AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(1)), 
+        //                                                                    get_sensor_name(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(0))), 
+        //                                                                    AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(0)));
+        //hal.uartC->printf("baro order: [1]%s on bus %u; [0]%s on bus %u \n", get_sensor_name(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(1))), 
+        //                                                                    AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(1)),
+        //                                                                    get_sensor_name(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(0))),
+        //                                                                    AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(0)));
+        //hal.uartC->printf("gyr order: [2]%s on bus %u; [1]%s  on bus %u; [0]%s on bus %u \n", get_sensor_name(T_INS, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(2))), 
+        //                                                                                    AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(2)), 
+        //                                                                                    get_sensor_name(T_INS, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(1))), 
+        //                                                                                    AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(1)), 
+        //                                                                                    get_sensor_name(T_INS, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(0))), 
+        //                                                                                    AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(0)));
+        //hal.uartC->printf("acc order: [2]%s on bus %u; [1]%s  on bus %u; [0]%s on bus %u \n", get_sensor_name(T_INS, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(2))), 
+        //                                                                                    AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(2)),
+        //                                                                                    get_sensor_name(T_INS, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(1))), 
+        //                                                                                    AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(1)),
+        //                                                                                    get_sensor_name(T_INS, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(0))), 
+        //                                                                                    AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(0)));
+
         //for (uint8_t i = 0; i < 3; i++) {
         //    if (!AP::ins().get_accel_health(i)) {
         //        hal.uartC->printf("[ERR]\t%s error count:\t%lu\n", sensor_pos[i], AP::ins().get_accel_error_count(i));
