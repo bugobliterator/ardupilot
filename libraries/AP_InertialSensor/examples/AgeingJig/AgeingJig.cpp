@@ -15,6 +15,9 @@
 #include "Parameters.h"
 #include <AP_GPS/AP_GPS.h>
 #include <AP_AHRS/AP_AHRS.h>
+#include <AP_Baro/AP_Baro_Backend.h>
+#include <AP_Compass/AP_Compass_Backend.h>
+#include <AP_InertialSensor/AP_InertialSensor_Backend.h>
 
 static Parameters g;
 
@@ -95,32 +98,32 @@ char* get_sensor_name(enum stype type, uint8_t devtype)
 {
    switch (type) 
    {
-        case 0: 
+        case T_COM : 
             switch (devtype) 
             {
-                case 0x02:  return (char*)"LSM303D";
-                case 0x04:  return (char*)"AK8963";
-                case 0x09:  return (char*)"AK09916";
-                case 0x0B:  return (char*)"ICM20948";
+                case AP_Compass_Backend::DEVTYPE_LSM303D:   return (char*)"LSM303D";
+                case AP_Compass_Backend::DEVTYPE_AK8963:    return (char*)"AK8963";
+                case AP_Compass_Backend::DEVTYPE_AK09916:   return (char*)"AK09916";
+                case AP_Compass_Backend::DEVTYPE_ICM20948:  return (char*)"ICM20948";
                 default:    return (char*)"none";
             }
-        case 1:
+        case T_BAR:
             switch (devtype) 
             {
-                case 0x0B:  return (char*)"MS5611";
+                case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return (char*)"MS5611";
                 default:    return (char*)"none";
             }
-        case 2:
+        case T_INS:
             switch (devtype) 
             {
-                case 0x11:  return (char*)"LSM303D";
-                case 0x16:  return (char*)"MPU9250";
-                case 0x22:  return (char*)"L3GD20";
-                case 0x24:  return (char*)"MPU9250";
-                case 0x2C:  return (char*)"ICM20948";
-                case 0x2E:  return (char*)"ICM20649";
-                case 0x2F:  return (char*)"ICM20602";
-                case 0x31:  return (char*)"ADIS1647X";
+                case AP_InertialSensor_Backend::DEVTYPE_ACC_LSM303D:    return (char*)"LSM303D";
+                case AP_InertialSensor_Backend::DEVTYPE_ACC_MPU9250:    return (char*)"MPU9250";
+                case AP_InertialSensor_Backend::DEVTYPE_GYR_L3GD20:     return (char*)"L3GD20";
+                case AP_InertialSensor_Backend::DEVTYPE_GYR_MPU9250:    return (char*)"MPU9250";
+                case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return (char*)"ICM20948";
+                case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:   return (char*)"ICM20649";
+                case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return (char*)"ICM20602";
+                case AP_InertialSensor_Backend::DEVTYPE_INS_ADIS1647X:  return (char*)"ADIS1647X";
                 default:    return (char*)"none";
             }
         default:
@@ -133,71 +136,71 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
 {
     switch (type) 
     {
-        case 0:     //COM
+        case T_COM:
             switch (bus)
             {
                 case 1:
                     switch (devtype)
                     {
-                        case 0x04:  return 1;   //AK8963
+                        case AP_Compass_Backend::DEVTYPE_AK8963:    return 1;
                     }
                 case 4:
                     switch (devtype)
                     {
-                        case 0x02:  return 0;   //LSM303D
-                        case 0x09:  return 0;   //AK09916
+                        case AP_Compass_Backend::DEVTYPE_LSM303D:   return 0;
+                        case AP_Compass_Backend::DEVTYPE_AK09916:   return 0;
                     }
             }
-        case 1:     //BAR
+        case T_BAR:
             switch (bus)
             {
                 case 1:
                     switch (devtype)
                     {
-                        case 0x0B:  return 1;   //MS5611
+                        case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return 1;
                     }
                 case 4:
                     switch (devtype)
                     {
-                        case 0x0B:  return 0;   //MS5611
+                        case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return 0;
                     }
             }
-        case 2:
+        case T_INS:
             return 16;
-        case 3:     //GYR
+        case T_GYR:
             switch (bus)
             {
                 case 1:
                     switch (devtype)
                     {
-                        case 0x16:  return 2;   //MPU9250
-                        case 0x2E:  return 2;   //ICM20649
+                        case AP_InertialSensor_Backend::DEVTYPE_GYR_MPU9250:    return 2;
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:   return 2;   //ICM20649
                     }
                 case 4:
                     switch (devtype)
                     {
-                        case 0x16:  return 0;   //MPU9250
-                        case 0x22:  return 1;   //L3GD20
-                        case 0x2C:  return 1;   //ICM20948
-                        case 0x2F:  return 0;   //ICM20602
+                        case AP_InertialSensor_Backend::DEVTYPE_GYR_MPU9250:    return 0;   //MPU9250
+                        case AP_InertialSensor_Backend::DEVTYPE_GYR_L3GD20:     return 1;   //L3GD20
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return 1;   //ICM20948
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return 0;   //ICM20602
                     }
             }
-        case 4:     //ACC
+        case T_ACC:
             switch (bus)
             {
                 case 1:
                     switch (devtype)
                     {
-                        case 0x16:  return 2;   //MPU9250
-                        case 0x2E:  return 2;   //ICM20649
+                        case AP_InertialSensor_Backend::DEVTYPE_ACC_MPU9250:   return 2;   //MPU9250
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:  return 2;   //ICM20649
                     }
                 case 4:
                     switch (devtype)
                     {
-                        case 0x16:  return 0;   //MPU9250
-                        case 0x11:  return 1;   //LSM303D
-                        case 0x2C:  return 1;   //ICM20948
-                        case 0x2F:  return 0;   //ICM20602
+                        case AP_InertialSensor_Backend::DEVTYPE_ACC_MPU9250:   return 0;   //MPU9250
+                        case AP_InertialSensor_Backend::DEVTYPE_ACC_LSM303D:   return 1;   //LSM303D
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:  return 1;   //ICM20948
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:  return 0;   //ICM20602
                     }
             }
     }
@@ -219,8 +222,9 @@ void setup(void)
     baro.calibrate();
     compass.init();
     hal.scheduler->delay(2000);
+    hal.console->printf("Testing firmware updated on 1/9/2020 1534\n");
     hal.console->printf("Starting UAVCAN\n");
-    hal.uartC->printf("Testing firmware updated on 5/8/2020 1645\n");
+    hal.uartC->printf("Testing firmware updated on 1/9/2020 1534\n");
     hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
@@ -291,7 +295,6 @@ void setup(void)
 
     hal.console->printf("Log: %d\n", AP::logger().find_last_log());
     hal.uartC->printf("Log: %d\n", AP::logger().find_last_log());
-    
 }
 
 #define IMU_HIGH_TEMP 70
@@ -384,7 +387,7 @@ void loop()
         hal.uartC->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         
         //hal.uartC->printf("_local_sensor_health_mask: 0x%x \n", _local_sensor_health_mask);
-        //hal.uartC->printf("INSTANT SENSOR_MASK: 0x%x\n", _instant_sensor_health_mask);
+        hal.uartC->printf("INSTANT: 0x%x\n", _instant_sensor_health_mask);
         
         //hal.uartC->printf("com order: [1]%s on bus %u; [0]%s on bus %u \n", get_sensor_name(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(1))), 
         //                                                                    AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(1)), 
