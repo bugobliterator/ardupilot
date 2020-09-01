@@ -702,8 +702,9 @@ void AP_IOMCU_FW::safety_update(void)
 #endif
 
     led_counter = (led_counter+1) % 16;
-    const uint16_t led_pattern = reg_status.flag_safety_off?0xFFFF:0x5500;
-    palWriteLine(HAL_GPIO_PIN_SAFETY_LED, (led_pattern & (1U << led_counter))?0:1);
+    //const uint16_t led_pattern = reg_status.flag_safety_off?0xFFFF:0x5500;
+    //palWriteLine(HAL_GPIO_PIN_SAFETY_LED, (led_pattern & (1U << led_counter))?0:1);
+    palWriteLine(HAL_GPIO_PIN_SAFETY_LED, 0);
 }
 
 /*
