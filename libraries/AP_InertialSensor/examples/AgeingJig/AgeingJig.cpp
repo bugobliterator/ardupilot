@@ -222,9 +222,9 @@ void setup(void)
     baro.calibrate();
     compass.init();
     hal.scheduler->delay(2000);
-    hal.console->printf("Testing firmware updated on 1/9/2020 1534\n");
+    hal.console->printf("Testing firmware updated on 2/9/2020 1534\n");
     hal.console->printf("Starting UAVCAN\n");
-    hal.uartC->printf("Testing firmware updated on 1/9/2020 1534\n");
+    hal.uartC->printf("Testing firmware updated on 2/9/2020 1534\n");
     hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
@@ -371,7 +371,9 @@ void loop()
     _last_sensor_health_mask = _instant_sensor_health_mask;  
 
     //Write IMU Data to Log
-    logger.Write_IMU();  
+    logger.Write_IMU();
+    logger.Write_Baro();
+    logger.Write_Compass();
 
     // Do LED Patterns
     if ((AP_HAL::millis() - _led_blink_ms) > 2000) {
