@@ -222,9 +222,9 @@ void setup(void)
     baro.calibrate();
     compass.init();
     hal.scheduler->delay(2000);
-    hal.console->printf("Testing firmware updated on 2/9/2020 1534\n");
+    hal.console->printf("Testing firmware updated on 3/9/2020 1750\n");
     hal.console->printf("Starting UAVCAN\n");
-    hal.uartC->printf("Testing firmware updated on 2/9/2020 1534\n");
+    hal.uartC->printf("Testing firmware updated on 3/9/2020 1750\n");
     hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
@@ -305,6 +305,7 @@ static uint32_t _hold_start_ms;
 static uint8_t _heater_state;
 static uint32_t _led_blink_ms;
 static uint32_t _led_blink_state;
+static uint32_t _log_ms;
 
 void loop()
 {
@@ -353,7 +354,7 @@ void loop()
 
     // Log sensor failure event
     if (_instant_sensor_health_mask != _last_sensor_health_mask) {
-         for (uint8_t i = 0; i < ((SENSOR_MASK >> 9) + 9); i++)
+        for (uint8_t i = 0; i < ((SENSOR_MASK >> 9) + 9); i++)
             if (((_instant_sensor_health_mask >> i) & 1) > ((_last_sensor_health_mask >> i) & 1)) {
                 AP::logger().Write_MessageF("%s regain at loop %d\n", sensor_pos[i], loop_cycle);
                 hal.console->printf("[EVENT]\t%s regain at loop %d\n", sensor_pos[i], loop_cycle);
@@ -364,16 +365,23 @@ void loop()
                 hal.console->printf("[EVENT]\t%s lost at loop %d\n", sensor_pos[i], loop_cycle);
                 hal.uartC->printf("[EVENT]\t%s lost at loop %d\n", sensor_pos[i], loop_cycle);
             }
+        //log instant of error
+        log_sensor_health(_instant_sensor_health_mask);
+        logger.Write_IMU();
+        logger.Write_Baro();
+        logger.Write_Compass();
     }
 
-    //hal.uartC->printf("health:0x%x\n", _loop_sensor_health_mask);
-    log_sensor_health(_instant_sensor_health_mask);
     _last_sensor_health_mask = _instant_sensor_health_mask;  
 
     //Write IMU Data to Log
-    logger.Write_IMU();
-    logger.Write_Baro();
-    logger.Write_Compass();
+    if ((AP_HAL::millis() - _log_ms) > 500) {
+        _log_ms = AP_HAL::millis();
+        log_sensor_health(_instant_sensor_health_mask);
+        logger.Write_IMU();
+        logger.Write_Baro();
+        logger.Write_Compass();
+    }
 
     // Do LED Patterns
     if ((AP_HAL::millis() - _led_blink_ms) > 2000) {
