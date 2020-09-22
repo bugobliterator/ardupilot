@@ -222,9 +222,9 @@ void setup(void)
     baro.calibrate();
     compass.init();
     hal.scheduler->delay(2000);
-    hal.console->printf("Testing firmware updated on 3/9/2020 1750\n");
+    hal.console->printf("Testing firmware updated on 22/9/2020 1750\n");
     hal.console->printf("Starting UAVCAN\n");
-    hal.uartC->printf("Testing firmware updated on 3/9/2020 1750\n");
+    hal.uartC->printf("Testing firmware updated on 22/9/2020 1750\n");
     hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
@@ -370,6 +370,7 @@ void loop()
         logger.Write_IMU();
         logger.Write_Baro();
         logger.Write_Compass();
+        logger.Write_Power();
     }
 
     _last_sensor_health_mask = _instant_sensor_health_mask;  
@@ -381,6 +382,7 @@ void loop()
         logger.Write_IMU();
         logger.Write_Baro();
         logger.Write_Compass();
+        logger.Write_Power();
     }
 
     // Do LED Patterns
