@@ -18,6 +18,7 @@
 #include <AP_Baro/AP_Baro_Backend.h>
 #include <AP_Compass/AP_Compass_Backend.h>
 #include <AP_InertialSensor/AP_InertialSensor_Backend.h>
+#include <AP_HAL_ChibiOS/hwdef/common/stm32_util.h>
 
 static Parameters g;
 
@@ -209,6 +210,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
 
 void setup(void)
 {
+    set_fast_reboot(RTC_BOOT_FAST);
     unused = -1;
     BoardConfig.init();
     // setup any board specific drivers
@@ -222,9 +224,9 @@ void setup(void)
     baro.calibrate();
     compass.init();
     hal.scheduler->delay(2000);
-    hal.console->printf("Testing firmware updated on 22/9/2020 1750\n");
+    hal.console->printf("Testing firmware updated on 26/11/2020 1715\n");
     hal.console->printf("Starting UAVCAN\n");
-    hal.uartC->printf("Testing firmware updated on 22/9/2020 1750\n");
+    hal.uartC->printf("Testing firmware updated on 26/11/2020 1715\n");
     hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
