@@ -22,6 +22,8 @@
 
 static Parameters g;
 
+#define RELEASE_INFO "4/12/2020 1716"
+
 const AP_HAL::HAL &hal = AP_HAL::get_HAL();
 int ownserial = -1;
 
@@ -223,11 +225,11 @@ void setup(void)
     baro.init();
     baro.calibrate();
     compass.init();
-    hal.scheduler->delay(2000);
-    hal.console->printf("Testing firmware updated on 26/11/2020 1715\n");
-    hal.console->printf("Starting UAVCAN\n");
-    hal.uartC->printf("Testing firmware updated on 26/11/2020 1715\n");
-    hal.uartC->printf("Starting UAVCAN\n");
+    // hal.scheduler->delay(2000);
+    hal.console->printf("Testing firmware updated on %s\n", RELEASE_INFO);
+    // hal.console->printf("Starting UAVCAN\n");
+    // hal.uartC->printf("Testing firmware updated on 26/11/2020 1715\n");
+    // hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
     g.load_parameters();
@@ -235,7 +237,7 @@ void setup(void)
     logger.Init(log_structure, ARRAY_SIZE(log_structure));
 
     //setup test
-    hal.scheduler->delay(3000);
+    hal.scheduler->delay(1000);
     AP::logger().Write_Message("Setup Test Started");
     AP::ins().update();
     AP::baro().update();
@@ -396,7 +398,7 @@ void loop()
             hal.console->printf("Fail sensor changed in this run. Log: %d\n", AP::logger().find_last_log());
             hal.uartC->printf("Fail sensor changed in this run. Log: %d\n", AP::logger().find_last_log());
         }
-
+        hal.console->printf("Testing firmware updated on %s\n", RELEASE_INFO);
         hal.console->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         hal.uartC->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         
