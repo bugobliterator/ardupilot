@@ -18,7 +18,6 @@
 #include <AP_Baro/AP_Baro_Backend.h>
 #include <AP_Compass/AP_Compass_Backend.h>
 #include <AP_InertialSensor/AP_InertialSensor_Backend.h>
-#include <AP_HAL_ChibiOS/hwdef/common/stm32_util.h>
 
 static Parameters g;
 
@@ -212,7 +211,6 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
 
 void setup(void)
 {
-    set_fast_reboot(RTC_BOOT_FAST);
     unused = -1;
     BoardConfig.init();
     // setup any board specific drivers
@@ -228,7 +226,7 @@ void setup(void)
     // hal.scheduler->delay(2000);
     hal.console->printf("Testing firmware updated on %s\n", RELEASE_INFO);
     // hal.console->printf("Starting UAVCAN\n");
-    // hal.uartC->printf("Testing firmware updated on 26/11/2020 1715\n");
+    hal.uartC->printf("Testing firmware updated on %s\n", RELEASE_INFO);
     // hal.uartC->printf("Starting UAVCAN\n");
     hal.gpio->pinMode(0, HAL_GPIO_OUTPUT);
     UAVCAN_handler::init();
@@ -380,7 +378,7 @@ void loop()
     _last_sensor_health_mask = _instant_sensor_health_mask;  
 
     //Write IMU Data to Log
-    if ((AP_HAL::millis() - _log_ms) > 500) {
+    if ((AP_HAL::millis() - _log_ms) > 10000) {
         _log_ms = AP_HAL::millis();
         log_sensor_health(_instant_sensor_health_mask);
         logger.Write_IMU();
@@ -399,6 +397,7 @@ void loop()
             hal.uartC->printf("Fail sensor changed in this run. Log: %d\n", AP::logger().find_last_log());
         }
         hal.console->printf("Testing firmware updated on %s\n", RELEASE_INFO);
+        hal.uartC->printf("Testing firmware updated on %s\n", RELEASE_INFO);
         hal.console->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         hal.uartC->printf("SENSOR_MASK: 0x%x NUM_RUNS: %d NUM_FAILS: %d LOOP_TEST_FLAGS: 0x%x SETUP_TEST_FLAGS: 0x%x\n", SENSOR_MASK, g.num_cycles.get(), g.num_fails.get(), g.loop_sensor_health.get(), g.setup_sensor_health.get());
         
