@@ -3,7 +3,6 @@
 #include <AP_Common/AP_Common.h>
 #include <AP_Param/AP_Param.h>
 #include <AP_Math/AP_Math.h>
-#include <GCS_MAVLink/GCS_MAVLink.h>
 #include "AP_BattMonitor_Params.h"
 
 // maximum number of battery monitors
@@ -44,6 +43,7 @@ class AP_BattMonitor_SMBus_Rotoye;
 class AP_BattMonitor_UAVCAN;
 class AP_BattMonitor_Generator;
 class AP_BattMonitor_MPPT_PacketDigital;
+class AP_BattMonitor_BQ769x0;
 
 class AP_BattMonitor
 {
@@ -60,6 +60,7 @@ class AP_BattMonitor
     friend class AP_BattMonitor_FuelLevel_PWM;
     friend class AP_BattMonitor_Generator;
     friend class AP_BattMonitor_MPPT_PacketDigital;
+    friend class AP_BattMonitor_BQ769x0;
 
 public:
 
@@ -91,12 +92,16 @@ public:
         GENERATOR_FUEL             = 18,
         Rotoye                     = 19,
         MPPT_PacketDigital         = 20,
+        BQ769x0                    = 21,
     };
 
+#ifndef HAL_BUILD_AP_PERIPH
     FUNCTOR_TYPEDEF(battery_failsafe_handler_fn_t, void, const char *, const int8_t);
 
     AP_BattMonitor(uint32_t log_battery_bit, battery_failsafe_handler_fn_t battery_failsafe_handler_fn, const int8_t *failsafe_priorities);
-
+#else
+    AP_BattMonitor();
+#endif
     /* Do not allow copies */
     AP_BattMonitor(const AP_BattMonitor &other) = delete;
     AP_BattMonitor &operator=(const AP_BattMonitor&) = delete;
@@ -173,11 +178,13 @@ public:
     int32_t pack_capacity_mah(uint8_t instance) const;
     int32_t pack_capacity_mah() const { return pack_capacity_mah(AP_BATT_PRIMARY_INSTANCE); }
  
+ #ifndef HAL_BUILD_AP_PERIPH
     /// returns true if a battery failsafe has ever been triggered
     bool has_failsafed(void) const { return _has_triggered_failsafe; };
 
     /// returns the highest failsafe action that has been triggered
     int8_t get_highest_failsafe_priority(void) const { return _highest_failsafe_priority; };
+#endif
 
     /// get_type - returns battery monitor type
     enum Type get_type() const { return get_type(AP_BATT_PRIMARY_INSTANCE); }
@@ -225,6 +232,28 @@ public:
     // Returns mavlink charge state
     MAV_BATTERY_CHARGE_STATE get_mavlink_charge_state(const uint8_t instance) const;
 
+    // Power On battery
+    bool power_on() { return power_on(AP_BATT_PRIMARY_INSTANCE); }
+    bool power_on(uint8_t instance);
+
+    // Power off battery
+    bool power_off() { return power_off(AP_BATT_PRIMARY_INSTANCE); }
+    bool power_off(uint8_t instance);
+
+    // Start Charging
+    bool start_charging() { return start_charging(AP_BATT_PRIMARY_INSTANCE); }
+    bool start_charging(uint8_t instance);
+
+    // Stop Charging
+    bool stop_charging() { return start_charging(AP_BATT_PRIMARY_INSTANCE); }
+    bool stop_charging(uint8_t instance);
+
+    bool is_charging() { return is_charging(AP_BATT_PRIMARY_INSTANCE); }
+    bool is_charging(uint8_t instance);
+
+    bool is_balancing() { return is_balancing(AP_BATT_PRIMARY_INSTANCE); }
+    bool is_balancing(uint8_t instance);
+
     static const struct AP_Param::GroupInfo var_info[];
 
 protected:
@@ -243,6 +272,8 @@ private:
     void convert_params(void);
     void convert_dynamic_param_groups(uint8_t instance);
 
+#ifndef HAL_BUILD_AP_PERIPH
+    uint32_t    _log_battery_bit;
     /// returns the failsafe state of the battery
     Failsafe check_failsafe(const uint8_t instance);
     void check_failsafes(void); // checks all batteries failsafes
@@ -252,6 +283,12 @@ private:
 
     int8_t      _highest_failsafe_priority; // highest selected failsafe action level (used to restrict what actions we move into)
     bool        _has_triggered_failsafe;  // true after a battery failsafe has been triggered for the first time
+#endif
+
+    uint8_t     _num_instances;                                     /// number of monitors
+
+    void convert_params(void);
+
 
 };
 

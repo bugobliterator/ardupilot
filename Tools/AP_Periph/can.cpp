@@ -52,6 +52,7 @@
 #include <uavcan/equipment/esc/RawCommand.h>
 #include <uavcan/equipment/actuator/ArrayCommand.h>
 #include <uavcan/equipment/actuator/Command.h>
+#include <uavcan/equipment/power/BatteryInfo.h>
 #include <stdio.h>
 #include <drivers/stm32/canard_stm32.h>
 #include <AP_HAL/I2CDevice.h>
@@ -392,6 +393,9 @@ static void handle_param_executeopcode(CanardInstance* ins, CanardRxTransfer* tr
 #ifdef HAL_PERIPH_ENABLE_RANGEFINDER
         AP_Param::setup_object_defaults(&periph.rangefinder, periph.rangefinder.var_info);
 #endif
+//#ifdef HAL_PERIPH_ENABLE_BATTMON
+        AP_Param::setup_object_defaults(&periph.battmon, periph.battmon.var_info);
+//#endif
     }
 
     uavcan_protocol_param_ExecuteOpcodeResponse pkt {};
@@ -1364,6 +1368,10 @@ static void process1HzTasks(uint64_t timestamp_usec)
         set_fast_reboot(RTC_BOOT_FWOK);
     }
 #endif
+
+// #ifdef HAL_PERIPH_ENABLE_BATTMON
+    periph.battmon_1hz_update();
+// #endif
 }
 
 /*
@@ -1621,6 +1629,9 @@ void AP_Periph_FW::can_update()
 #ifdef HAL_PERIPH_ENABLE_RC_OUT
     rcout_update();
 #endif
+// #ifdef HAL_PERIPH_ENABLE_BATTMON
+    battmon_update();
+// #endif
     const uint32_t now_us = AP_HAL::micros();
     while ((AP_HAL::micros() - now_us) < 1000) {
         hal.scheduler->delay_microseconds(64);
@@ -2295,6 +2306,53 @@ void AP_Periph_FW::can_send_ADSB(struct __mavlink_adsb_vehicle_t &msg)
                     total_size);
 }
 #endif // HAL_PERIPH_ENABLE_ADSB
+
+// #ifdef HAL_PERIPH_ENABLE_BATTMON
+void AP_Periph_FW::battmon_cansend(void)
+{
+    uint32_t now = AP_HAL::millis();
+    if (now - last_battmon_update_ms < 100) {
+        // max 10Hz data
+        return;
+    }
+    last_battmon_update_ms = now;
+    if (!battmon.healthy()) {
+        return;
+    }
+
+
+    uavcan_equipment_power_BatteryInfo pkt {};
+    if (!battmon.current_amps(pkt.current)) {
+        pkt.current = 0.0f;
+    }
+    fix_float16(pkt.current);
+    pkt.voltage = battmon.voltage(0);
+    fix_float16(pkt.voltage);
+    pkt.full_charge_capacity_wh = battmon.pack_capacity_mah(0)/1000.f;
+    if (!battmon.get_temperature(pkt.temperature)) {
+        pkt.temperature = 0.0f;
+    }
+    fix_float16(pkt.temperature);
+    if (!battmon.consumed_mah(pkt.remaining_capacity_wh)) {
+        pkt.remaining_capacity_wh = 0.0f;
+    }
+    pkt.remaining_capacity_wh /= 1000.f;
+    pkt.remaining_capacity_wh = (battmon.pack_capacity_mah(0)/1000.f) - pkt.remaining_capacity_wh;
+    fix_float16(pkt.remaining_capacity_wh);
+    
+    uint8_t buffer[UAVCAN_EQUIPMENT_POWER_BATTERYINFO_MAX_SIZE];
+    uint16_t total_size = uavcan_equipment_power_BatteryInfo_encode(&pkt, buffer);
+
+    canardBroadcast(&canard,
+                    UAVCAN_EQUIPMENT_POWER_BATTERYINFO_SIGNATURE,
+                    UAVCAN_EQUIPMENT_POWER_BATTERYINFO_ID,
+                    &transfer_id,
+                    CANARD_TRANSFER_PRIORITY_LOW,
+                    &buffer[0],
+                    total_size);
+}
+
+// #endif
 
 // printf to CAN LogMessage for debugging
 void can_printf(const char *fmt, ...)

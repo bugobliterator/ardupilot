@@ -13,6 +13,7 @@
 #include <AP_RangeFinder/AP_RangeFinder.h>
 #include <AP_MSP/AP_MSP.h>
 #include <AP_MSP/msp.h>
+#include <AP_BattMonitor/AP_BattMonitor.h>
 #include "../AP_Bootloader/app_comms.h"
 #include "hwing_esc.h"
 #include <AP_CANManager/AP_CANManager.h>
@@ -138,6 +139,14 @@ public:
     // change the rest of your params or verify it succeeded.
     AP_CANManager::Driver_Type can_protocol_cached[HAL_NUM_CAN_IFACES];
 #endif
+// #ifdef HAL_PERIPH_ENABLE_BATTMON
+    AP_BattMonitor battmon;
+    void battmon_update(void);
+    void battmon_cansend(void);
+    void battmon_init(void);
+    static void battmon_handle_button();
+    void battmon_1hz_update();
+// #endif
 
 #ifdef HAL_PERIPH_ENABLE_MSP
     struct {
@@ -231,7 +240,9 @@ public:
     uint32_t last_gps_update_ms;
     uint32_t last_baro_update_ms;
     uint32_t last_airspeed_update_ms;
-
+// #ifdef HAL_PERIPH_ENABLE_BATTMON
+    uint32_t last_battmon_update_ms;
+// #endif
     static AP_Periph_FW *_singleton;
 
     // show stack as DEBUG msgs

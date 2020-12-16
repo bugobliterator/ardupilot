@@ -208,10 +208,11 @@ void AP_Periph_FW::init()
         msp_init(hal.serial(g.msp_port));
     }
 #endif
-    
+
 #ifdef HAL_PERIPH_ENABLE_NOTIFY
     notify.init();
 #endif
+    battmon_init();
 
     start_ms = AP_HAL::native_millis();
 }

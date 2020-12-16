@@ -1,0 +1,59 @@
+# hw definition file for processing by chibios_hwdef.py
+# for H743 bootloader
+
+# MCU class and specific type
+MCU STM32H7xx STM32H757xx
+
+define CORE_CM7
+define SMPS_PWR
+
+define WATCHDOG_DISABLED
+
+# crystal frequency
+OSCILLATOR_HZ 24000000
+
+# board ID for firmware load
+APJ_BOARD_ID 1402
+
+FLASH_SIZE_KB 2048
+
+# setup build for a peripheral firmware
+env AP_PERIPH 1
+
+# bootloader is installed at zero offset
+FLASH_RESERVE_START_KB 0
+
+# the location where the bootloader will put the firmware
+# the H743 has 128k sectors
+FLASH_BOOTLOADER_LOAD_KB 128
+
+define HAL_LED_ON 1
+
+PB0 LED OUTPUT LOW
+PB1 LED_BOOTLOADER OUTPUT
+PB2 LED_ACTIVITY OUTPUT
+
+# order of UARTs (and USB)
+SERIAL_ORDER USART1
+
+PB15 USART1_RX USART1
+PB14 USART1_TX USART1
+
+PA13 JTMS-SWDIO SWD
+PA14 JTCK-SWCLK SWD
+
+# the first CAN bus
+PA11 CAN1_RX CAN1
+PA12 CAN1_TX CAN1
+PC8 GPIO CAN_SLEEP OUTPUT LOW
+
+define HAL_USE_EMPTY_STORAGE 1
+define HAL_STORAGE_SIZE 16384
+
+# reserve 256 bytes for comms between app and bootloader
+RAM_RESERVE_START 256
+
+# use DNA
+define HAL_CAN_DEFAULT_NODE_ID 0
+
+define CAN_APP_NODE_NAME "org.cubepilot.HereBattMon"

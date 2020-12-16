@@ -346,6 +346,11 @@ const AP_Param::Info AP_Periph_FW::var_info[] = {
     // @Path: ../libraries/AP_SerialManager/AP_SerialManager.cpp
     GOBJECT(serial_manager, "SERIAL",   AP_SerialManager),
 #endif
+// #ifdef HAL_PERIPH_ENABLE_BATTMON
+    // @Group: BATT
+    // @Path: ../../libraries/AP_BattMonitor/AP_BattMonitor.cpp
+    GOBJECT(battmon,         "BATT",     AP_BattMonitor),
+// #endif
 
     AP_VAREND
 };

@@ -1,0 +1,2 @@
+# setup correct defaults for battery monitoring for cubebrick
+BATT_MONITOR 17
