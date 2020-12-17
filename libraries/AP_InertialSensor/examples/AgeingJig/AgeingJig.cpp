@@ -21,7 +21,7 @@
 
 static Parameters g;
 
-#define RELEASE_INFO "4/12/2020 1716"
+#define RELEASE_INFO "17/12/2020 1716"
 
 const AP_HAL::HAL &hal = AP_HAL::get_HAL();
 int ownserial = -1;
