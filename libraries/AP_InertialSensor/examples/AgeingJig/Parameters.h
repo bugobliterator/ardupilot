@@ -4,14 +4,6 @@
 #include <AP_Common/AP_Common.h>
 #include <AP_Param/AP_Param.h>
 
-#if defined(STM32H7) || defined(STM32F7)
-//CubeOrange or CubeOrange
-#define SENSOR_MASK 0x1FF
-#elif defined(STM32F4)
-//CubeBlack
-#define SENSOR_MASK 0x3FF
-#endif
-
 // Global parameter class.
 //
 class Parameters {

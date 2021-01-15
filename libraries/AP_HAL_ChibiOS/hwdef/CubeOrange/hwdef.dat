@@ -321,3 +321,4 @@ ROMFS io_firmware.bin Tools/IO_Firmware/iofirmware_highpolh.bin
 
 DMA_NOSHARE SPI1* SPI4* USART6*
 
+define SENSOR_MASK 0x1FF

@@ -15,3 +15,5 @@ IMU Invensense SPI:mpu9250 ROTATION_YAW_270
 
 undef ROMFS
 ROMFS io_firmware.bin Tools/IO_Firmware/iofirmware_highpolh.bin
+
+define SENSOR_MASK 0x1FF
