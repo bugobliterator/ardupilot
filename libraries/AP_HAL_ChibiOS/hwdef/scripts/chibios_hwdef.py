@@ -1428,20 +1428,34 @@ def write_UART_config_bootloader(f):
 #endif
 ''')
 
+def write_I2CSlave_config(f):
+    slave_bus_list = config['I2C_SLAVE']
+    devlist = []
+    for slave_bus in slave_bus_list:
+        if not slave_bus.startswith('I2C') or slave_bus[3] not in "1234":
+            error("Bad I2C_SLAVE element %s" % slave_bus)
+        n = int(slave_bus[3:])
+        devlist.append('HAL_I2C{}_SLAVE_CONFIG'.format(n))
+        scl_line = make_line('I2C{}_SCL'.format(n))
+        sda_line = make_line('I2C{}_SDA'.format(n))
+        f.write('''
+#define HAL_I2C{0}_SLAVE_CONFIG {{ I2C{0}, {1}, {2}, I2C{0}_EV_IRQn, NULL }}
+'''.format(n, scl_line, sda_line))
+    f.write('\n#define HAL_I2C_SLAVE_LIST {}\n\n'.format(','.join(devlist)))
 
 def write_I2C_config(f):
     '''write I2C config defines'''
-    if not have_type_prefix('I2C'):
-        print("No I2C peripherals")
+    if 'I2C_SLAVE' in config:
+        write_I2CSlave_config(f)
+    if 'I2C_ORDER' not in config:
+        print("Missing I2C_ORDER config")
         f.write('''
 #ifndef HAL_USE_I2C
 #define HAL_USE_I2C FALSE
 #endif
 ''')
         return
-    if 'I2C_ORDER' not in config:
-        print("Missing I2C_ORDER config")
-        return
+    
     i2c_list = config['I2C_ORDER']
     f.write('// I2C configuration\n')
     if len(i2c_list) == 0:
@@ -1811,7 +1825,7 @@ def write_peripheral_enable(f):
             f.write('#define STM32_SPI_USE_%s                  TRUE\n' % type)
         if type.startswith('OTG'):
             f.write('#define STM32_USB_USE_%s                  TRUE\n' % type)
-        if type.startswith('I2C'):
+        if type.startswith('I2C') and type not in config['I2C_SLAVE']:
             f.write('#define STM32_I2C_USE_%s                  TRUE\n' % type)
         if type.startswith('QUADSPI'):
             f.write('#define STM32_WSPI_USE_%s                 TRUE\n' % type)

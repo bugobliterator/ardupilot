@@ -14,6 +14,7 @@
 #include "RCInput.h"
 #include "RCOutput.h"
 #include "I2CDevice.h"
+#include "I2CSlave.h"
 #include "Flash.h"
 #include "DSP.h"
 #include "QSPIDevice.h"
