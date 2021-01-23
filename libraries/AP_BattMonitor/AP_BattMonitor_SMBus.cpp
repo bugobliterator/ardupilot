@@ -170,7 +170,7 @@ bool AP_BattMonitor_SMBus::read_word(uint8_t reg, uint16_t& data) const
 }
 
 /// get_PEC - calculate packet error correction code of buffer
-uint8_t AP_BattMonitor_SMBus::get_PEC(const uint8_t i2c_addr, uint8_t cmd, bool reading, const uint8_t buff[], uint8_t len) const
+uint8_t AP_BattMonitor_SMBus::get_PEC(const uint8_t i2c_addr, uint8_t cmd, bool reading, const uint8_t buff[], uint8_t len)
 {
     // exit immediately if no data
     if (len == 0) {
