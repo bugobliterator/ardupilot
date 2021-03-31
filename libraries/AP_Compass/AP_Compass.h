@@ -109,7 +109,7 @@ public:
     /// @returns heading in radians
     ///
     float calculate_heading(const Matrix3f &dcm_matrix) const {
-        return calculate_heading(dcm_matrix, 0);
+        return calculate_heading(dcm_matrix, get_first_usable());
     }
     float calculate_heading(const Matrix3f &dcm_matrix, uint8_t i) const;
 
@@ -149,7 +149,7 @@ public:
     
     /// Return the current field as a Vector3f in milligauss
     const Vector3f &get_field(uint8_t i) const { return _get_state(Priority(i)).field; }
-    const Vector3f &get_field(void) const { return get_field(0); }
+    const Vector3f &get_field(void) const { return get_field(get_first_usable()); }
 
     /// Return true if we have set a scale factor for a compass
     bool have_scale_factor(uint8_t i) const;
@@ -193,7 +193,7 @@ public:
 
     /// Return the health of a compass
     bool healthy(uint8_t i) const { return _get_state(Priority(i)).healthy; }
-    bool healthy(void) const { return healthy(0); }
+    bool healthy(void) const { return healthy(get_first_usable()); }
     uint8_t get_healthy_mask() const;
 
     /// Returns the current offset values
@@ -201,13 +201,13 @@ public:
     /// @returns                    The current compass offsets in milligauss.
     ///
     const Vector3f &get_offsets(uint8_t i) const { return _get_state(Priority(i)).offset; }
-    const Vector3f &get_offsets(void) const { return get_offsets(0); }
+    const Vector3f &get_offsets(void) const { return get_offsets(get_first_usable()); }
 
     const Vector3f &get_diagonals(uint8_t i) const { return _get_state(Priority(i)).diagonals; }
-    const Vector3f &get_diagonals(void) const { return get_diagonals(0); }
+    const Vector3f &get_diagonals(void) const { return get_diagonals(get_first_usable()); }
 
     const Vector3f &get_offdiagonals(uint8_t i) const { return _get_state(Priority(i)).offdiagonals; }
-    const Vector3f &get_offdiagonals(void) const { return get_offdiagonals(0); }
+    const Vector3f &get_offdiagonals(void) const { return get_offdiagonals(get_first_usable()); }
 
     // learn offsets accessor
     bool learn_offsets_enabled() const { return _learn == LEARN_INFLIGHT; }
@@ -252,7 +252,7 @@ public:
 
     /// get motor compensation factors as a vector
     const Vector3f& get_motor_compensation(uint8_t i) const { return _get_state(Priority(i)).motor_compensation; }
-    const Vector3f& get_motor_compensation(void) const { return get_motor_compensation(0); }
+    const Vector3f& get_motor_compensation(void) const { return get_motor_compensation(get_first_usable()); }
 
     /// Saves the current motor compensation x/y/z values.
     ///
@@ -265,7 +265,7 @@ public:
     /// @returns                    The current compass offsets in milligauss.
     ///
     const Vector3f &get_motor_offsets(uint8_t i) const { return _get_state(Priority(i)).motor_offset; }
-    const Vector3f &get_motor_offsets(void) const { return get_motor_offsets(0); }
+    const Vector3f &get_motor_offsets(void) const { return get_motor_offsets(get_first_usable()); }
 
     /// Set the throttle as a percentage from 0.0 to 1.0
     /// @param thr_pct              throttle expressed as a percentage from 0 to 1.0
@@ -299,10 +299,10 @@ public:
     void        set_hil_mode(void) { _hil_mode = true; }
 
     // return last update time in microseconds
-    uint32_t last_update_usec(void) const { return last_update_usec(0); }
+    uint32_t last_update_usec(void) const { return last_update_usec(get_first_usable()); }
     uint32_t last_update_usec(uint8_t i) const { return _get_state(Priority(i)).last_update_usec; }
 
-    uint32_t last_update_ms(void) const { return last_update_ms(0); }
+    uint32_t last_update_ms(void) const { return last_update_ms(get_first_usable()); }
     uint32_t last_update_ms(uint8_t i) const { return _get_state(Priority(i)).last_update_ms; }
 
     static const struct AP_Param::GroupInfo var_info[];
@@ -359,6 +359,9 @@ public:
 
     // force save of current calibration as valid
     void force_save_calibration(void);
+
+    // get the first compass marked for use
+    uint8_t get_first_usable(void) const;
 
 private:
     static Compass *_singleton;
