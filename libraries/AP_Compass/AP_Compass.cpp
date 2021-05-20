@@ -1719,9 +1719,9 @@ Compass::use_for_yaw(uint8_t i) const
 
 uint8_t Compass::get_first_usable() const
 {
-    for (uint8_t i=0; i<COMPASS_MAX_INSTANCES; i++) {
-        if (use_for_yaw(i)) {
-            return i;
+    for (Priority i(0); i<COMPASS_MAX_INSTANCES; i++) {
+        if (_use_for_yaw[i]) {
+            return uint8_t(i);
         }
     }
     return 0;
