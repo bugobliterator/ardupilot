@@ -354,6 +354,12 @@ def configure(cfg):
     else:
         cfg.end_msg('disabled', color='YELLOW')
 
+    cfg.start_msg('lwip')
+    if cfg.env.HAS_LWIP:
+        cfg.end_msg('enabled')
+    else:
+        cfg.end_msg('disabled', color='YELLOW')
+
     cfg.start_msg('Scripting')
     if cfg.options.disable_scripting:
         cfg.end_msg('disabled', color='YELLOW')
@@ -544,6 +550,9 @@ def _build_common_taskgens(bld):
 
     if bld.env.HAS_GBENCHMARK:
         bld.libbenchmark()
+    
+    if bld.env.HAS_LWIP:
+        bld.liblwip()
 
 def _build_recursion(bld):
     common_dirs_patterns = [
