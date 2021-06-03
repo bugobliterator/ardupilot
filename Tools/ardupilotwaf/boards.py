@@ -442,9 +442,7 @@ class sitl(Board):
         )
 
         cfg.load('lwip')
-        env.INCLUDES += [
-            cfg.srcnode.find_dir('modules/lwip/src/include').abspath()
-        ]
+
         env.LWIP_CONFIG = 'libraries/AP_HAL_SITL/lwip'
         env.AP_PROGRAM_FEATURES += ['lwip']
 

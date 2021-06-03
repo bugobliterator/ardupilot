@@ -15,10 +15,15 @@ def configure(cfg):
 
     bldnode = cfg.bldnode.make_node(cfg.variant)
     prefix_node = bldnode.make_node(env.LWIP_PREFIX_REL)
+    env.INCLUDES += [
+        cfg.srcnode.find_dir('modules/lwip/src/include').abspath(),
+        cfg.srcnode.find_dir('libraries/AP_HAL_SITL/lwip').abspath(),
+        cfg.srcnode.find_dir('modules/lwip-contrib/ports/unix/port/include').abspath()
+    ]
 
-    env.INCLUDES_LWIP = [prefix_node.make_node('include').abspath()]
-    env.LIBPATH_LWIP = [prefix_node.make_node('lib').abspath()]
-    env.LIB_LWIP = ['lwip']
+    # env.INCLUDES_LWIP = [prefix_node.make_node('include').abspath()]
+    env.STLIBPATH_LWIP = [prefix_node.make_node('.').abspath()]
+    env.STLIB_LWIP = ['lwip', 'lwipcore', 'lwipcontribportunix', 'lwipallapps']
 
     env.append_value('GIT_SUBMODULES', 'lwip')
     env.HAS_LWIP = True
@@ -30,7 +35,7 @@ def liblwip(bld):
     lwip = bld.cmake(
         name='lwip',
         cmake_src=bld.env.LWIP_CONFIG,
-        cmake_bld='lwip',
+        cmake_bld=['lwip'],
         cmake_vars=dict(
             CMAKE_BUILD_TYPE='Release',
             CMAKE_INSTALL_PREFIX=prefix_node.abspath()
@@ -40,6 +45,9 @@ def liblwip(bld):
     prefix_node = bld.bldnode.make_node(bld.env.LWIP_PREFIX_REL)
     output_paths = (
         'liblwip.a',
+        'liblwipcore.a',
+        'liblwipcontribportunix.a',
+        'liblwipallapps.a'
     )
     outputs = [prefix_node.make_node(path) for path in output_paths]
     lwip.build('lwip', 
