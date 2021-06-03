@@ -30,7 +30,7 @@ def liblwip(bld):
     lwip = bld.cmake(
         name='lwip',
         cmake_src=bld.env.LWIP_CONFIG,
-        cmake_bld='lwip_build',
+        cmake_bld='lwip',
         cmake_vars=dict(
             CMAKE_BUILD_TYPE='Release',
             CMAKE_INSTALL_PREFIX=prefix_node.abspath()
@@ -39,7 +39,7 @@ def liblwip(bld):
 
     prefix_node = bld.bldnode.make_node(bld.env.LWIP_PREFIX_REL)
     output_paths = (
-        'lib/liblwip.a',
+        'liblwip.a',
     )
     outputs = [prefix_node.make_node(path) for path in output_paths]
     lwip.build('lwip', 
