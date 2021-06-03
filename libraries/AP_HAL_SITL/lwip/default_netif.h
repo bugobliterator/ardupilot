@@ -35,6 +35,9 @@
 
 #include "lwip/ip_addr.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #if LWIP_IPV4
 void init_default_netif(const ip4_addr_t *ipaddr, const ip4_addr_t *netmask, const ip4_addr_t *gw);
 #else
@@ -44,4 +47,9 @@ void init_default_netif(void);
 void default_netif_poll(void);
 void default_netif_shutdown(void);
 
+extern struct netif netif;
+#ifdef __cplusplus
+}
+
+#endif
 #endif
