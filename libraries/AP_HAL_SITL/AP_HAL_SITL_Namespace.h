@@ -18,5 +18,5 @@ class GPIO;
 class DigitalSource;
 class DSP;
 class CANIface;
-class HTMLClient;
+class TCPClient;
 }  // namespace HALSITL

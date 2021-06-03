@@ -43,7 +43,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include "AP_HAL_SITL.h"
 
-class HALSITL::HTMLClient {
+class HALSITL::TCPClient {
 public:
     void init();
     void thread_loop();
@@ -51,7 +51,10 @@ public:
 private:
     static void status_callback(struct netif *state_netif);
     static void link_callback(struct netif *state_netif);
+    static void init_iface(void *arg);
+
     ip4_addr_t ipaddr, netmask, gw;
     struct dhcp netif_dhcp;
     struct autoip netif_autoip;
+    sys_sem_t init_sem;
 };

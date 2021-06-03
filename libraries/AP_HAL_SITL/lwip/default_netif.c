@@ -36,9 +36,9 @@
 #include "lwip/ip_addr.h"
 #include "lwip/tcpip.h"
 #include "netif/tapif.h"
-#include "examples/example_app/default_netif.h"
+#include "default_netif.h"
 
-struct netif netif;
+struct netif netif = {0};
 
 #if LWIP_IPV4
 #define NETIF_ADDRS ipaddr, netmask, gw,

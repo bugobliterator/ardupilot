@@ -36,6 +36,9 @@
 #include "lwipopts_test.h"
 #else /* LWIP_OPTTEST_FILE */
 
+#define LWIP_MAC_ADDR_BASE            {0x00,0x01,0x02,0x03,0x04,0x05}
+
+
 #define LWIP_IPV4                  1
 #define LWIP_IPV6                  0
 
@@ -76,7 +79,7 @@
 
 #ifdef LWIP_DEBUG
 
-#define LWIP_DBG_MIN_LEVEL         0
+#define LWIP_DBG_MIN_LEVEL         LWIP_DBG_LEVEL_ALL
 #define PPP_DEBUG                  LWIP_DBG_OFF
 #define MEM_DEBUG                  LWIP_DBG_OFF
 #define MEMP_DEBUG                 LWIP_DBG_OFF
@@ -84,7 +87,7 @@
 #define API_LIB_DEBUG              LWIP_DBG_OFF
 #define API_MSG_DEBUG              LWIP_DBG_OFF
 #define TCPIP_DEBUG                LWIP_DBG_OFF
-#define NETIF_DEBUG                LWIP_DBG_OFF
+#define NETIF_DEBUG                LWIP_DBG_ON
 #define SOCKETS_DEBUG              LWIP_DBG_OFF
 #define DNS_DEBUG                  LWIP_DBG_OFF
 #define AUTOIP_DEBUG               LWIP_DBG_OFF
@@ -94,7 +97,7 @@
 #define ICMP_DEBUG                 LWIP_DBG_OFF
 #define IGMP_DEBUG                 LWIP_DBG_OFF
 #define UDP_DEBUG                  LWIP_DBG_OFF
-#define TCP_DEBUG                  LWIP_DBG_OFF
+#define TCP_DEBUG                  LWIP_DBG_ON
 #define TCP_INPUT_DEBUG            LWIP_DBG_OFF
 #define TCP_OUTPUT_DEBUG           LWIP_DBG_OFF
 #define TCP_RTO_DEBUG              LWIP_DBG_OFF

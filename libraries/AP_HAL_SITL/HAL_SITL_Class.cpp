@@ -22,7 +22,7 @@
 #include "Util.h"
 #include "DSP.h"
 #include "CANSocketIface.h"
-#include "HTMLClient.h"
+#include "TCPClient.h"
 
 #include <AP_BoardConfig/AP_BoardConfig.h>
 #include <AP_HAL_Empty/AP_HAL_Empty.h>
@@ -70,7 +70,7 @@ static I2CDeviceManager i2c_mgr_instance;
 #endif
 static Util utilInstance(&sitlState);
 
-static HTMLClient htmlclient;
+static TCPClient tcpclient;
 
 #if HAL_NUM_CAN_IFACES
 static HALSITL::CANIface* canDrivers[HAL_NUM_CAN_IFACES];
@@ -200,7 +200,7 @@ void HAL_SITL::run(int argc, char * const argv[], Callbacks* callbacks) const
         }
     }
 
-    htmlclient.init();
+    tcpclient.init();
 
     // form a new argv, removing problem parameters. This is used for reboot
     uint8_t new_argv_offset = 0;
@@ -252,7 +252,7 @@ void HAL_SITL::run(int argc, char * const argv[], Callbacks* callbacks) const
             // protection, but saves a lot of CPU
             fill_stack_nan();
         }
-        htmlclient.thread_loop();
+        tcpclient.thread_loop();
         callbacks->loop();
         HALSITL::Scheduler::_run_io_procs();
 
