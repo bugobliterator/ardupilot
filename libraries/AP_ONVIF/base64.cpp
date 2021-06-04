@@ -71,13 +71,13 @@ uint8_t* base64_encode_global(const uint8_t *src, uint16_t len, uint16_t *out_le
 		*pos++ = table[((in[1] & 0x0f) << 2) | (in[2] >> 6)];
 		*pos++ = table[in[2] & 0x3f];
 		in += 3;
-		if (!urlsafe) {
-			line_len += 4;
-			if (line_len >= 72) {
-				*pos++ = '\n';
-				line_len = 0;
-			}
-		}
+		// if (!urlsafe) {
+		// 	line_len += 4;
+		// 	if (line_len >= 72) {
+		// 		*pos++ = '\n';
+		// 		line_len = 0;
+		// 	}
+		// }
 	}
 
 	if (end - in) {
@@ -98,9 +98,9 @@ uint8_t* base64_encode_global(const uint8_t *src, uint16_t len, uint16_t *out_le
 		line_len += 4;
 	}
 
-	if (line_len && !urlsafe) {
-		*pos++ = '\n';
-	}
+	// if (line_len && !urlsafe) {
+	// 	*pos++ = '\n';
+	// }
 
 	*pos = '\0';
 	if (out_len) {

@@ -179,13 +179,15 @@ void AP_ONVIF::set_credentials()
     sha1_hash((const unsigned char*)test_nonce, noncelen, &ctx);
     sha1_hash((const unsigned char*)TEST_TIME, strlen(TEST_TIME), &ctx);
     sha1_hash((const unsigned char*)TEST_PASS, strlen(TEST_PASS), &ctx);
+    nonceBase64 = (char*)base64_encode((unsigned char*)test_nonce, 16, &noncelen);
+    PRINT("Created:%s Hash64:%s", TEST_TIME, HABase64fin);
 #else
     sha1_hash((const unsigned char*)nonce, 16, &ctx);
     sha1_hash((const unsigned char*)created, strlen(created), &ctx);
     sha1_hash((const unsigned char*)PASSWORD, strlen(PASSWORD), &ctx);
+    nonceBase64 = (char*)base64_encode((unsigned char*)nonce, 16, &noncelen);
 #endif
     sha1_end((unsigned char*)HA, &ctx);
-    nonceBase64 = (char*)base64_encode((unsigned char*)nonce, 16, &noncelen);
     HABase64enc = (char*)base64_encode((unsigned char*)HA, SHA1_DIGEST_SIZE, &HABase64len);
     if (HABase64len > 29) {
         //things have gone truly bad time to panic
@@ -195,7 +197,6 @@ void AP_ONVIF::set_credentials()
     }
 
     memcpy(HABase64fin, HABase64enc, HABase64len);
-    PRINT("Created:%s Hash64:%s", created, HABase64fin);
 
     if (soap_wsse_add_UsernameTokenText(soap, "Auth", USERNAME, HABase64fin))
     {
