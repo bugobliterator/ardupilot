@@ -451,6 +451,11 @@ class sitl(Board):
         env.AP_LIBRARIES += [
             'AP_ONVIF'
         ]
+        env.CXXFLAGS += [
+            '-Wno-shadow',
+            '-Wno-undef',
+            '-Wno-cast-align',
+        ]
         if self.with_can:
             cfg.define('HAL_NUM_CAN_IFACES', 2)
             cfg.define('UAVCAN_EXCEPTIONS', 0)
