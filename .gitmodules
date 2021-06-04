@@ -25,3 +25,6 @@
 [submodule "modules/lwip-contrib"]
 	path = modules/lwip-contrib
 	url = https://git.savannah.nongnu.org/git/lwip/lwip-contrib.git
+[submodule "modules/gsoap"]
+	path = modules/gsoap
+	url = https://github.com/bugobliterator/gsoap
