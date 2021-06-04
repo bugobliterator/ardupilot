@@ -122,7 +122,7 @@ template <class T> class std::vector;
 
 #import "xop.h"	// xop = <http://www.w3.org/2004/08/xop/include>
 #import "wsa5.h"	// wsa5 = <http://www.w3.org/2005/08/addressing>
-
+#import "wsse.h"
 /******************************************************************************\
  *                                                                            *
  * Schema Namespaces                                                          *

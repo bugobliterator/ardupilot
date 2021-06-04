@@ -20,10 +20,15 @@
 #include <AP_ONVIF/onvifDeviceBindingProxy.h>
 #include <AP_ONVIF/onvifMediaBindingProxy.h>
 #include <AP_ONVIF/onvifPTZBindingProxy.h>
+#include <plugin/wsseapi-lite.h>
 
 class AP_ONVIF {
 public:
     bool init();
+    void set_credentials();
+
+    // get singleton instance
+    // static AP_ONVIF *get_singleton() { return _singleton; }
 
 private:
     void report_error();
@@ -32,4 +37,10 @@ private:
     DeviceBindingProxy *proxy_device;
     MediaBindingProxy  *proxy_media;
     PTZBindingProxy    *proxy_ptz;
+    static AP_ONVIF *_singleton;
 };
+
+
+// namespace AP {
+//     AP_ONVIF *onvif();
+// };

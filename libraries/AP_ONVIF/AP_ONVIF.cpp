@@ -18,6 +18,19 @@
 #include "AP_ONVIF.h"
 #include <AP_ONVIF/DeviceBinding.nsmap>
 
+#include "onvifhelpers.h"
+// For ChibiOS we will use HW RND # generator
+#include <stdlib.h> //rand()
+
+
+#ifndef USERNAME
+#define USERNAME "admin"
+#endif
+
+#ifndef PASSWORD
+#define PASSWORD "admin"
+#endif
+
 #ifndef ONVIF_HOSTNAME
 #define ONVIF_HOSTNAME "http://10.211.55.3:10000/onvif/device_service"
 #endif
@@ -26,8 +39,15 @@
 #define PRINT(fmt,args...) do {printf(fmt "\n", ## args); } while(0)
 #endif
 
+const char *wsse_PasswordDigestURI = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest";
+const char *wsse_Base64BinaryURI = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary";
+
+// static AP _ONVIF *_singleton;
+extern const AP_HAL::HAL &hal;
+
 bool AP_ONVIF::init()
 {
+    srand ((time_t)(hal.util->get_hw_rtc()/1000000ULL));
     soap = soap_new1(SOAP_XML_STRICT | SOAP_XML_CANONICAL | SOAP_C_UTFSTRING);
     soap->connect_timeout = soap->recv_timeout = soap->send_timeout = 10; // 10 sec
 
@@ -79,7 +99,7 @@ bool AP_ONVIF::probe_onvif_server()
 {
     _tds__GetDeviceInformation GetDeviceInformation;
     _tds__GetDeviceInformationResponse GetDeviceInformationResponse;
-
+    set_credentials();
     if (proxy_device->GetDeviceInformation(&GetDeviceInformation, GetDeviceInformationResponse)) {
         report_error();
         return false;
@@ -94,7 +114,7 @@ bool AP_ONVIF::probe_onvif_server()
     // get device capabilities and print media
     _tds__GetCapabilities GetCapabilities;
     _tds__GetCapabilitiesResponse GetCapabilitiesResponse;
-
+    set_credentials();
     if (proxy_device->GetCapabilities(&GetCapabilities, GetCapabilitiesResponse)) {
         report_error();
         return false;
@@ -119,3 +139,78 @@ bool AP_ONVIF::probe_onvif_server()
     return true;
 }
 
+void rand_nonce(char *nonce, size_t noncelen)
+{
+    size_t i;
+    uint32_t r = (uint32_t)(hal.util->get_hw_rtc()/1000000ULL);
+    (void)memcpy((void *)nonce, (const void *)&r, 4);
+    for (i = 4; i < noncelen; i += 4)
+    {
+        r = rand();
+        (void)memcpy((void *)(nonce + i), (const void *)&r, 4);
+    }
+}
+#define TEST_NONCE "LKqI6G/AikKCQrN0zqZFlg=="
+#define TEST_TIME "2010-09-16T07:50:45Z"
+#define TEST_PASS "userpassword"
+#define TEST_RESULT "tuOSpGlFlIXsozq4HFNeeGeFLEI="
+#define TEST 0
+void AP_ONVIF::set_credentials()
+{
+    soap_wsse_delete_Security(soap);
+
+    _wsse__Security *security = soap_wsse_add_Security(soap);
+    const char *created = soap_dateTime2s(soap, (time_t)(hal.util->get_hw_rtc()/1000000ULL));
+    char HA[SHA1_DIGEST_SIZE] {};
+    char HABase64fin[29] {};
+    char nonce[16], *nonceBase64;
+    sha1_ctx ctx;
+    uint16_t HABase64len;
+    char *HABase64enc;
+    uint16_t noncelen; 
+
+    /* generate a nonce */
+    rand_nonce(nonce, 16);
+
+    sha1_begin(&ctx);
+#if TEST
+    char* test_nonce = (char*)base64_decode((const unsigned char*)TEST_NONCE, strlen(TEST_NONCE), &noncelen);
+    sha1_hash((const unsigned char*)test_nonce, noncelen, &ctx);
+    sha1_hash((const unsigned char*)TEST_TIME, strlen(TEST_TIME), &ctx);
+    sha1_hash((const unsigned char*)TEST_PASS, strlen(TEST_PASS), &ctx);
+#else
+    sha1_hash((const unsigned char*)nonce, 16, &ctx);
+    sha1_hash((const unsigned char*)created, strlen(created), &ctx);
+    sha1_hash((const unsigned char*)PASSWORD, strlen(PASSWORD), &ctx);
+#endif
+    sha1_end((unsigned char*)HA, &ctx);
+    nonceBase64 = (char*)base64_encode((unsigned char*)nonce, 16, &noncelen);
+    HABase64enc = (char*)base64_encode((unsigned char*)HA, SHA1_DIGEST_SIZE, &HABase64len);
+    if (HABase64len > 29) {
+        //things have gone truly bad time to panic
+        PRINT("Error: Invalid Base64 Encode!");
+        free(HABase64enc);
+        return;
+    }
+
+    memcpy(HABase64fin, HABase64enc, HABase64len);
+    PRINT("Created:%s Hash64:%s", created, HABase64fin);
+
+    if (soap_wsse_add_Timestamp(soap, "Time", 10) ||
+        soap_wsse_add_UsernameTokenText(soap, "Auth", USERNAME, HABase64fin))
+    {
+        report_error();
+    }
+    /* populate the remainder of the password, nonce, and created */
+    security->UsernameToken->Password->Type = (char*)wsse_PasswordDigestURI;
+    security->UsernameToken->Nonce = (struct wsse__EncodedString*)soap_malloc(soap, sizeof(struct wsse__EncodedString));
+    security->UsernameToken->Salt = NULL;
+    security->UsernameToken->Iteration = NULL;
+    if (!security->UsernameToken->Nonce) {
+        return;
+    }
+    soap_default_wsse__EncodedString(soap, security->UsernameToken->Nonce);
+    security->UsernameToken->Nonce->__item = nonceBase64;
+    security->UsernameToken->Nonce->EncodingType = (char*)wsse_Base64BinaryURI;
+    security->UsernameToken->wsu__Created = soap_strdup(soap, created);
+}
