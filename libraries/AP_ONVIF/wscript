@@ -18,8 +18,10 @@ def configure(cfg):
     cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] = []
     for src in cfg.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'):
         name = os.path.splitext(os.path.basename(src.abspath()))[0]
-        cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}ClientLib.cpp'.format(name)]
-
+        cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}DeviceBindingProxy.cpp'.format(name)]
+        cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}C.cpp'.format(name)]
+    cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'].append(cfg.srcnode.make_node('modules/gsoap/gsoap/stdsoap2.cpp').abspath())
+    cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'].append(cfg.srcnode.make_node('modules/gsoap/gsoap/dom.cpp').abspath())
     env.append_value('GIT_SUBMODULES', 'gsoap')
 
 
@@ -36,12 +38,13 @@ def build(bld):
     import_dir = bld.srcnode.make_node('modules/gsoap/gsoap/import')
     for src in bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'):
         name = os.path.splitext(os.path.basename(src.abspath()))[0]
-        generated_cpp.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}ClientLib.cpp'.format(name)))
+        generated_cpp.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}DeviceBindingProxy.cpp'.format(name)))
+        generated_cpp.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}C.cpp'.format(name)))
         generated_h.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}H.h'.format(name)))
     bld(
         source=bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'),
         # need to find a cleaner way to generate source into right directory
-        rule="$(cd %s;%s -2 -Cp $(basename -- ${SRC} .h) -I '%s' ../../${SRC})" % (output_dir,
+        rule="$(cd %s;%s -2 -j -Cp $(basename -- ${SRC} .h) -I '%s' ../../${SRC})" % (output_dir,
                                                                             bld.env.get_flat('SOAPCPP2'),
                                                                             import_dir),
         target=generated_cpp + generated_h,
