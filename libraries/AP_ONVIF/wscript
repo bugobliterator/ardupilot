@@ -1,0 +1,49 @@
+#!/usr/bin/env python
+# encoding: utf-8
+'''
+build generated bindings from bindings.desc for AP_Scripting
+'''
+
+from waflib.TaskGen import after_method, before_method, feature
+import os
+
+def configure(cfg):
+    """
+    setup environment for mavlink header generator
+    """
+    cfg.find_program('soapcpp2')
+    env = cfg.env
+    env.SOAP_DIR = cfg.srcnode.make_node('libraries/AP_ONVIF/soap').abspath()
+    env.SOAP_IMPORT = cfg.srcnode.make_node('modules/gsoap/gsoap/import').abspath()
+    cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] = []
+    for src in cfg.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'):
+        name = os.path.splitext(os.path.basename(src.abspath()))[0]
+        cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}ClientLib.cpp'.format(name)]
+
+    env.append_value('GIT_SUBMODULES', 'gsoap')
+
+
+def relpath(bld, node):
+    '''make a build relative path. This is needed for CI to pass on azure'''
+    blddir = bld.bldnode.make_node(".").abspath()
+    return os.path.relpath(node.abspath(), blddir)
+
+
+def build(bld):
+    generated_cpp = []
+    generated_h = []
+    output_dir = bld.bldnode.make_node('libraries/AP_ONVIF')
+    import_dir = bld.srcnode.make_node('modules/gsoap/gsoap/import')
+    for src in bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'):
+        name = os.path.splitext(os.path.basename(src.abspath()))[0]
+        generated_cpp.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}ClientLib.cpp'.format(name)))
+        generated_h.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}H.h'.format(name)))
+    bld(
+        source=bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'),
+        # need to find a cleaner way to generate source into right directory
+        rule="$(cd %s;%s -2 -Cp $(basename -- ${SRC} .h) -I '%s' ../../${SRC})" % (output_dir,
+                                                                            bld.env.get_flat('SOAPCPP2'),
+                                                                            import_dir),
+        target=generated_cpp + generated_h,
+        group='dynamic_sources'
+    )

@@ -446,7 +446,9 @@ class sitl(Board):
         env.LWIP_CONFIG = 'libraries/AP_HAL_SITL/lwip'
         env.AP_PROGRAM_FEATURES += ['lwip']
 
-
+        env.AP_LIBRARIES += [
+            'AP_ONVIF'
+        ]
         if self.with_can:
             cfg.define('HAL_NUM_CAN_IFACES', 2)
             cfg.define('UAVCAN_EXCEPTIONS', 0)

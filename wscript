@@ -357,6 +357,7 @@ def configure(cfg):
     cfg.start_msg('lwip')
     if cfg.env.HAS_LWIP:
         cfg.end_msg('enabled')
+        cfg.recurse('libraries/AP_ONVIF')
     else:
         cfg.end_msg('disabled', color='YELLOW')
 
@@ -519,6 +520,10 @@ def _build_dynamic_sources(bld):
             ]
         )
 
+    if bld.env.HAS_LWIP:
+        bld.liblwip()
+
+
     def write_version_header(tsk):
         bld = tsk.generator.bld
         return bld.write_version_header(tsk.outputs[0].abspath())
@@ -550,9 +555,7 @@ def _build_common_taskgens(bld):
 
     if bld.env.HAS_GBENCHMARK:
         bld.libbenchmark()
-    
-    if bld.env.HAS_LWIP:
-        bld.liblwip()
+
 
 def _build_recursion(bld):
     common_dirs_patterns = [
@@ -594,6 +597,7 @@ def _build_recursion(bld):
             dirs_to_recurse.append('Tools/AP_Periph')
 
     dirs_to_recurse.append('libraries/AP_Scripting')
+    dirs_to_recurse.append('libraries/AP_ONVIF')
 
     for p in hal_dirs_patterns:
         dirs_to_recurse += collect_dirs_to_recurse(
