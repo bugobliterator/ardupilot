@@ -1,6 +1,9 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_ONVIF/AP_ONVIF.h> 
+// #include <DeviceBinding.nsmap>
+// #include <MediaBinding.nsmap>
+// #include <PTZBinding.nsmap>
 
 void setup();
 void loop();

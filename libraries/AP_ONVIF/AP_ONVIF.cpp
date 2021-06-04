@@ -16,14 +16,14 @@
  */
 
 #include "AP_ONVIF.h"
-
+#include <AP_ONVIF/DeviceBinding.nsmap>
 
 #ifndef ONVIF_HOSTNAME
 #define ONVIF_HOSTNAME "http://10.211.55.3:10000/onvif/device_service"
 #endif
 
 #ifndef PRINT
-#define PRINT do {printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); hal.scheduler->delay(1); } while(0)
+#define PRINT(fmt,args...) do {printf(fmt "\n", ## args); } while(0)
 #endif
 
 bool AP_ONVIF::init()
@@ -45,16 +45,17 @@ bool AP_ONVIF::init()
     //  or it could be just storage, we will see
     proxy_device->soap_endpoint = ONVIF_HOSTNAME;
     if (!probe_onvif_server()) {
-        PRINT("Failed to probe onvif server.\n");
+        PRINT("Failed to probe onvif server.");
         return false;
     }
+    return true;
 }
 
 void AP_ONVIF::report_error()
 {
     PRINT("ONVIF ERROR:\n");
     if (soap_check_state(soap)) {
-        PRINT("Error: soap struct state not initialized\n");
+        PRINT("Error: soap struct state not initialized");
     } else if (soap->error) {
         const char **c, *v = NULL, *s, *d;
         c = soap_faultcode(soap);
@@ -67,7 +68,7 @@ void AP_ONVIF::report_error()
         }
         s = soap_fault_string(soap);
         d = soap_fault_detail(soap);
-        PRINT("%s%d fault %d [%s]\n%s\nDetail: %s\n",(soap->version ? "SOAP 1." : "Error "),
+        PRINT("%s%d fault %s [%s]\n%s\nDetail: %s",(soap->version ? "SOAP 1." : "Error "),
                                                       (soap->version ? (int)soap->version : soap->error),
                                                       *c, (v ? v : "no subcode"), (s ? s : "[no reason]"),
                                                       (d ? d : "[no detail]"));
@@ -79,41 +80,42 @@ bool AP_ONVIF::probe_onvif_server()
     _tds__GetDeviceInformation GetDeviceInformation;
     _tds__GetDeviceInformationResponse GetDeviceInformationResponse;
 
-    if (proxyDevice.GetDeviceInformation(&GetDeviceInformation, GetDeviceInformationResponse)) {
-        report_error(soap);
+    if (proxy_device->GetDeviceInformation(&GetDeviceInformation, GetDeviceInformationResponse)) {
+        report_error();
         return false;
     }
 
-    PRINT("Manufacturer:    %s\n",GetDeviceInformationResponse.Manufacturer.c_str());
-    PRINT("Model:           %s\n",GetDeviceInformationResponse.Model.c_str());
-    PRINT("FirmwareVersion: %s\n",GetDeviceInformationResponse.FirmwareVersion.c_str());
-    PRINT("SerialNumber:    %s\n",GetDeviceInformationResponse.SerialNumber.c_str());
-    PRINT("HardwareId:      %s\n",GetDeviceInformationResponse.HardwareId.c_str());
+    PRINT("Manufacturer:    %s",GetDeviceInformationResponse.Manufacturer.c_str());
+    PRINT("Model:           %s",GetDeviceInformationResponse.Model.c_str());
+    PRINT("FirmwareVersion: %s",GetDeviceInformationResponse.FirmwareVersion.c_str());
+    PRINT("SerialNumber:    %s",GetDeviceInformationResponse.SerialNumber.c_str());
+    PRINT("HardwareId:      %s",GetDeviceInformationResponse.HardwareId.c_str());
 
     // get device capabilities and print media
     _tds__GetCapabilities GetCapabilities;
     _tds__GetCapabilitiesResponse GetCapabilitiesResponse;
 
-    if (proxyDevice.GetCapabilities(&GetCapabilities, GetCapabilitiesResponse)) {
-        report_error(soap);
+    if (proxy_device->GetCapabilities(&GetCapabilities, GetCapabilitiesResponse)) {
+        report_error();
         return false;
     }
 
     if (!GetCapabilitiesResponse.Capabilities || !GetCapabilitiesResponse.Capabilities->Media) {
-        PRINT("Missing device capabilities info\n");
+        PRINT("Missing device capabilities info");
     } else {
-        PRINT("XAddr:        %s\n", GetCapabilitiesResponse.Capabilities->Media->XAddr.c_str());
+        PRINT("XAddr:        %s", GetCapabilitiesResponse.Capabilities->Media->XAddr.c_str());
         if (GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities) {
             if (GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTPMulticast) {
-                PRINT("RTPMulticast: %s\n",(*GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTPMulticast ? "yes" : "no"));
+                PRINT("RTPMulticast: %s",(*GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTPMulticast ? "yes" : "no"));
             }
             if (GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTP_USCORETCP) {
-                PRINT("RTP_TCP:      %s\n", (*GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTP_USCORETCP ? "yes" : "no"));
+                PRINT("RTP_TCP:      %s", (*GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTP_USCORETCP ? "yes" : "no"));
             }
             if (GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTP_USCORERTSP_USCORETCP) {
-                PRINT("RTP_RTSP_TCP: %s\n", (*GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTP_USCORERTSP_USCORETCP ? "yes" : "no"));
+                PRINT("RTP_RTSP_TCP: %s", (*GetCapabilitiesResponse.Capabilities->Media->StreamingCapabilities->RTP_USCORERTSP_USCORETCP ? "yes" : "no"));
             }
         }
     }
+    return true;
 }
 

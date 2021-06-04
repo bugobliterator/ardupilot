@@ -16,10 +16,12 @@ def configure(cfg):
     env.SOAP_DIR = cfg.srcnode.make_node('libraries/AP_ONVIF/soap').abspath()
     env.SOAP_IMPORT = cfg.srcnode.make_node('modules/gsoap/gsoap/import').abspath()
     cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] = []
-    for src in cfg.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'):
-        name = os.path.splitext(os.path.basename(src.abspath()))[0]
-        cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}DeviceBindingProxy.cpp'.format(name)]
-        cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}C.cpp'.format(name)]
+
+    cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['onvifDeviceBindingProxy.cpp',
+                                                 'onvifMediaBindingProxy.cpp',
+                                                 'onvifPTZBindingProxy.cpp']
+    name = 'onvif'
+    cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'] += ['{}C.cpp'.format(name)]
     cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'].append(cfg.srcnode.make_node('modules/gsoap/gsoap/stdsoap2.cpp').abspath())
     cfg.env.AP_LIB_EXTRA_SOURCES['AP_ONVIF'].append(cfg.srcnode.make_node('modules/gsoap/gsoap/dom.cpp').abspath())
     env.append_value('GIT_SUBMODULES', 'gsoap')
@@ -32,21 +34,17 @@ def relpath(bld, node):
 
 
 def build(bld):
-    generated_cpp = []
-    generated_h = []
     output_dir = bld.bldnode.make_node('libraries/AP_ONVIF')
     import_dir = bld.srcnode.make_node('modules/gsoap/gsoap/import')
-    for src in bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'):
-        name = os.path.splitext(os.path.basename(src.abspath()))[0]
-        generated_cpp.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}DeviceBindingProxy.cpp'.format(name)))
-        generated_cpp.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}C.cpp'.format(name)))
-        generated_h.append(bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}H.h'.format(name)))
+    src = bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/onvif.h')
+    name = 'onvif'
+    generated_cpp = [bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}C.cpp'.format(name))]
+    generated_h = [bld.bldnode.find_or_declare('libraries/AP_ONVIF/{}H.h'.format(name))]
     bld(
-        source=bld.srcnode.ant_glob('libraries/AP_ONVIF/soap/*.h'),
-        # need to find a cleaner way to generate source into right directory
-        rule="$(cd %s;%s -2 -j -Cp $(basename -- ${SRC} .h) -I '%s' ../../${SRC})" % (output_dir,
-                                                                            bld.env.get_flat('SOAPCPP2'),
-                                                                            import_dir),
+        source=src,
+        rule="$(cd %s;%s -2 -Cp onvif -I '%s' -j -x ../../${SRC})" % (output_dir,
+                                                                         bld.env.get_flat('SOAPCPP2'),
+                                                                         import_dir),
         target=generated_cpp + generated_h,
         group='dynamic_sources'
     )

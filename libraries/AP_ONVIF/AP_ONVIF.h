@@ -14,17 +14,22 @@
  *
  * Code by Siddharth Bharat Purohit
  */
+#pragma once
 
 #include <AP_HAL/AP_HAL.h>
-#include <AP_ONVIF/devicemgmtDeviceBindingProxy.h>
-#include <AP_ONVIF/devicemgmtMediaBindingProxy.h>
+#include <AP_ONVIF/onvifDeviceBindingProxy.h>
+#include <AP_ONVIF/onvifMediaBindingProxy.h>
+#include <AP_ONVIF/onvifPTZBindingProxy.h>
 
 class AP_ONVIF {
 public:
     bool init();
 
 private:
+    void report_error();
+    bool probe_onvif_server();
     struct soap *soap;
     DeviceBindingProxy *proxy_device;
     MediaBindingProxy  *proxy_media;
+    PTZBindingProxy    *proxy_ptz;
 };
