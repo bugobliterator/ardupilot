@@ -446,6 +446,8 @@ class sitl(Board):
         env.LWIP_CONFIG = 'libraries/AP_HAL_SITL/lwip'
         env.AP_PROGRAM_FEATURES += ['lwip']
 
+        cfg.recurse('libraries/AP_ONVIF')
+
         env.AP_LIBRARIES += [
             'AP_ONVIF'
         ]

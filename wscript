@@ -357,7 +357,6 @@ def configure(cfg):
     cfg.start_msg('lwip')
     if cfg.env.HAS_LWIP:
         cfg.end_msg('enabled')
-        cfg.recurse('libraries/AP_ONVIF')
     else:
         cfg.end_msg('disabled', color='YELLOW')
 
