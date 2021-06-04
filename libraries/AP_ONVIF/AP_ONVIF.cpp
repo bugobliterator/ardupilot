@@ -158,6 +158,7 @@ void rand_nonce(char *nonce, size_t noncelen)
 void AP_ONVIF::set_credentials()
 {
     soap_wsse_delete_Security(soap);
+    soap_wsse_add_Timestamp(soap, "Time", 30);
 
     _wsse__Security *security = soap_wsse_add_Security(soap);
     const char *created = soap_dateTime2s(soap, (time_t)(hal.util->get_hw_rtc()/1000000ULL));
@@ -196,8 +197,7 @@ void AP_ONVIF::set_credentials()
     memcpy(HABase64fin, HABase64enc, HABase64len);
     PRINT("Created:%s Hash64:%s", created, HABase64fin);
 
-    if (soap_wsse_add_Timestamp(soap, "Time", 10) ||
-        soap_wsse_add_UsernameTokenText(soap, "Auth", USERNAME, HABase64fin))
+    if (soap_wsse_add_UsernameTokenText(soap, "Auth", USERNAME, HABase64fin))
     {
         report_error();
     }
