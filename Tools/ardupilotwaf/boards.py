@@ -455,6 +455,7 @@ class sitl(Board):
             '-Wno-shadow',
             '-Wno-undef',
             '-Wno-cast-align',
+            '-Wno-suggest-override',
         ]
         if self.with_can:
             cfg.define('HAL_NUM_CAN_IFACES', 2)
