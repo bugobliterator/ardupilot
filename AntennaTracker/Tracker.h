@@ -43,6 +43,8 @@
 #include <AP_Stats/AP_Stats.h>                      // statistics library
 #include <AP_BattMonitor/AP_BattMonitor.h> // Battery monitor library
 
+#include <AP_ONVIF/AP_ONVIF.h>
+
 // Configuration
 #include "config.h"
 #include "defines.h"
@@ -88,7 +90,9 @@ private:
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
     SITL::SITL sitl;
 #endif
-    
+
+    AP_ONVIF onvif;
+
     /**
        antenna control channels
     */

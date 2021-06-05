@@ -46,6 +46,8 @@ void Tracker::update_pitch_servo(float pitch)
         update_pitch_position_servo();
         break;
     }
+    // set tilt value for onvif camera as well here
+    onvif.set_tilt_norm(SRV_Channels::get_output_norm(SRV_Channel::k_tracker_pitch));
 }
 
 /**
@@ -148,6 +150,8 @@ void Tracker::update_yaw_servo(float yaw)
         update_yaw_position_servo();
         break;
     }
+    // set tilt value for onvif camera as well here
+    onvif.set_pan_norm(SRV_Channels::get_output_norm(SRV_Channel::k_tracker_yaw));
 }
 
 /**

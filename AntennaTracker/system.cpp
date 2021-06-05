@@ -64,6 +64,9 @@ void Tracker::init_ardupilot()
     // initialise servos
     init_servos();
 
+    // initialise onvif
+    onvif.init();
+
     // use given start positions - useful for indoor testing, and
     // while waiting for GPS lock
     // sanity check location
