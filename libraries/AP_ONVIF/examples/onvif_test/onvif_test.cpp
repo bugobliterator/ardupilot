@@ -16,13 +16,30 @@ void setup()
 {
     printf("AP_ONVIF library test\n");
     if (!onvif.init()) {
-        printf("Failed to initialise onvif");
+        AP_HAL::panic("Failed to initialise onvif");
     }
 }
 
 void loop()
 {
-    hal.scheduler->delay(1000);
+    static float pan = 0.0, tilt = 0.0;
+    static bool move_up;
+    printf("Sending: %f %f\n", pan, tilt);
+    onvif.set_absolutemove(pan, tilt, 0);
+    if (pan < 1.0 && move_up) {
+        pan += 0.1;
+        tilt += 0.1;
+    } else if(pan > -1.0 && !move_up) {
+        pan -= 0.1;
+        tilt -= 0.1;
+    }
+    if (pan >= 1.0 && move_up) {
+        move_up = false;
+    }
+    if (pan <= -1.0 && !move_up) {
+        move_up = true;
+    }
+    hal.scheduler->delay(10000);
 }
 
 AP_HAL_MAIN();

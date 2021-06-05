@@ -21,23 +21,30 @@
 #include <AP_ONVIF/onvifMediaBindingProxy.h>
 #include <AP_ONVIF/onvifPTZBindingProxy.h>
 #include <plugin/wsseapi-lite.h>
+#include <AP_Math/AP_Math.h>
 
 class AP_ONVIF {
 public:
     bool init();
     void set_credentials();
-
+    bool set_absolutemove(float x, float y, float z);
     // get singleton instance
     // static AP_ONVIF *get_singleton() { return _singleton; }
 
 private:
     void report_error();
     bool probe_onvif_server();
+    void rand_nonce(char *nonce, size_t noncelen);
+    Vector2f pan_tilt_limit_min;
+    Vector2f pan_tilt_limit_max;
+    float zoom_min, zoom_max;
+    std::string profile_token;
     struct soap *soap;
     DeviceBindingProxy *proxy_device;
     MediaBindingProxy  *proxy_media;
     PTZBindingProxy    *proxy_ptz;
     static AP_ONVIF *_singleton;
+    char* media_endpoint;
 };
 
 
