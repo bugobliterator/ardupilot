@@ -27,7 +27,10 @@ class AP_ONVIF {
 public:
     bool init();
     void set_credentials();
-    bool set_absolutemove(float x, float y, float z);
+    bool set_absolutemove(float pan, float tilt, float zoom);
+    void set_pan_norm(float pan) { pan_norm = pan; }
+    void set_tilt_norm(float tilt) { tilt_norm = tilt; }
+
     // get singleton instance
     // static AP_ONVIF *get_singleton() { return _singleton; }
 
@@ -35,8 +38,13 @@ private:
     void report_error();
     bool probe_onvif_server();
     void rand_nonce(char *nonce, size_t noncelen);
+    void update();
+
     Vector2f pan_tilt_limit_min;
     Vector2f pan_tilt_limit_max;
+    float pan_norm, tilt_norm;
+    float last_pan_cmd, last_tilt_cmd;
+
     float zoom_min, zoom_max;
     std::string profile_token;
     struct soap *soap;

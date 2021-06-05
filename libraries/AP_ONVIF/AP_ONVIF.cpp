@@ -72,7 +72,34 @@ bool AP_ONVIF::init()
         PRINT("Failed to probe onvif server.");
         return false;
     }
+
+    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ONVIF::update, void), "onvif",
+                                                            4096, AP_HAL::Scheduler::PRIORITY_IO, 0)) {
+        PRINT("Failed to create onvif thread");
+        return false;
+    }
     return true;
+}
+
+void AP_ONVIF::update()
+{
+    while(true) {
+        float pan = pan_norm;
+        float tilt = tilt_norm;
+
+        // translate them into actual commands using cmd limits
+        pan = ((pan - 1) * (pan_tilt_limit_max.x - pan_tilt_limit_min.x)/2.0) + pan_tilt_limit_max.x;
+        tilt = ((tilt - 1) * (pan_tilt_limit_max.y - pan_tilt_limit_min.y)/2.0) + pan_tilt_limit_max.y;
+        PRINT("PAN: %f TILT: %f", pan, tilt);
+        // don't send the same request again
+        if (uint32_t(pan*100.0) != uint32_t(last_pan_cmd*100.0) || uint32_t(tilt*100.0) != uint32_t(last_tilt_cmd*100.0)) {
+            // actually send the command
+            set_absolutemove(pan, tilt, 0.0);
+            last_pan_cmd = pan;
+            last_tilt_cmd = tilt;
+        }
+        hal.scheduler->delay(100);
+    }
 }
 
 void AP_ONVIF::report_error()
@@ -333,6 +360,9 @@ bool AP_ONVIF::set_absolutemove(float x, float y, float z)
     AbsoluteMove.Position->Zoom->x = constrain_float(z, zoom_min, zoom_max);
     AbsoluteMove.Speed = NULL;
     AbsoluteMove.ProfileToken = profile_token;
+    // PRINT("Setting AbsoluteMove: %f %f %f", AbsoluteMove.Position->PanTilt->x,
+                                            // AbsoluteMove.Position->PanTilt->y,
+                                            // AbsoluteMove.Position->Zoom->x);
     set_credentials();
     if (proxy_ptz->AbsoluteMove(&AbsoluteMove, AbsoluteMoveResponse)) {
         PRINT("Failed to sent AbsoluteMove cmd");
