@@ -1,25 +1,9 @@
 #include <AP_HAL/AP_HAL.h>
-#include <GCS_MAVLink/GCS_Dummy.h>
-#include <AP_Vehicle/AP_Vehicle.h>
-#include <AP_SerialManager/AP_SerialManager.h>
-#include <AP_BoardConfig/AP_BoardConfig.h>
 #include <AP_FlashIface/AP_FlashIface.h>
 #include <stdio.h>
 #include <support.h>
 
 AP_FlashIface_JEDEC jedec_dev;
-
-void setup();
-void loop();
-
-GCS_Dummy _gcs;
-
-const AP_Param::GroupInfo GCS_MAVLINK_Parameters::var_info[] = {
-        AP_GROUPEND
-};
-
-static AP_SerialManager serial_manager;
-static AP_BoardConfig board_config;
 
 static UNUSED_FUNCTION void test_page_program()
 {
@@ -71,16 +55,16 @@ static UNUSED_FUNCTION void test_page_program()
     // Now test XIP mode here as well
     uint8_t *chip_data = nullptr;
     if (!jedec_dev.start_xip_mode((void**)&chip_data)) {
-        hal.console->printf("Failed to setup XIP mode\n");
+        uprintf("Failed to setup XIP mode\n");
     }
     if (chip_data == nullptr) {
-        hal.console->printf("Invalid address!\n");
+        uprintf("Invalid address!\n");
     }
     // Here comes the future!
     if (memcmp(data, chip_data, jedec_dev.get_page_size()) != 0) {
-        hal.console->printf("Program Data Mismatch in XIP mode!\n");
+        uprintf("Program Data Mismatch in XIP mode!\n");
     } else {
-        hal.console->printf("Program Data Verified Good in XIP mode!\n");
+        uprintf("Program Data Verified Good in XIP mode!\n");
     }
     jedec_dev.stop_xip_mode();
 }
@@ -160,9 +144,7 @@ static UNUSED_FUNCTION void test_mass_erase()
 
 int main()
 {
-    board_config.init();
-    serial_manager.init();
-}
+    init_uarts();
 
     while (true) {
         // Start on user input
