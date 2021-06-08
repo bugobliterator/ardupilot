@@ -98,7 +98,7 @@ void AP_ONVIF::update()
             last_pan_cmd = pan;
             last_tilt_cmd = tilt;
         }
-        hal.scheduler->delay(100);
+        hal.scheduler->delay(333);
     }
 }
 
