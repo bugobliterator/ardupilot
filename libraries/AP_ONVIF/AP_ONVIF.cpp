@@ -88,8 +88,8 @@ void AP_ONVIF::update()
         float tilt = tilt_norm;
 
         // translate them into actual commands using cmd limits
-        pan = ((pan - 1) * (pan_tilt_limit_max.x - pan_tilt_limit_min.x)/2.0) + pan_tilt_limit_max.x;
-        tilt = ((tilt - 1) * (pan_tilt_limit_max.y - pan_tilt_limit_min.y)/2.0) + pan_tilt_limit_max.y;
+        pan = ((pan + 1) * (pan_tilt_limit_max.x - pan_tilt_limit_min.x)/2.0) + pan_tilt_limit_min.x;
+        tilt = ((tilt + 1) * (pan_tilt_limit_max.y - pan_tilt_limit_min.y)/2.0) + pan_tilt_limit_min.y;
         PRINT("PAN: %f TILT: %f", pan, tilt);
         // don't send the same request again
         if (uint32_t(pan*100.0) != uint32_t(last_pan_cmd*100.0) || uint32_t(tilt*100.0) != uint32_t(last_tilt_cmd*100.0)) {
