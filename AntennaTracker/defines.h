@@ -6,7 +6,8 @@
 enum ServoType {
     SERVO_TYPE_POSITION=0,
     SERVO_TYPE_ONOFF=1,
-    SERVO_TYPE_CR=2
+    SERVO_TYPE_CR=2,
+    SERVO_TYPE_ONVIF_ABS=3
 };
 
 enum AltSource {

@@ -96,14 +96,14 @@ const AP_Param::Info Tracker::var_info[] = {
     // @Param: SERVO_PITCH_TYPE
     // @DisplayName: Type of servo system being used for pitch
     // @Description: This allows selection of position servos or on/off servos for pitch
-    // @Values: 0:Position,1:OnOff,2:ContinuousRotation
+    // @Values: 0:Position,1:OnOff,2:ContinuousRotation,3:OnvifABS
     // @User: Standard
     GSCALAR(servo_pitch_type,          "SERVO_PITCH_TYPE",   SERVO_TYPE_POSITION),
 
     // @Param: SERVO_YAW_TYPE
     // @DisplayName: Type of servo system being used for yaw
     // @Description: This allows selection of position servos or on/off servos for yaw
-    // @Values: 0:Position,1:OnOff,2:ContinuousRotation
+    // @Values: 0:Position,1:OnOff,2:ContinuousRotation,3:OnvifABS
     // @User: Standard
     GSCALAR(servo_yaw_type,          "SERVO_YAW_TYPE",   SERVO_TYPE_POSITION),
 
