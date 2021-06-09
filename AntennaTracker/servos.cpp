@@ -42,9 +42,11 @@ void Tracker::update_pitch_servo(float pitch)
         break;
 
     case SERVO_TYPE_ONVIF_ABS:
+    {
         // set tilt value for onvif camera as well here
         float tilt_norm = ((constrain_float(nav_status.pitch+g.pitch_trim, g.pitch_min, g.pitch_max) - g.pitch_min)*2.0f/(g.pitch_max - g.pitch_min)) - 1;
         onvif.set_tilt_norm(tilt_norm);
+    }
         break;
 
     case SERVO_TYPE_POSITION:
@@ -52,7 +54,6 @@ void Tracker::update_pitch_servo(float pitch)
         update_pitch_position_servo();
         break;
     }
-
 }
 
 /**
@@ -151,10 +152,12 @@ void Tracker::update_yaw_servo(float yaw)
         break;
 
     case SERVO_TYPE_ONVIF_ABS:
+    {
         // set yaw value for onvif camera as well here
         float pan_norm = (wrap_360(tracker.nav_status.bearing+g.yaw_trim)*2.0f/(g.yaw_range)) - 1;
         onvif.set_pan_norm(pan_norm);
-        break;
+    }
+    break;
 
     case SERVO_TYPE_POSITION:
     default:
