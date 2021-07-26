@@ -16,5 +16,5 @@ jobs:
                   CAN=@bugobliterator
                   AP_Periph=@bugobliterator
                   ChibiOS=@bugobliterator
-                  Compass=@bugobliterator
+                  Compass=@bugobliterator @sidbhp
                   bootloader=@bugobliterator
