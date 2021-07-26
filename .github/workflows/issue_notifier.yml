@@ -10,11 +10,11 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-        - uses: bugobliterator/issue-label-notification-action@master
+        - uses: bugobliterator/issue-label-notification-action@pr-issue-label-review-request
           with:
              recipients: |
                   CAN=@bugobliterator
                   AP_Periph=@bugobliterator
                   ChibiOS=@bugobliterator
-                  Compass=@bugobliterator
+                  Compass=@bugobliterator @sidbhp
                   bootloader=@bugobliterator
