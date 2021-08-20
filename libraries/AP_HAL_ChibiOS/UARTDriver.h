@@ -156,6 +156,10 @@ private:
      */
     ioline_t atx_line;
     ioline_t arx_line;
+    int8_t arxinv_gpio;
+    int8_t atxinv_gpio;
+    uint8_t arxinv_polarity;
+    uint8_t atxinv_polarity;
 
     // thread used for all UARTs
     static thread_t* volatile uart_rx_thread_ctx;

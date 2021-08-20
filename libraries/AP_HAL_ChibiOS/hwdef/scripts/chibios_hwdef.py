@@ -543,6 +543,10 @@ class generic_pin(object):
             'UART*RX' : 'PERIPH_TYPE::UART_RX',
             'USART*TX' : 'PERIPH_TYPE::UART_TX',
             'UART*TX' : 'PERIPH_TYPE::UART_TX',
+            'USART*RXINV' : 'PERIPH_TYPE::UART_RXINV',
+            'UART*RXINV' : 'PERIPH_TYPE::UART_RXINV',
+            'USART*TXINV' : 'PERIPH_TYPE::UART_TXINV',
+            'UART*TXINV' : 'PERIPH_TYPE::UART_TXINV',
             'I2C*SDA' : 'PERIPH_TYPE::I2C_SDA',
             'I2C*SCL' : 'PERIPH_TYPE::I2C_SCL',
         }
@@ -553,8 +557,11 @@ class generic_pin(object):
 
     def periph_instance(self):
         '''return peripheral instance'''
-        result = re.match(r'[A-Z]*([0-9]*)', self.type)
-        if result:
+        if self.type == 'OUTPUT':
+            result = re.match(r'.*ART([0-9]*)_', self.label)
+        else:
+            result = re.match(r'[A-Z]*([0-9]*)', self.type)
+        if len(result.group(1)):
             return int(result.group(1))
         return 0
 
@@ -1719,8 +1726,10 @@ def write_GPIO_config(f):
     f.write('// GPIO config\n')
     gpios = []
     gpioset = set()
-    for l in bylabel:
-        p = bylabel[l]
+    pinlist = {**bylabel, **altlabel}
+    for l in pinlist:
+        p = pinlist[l]
+        print(p)
         gpio = p.extra_value('GPIO', type=int)
         if gpio is None:
             continue
@@ -1732,6 +1741,7 @@ def write_GPIO_config(f):
         port = p.port
         pin = p.pin
         gpios.append((gpio, pwm, port, pin, p))
+
     gpios = sorted(gpios)
     for (gpio, pwm, port, pin, p) in gpios:
         f.write('#define HAL_GPIO_LINE_GPIO%u PAL_LINE(GPIO%s, %2uU)\n' % (gpio, port, pin))
@@ -1847,7 +1857,7 @@ def write_alt_config(f):
     for alt in altmap.keys():
         for pp in altmap[alt].keys():
             p = altmap[alt][pp]
-            f.write("    { %u, %s, PAL_LINE(GPIO%s,%uU), %s, %u}, /* %s */ \\\n" % (alt, p.pal_modeline(), p.port, p.pin, p.periph_type(), p.periph_instance(), str(p)))
+            f.write("    { %u, %s, PAL_LINE(GPIO%s,%uU), %s, %u, %d, %d}, /* %s */ \\\n" % (alt, p.pal_modeline(), p.port, p.pin, p.periph_type(), p.periph_instance(), p.extra_value("POL", type=int, default=0), p.extra_value('GPIO', type=int, default=-1), str(p)))
     f.write('}\n\n')
 
 def write_all_lines(hwdat):

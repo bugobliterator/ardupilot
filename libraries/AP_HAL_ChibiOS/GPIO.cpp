@@ -102,6 +102,8 @@ static const struct alt_config {
     ioline_t line;
     PERIPH_TYPE periph_type;
     uint8_t periph_instance;
+    uint8_t polarity;
+    int8_t gpio_id;
 } alternate_config[] HAL_PIN_ALT_CONFIG;
 
 /*
@@ -166,6 +168,47 @@ ioline_t GPIO::resolve_alt_config(ioline_t base, PERIPH_TYPE ptype, uint8_t inst
     return base;
 }
 
+// Get Alt pin GPIO for UART INV pins
+int8_t GPIO::get_alt_pin_gpio(int8_t gpio, PERIPH_TYPE ptype, uint8_t instance)
+{
+#ifdef HAL_PIN_ALT_CONFIG
+    if (alt_config == 0) {
+        // unchanged
+        return gpio;
+    }
+    for (uint8_t i=0; i<ARRAY_SIZE(alternate_config); i++) {
+        const struct alt_config &alt = alternate_config[i];
+        if (alt_config == alt.alternate) {
+            if (ptype == alt.periph_type && instance == alt.periph_instance) {
+                // we've reconfigured this peripheral with a different line
+                return alt.gpio_id;
+            }
+        }
+    }
+#endif
+    return gpio;
+}
+
+// Get Alt pin polarity for UART INV pins
+uint8_t GPIO::get_alt_pin_polarity(uint8_t default_polarity, PERIPH_TYPE ptype, uint8_t instance)
+{
+#ifdef HAL_PIN_ALT_CONFIG
+    if (alt_config == 0) {
+        // unchanged
+        return default_polarity;
+    }
+    for (uint8_t i=0; i<ARRAY_SIZE(alternate_config); i++) {
+        const struct alt_config &alt = alternate_config[i];
+        if (alt_config == alt.alternate) {
+            if (ptype == alt.periph_type && instance == alt.periph_instance) {
+                // we've reconfigured this peripheral with a different line
+                return alt.polarity;
+            }
+        }
+    }
+#endif
+    return default_polarity;
+}
 
 void GPIO::pinMode(uint8_t pin, uint8_t output)
 {

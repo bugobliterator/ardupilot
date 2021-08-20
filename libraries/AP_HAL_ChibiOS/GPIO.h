@@ -32,6 +32,8 @@
 enum class PERIPH_TYPE : uint8_t {
     UART_RX,
     UART_TX,
+    UART_RXINV,
+    UART_TXINV,
     I2C_SDA,
     I2C_SCL,
     OTHER,
@@ -85,6 +87,12 @@ public:
       resolve an ioline to take account of alternative configurations
      */
     static ioline_t resolve_alt_config(ioline_t base, PERIPH_TYPE ptype, uint8_t instance);
+
+
+    static int8_t get_alt_pin_gpio(int8_t gpio, PERIPH_TYPE ptype, uint8_t instance);
+
+    // Get Alt pin polarity for UART INV pins
+    static uint8_t get_alt_pin_polarity(uint8_t default_polarity, PERIPH_TYPE ptype, uint8_t instance);
 
 private:
     bool _usb_connected;

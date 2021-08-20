@@ -1594,9 +1594,19 @@ bool UARTDriver::set_options(uint16_t options)
      */
     arx_line = GPIO::resolve_alt_config(sdef.rx_line, PERIPH_TYPE::UART_RX, sdef.instance);
     atx_line = GPIO::resolve_alt_config(sdef.tx_line, PERIPH_TYPE::UART_TX, sdef.instance);
+
+    arxinv_gpio = GPIO::get_alt_pin_gpio(sdef.rxinv_gpio, PERIPH_TYPE::UART_RXINV, sdef.instance);
+    arxinv_polarity = GPIO::get_alt_pin_polarity(sdef.rxinv_polarity, PERIPH_TYPE::UART_RXINV, sdef.instance);
+    atxinv_gpio = GPIO::get_alt_pin_gpio(sdef.txinv_gpio, PERIPH_TYPE::UART_RXINV, sdef.instance);
+    atxinv_polarity = GPIO::get_alt_pin_polarity(sdef.txinv_polarity, PERIPH_TYPE::UART_TXINV, sdef.instance);
 #else
     arx_line = sdef.rx_line;
     atx_line = sdef.tx_line;
+
+    arxinv_gpio = sdef.rxinv_gpio;
+    arxinv_polarity = sdef.rxinv_polarity;
+    atxinv_gpio = sdef.txinv_gpio;
+    atxinv_polarity = sdef.txinv_polarity;
 #endif
 
 #if defined(STM32F7) || defined(STM32H7) || defined(STM32F3) || defined(STM32G4)
@@ -1649,15 +1659,15 @@ bool UARTDriver::set_options(uint16_t options)
     // F4 can do inversion by GPIO if enabled in hwdef.dat, using
     // TXINV and RXINV options
     if (options & OPTION_RXINV) {
-        if (sdef.rxinv_gpio >= 0) {
-            hal.gpio->write(sdef.rxinv_gpio, sdef.rxinv_polarity);
+        if (arxinv_gpio >= 0) {
+            hal.gpio->write(arxinv_gpio, arxinv_polarity);
         } else {
             ret = false;
         }
     }
     if (options & OPTION_TXINV) {
-        if (sdef.txinv_gpio >= 0) {
-            hal.gpio->write(sdef.txinv_gpio, sdef.txinv_polarity);
+        if (atxinv_gpio >= 0) {
+            hal.gpio->write(atxinv_gpio, atxinv_polarity);
         } else {
             ret = false;
         }
