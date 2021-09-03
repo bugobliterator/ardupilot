@@ -2,6 +2,19 @@
 # encoding: utf-8
 
 def build(bld):
-    bld.ap_example(
-        use='ap',
+    bld.ap_stlib(
+        name='AP_Declination_test' + '_libs',
+        ap_vehicle='Replay',
+        ap_libraries=[
+            'AP_Common',
+            'AP_Math',
+            'AP_InternalError',
+            'AP_Declination',
+        ],
+    )
+
+    # only valid to build with no GCS and no scripting
+    bld.ap_program(
+        program_groups=['examples'],
+        use='AP_Declination_test_libs',
     )
