@@ -307,7 +307,7 @@ uint8_t AP_BattMonitor_BQ769x0::tripCalculator(float trip_voltage)
 //Conversion example from datasheet: 14-bit ADC = 0x1800, Gain = 0x0F, Offset = 0x1E = 2.365V
 bool AP_BattMonitor_BQ769x0::read_cell_voltage(uint8_t cell_number, uint16_t &voltage)
 {
-    if (cell_number > 15) {
+    if (cell_number > HAL_BQ769X0_NUM_CELLS) {
         return false; //Return error
     }
 

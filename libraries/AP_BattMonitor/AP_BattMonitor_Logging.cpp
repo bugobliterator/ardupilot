@@ -3,6 +3,8 @@
 
 extern const AP_HAL::HAL& hal;
 
+#if HAL_LOGGING_ENABLED
+
 // Write BAT data packet(s)
 void AP_BattMonitor_Backend::Log_Write_BAT(const uint8_t instance, const uint64_t time_us) const
 {
@@ -70,3 +72,4 @@ void AP_BattMonitor_Backend::Log_Write_BCL(const uint8_t instance, const uint64_
     }
 #endif
 }
+#endif // HAL_LOGGING_ENABLED

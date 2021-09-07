@@ -84,7 +84,7 @@ static struct  BattMonI2CIface {
     uint16_t cell_voltage[AP_BATT_MONITOR_CELLS_MAX];
     uint32_t current_mA;
     struct reg_block* get_reg_block(uint8_t reg);
-    uint8_t send_buf[10]; // 1B Length + Max 8 bytes + 1 PEC
+    uint8_t send_buf[2*AP_BATT_MONITOR_CELLS_MAX + 2]; // 1B Length + Max 8 bytes + 1 PEC
     uint8_t send_length;
 } battmon_i2c;
 

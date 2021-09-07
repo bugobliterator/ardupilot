@@ -179,6 +179,9 @@ uint8_t crc8_maxim(const uint8_t *data, uint16_t length)
         data++;
     }
 
+    return crc;
+}
+
 // CRC ITT https://github.com/LibreSolar/bq769x0_mbed_lib/blob/master/bq769x0.cpp
 uint8_t crc8_ccitt_update(uint8_t crc, uint8_t data)
 {

@@ -294,9 +294,11 @@ AP_BattMonitor::init()
                 break;
 #endif // HAL_MPPT_PACKETDIGITAL_CAN_ENABLE
             case Type::BQ769x0:
+#ifdef AP_BATTMONITOR_BQ769x0_BUS_INTERNAL
                 drivers[instance] = new AP_BattMonitor_BQ769x0(*this, state[instance], _params[instance],
-                                                               hal.i2c_mgr->get_device(_params[instance]._i2c_bus, AP_BATTMONITOR_BQ_I2C_ADDR,
+                                                               hal.i2c_mgr->get_device(AP_BATTMONITOR_BQ769x0_BUS_INTERNAL, AP_BATTMONITOR_BQ_I2C_ADDR,
                                                                100000, false, 20));
+#endif // AP_BATTMONITOR_BQ769x0_BUS_INTERNAL
                 break;
             case Type::NONE:
             default:

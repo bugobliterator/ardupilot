@@ -68,7 +68,7 @@ private:
         BQ76920 = 0,
     };
     const bq_type _bq_type = BQ76920; // Currently only BQ76920 supported
-    const uint8_t _num_cells = 4; // Currently only four cells supported
+    const uint8_t _num_cells = HAL_BQ769X0_NUM_CELLS; // Currently only four cells supported
 
     // Battery Monitor Vars
     float _adc_gain;

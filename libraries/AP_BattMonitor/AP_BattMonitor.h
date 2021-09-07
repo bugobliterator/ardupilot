@@ -4,6 +4,8 @@
 #include <AP_Param/AP_Param.h>
 #include <AP_Math/AP_Math.h>
 #include "AP_BattMonitor_Params.h"
+#include <GCS_MAVLink/GCS_MAVLink.h>
+#include <AP_HAL/AP_HAL.h>
 
 // maximum number of battery monitors
 #define AP_BATT_MONITOR_MAX_INSTANCES       9
@@ -264,7 +266,6 @@ private:
 
     BattMonitor_State state[AP_BATT_MONITOR_MAX_INSTANCES];
     AP_BattMonitor_Backend *drivers[AP_BATT_MONITOR_MAX_INSTANCES];
-    uint32_t    _log_battery_bit;
     uint8_t     _num_instances;                                     /// number of monitors
 
     void convert_params(void);
@@ -282,11 +283,6 @@ private:
     int8_t      _highest_failsafe_priority; // highest selected failsafe action level (used to restrict what actions we move into)
     bool        _has_triggered_failsafe;  // true after a battery failsafe has been triggered for the first time
 #endif
-
-    uint8_t     _num_instances;                                     /// number of monitors
-
-    void convert_params(void);
-
 
 };
 

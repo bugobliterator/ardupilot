@@ -2325,28 +2325,22 @@ void AP_Periph_FW::battmon_cansend(void)
     if (!battmon.current_amps(pkt.current)) {
         pkt.current = 0.0f;
     }
-    fix_float16(pkt.current);
     pkt.voltage = battmon.voltage(0);
-    fix_float16(pkt.voltage);
     pkt.full_charge_capacity_wh = battmon.pack_capacity_mah(0)/1000.f;
     if (!battmon.get_temperature(pkt.temperature)) {
         pkt.temperature = 0.0f;
     }
-    fix_float16(pkt.temperature);
     if (!battmon.consumed_mah(pkt.remaining_capacity_wh)) {
         pkt.remaining_capacity_wh = 0.0f;
     }
     pkt.remaining_capacity_wh /= 1000.f;
     pkt.remaining_capacity_wh = (battmon.pack_capacity_mah(0)/1000.f) - pkt.remaining_capacity_wh;
-    fix_float16(pkt.remaining_capacity_wh);
     
     uint8_t buffer[UAVCAN_EQUIPMENT_POWER_BATTERYINFO_MAX_SIZE];
     uint16_t total_size = uavcan_equipment_power_BatteryInfo_encode(&pkt, buffer);
 
-    canardBroadcast(&canard,
-                    UAVCAN_EQUIPMENT_POWER_BATTERYINFO_SIGNATURE,
+    canard_broadcast(UAVCAN_EQUIPMENT_POWER_BATTERYINFO_SIGNATURE,
                     UAVCAN_EQUIPMENT_POWER_BATTERYINFO_ID,
-                    &transfer_id,
                     CANARD_TRANSFER_PRIORITY_LOW,
                     &buffer[0],
                     total_size);
