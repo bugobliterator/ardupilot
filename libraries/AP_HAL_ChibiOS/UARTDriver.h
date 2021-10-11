@@ -66,7 +66,7 @@ public:
 
     // control optional features
     bool set_options(uint16_t options) override;
-    uint8_t get_options(void) const override;
+    uint16_t get_options(void) const override;
 
     // write to a locked port. If port is locked and key is not correct then 0 is returned
     // and write is discarded
@@ -101,7 +101,7 @@ public:
     bool wait_timeout(uint16_t n, uint32_t timeout_ms) override;
 
     void set_flow_control(enum flow_control flow_control) override;
-    enum flow_control get_flow_control(void) override { return _flow_control; }
+    enum flow_control get_flow_control(void) override;
 
     // allow for low latency writes
     bool set_unbuffered_writes(bool on) override;
@@ -144,20 +144,27 @@ public:
     /*
       return true if this UART has DMA enabled on both RX and TX
      */
-    bool is_dma_enabled() const override { return rx_dma_enabled && tx_dma_enabled; }
+    bool is_dma_enabled() const override;
+
+    // event used to wake up waiting thread. This event number is for
+    // caller threads
+    static const eventmask_t EVT_DATA = EVENT_MASK(10);
+
+    // event for parity error
+    static const eventmask_t EVT_PARITY = EVENT_MASK(11);
+
+    // event for transmit end for half-duplex
+    static const eventmask_t EVT_TRANSMIT_END = EVENT_MASK(12);
+
+    // events for dma tx, thread per UART so can be from 0
+    static const eventmask_t EVT_TRANSMIT_DMA_START = EVENT_MASK(0);
+    static const eventmask_t EVT_TRANSMIT_DMA_COMPLETE = EVENT_MASK(1);
+    static const eventmask_t EVT_TRANSMIT_DATA_READY = EVENT_MASK(2);
+    static const eventmask_t EVT_TRANSMIT_UNBUFFERED = EVENT_MASK(3);
 
 private:
     const SerialDef &sdef;
-    bool rx_dma_enabled;
-    bool tx_dma_enabled;
-
-    /*
-      copy of rx_line, tx_line, rts_line and cts_line with alternative configs resolved
-     */
-    ioline_t atx_line;
-    ioline_t arx_line;
-    ioline_t arts_line;
-    ioline_t acts_line;
+    AP_HAL::OwnPtr<ChibiOS::SerialDevice> _device;
 
     // thread used for all UARTs
     static thread_t* volatile uart_rx_thread_ctx;
@@ -177,109 +184,23 @@ private:
     uint32_t lock_read_key;
 
     uint32_t _baudrate;
-#if HAL_USE_SERIAL == TRUE
-    SerialConfig sercfg;
-#endif
+
     const thread_t* _uart_owner_thd;
 
-    struct {
-        // thread waiting for data
-        thread_t *thread_ctx;
-        // number of bytes needed
-        uint16_t n;
-    } _wait;
-
-    // we use in-task ring buffers to reduce the system call cost
-    // of ::read() and ::write() in the main loop
-#ifndef HAL_UART_NODMA
-    volatile uint8_t rx_bounce_idx;
-    uint8_t *rx_bounce_buf[2];
-    uint8_t *tx_bounce_buf;
-    uint16_t contention_counter;
-#endif
     ByteBuffer _readbuf{0};
     ByteBuffer _writebuf{0};
     HAL_Semaphore _write_mutex;
-#ifndef HAL_UART_NODMA
-    const stm32_dma_stream_t* rxdma;
-    const stm32_dma_stream_t* txdma;
-#endif
+
     volatile bool _in_rx_timer;
-    volatile bool _in_tx_timer;
     bool _blocking_writes;
     volatile bool _rx_initialised;
     volatile bool _tx_initialised;
-    volatile bool _device_initialised;
-#ifndef HAL_UART_NODMA
-    Shared_DMA *dma_handle;
-#endif
+
     static const SerialDef _serial_tab[];
-
-    // timestamp for receiving data on the UART, avoiding a lock
-    uint64_t _receive_timestamp[2];
-    uint8_t _receive_timestamp_idx;
-
-    // handling of flow control
-    enum flow_control _flow_control = FLOW_CONTROL_DISABLE;
-    bool _rts_is_active;
-    uint32_t _last_write_completed_us;
-    uint32_t _first_write_started_us;
-    uint32_t _total_written;
-
-    // statistics
-    uint32_t _tx_stats_bytes;
-    uint32_t _rx_stats_bytes;
-    uint32_t _last_stats_ms;
-
-    // we remember config options from set_options to apply on sdStart()
-    uint32_t _cr1_options;
-    uint32_t _cr2_options;
-    uint32_t _cr3_options;
-    uint16_t _last_options;
-
-    // half duplex control. After writing we throw away bytes for 4 byte widths to
-    // prevent reading our own bytes back
-#if CH_CFG_USE_EVENTS == TRUE
-    bool half_duplex;
-    event_listener_t hd_listener;
-    eventflags_t hd_tx_active;
-    void half_duplex_setup_tx(void);
-#endif
 
     // set to true for unbuffered writes (low latency writes)
     bool unbuffered_writes;
 
-#if CH_CFG_USE_EVENTS == TRUE
-    // listener for parity error events
-    event_listener_t ev_listener;
-    bool parity_enabled;
-#endif
-
-#ifndef HAL_UART_NODMA
-    static void rx_irq_cb(void* sd);
-#endif
-    static void rxbuff_full_irq(void* self, uint32_t flags);
-    static void tx_complete(void* self, uint32_t flags);
-
-#ifndef HAL_UART_NODMA
-    void dma_tx_allocate(Shared_DMA *ctx);
-    void dma_tx_deallocate(Shared_DMA *ctx);
-    void dma_rx_enable(void);
-#endif
-    void update_rts_line(void);
-
-    void check_dma_tx_completion(void);
-#ifndef HAL_UART_NODMA
-    void write_pending_bytes_DMA(uint32_t n);
-#endif
-    void write_pending_bytes_NODMA(uint32_t n);
-    void write_pending_bytes(void);
-    void read_bytes_NODMA();
-
-    void receive_timestamp_update(void);
-
-    // set SERIALn_OPTIONS for pullup/pulldown
-    void set_pushpull(uint16_t options);
 
     static void thread_rx_init();
     void thread_init();

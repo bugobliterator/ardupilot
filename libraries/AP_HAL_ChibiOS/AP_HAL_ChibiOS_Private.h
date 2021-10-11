@@ -17,3 +17,6 @@
 #include "Flash.h"
 #include "DSP.h"
 #include "QSPIDevice.h"
+#include "SerialDevice.h"
+#include "USBSerialDevice.h"
+#include "UARTDevice.h"

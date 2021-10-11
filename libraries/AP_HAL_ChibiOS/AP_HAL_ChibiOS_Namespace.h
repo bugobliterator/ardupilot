@@ -28,6 +28,9 @@ namespace ChibiOS {
     class QSPIDevice;
     class QSPIDeviceManager;
     class Storage;
+    class SerialDevice;
+    class USBSerialDevice;
+    class UARTDevice;
     class UARTDriver;
     class Util;
     class Shared_DMA;
