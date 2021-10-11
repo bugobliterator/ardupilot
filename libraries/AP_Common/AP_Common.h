@@ -162,3 +162,23 @@ template <typename T> void BIT_CLEAR (T& value, uint8_t bitnumber) noexcept {
      static_assert(std::is_integral<T>::value, "Integral required.");
      ((value) &= ~((T)(1U) << (bitnumber)));
  }
+
+// This allows assigning value to var at declaration of the class
+// and autmatically set it to after value during destruction, which
+// happens when exiting methods.
+template<typename T>
+class AutoFlagResetter {
+public:
+    AutoFlagResetter(volatile T &_val, T _before, T _after) :
+    val(_val),
+    after(_after) {
+        val = _before;
+    }
+    //destructor
+    ~AutoFlagResetter() {
+        val = after;
+    }
+private:
+    volatile T &val;
+    T after;
+};
