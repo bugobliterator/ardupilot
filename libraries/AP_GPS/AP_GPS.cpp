@@ -835,11 +835,11 @@ void AP_GPS::update_instance(uint8_t instance)
             data_should_be_logged = true;
         }
     } else {
-        if (state[instance].uart_timestamp_ms != 0) {
+        if (state[instance].transport_timestamp_ms != 0) {
             // set the timestamp for this messages based on
             // set_uart_timestamp() in backend, if available
-            tnow = state[instance].uart_timestamp_ms;
-            state[instance].uart_timestamp_ms = 0;
+            tnow = state[instance].transport_timestamp_ms;
+            state[instance].transport_timestamp_ms = 0;
         }
         // delta will only be correct after parsing two messages
         timing[instance].delta_time_ms = tnow - timing[instance].last_message_time_ms;

@@ -142,4 +142,6 @@ private:
     bool handle_param_get_set_response_int(AP_UAVCAN* ap_uavcan, const uint8_t node_id, const char* name, int32_t &value);
     bool handle_param_get_set_response_float(AP_UAVCAN* ap_uavcan, const uint8_t node_id, const char* name, float &value);
     void handle_param_save_response(AP_UAVCAN* ap_uavcan, const uint8_t node_id, bool success);
+
+    JitterCorrection jitter;
 };

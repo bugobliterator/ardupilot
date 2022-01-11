@@ -94,12 +94,14 @@ AP_GPS_UAVCAN::~AP_GPS_UAVCAN()
     }
 #endif
 }
+static virtual_timer_t timeout_vt;
 
 void AP_GPS_UAVCAN::subscribe_msgs(AP_UAVCAN* ap_uavcan)
 {
     if (ap_uavcan == nullptr) {
         return;
     }
+    chVTObjectInit(&timeout_vt);
 
     auto* node = ap_uavcan->get_node();
 
@@ -466,6 +468,9 @@ void AP_GPS_UAVCAN::handle_fix_msg(const FixCb &cb)
         interim_state.hdop = interim_state.vdop = cb.msg->pdop * 100.0;
     }
 
+    // using getLastTransferTimestampUtc as that is the record of time when the first frame was received
+    // monotonic time is recorded as the time of last frame, quite silly but that's how it is in libuavcan
+    interim_state.transport_timestamp_ms = jitter.correct_offboard_timestamp_msec(cb.msg->timestamp.usec/1000, cb.msg->getUtcTimestamp().toMSec());
     interim_state.last_gps_time_ms = AP_HAL::millis();
 
     _new_data = true;
@@ -480,6 +485,14 @@ void AP_GPS_UAVCAN::handle_fix_msg(const FixCb &cb)
     }
 }
 
+static void handle_timeout(void *arg)
+{
+    (void)arg;
+    //we are called from ISR context
+    chSysLockFromISR();
+    hal.gpio->toggle(51);
+    chSysUnlockFromISR();
+}
 
 void AP_GPS_UAVCAN::handle_fix2_msg(const Fix2Cb &cb)
 {
@@ -578,7 +591,23 @@ void AP_GPS_UAVCAN::handle_fix2_msg(const Fix2Cb &cb)
         // hdop from pdop. Some GPS modules don't provide the Aux message
         interim_state.hdop = interim_state.vdop = cb.msg->pdop * 100.0;
     }
+    hal.gpio->pinMode(50, 1);
+    hal.gpio->pinMode(51, 1);
+    // using getLastTransferTimestampUtc as that is the record of time when the first frame was received
+    // monotonic time is recorded as the time of last frame, quite silly but that's how it is in libuavcan
+    interim_state.transport_timestamp_ms = jitter.correct_offboard_timestamp_msec(cb.msg->timestamp.usec/1000, cb.msg->getUtcTimestamp().toMSec());
+    static uint32_t next_toggle, last_toggle;
     
+    next_toggle = (cb.msg->timestamp.usec/1000) + (1000 - ((cb.msg->timestamp.usec/1000) % 1000));
+
+    next_toggle += (jitter.get_link_offset_usec()/1000);
+    if (next_toggle != last_toggle) {
+        chVTSet(&timeout_vt, chTimeMS2I(next_toggle - AP_HAL::millis()), handle_timeout, nullptr);
+        last_toggle = next_toggle;
+    }
+    hal.gpio->toggle(50);
+
+    // hal.console->printf("Got Here!\n");
     interim_state.last_gps_time_ms = AP_HAL::millis();
 
     _new_data = true;

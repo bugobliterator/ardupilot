@@ -44,6 +44,7 @@
 #include <ardupilot/equipment/trafficmonitor/TrafficReport.hpp>
 #include <uavcan/equipment/gnss/RTCMStream.hpp>
 #include <uavcan/protocol/debug/LogMessage.hpp>
+#include <uavcan/protocol/GlobalTimeSync.hpp>
 
 #include <AP_Arming/AP_Arming.h>
 #include <AP_Baro/AP_Baro_UAVCAN.h>
@@ -131,6 +132,7 @@ static uavcan::Publisher<ardupilot::indication::SafetyState>* safety_state[HAL_M
 static uavcan::Publisher<uavcan::equipment::safety::ArmingStatus>* arming_status[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 static uavcan::Publisher<uavcan::equipment::gnss::RTCMStream>* rtcm_stream[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 static uavcan::Publisher<ardupilot::indication::NotifyState>* notify_state[HAL_MAX_CAN_PROTOCOL_DRIVERS];
+// static uavcan::Publisher<uavcan::protocol::GlobalTimeSync>* global_time_sync[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 
 // Clients
 UC_CLIENT_CALL_REGISTRY_BINDER(ParamGetSetCb, uavcan::protocol::param::GetSet);
@@ -163,6 +165,10 @@ static uavcan::Subscriber<uavcan::equipment::esc::Status, ESCStatusCb> *esc_stat
 // handler DEBUG
 UC_REGISTRY_BINDER(DebugCb, uavcan::protocol::debug::LogMessage);
 static uavcan::Subscriber<uavcan::protocol::debug::LogMessage, DebugCb> *debug_listener[HAL_MAX_CAN_PROTOCOL_DRIVERS];
+
+// handler Global Time Sync
+// UC_REGISTRY_BINDER(GlobalTimeSyncCb, uavcan::protocol::GlobalTimeSync);
+// static uavcan::Subscriber<uavcan::protocol::GlobalTimeSync, GlobalTimeSyncCb> *global_time_sync_listener[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 
 
 AP_UAVCAN::AP_UAVCAN() :
@@ -327,6 +333,10 @@ void AP_UAVCAN::init(uint8_t driver_index, bool enable_filters)
     notify_state[driver_index]->setTxTimeout(uavcan::MonotonicDuration::fromMSec(20));
     notify_state[driver_index]->setPriority(uavcan::TransferPriority::OneHigherThanLowest);
 
+    // global_time_sync[driver_index] = new uavcan::Publisher<uavcan::protocol::GlobalTimeSync>(*_node);
+    // global_time_sync[driver_index]->setTxTimeout(uavcan::MonotonicDuration::fromMSec(20));
+    // global_time_sync[driver_index]->setPriority(uavcan::TransferPriority::OneHigherThanLowest);
+
     param_get_set_client[driver_index] = new uavcan::ServiceClient<uavcan::protocol::param::GetSet, ParamGetSetCb>(*_node, ParamGetSetCb(this, &AP_UAVCAN::handle_param_get_set_response));
 
     param_execute_opcode_client[driver_index] = new uavcan::ServiceClient<uavcan::protocol::param::ExecuteOpcode, ParamExecuteOpcodeCb>(*_node, ParamExecuteOpcodeCb(this, &AP_UAVCAN::handle_param_save_response));
@@ -355,7 +365,12 @@ void AP_UAVCAN::init(uint8_t driver_index, bool enable_filters)
     if (debug_listener[driver_index]) {
         debug_listener[driver_index]->start(DebugCb(this, &handle_debug));
     }
-    
+
+    // global_time_sync_listener[driver_index] = new uavcan::Subscriber<uavcan::protocol::GlobalTimeSync, GlobalTimeSyncCb>(*_node);
+    // if (global_time_sync_listener[driver_index]) {
+    //     // global_time_sync_listener[driver_index]->start(GlobalTimeSyncCb(this, &handle_global_time_sync));
+    // }
+
     _led_conf.devices_count = 0;
     if (enable_filters) {
         configureCanAcceptanceFilters(*_node);

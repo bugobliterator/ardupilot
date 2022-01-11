@@ -194,7 +194,7 @@ public:
         bool have_gps_yaw;                ///< does GPS give yaw? Set to true only once available.
         bool have_gps_yaw_accuracy;       ///< does the GPS give a heading accuracy estimate? Set to true only once available
         uint32_t last_gps_time_ms;          ///< the system time we got the last GPS timestamp, milliseconds
-        uint32_t uart_timestamp_ms;         ///< optional timestamp from set_uart_timestamp()
+        uint32_t transport_timestamp_ms;    ///< optional timestamp from set_uart_timestamp()
         uint32_t lagged_sample_count;       ///< number of samples with 50ms more lag than expected
 
         // all the following fields must only all be filled by RTK capable backend drivers
