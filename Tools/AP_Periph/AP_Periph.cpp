@@ -217,6 +217,8 @@ void AP_Periph_FW::init()
 #if AP_SCRIPTING_ENABLED
     scripting.init();
 #endif
+    chVTObjectInit(&timeout_vt);
+
     start_ms = AP_HAL::native_millis();
 }
 

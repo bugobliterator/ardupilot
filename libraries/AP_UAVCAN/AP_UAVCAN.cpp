@@ -44,7 +44,6 @@
 #include <ardupilot/equipment/trafficmonitor/TrafficReport.hpp>
 #include <uavcan/equipment/gnss/RTCMStream.hpp>
 #include <uavcan/protocol/debug/LogMessage.hpp>
-#include <uavcan/protocol/GlobalTimeSync.hpp>
 
 #include <AP_Arming/AP_Arming.h>
 #include <AP_Baro/AP_Baro_UAVCAN.h>
@@ -132,7 +131,6 @@ static uavcan::Publisher<ardupilot::indication::SafetyState>* safety_state[HAL_M
 static uavcan::Publisher<uavcan::equipment::safety::ArmingStatus>* arming_status[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 static uavcan::Publisher<uavcan::equipment::gnss::RTCMStream>* rtcm_stream[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 static uavcan::Publisher<ardupilot::indication::NotifyState>* notify_state[HAL_MAX_CAN_PROTOCOL_DRIVERS];
-// static uavcan::Publisher<uavcan::protocol::GlobalTimeSync>* global_time_sync[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 
 // Clients
 UC_CLIENT_CALL_REGISTRY_BINDER(ParamGetSetCb, uavcan::protocol::param::GetSet);
@@ -165,10 +163,6 @@ static uavcan::Subscriber<uavcan::equipment::esc::Status, ESCStatusCb> *esc_stat
 // handler DEBUG
 UC_REGISTRY_BINDER(DebugCb, uavcan::protocol::debug::LogMessage);
 static uavcan::Subscriber<uavcan::protocol::debug::LogMessage, DebugCb> *debug_listener[HAL_MAX_CAN_PROTOCOL_DRIVERS];
-
-// handler Global Time Sync
-// UC_REGISTRY_BINDER(GlobalTimeSyncCb, uavcan::protocol::GlobalTimeSync);
-// static uavcan::Subscriber<uavcan::protocol::GlobalTimeSync, GlobalTimeSyncCb> *global_time_sync_listener[HAL_MAX_CAN_PROTOCOL_DRIVERS];
 
 
 AP_UAVCAN::AP_UAVCAN() :
@@ -216,7 +210,7 @@ bool AP_UAVCAN::add_interface(AP_HAL::CANIface* can_iface) {
 }
 
 #pragma GCC diagnostic push
-#pragma GCC diagnostic error "-Wframe-larger-than=1700"
+#pragma GCC diagnostic error "-Wframe-larger-than=1800"
 void AP_UAVCAN::init(uint8_t driver_index, bool enable_filters)
 {
     _driver_index = driver_index;
@@ -333,10 +327,6 @@ void AP_UAVCAN::init(uint8_t driver_index, bool enable_filters)
     notify_state[driver_index]->setTxTimeout(uavcan::MonotonicDuration::fromMSec(20));
     notify_state[driver_index]->setPriority(uavcan::TransferPriority::OneHigherThanLowest);
 
-    // global_time_sync[driver_index] = new uavcan::Publisher<uavcan::protocol::GlobalTimeSync>(*_node);
-    // global_time_sync[driver_index]->setTxTimeout(uavcan::MonotonicDuration::fromMSec(20));
-    // global_time_sync[driver_index]->setPriority(uavcan::TransferPriority::OneHigherThanLowest);
-
     param_get_set_client[driver_index] = new uavcan::ServiceClient<uavcan::protocol::param::GetSet, ParamGetSetCb>(*_node, ParamGetSetCb(this, &AP_UAVCAN::handle_param_get_set_response));
 
     param_execute_opcode_client[driver_index] = new uavcan::ServiceClient<uavcan::protocol::param::ExecuteOpcode, ParamExecuteOpcodeCb>(*_node, ParamExecuteOpcodeCb(this, &AP_UAVCAN::handle_param_save_response));
@@ -366,10 +356,14 @@ void AP_UAVCAN::init(uint8_t driver_index, bool enable_filters)
         debug_listener[driver_index]->start(DebugCb(this, &handle_debug));
     }
 
-    // global_time_sync_listener[driver_index] = new uavcan::Subscriber<uavcan::protocol::GlobalTimeSync, GlobalTimeSyncCb>(*_node);
-    // if (global_time_sync_listener[driver_index]) {
-    //     // global_time_sync_listener[driver_index]->start(GlobalTimeSyncCb(this, &handle_global_time_sync));
-    // }
+    ts_master = new uavcan::GlobalTimeSyncMaster(*_node);
+    if (ts_master == nullptr) {
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "UAVCAN: Failed to create GlobalTimeSyncMaster");
+    }
+
+    if (ts_master->init() < 0) {
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "UAVCAN: Failed to initialize GlobalTimeSyncMaster");
+    }
 
     _led_conf.devices_count = 0;
     if (enable_filters) {
@@ -447,10 +441,23 @@ void AP_UAVCAN::loop(void)
         notify_state_send();
         send_parameter_request();
         send_parameter_save_request();
+        time_sync_publish();
         AP::uavcan_dna_server().verify_nodes(this);
     }
 }
 
+void AP_UAVCAN::time_sync_publish()
+{
+    if (ts_master == nullptr) {
+        return;
+    }
+
+    // Publish TimeSync message every 1s
+    if (ts_master->isInitialized() && (AP_HAL::millis() - _last_timesync_pub_ms > 1000)) {
+        _last_timesync_pub_ms = AP_HAL::millis();
+        ts_master->publish();
+    }
+}
 
 ///// SRV output /////
 

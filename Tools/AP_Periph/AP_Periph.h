@@ -254,6 +254,7 @@ public:
     void show_stack_free();
 
     static bool no_iface_finished_dna;
+    virtual_timer_t timeout_vt;
 };
 
 namespace AP

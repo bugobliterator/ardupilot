@@ -1765,6 +1765,16 @@ void AP_Periph_FW::can_battery_update(void)
 #endif
 }
 
+
+static void handle_timeout(void *arg)
+{
+    (void)arg;
+    //we are called from ISR context
+    chSysLockFromISR();
+    hal.gpio->toggle(50);
+    chSysUnlockFromISR();
+}
+
 /*
   update CAN GPS
  */
@@ -1790,6 +1800,12 @@ void AP_Periph_FW::can_gps_update(void)
         const Location &loc = gps.location();
         const Vector3f &vel = gps.velocity();
 
+        static uint32_t last_toggle;
+        uint64_t next_toggle = AP_HAL::millis() + (1000 - ((AP_HAL::millis()) % 1000));
+        if (next_toggle != last_toggle) {
+            chVTSet(&periph.timeout_vt, chTimeMS2I(next_toggle - AP_HAL::millis()), handle_timeout, nullptr);
+            last_toggle = next_toggle;
+        }
         pkt.timestamp.usec = gps.last_message_time_ms() * 1000ULL;
         pkt.gnss_timestamp.usec = gps.time_epoch_usec();
         if (pkt.gnss_timestamp.usec == 0) {

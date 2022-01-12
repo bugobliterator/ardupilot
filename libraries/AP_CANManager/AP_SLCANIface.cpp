@@ -625,7 +625,10 @@ int16_t SLCAN::CANIface::send(const AP_HAL::CANFrame& frame, uint64_t tx_deadlin
     if (frame.isErrorFrame() || frame.dlc > 8) {
         return ret;
     }
-    reportFrame(frame, AP_HAL::native_micros64());
+    if (!(flags & AP_HAL::CANIface::Loopback)) {
+        // we read loopback frames from the receive, so don't send them on slcan just yet
+        reportFrame(frame, AP_HAL::native_micros64());
+    }
     return ret;
 }
 

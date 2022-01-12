@@ -31,6 +31,7 @@
 #include <uavcan/protocol/param/GetSet.hpp>
 #include <uavcan/protocol/param/ExecuteOpcode.hpp>
 #include <uavcan/helpers/heap_based_pool_allocator.hpp>
+#include <uavcan/protocol/global_time_sync_master.hpp>
 
 
 #ifndef UAVCAN_NODE_POOL_SIZE
@@ -273,6 +274,7 @@ private:
     AP_Int16 _notify_state_hz;
 
     uavcan::Node<0> *_node;
+    uavcan::GlobalTimeSyncMaster *ts_master;
 
     uint8_t _driver_index;
 
@@ -331,6 +333,9 @@ private:
     // notify vehicle state
     uint32_t _last_notify_state_ms;
 
+    // last time sync publish
+    uint32_t _last_timesync_pub_ms;
+
     // incoming button handling
     static void handle_button(AP_UAVCAN* ap_uavcan, uint8_t node_id, const ButtonCb &cb);
     static void handle_traffic_report(AP_UAVCAN* ap_uavcan, uint8_t node_id, const TrafficReportCb &cb);
@@ -340,6 +345,7 @@ private:
     static void handle_debug(AP_UAVCAN* ap_uavcan, uint8_t node_id, const DebugCb &cb);
     static void handle_param_get_set_response(AP_UAVCAN* ap_uavcan, uint8_t node_id, const ParamGetSetCb &cb);
     static void handle_param_save_response(AP_UAVCAN* ap_uavcan, uint8_t node_id, const ParamExecuteOpcodeCb &cb);
+    void time_sync_publish();
 };
 
 #endif // #if HAL_ENABLE_LIBUAVCAN_DRIVERS
