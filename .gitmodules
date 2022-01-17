@@ -34,3 +34,6 @@
 [submodule "modules/CrashDebug"]
 	path = modules/CrashDebug
 	url = https://github.com/adamgreen/CrashDebug
+[submodule "modules/jwt-cpp"]
+	path = modules/jwt-cpp
+	url = https://github.com/Thalhammer/jwt-cpp
