@@ -358,11 +358,27 @@ class Board:
                 cfg.srcnode.find_dir('modules/uavcan/libuavcan/include').abspath()
             ]
 
+        env.INCLUDES += [
+            cfg.srcnode.find_dir('modules/jwt-cpp/include/').abspath(), # for accessing jwt-cpp files
+            # cfg.srcnode.find_dir('/usr/lib/x86_64-linux-gnu/'),
+            # cfg.srcnode.find_dir('/lib/x86_64-linux-gnu/'),
+            # cfg.srcnode.find_dir('/usr/include/openssl/'),
+            # cfg.srcnode.find_dir('/usr/lib/ssl/')
+        ]
+        env.CXXFLAGS += [
+            '-fexceptions',
+        ]
+        # env.LINKFLAGS += [
+        #     '-L/usr/lib/ssl/',
+        #     '-lssl',
+        #     '-lcrypto'
+        # ]
+
         if cfg.options.build_dates:
             env.build_dates = True
 
         # We always want to use PRI format macros
-        cfg.define('__STDC_FORMAT_MACROS', 1)
+        cfg.define('__STDC_FORMAT_MACROS_', 1)
 
         if cfg.options.disable_ekf2:
             env.CXXFLAGS += ['-DHAL_NAVEKF2_AVAILABLE=0']

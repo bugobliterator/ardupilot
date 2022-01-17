@@ -477,7 +477,9 @@ def configure(cfg):
         cfg.end_msg('disabled', color='YELLOW')
 
     cfg.env.append_value('GIT_SUBMODULES', 'mavlink')
-
+    # cfg.env.append_value("LINKFLAGS", ["-L/usr/lib/x86_64-linux-gnu/", "-l:libcrypto.a"])
+    # cfg.env.append_value("LINKFLAGS", ["-L/usr/lib/x86_64-linux-gnu/", "-l:libssl.a"])
+    
     cfg.env.prepend_value('INCLUDES', [
         cfg.srcnode.abspath() + '/libraries/',
     ])

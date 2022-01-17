@@ -1,6 +1,12 @@
 #pragma once
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC disgnostic pop
+
 #include <AP_Arming/AP_Arming.h>
+#include <jwt-cpp/jwt.h>
 
 class AP_Arming_Copter : public AP_Arming
 {
