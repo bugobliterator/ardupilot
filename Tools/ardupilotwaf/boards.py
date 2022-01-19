@@ -368,11 +368,6 @@ class Board:
         env.CXXFLAGS += [
             '-fexceptions',
         ]
-        # env.LINKFLAGS += [
-        #     '-L/usr/lib/ssl/',
-        #     '-lssl',
-        #     '-lcrypto'
-        # ]
 
         if cfg.options.build_dates:
             env.build_dates = True
@@ -564,6 +559,8 @@ class sitl(Board):
 
         env.LIB += [
             'm',
+            'ssl',
+            'crypto',
         ]
 
         cfg.check_librt(env)
