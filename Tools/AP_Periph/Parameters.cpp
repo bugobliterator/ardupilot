@@ -376,8 +376,31 @@ const AP_Param::Info AP_Periph_FW::var_info[] = {
 #endif
 
 #if HAL_CANFD_SUPPORTED
-    // can node FD Out mode
+    // @Param: CAN_FDMODE
+    // @DisplayName: Enable CANFD mode
+    // @Description: Enabling this option sets the CAN bus to be in CANFD mode with BRS.
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    // @RebootRequired: True
     GSCALAR(can_fdmode,     "CAN_FDMODE", 0),
+
+    // @Param: CAN_FDMODE
+    // @DisplayName: Set up bitrate for data section on CAN1
+    // @Description: This sets the bitrate for the data section of CAN1.
+    // @Values: 2:2M,5:5M,8:8M
+    // @User: Advanced
+    // @RebootRequired: True
+    GSCALAR(can_fdmode,     "CAN_FDBAUDRATE", 8),
+
+#if HAL_NUM_CAN_IFACES >= 2
+    // @Param: CAN_FDMODE
+    // @DisplayName: Set up bitrate for data section on CAN2
+    // @Description: This sets the bitrate for the data section of CAN2.
+    // @Values: 2:2M,5:5M,8:8M
+    // @User: Advanced
+    // @RebootRequired: True
+    GSCALAR(can_fdmode,     "CAN2_FDBAUDRATE", 8),
+#endif
 #endif
     AP_VAREND
 };
