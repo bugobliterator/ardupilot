@@ -387,19 +387,19 @@ const AP_Param::Info AP_Periph_FW::var_info[] = {
     // @Param: CAN_FDMODE
     // @DisplayName: Set up bitrate for data section on CAN1
     // @Description: This sets the bitrate for the data section of CAN1.
-    // @Values: 2:2M,5:5M,8:8M
+    // @Values: 2:2M, 4:4M, 5:5M, 8:8M
     // @User: Advanced
     // @RebootRequired: True
-    GSCALAR(can_fdmode,     "CAN_FDBAUDRATE", 8),
+    GARRAY(can_fdbaudrate,    0, "CAN_FDBAUDRATE", HAL_CANFD_SUPPORTED),
 
 #if HAL_NUM_CAN_IFACES >= 2
     // @Param: CAN_FDMODE
     // @DisplayName: Set up bitrate for data section on CAN2
     // @Description: This sets the bitrate for the data section of CAN2.
-    // @Values: 2:2M,5:5M,8:8M
+    // @Values: 2:2M, 4:4M, 5:5M, 8:8M
     // @User: Advanced
     // @RebootRequired: True
-    GSCALAR(can_fdmode,     "CAN2_FDBAUDRATE", 8),
+    GARRAY(can_fdbaudrate,    1, "CAN2_FDBAUDRATE", HAL_CANFD_SUPPORTED),
 #endif
 #endif
     AP_VAREND
