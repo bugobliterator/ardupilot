@@ -3531,6 +3531,14 @@ void GCS_MAVLINK::handle_heartbeat(const mavlink_message_t &msg) const
     if (msg.sysid == sysid_my_gcs()) {
         gcs().sysid_myggcs_seen(AP_HAL::millis());
     }
+
+    // forward it to mount module as well, used to auto-detect gimbals
+#if HAL_MOUNT_ENABLED
+    AP_Mount *mount = AP::mount();
+    if (mount != nullptr) {
+        mount->handle_message(chan, msg);
+    }
+#endif
 }
 
 /*
@@ -3631,6 +3639,10 @@ void GCS_MAVLINK::handle_common_message(const mavlink_message_t &msg)
         break;
 
     case MAVLINK_MSG_ID_GIMBAL_REPORT:
+        handle_mount_message(msg);
+        break;
+
+    case MAVLINK_MSG_ID_GIMBAL_DEVICE_INFORMATION:
         handle_mount_message(msg);
         break;
 

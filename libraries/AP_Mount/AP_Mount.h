@@ -46,7 +46,8 @@ class AP_Mount_SoloGimbal;
 class AP_Mount_Alexmos;
 class AP_Mount_SToRM32;
 class AP_Mount_SToRM32_serial;
-
+class AP_Mount_Gremsy;
+class GCS_MAVLINK;
 /*
   This is a workaround to allow the MAVLink backend access to the
   SmallEKF. It would be nice to find a neater solution to this
@@ -61,6 +62,7 @@ class AP_Mount
     friend class AP_Mount_Alexmos;
     friend class AP_Mount_SToRM32;
     friend class AP_Mount_SToRM32_serial;
+    friend class AP_Mount_Gremsy;
 
 public:
     AP_Mount();
@@ -81,7 +83,8 @@ public:
         Mount_Type_SoloGimbal = 2,      /// Solo's gimbal
         Mount_Type_Alexmos = 3,         /// Alexmos mount
         Mount_Type_SToRM32 = 4,         /// SToRM32 mount using MAVLink protocol
-        Mount_Type_SToRM32_serial = 5   /// SToRM32 mount using custom serial protocol
+        Mount_Type_SToRM32_serial = 5,  /// SToRM32 mount using custom serial protocol
+        Mount_Type_Gremsy = 6     /// MAVLink gimbal using v2 Gimbal protocol
     };
 
     // init - detect and initialise all mounts
@@ -188,7 +191,8 @@ protected:
         uint8_t _target_sysid;           // sysid to track
         Location _target_sysid_location; // sysid target location
         bool _target_sysid_location_set;
-
+        AP_Int16 _mgr_sysid;            // system id of the mount manager
+        AP_Int16 _mgr_compid;           // component id of the mount manager
     } state[AP_MOUNT_MAX_INSTANCES];
 
 private:
@@ -203,6 +207,7 @@ private:
     MAV_RESULT handle_command_do_mount_configure(const mavlink_command_long_t &packet);
     MAV_RESULT handle_command_do_mount_control(const mavlink_command_long_t &packet);
     void handle_global_position_int(const mavlink_message_t &msg);
+    void detect_mount();
 };
 
 namespace AP {

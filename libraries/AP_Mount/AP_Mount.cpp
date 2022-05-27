@@ -10,6 +10,7 @@
 #include "AP_Mount_Alexmos.h"
 #include "AP_Mount_SToRM32.h"
 #include "AP_Mount_SToRM32_serial.h"
+#include "AP_Mount_Gremsy.h"
 #include <AP_Math/location.h>
 
 const AP_Param::GroupInfo AP_Mount::var_info[] = {
@@ -17,7 +18,7 @@ const AP_Param::GroupInfo AP_Mount::var_info[] = {
     // @Param: _TYPE
     // @DisplayName: Mount Type
     // @Description: Mount Type (None, Servo or MAVLink)
-    // @Values: 0:None, 1:Servo, 2:3DR Solo, 3:Alexmos Serial, 4:SToRM32 MAVLink, 5:SToRM32 Serial
+    // @Values: 0:None, 1:Servo, 2:3DR Solo, 3:Alexmos Serial, 4:SToRM32 MAVLink, 5:SToRM32 Serial, 6:Gremsy
     // @RebootRequired: True
     // @User: Standard
     AP_GROUPINFO_FLAGS("_TYPE", 19, AP_Mount, state[0]._type, 0, AP_PARAM_FLAG_ENABLE),
@@ -392,7 +393,7 @@ const AP_Param::GroupInfo AP_Mount::var_info[] = {
     // @Param: 2_TYPE
     // @DisplayName: Mount2 Type
     // @Description: Mount Type (None, Servo or MAVLink)
-    // @Values: 0:None, 1:Servo, 2:3DR Solo, 3:Alexmos Serial, 4:SToRM32 MAVLink, 5:SToRM32 Serial
+    // @Values: 0:None, 1:Servo, 2:3DR Solo, 3:Alexmos Serial, 4:SToRM32 MAVLink, 5:SToRM32 Serial, 6:Gremsy
     // @User: Standard
     AP_GROUPINFO("2_TYPE",           42, AP_Mount, state[1]._type, 0),
 #endif // AP_MOUNT_MAX_INSTANCES > 1
@@ -488,6 +489,9 @@ void AP_Mount::init()
 // update - give mount opportunity to update servos.  should be called at 10hz or higher
 void AP_Mount::update()
 {
+    // try detecting a mount
+    detect_mount();
+
     // update each instance
     for (uint8_t instance=0; instance<AP_MOUNT_MAX_INSTANCES; instance++) {
         if (_backends[instance] != nullptr) {
@@ -503,6 +507,17 @@ void AP_Mount::update_fast()
     for (uint8_t instance=0; instance<AP_MOUNT_MAX_INSTANCES; instance++) {
         if (_backends[instance] != nullptr) {
             _backends[instance]->update_fast();
+        }
+    }
+}
+
+// Detect mounts
+void AP_Mount::detect_mount()
+{
+    // check for a mount
+    for (uint8_t instance=0; instance<AP_MOUNT_MAX_INSTANCES; instance++) {
+        if (_backends[instance] == nullptr && (state[instance]._type == Mount_Type_Gremsy)) {
+            _backends[instance] = AP_Mount_Gremsy::detect(*this, state[instance], instance);
         }
     }
 }
@@ -722,6 +737,9 @@ void AP_Mount::handle_message(mavlink_channel_t chan, const mavlink_message_t &m
 #endif
         break;
     }
+
+    // call backend specific handle_messages
+    AP_Mount_Gremsy::handle_message(chan, msg);
 }
 
 // handle PARAM_VALUE
