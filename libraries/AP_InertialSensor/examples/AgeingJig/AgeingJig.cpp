@@ -146,13 +146,16 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                     {
                         case AP_Compass_Backend::DEVTYPE_AK8963:    return 1;
                     }
+                    break;
                 case 4:
                     switch (devtype)
                     {
                         case AP_Compass_Backend::DEVTYPE_LSM303D:   return 0;
                         case AP_Compass_Backend::DEVTYPE_AK09916:   return 0;
                     }
+                    break;
             }
+            break;
         case T_BAR:
             switch (bus)
             {
@@ -161,12 +164,15 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                     {
                         case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return 1;
                     }
+                    break;
                 case 4:
                     switch (devtype)
                     {
                         case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return 0;
                     }
+                    break;
             }
+            break;
         case T_INS:
             return 16;
         case T_GYR:
@@ -178,6 +184,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_GYR_MPU9250:    return 2;
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:   return 2;   //ICM20649
                     }
+                    break;
                 case 4:
                     switch (devtype)
                     {
@@ -186,7 +193,9 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return 1;   //ICM20948
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return 0;   //ICM20602
                     }
+                    break;
             }
+            break;
         case T_ACC:
             switch (bus)
             {
@@ -196,6 +205,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_ACC_MPU9250:   return 2;   //MPU9250
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:  return 2;   //ICM20649
                     }
+                    break;
                 case 4:
                     switch (devtype)
                     {
@@ -204,7 +214,9 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:  return 1;   //ICM20948
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:  return 0;   //ICM20602
                     }
+                    break;
             }
+            break;
     }
     return 16;
 }

@@ -354,6 +354,13 @@ public:
     /* set number of retries on transfers */
     virtual void set_retries(uint8_t retries) {};
 
+    // checked registers
+    struct checkreg {
+        uint8_t bank;
+        uint8_t regnum;
+        uint8_t value;
+    };
+
 protected:
     uint8_t _read_flag = 0;
 
@@ -390,12 +397,6 @@ protected:
 private:
     BankSelectCb _bank_select;
 
-    // checked registers
-    struct checkreg {
-        uint8_t bank;
-        uint8_t regnum;
-        uint8_t value;
-    };
     struct {
         uint8_t n_allocated;
         uint8_t n_set;
