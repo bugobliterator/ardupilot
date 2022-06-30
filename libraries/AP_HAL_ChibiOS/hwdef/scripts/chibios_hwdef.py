@@ -890,6 +890,11 @@ def write_mcu_config(f):
         f.write('#define HAL_USE_SERIAL_USB TRUE\n')
     if 'OTG2' in bytype:
         f.write('#define STM32_USB_USE_OTG2                  TRUE\n')
+    if 'OTG_HS' in bytype:
+        f.write('#define STM32_USB_USE_OTG2                  TRUE\n')
+        f.write('#define HAL_USE_USB TRUE\n')
+        f.write('#define HAL_USE_SERIAL_USB TRUE\n')
+        f.write('#define BOARD_OTG2_USES_ULPI\n')
 
     defines = get_mcu_config('DEFINES', False)
     if defines is not None:
@@ -2633,7 +2638,7 @@ def romfs_add_dir(subdirs):
 def valid_type(ptype, label):
     '''check type of a pin line is valid'''
     patterns = [ 'INPUT', 'OUTPUT', 'TIM\d+', 'USART\d+', 'UART\d+', 'ADC\d+',
-                'SPI\d+', 'OTG\d+', 'SWD', 'CAN\d?', 'I2C\d+', 'CS',
+                'SPI\d+', 'OTG\d+', 'OTG_HS', 'SWD', 'CAN\d?', 'I2C\d+', 'CS',
                 'SDMMC\d+', 'SDIO', 'QUADSPI\d' ]
     matches = False
     for p in patterns:
