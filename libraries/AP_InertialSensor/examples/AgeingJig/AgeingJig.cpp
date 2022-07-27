@@ -96,43 +96,43 @@ void log_sensor_health(uint16_t sensor_health)
                                             (sensor_health) & 1);
 }
 
-char* get_sensor_name(enum stype type, uint8_t devtype) 
-{
-   switch (type) 
-   {
-        case T_COM : 
-            switch (devtype) 
-            {
-                case AP_Compass_Backend::DEVTYPE_LSM303D:   return (char*)"LSM303D";
-                case AP_Compass_Backend::DEVTYPE_AK8963:    return (char*)"AK8963";
-                case AP_Compass_Backend::DEVTYPE_AK09916:   return (char*)"AK09916";
-                case AP_Compass_Backend::DEVTYPE_ICM20948:  return (char*)"ICM20948";
-                default:    return (char*)"none";
-            }
-        case T_BAR:
-            switch (devtype) 
-            {
-                case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return (char*)"MS5611";
-                default:    return (char*)"none";
-            }
-        case T_INS:
-            switch (devtype) 
-            {
-                case AP_InertialSensor_Backend::DEVTYPE_ACC_LSM303D:    return (char*)"LSM303D";
-                case AP_InertialSensor_Backend::DEVTYPE_ACC_MPU9250:    return (char*)"MPU9250";
-                case AP_InertialSensor_Backend::DEVTYPE_GYR_L3GD20:     return (char*)"L3GD20";
-                case AP_InertialSensor_Backend::DEVTYPE_GYR_MPU9250:    return (char*)"MPU9250";
-                case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return (char*)"ICM20948";
-                case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:   return (char*)"ICM20649";
-                case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return (char*)"ICM20602";
-                case AP_InertialSensor_Backend::DEVTYPE_INS_ADIS1647X:  return (char*)"ADIS1647X";
-                default:    return (char*)"none";
-            }
-        default:
-            return (char*)"none";
+// char* get_sensor_name(enum stype type, uint8_t devtype) 
+// {
+//    switch (type) 
+//    {
+//         case T_COM : 
+//             switch (devtype) 
+//             {
+//                 case AP_Compass_Backend::DEVTYPE_LSM303D:   return (char*)"LSM303D";
+//                 case AP_Compass_Backend::DEVTYPE_AK8963:    return (char*)"AK8963";
+//                 case AP_Compass_Backend::DEVTYPE_AK09916:   return (char*)"AK09916";
+//                 case AP_Compass_Backend::DEVTYPE_ICM20948:  return (char*)"ICM20948";
+//                 default:    return (char*)"none";
+//             }
+//         case T_BAR:
+//             switch (devtype) 
+//             {
+//                 case AP_Baro_Backend::DEVTYPE_BARO_MS5611:  return (char*)"MS5611";
+//                 default:    return (char*)"none";
+//             }
+//         case T_INS:
+//             switch (devtype) 
+//             {
+//                 case AP_InertialSensor_Backend::DEVTYPE_ACC_LSM303D:    return (char*)"LSM303D";
+//                 case AP_InertialSensor_Backend::DEVTYPE_ACC_MPU9250:    return (char*)"MPU9250";
+//                 case AP_InertialSensor_Backend::DEVTYPE_GYR_L3GD20:     return (char*)"L3GD20";
+//                 case AP_InertialSensor_Backend::DEVTYPE_GYR_MPU9250:    return (char*)"MPU9250";
+//                 case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return (char*)"ICM20948";
+//                 case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20649:   return (char*)"ICM20649";
+//                 case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return (char*)"ICM20602";
+//                 case AP_InertialSensor_Backend::DEVTYPE_INS_ADIS1647X:  return (char*)"ADIS1647X";
+//                 default:    return (char*)"none";
+//             }
+//         default:
+//             return (char*)"none";
         
-   }
-}
+//    }
+// }
 
 uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
 {
@@ -192,6 +192,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_GYR_L3GD20:     return 1;   //L3GD20
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return 1;   //ICM20948
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return 0;   //ICM20602
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM42688:   return 0;   //ICM42688
                     }
                     break;
             }
@@ -213,6 +214,8 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_ACC_LSM303D:   return 1;   //LSM303D
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:  return 1;   //ICM20948
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:  return 0;   //ICM20602
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM42688: hal.console->printf("ICM42688\n"); return 0;   //ICM42688
+
                     }
                     break;
             }

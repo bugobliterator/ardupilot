@@ -35,6 +35,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include "AP_InertialSensor_Invensensev3.h"
 #include <utility>
+#include <GCS_MAVLink/GCS.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -177,14 +178,14 @@ void AP_InertialSensor_Invensensev3::start()
         fifo_config1 = 0x07;
         break;
     }
+    hal.scheduler->delay(1000);
+    hal.console->printf("Probing ............................\n");
 
     // always use FIFO
     fifo_reset();
 
-    if (!_imu.register_gyro(INV3_ODR, dev->get_bus_id_devtype(devtype)) ||
-        !_imu.register_accel(INV3_ODR, dev->get_bus_id_devtype(devtype))) {
-        return;
-    }
+    gyro_instance = _imu.register_gyro(INV3_ODR, dev->get_bus_id_devtype(devtype));
+    accel_instance = _imu.register_accel(INV3_ODR, dev->get_bus_id_devtype(devtype));
 
     // setup on-sensor filtering and scaling
     set_filter_and_scaling();
