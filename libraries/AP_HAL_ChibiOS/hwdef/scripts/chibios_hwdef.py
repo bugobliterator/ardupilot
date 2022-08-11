@@ -4,6 +4,8 @@ setup board.h for chibios
 '''
 
 import argparse
+from itertools import product
+from math import prod
 import sys
 import fnmatch
 import os
@@ -1310,7 +1312,12 @@ def write_USB_config(f):
     default_product = "%BOARD%"
     if args.bootloader:
         default_product += "-BL"
-    f.write('#define HAL_USB_STRING_PRODUCT %s\n' % get_config("USB_STRING_PRODUCT", default="\"%s\""%default_product))
+    product_string = get_config("USB_STRING_PRODUCT", default="\"%s\""%default_product)
+    if args.bootloader and args.secure_bl:
+        product_string = product_string.replace("-BL", "-Secure-BL-v10")
+        print(product_string)
+    f.write('#define HAL_USB_STRING_PRODUCT %s\n' % product_string)
+    
     f.write('#define HAL_USB_STRING_SERIAL %s\n' % get_config("USB_STRING_SERIAL", default="\"%SERIAL%\""))
 
     f.write('\n\n')
