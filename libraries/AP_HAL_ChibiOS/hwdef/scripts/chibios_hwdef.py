@@ -20,6 +20,8 @@ parser.add_argument(
 parser.add_argument(
     '--bootloader', action='store_true', default=False, help='configure for bootloader')
 parser.add_argument(
+    '--secure-bl', action='store_true', default=False, help='configure for secure BL')
+parser.add_argument(
     'hwdef', type=str, nargs='+', default=None, help='hardware definition file')
 parser.add_argument(
     '--params', type=str, default=None, help='user default params path')
@@ -1134,7 +1136,7 @@ def write_mcu_config(f):
 #define DISABLE_SERIAL_ESC_COMM TRUE
 #define CH_CFG_USE_DYNAMIC FALSE
 ''')
-        if not env_vars['EXT_FLASH_SIZE_MB']:
+        if not env_vars['EXT_FLASH_SIZE_MB'] and not args.secure_bl:
             f.write('''
 #define CH_CFG_USE_MEMCORE FALSE
 #define CH_CFG_USE_SEMAPHORES FALSE
@@ -2303,6 +2305,11 @@ def write_hwdef_header(outfilename):
 #define MHZ (1000U*1000U)
 #define KHZ (1000U)
 
+''')
+
+    if args.secure_bl:
+        f.write('''
+#define SECURE 1
 ''')
 
     dma_noshare.extend(get_config('DMA_NOSHARE', default='', aslist=True))
