@@ -834,9 +834,13 @@ bool AP_IOMCU::check_crc(void)
     // flash size minus 4k bootloader
 	const uint32_t flash_size = 0x10000 - 0x1000;
 
-    fw = AP_ROMFS::find_decompress(fw_name, fw_size);
+    if (!AP_BoardConfig::io_dshot()) {
+        fw = AP_ROMFS::find_decompress(fw_name, fw_size);
+    } else {
+        fw = AP_ROMFS::find_decompress(dshot_fw_name, fw_size);
+    }
     if (!fw) {
-        DEV_PRINTF("failed to find %s\n", fw_name);
+        DEV_PRINTF("failed to find %s\n", AP_BoardConfig::io_dshot()?dshot_fw_name:fw_name);
         return false;
     }
     uint32_t crc = crc32_small(0, fw, fw_size);
