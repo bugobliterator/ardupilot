@@ -68,3 +68,10 @@ define HAL_CAN_DRIVER_DEFAULT 1
 define HAL_PERIPH_LISTEN_FOR_SERIAL_UART_REBOOT_CMD_PORT 0
  
 
+
+###########
+# SLCAN
+
+define AP_UAVCAN_SLCAN_ENABLED 1
+
+##########
