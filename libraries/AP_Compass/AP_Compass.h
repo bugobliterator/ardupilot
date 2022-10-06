@@ -188,7 +188,12 @@ public:
     void cancel_calibration_all();
 
     bool compass_cal_requires_reboot() const { return _cal_requires_reboot; }
+
+#if COMPASS_CAL_ENABLED
     bool is_calibrating() const;
+#else
+    bool is_calibrating() const { return false; }
+#endif
 
     // indicate which bit in LOG_BITMASK indicates we should log compass readings
     void set_log_bit(uint32_t log_bit) { _log_bit = log_bit; }
