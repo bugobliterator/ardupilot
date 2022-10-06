@@ -1094,7 +1094,7 @@ bool AP_Arming::proximity_checks(bool report) const
 
 bool AP_Arming::can_checks(bool report)
 {
-#if HAL_MAX_CAN_PROTOCOL_DRIVERS
+#if HAL_MAX_CAN_PROTOCOL_DRIVERS && HAL_CANMANAGER_ENABLED
     if (check_enabled(ARMING_CHECK_SYSTEM)) {
         char fail_msg[50] = {};
         (void)fail_msg; // might be left unused
