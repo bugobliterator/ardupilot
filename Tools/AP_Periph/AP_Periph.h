@@ -18,6 +18,7 @@
 #include <AP_CheckFirmware/AP_CheckFirmware.h>
 #include "hwing_esc.h"
 #include <AP_CANManager/AP_CANManager.h>
+#include <AP_CANManager/AP_SLCANIface.h>
 #include <AP_Scripting/AP_Scripting.h>
 #include <AP_HAL/CANIface.h>
 #include <AP_Stats/AP_Stats.h>
@@ -106,6 +107,10 @@ public:
     static ChibiOS::CANIface* can_iface_periph[HAL_NUM_CAN_IFACES];
 #elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
     static HALSITL::CANIface* can_iface_periph[HAL_NUM_CAN_IFACES];
+#endif
+
+#if AP_UAVCAN_SLCAN_ENABLED
+    static SLCAN::CANIface slcan_interface;
 #endif
 
     AP_SerialManager serial_manager;

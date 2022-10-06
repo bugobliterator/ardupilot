@@ -60,6 +60,7 @@ public:
         k_param_efi_port,
         k_param_efi_baudrate,
         k_param_esc_telem_rate,
+        k_param_slcan_interface,
     };
 
     AP_Int16 format_version;

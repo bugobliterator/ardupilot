@@ -164,6 +164,12 @@ const AP_Param::Info AP_Periph_FW::var_info[] = {
 #endif
 #endif
 
+#if AP_UAVCAN_SLCAN_ENABLED
+    // @Group: CAN_SLCAN_
+    // @Path: ../libraries/AP_CANManager/AP_SLCANIface.cpp
+    GOBJECT(slcan_interface, "CAN_SLCAN_", SLCAN::CANIface),
+#endif
+
 #if !defined(HAL_NO_FLASH_SUPPORT) && !defined(HAL_NO_ROMFS_SUPPORT)
     // @Param: FLASH_BOOTLOADER
     // @DisplayName: Trigger bootloader update

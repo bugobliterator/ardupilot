@@ -159,6 +159,9 @@ ChibiOS::CANIface* AP_Periph_FW::can_iface_periph[HAL_NUM_CAN_IFACES];
 HALSITL::CANIface* AP_Periph_FW::can_iface_periph[HAL_NUM_CAN_IFACES];
 #endif
 
+#if AP_UAVCAN_SLCAN_ENABLED
+SLCAN::CANIface AP_Periph_FW::slcan_interface;
+#endif
 
 /*
  * Node status variables
@@ -1471,6 +1474,11 @@ static bool can_do_dna()
 
 void AP_Periph_FW::can_start()
 {
+#if AP_UAVCAN_SLCAN_ENABLED
+    //Reset all SLCAN related params that needs resetting at boot
+    slcan_interface.reset_params();
+#endif
+
     node_status.health = UAVCAN_PROTOCOL_NODESTATUS_HEALTH_OK;
     node_status.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_INITIALIZATION;
     node_status.uptime_sec = AP_HAL::native_millis() / 1000U;
@@ -1508,6 +1516,15 @@ void AP_Periph_FW::can_start()
         can_protocol_cached[i] = g.can_protocol[i];
         CANSensor::set_periph(i, can_protocol_cached[i], can_iface_periph[i]);
 #endif
+
+
+
+
+#if AP_UAVCAN_SLCAN_ENABLED
+    AP_HAL::CANIface* iface = can_iface_periph[i];
+    const bool slcan_passthrough_enabled = slcan_interface.init_passthrough(i);
+#endif
+
         if (can_iface_periph[i] != nullptr) {
 #if HAL_CANFD_SUPPORTED
             can_iface_periph[i]->init(g.can_baudrate[i], g.can_fdbaudrate[i]*1000000U, AP_HAL::CANIface::NormalMode);
@@ -1515,7 +1532,16 @@ void AP_Periph_FW::can_start()
             can_iface_periph[i]->init(g.can_baudrate[i], AP_HAL::CANIface::NormalMode);
 #endif
         }
-    }
+
+#if AP_UAVCAN_SLCAN_ENABLED
+        if (slcan_passthrough_enabled) {
+            iface = &slcan_interface;
+            instances[i].iface = (ChibiOS::CANIface*)iface;
+        }
+#endif
+
+    } // for i<HAL_NUM_CAN_IFACES
+
     canardInit(&dronecan.canard, (uint8_t *)dronecan.canard_memory_pool, sizeof(dronecan.canard_memory_pool),
             onTransferReceived, shouldAcceptTransfer, NULL);
 
