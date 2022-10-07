@@ -85,7 +85,7 @@ static struct instance_t {
     uint8_t index;
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-    ChibiOS::CANIface* iface;
+    AP_HAL::CANIface* iface;
 #elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
     HALSITL::CANIface* iface;
 #endif
@@ -1517,14 +1517,6 @@ void AP_Periph_FW::can_start()
         CANSensor::set_periph(i, can_protocol_cached[i], can_iface_periph[i]);
 #endif
 
-
-
-
-#if AP_UAVCAN_SLCAN_ENABLED
-    AP_HAL::CANIface* iface = can_iface_periph[i];
-    const bool slcan_passthrough_enabled = slcan_interface.init_passthrough(i);
-#endif
-
         if (can_iface_periph[i] != nullptr) {
 #if HAL_CANFD_SUPPORTED
             can_iface_periph[i]->init(g.can_baudrate[i], g.can_fdbaudrate[i]*1000000U, AP_HAL::CANIface::NormalMode);
@@ -1532,15 +1524,15 @@ void AP_Periph_FW::can_start()
             can_iface_periph[i]->init(g.can_baudrate[i], AP_HAL::CANIface::NormalMode);
 #endif
         }
+    } // for i<HAL_NUM_CAN_IFACES
 
 #if AP_UAVCAN_SLCAN_ENABLED
-        if (slcan_passthrough_enabled) {
-            iface = &slcan_interface;
-            instances[i].iface = (ChibiOS::CANIface*)iface;
-        }
+    slcan_interface.set_can_iface(can_iface_periph[0]);
 #endif
 
-    } // for i<HAL_NUM_CAN_IFACES
+#if AP_UAVCAN_SLCAN_ENABLED
+    instances[0].iface = (AP_HAL::CANIface*)&slcan_interface;
+#endif
 
     canardInit(&dronecan.canard, (uint8_t *)dronecan.canard_memory_pool, sizeof(dronecan.canard_memory_pool),
             onTransferReceived, shouldAcceptTransfer, NULL);
