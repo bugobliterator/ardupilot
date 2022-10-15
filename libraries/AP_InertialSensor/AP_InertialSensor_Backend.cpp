@@ -136,7 +136,7 @@ void AP_InertialSensor_Backend::_publish_gyro(uint8_t instance, const Vector3f &
         return;
     }
     _imu._gyro[instance] = gyro;
-    _imu._gyro_healthy[instance] = true;
+    _imu._gyro_healthy[instance] = !got_fifo_reset();
 
     // publish delta angle
     _imu._delta_angle[instance] = _imu._delta_angle_acc[instance];
@@ -303,7 +303,7 @@ void AP_InertialSensor_Backend::_publish_accel(uint8_t instance, const Vector3f 
         return;
     }
     _imu._accel[instance] = accel;
-    _imu._accel_healthy[instance] = true;
+    _imu._accel_healthy[instance] = !got_fifo_reset();
 
     // publish delta velocity
     _imu._delta_velocity[instance] = _imu._delta_velocity_acc[instance];

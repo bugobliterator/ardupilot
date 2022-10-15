@@ -432,6 +432,7 @@ bool AP_InertialSensor_Invensense::_accumulate(uint8_t *samples, uint8_t n_sampl
         if (!_check_raw_temp(t2)) {
             if (!hal.scheduler->in_expected_delay()) {
                 debug("temp reset IMU[%u] %d %d", _accel_instance, _raw_temp, t2);
+                set_got_fifo_reset(true);
             }
             _fifo_reset();
             return false;
@@ -477,6 +478,7 @@ bool AP_InertialSensor_Invensense::_accumulate_sensor_rate_sampling(uint8_t *sam
         if (!_check_raw_temp(t2)) {
             if (!hal.scheduler->in_expected_delay()) {
                 debug("temp reset IMU[%u] %d %d", _accel_instance, _raw_temp, t2);
+                set_got_fifo_reset(true);
             }
             _fifo_reset();
             ret = false;
