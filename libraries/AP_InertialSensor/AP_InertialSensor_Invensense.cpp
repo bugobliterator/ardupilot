@@ -24,7 +24,7 @@
 #include <AP_HAL/AP_HAL.h>
 
 #include "AP_InertialSensor_Invensense.h"
-
+#include <AP_Logger/AP_Logger.h>
 extern const AP_HAL::HAL& hal;
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_LINUX
@@ -431,7 +431,7 @@ bool AP_InertialSensor_Invensense::_accumulate(uint8_t *samples, uint8_t n_sampl
         int16_t t2 = int16_val(data, 3);
         if (!_check_raw_temp(t2)) {
             if (!hal.scheduler->in_expected_delay()) {
-                debug("temp reset IMU[%u] %d %d", _accel_instance, _raw_temp, t2);
+                AP::logger().Write_MessageF("temp reset IMU[%u] %d %d", _accel_instance, _raw_temp, t2);
                 set_got_fifo_reset(true);
             }
             _fifo_reset();
@@ -477,7 +477,7 @@ bool AP_InertialSensor_Invensense::_accumulate_sensor_rate_sampling(uint8_t *sam
         int16_t t2 = int16_val(data, 3);
         if (!_check_raw_temp(t2)) {
             if (!hal.scheduler->in_expected_delay()) {
-                debug("temp reset IMU[%u] %d %d", _accel_instance, _raw_temp, t2);
+                AP::logger().Write_MessageF("temp reset IMU[%u] %d %d", _accel_instance, _raw_temp, t2);
                 set_got_fifo_reset(true);
             }
             _fifo_reset();
@@ -645,7 +645,7 @@ check_registers:
 */
 bool AP_InertialSensor_Invensense::_check_raw_temp(int16_t t2)
 {
-    if (abs(t2 - _raw_temp) < 400) {
+    if (abs(t2 - _raw_temp) < 2000) {
         // cached copy OK
         return true;
     }
@@ -653,7 +653,7 @@ bool AP_InertialSensor_Invensense::_check_raw_temp(int16_t t2)
     if (_block_read(MPUREG_TEMP_OUT_H, trx, 2)) {
         _raw_temp = int16_val(trx, 0);
     }
-    return (abs(t2 - _raw_temp) < 800);
+    return (abs(t2 - _raw_temp) < 2000);
 }
 
 bool AP_InertialSensor_Invensense::_block_read(uint8_t reg, uint8_t *buf,

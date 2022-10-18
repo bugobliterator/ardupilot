@@ -519,14 +519,14 @@ void loop()
     **/
     
     // auto-reboot for --upload
-    if (hal.console->available() > 10) {
-        hal.console->printf("rebooting\n");
-        hal.uartC->printf("rebooting\n");
-        while (hal.console->available()) {
-            hal.console->read();
-        }
-        hal.scheduler->reboot(true);
-    }
+    // if (hal.console->available() > 10) {
+    //     hal.console->printf("rebooting\n");
+    //     hal.uartC->printf("rebooting\n");
+    //     while (hal.console->available()) {
+    //         hal.console->read();
+    //     }
+    //     hal.scheduler->reboot(true);
+    // }
 }
 
 GCS_Dummy _gcs;
