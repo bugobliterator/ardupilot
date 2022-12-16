@@ -473,7 +473,9 @@ bool CompassCalibrator::set_status(CompassCalibrator::Status status)
 
 bool CompassCalibrator::fit_acceptable() const
 {
-    if (!isnan(_fitness) &&
+    if (_tolerance < 0 && !isnan(_fitness)) {
+        return true;
+    } else if (!isnan(_fitness) &&
         _params.radius > FIELD_RADIUS_MIN && _params.radius < FIELD_RADIUS_MAX &&
         fabsf(_params.offset.x) < _offset_max &&
         fabsf(_params.offset.y) < _offset_max &&
@@ -484,8 +486,8 @@ bool CompassCalibrator::fit_acceptable() const
         fabsf(_params.offdiag.x) < 1.0f &&      //absolute of sine/cosine output cannot be greater than 1
         fabsf(_params.offdiag.y) < 1.0f &&
         fabsf(_params.offdiag.z) < 1.0f ) {
-            return _fitness <= sq(_tolerance);
-        }
+        return _fitness <= sq(_tolerance);
+    }
     // display reason for failure
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "CompassCal: is_fitness_nan: %s", isnan(_fitness)?"true":"false");
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "CompassCal: radius within limits: %s", (_params.radius > FIELD_RADIUS_MIN && _params.radius < FIELD_RADIUS_MAX)?"true":"false");
@@ -920,7 +922,7 @@ Vector3f CompassCalibrator::calculate_earth_field(CompassSample &sample, enum Ro
  */
 bool CompassCalibrator::calculate_orientation(void)
 {
-    if (!_check_orientation) {
+    if (!_check_orientation || (_tolerance < 0)) {
         // we are not checking orientation
         return true;
     }
@@ -1092,7 +1094,7 @@ bool CompassCalibrator::fix_radius(void)
     float expected_radius = intensity * 1000; // mGauss
     float correction = expected_radius / _params.radius;
 
-    if (correction > COMPASS_MAX_SCALE_FACTOR || correction < COMPASS_MIN_SCALE_FACTOR) {
+    if ((correction > COMPASS_MAX_SCALE_FACTOR || correction < COMPASS_MIN_SCALE_FACTOR) && (_tolerance > 0)) {
         // don't allow more than 30% scale factor correction
         GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Mag(%u) bad radius %.0f expected %.0f",
                         _compass_idx,
