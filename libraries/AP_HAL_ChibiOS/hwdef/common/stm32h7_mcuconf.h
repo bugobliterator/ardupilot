@@ -368,7 +368,9 @@
 #ifndef STM32_ADC_DUAL_MODE
 #define STM32_ADC_DUAL_MODE                 FALSE
 #endif
+#ifndef STM32_ADC_SAMPLES_SIZE
 #define STM32_ADC_SAMPLES_SIZE              16
+#endif
 #define STM32_ADC_COMPACT_SAMPLES           FALSE
 #define STM32_ADC_USE_ADC12                 TRUE
 #ifndef STM32H750xx
