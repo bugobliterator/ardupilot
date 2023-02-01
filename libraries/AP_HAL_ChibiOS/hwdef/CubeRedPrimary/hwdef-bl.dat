@@ -65,7 +65,7 @@ EXT_FLASH_SIZE_MB 32
 INT_FLASH_PRIMARY 1
 
 # IFace     Device Name     Bus         QSPI Mode     Clk Freq  Size (Pow2)  NCS Delay
-QSPIDEV     w25q-dtr       QUADSPI1      MODE1         120*MHZ      31            1
+QSPIDEV     w25q-dtr       QUADSPI1      MODE1         100*MHZ      31            1
 
 # disable peripheral and sensor power in the bootloader
 PG0 VDD_3V3_SENSORS_EN OUTPUT LOW
