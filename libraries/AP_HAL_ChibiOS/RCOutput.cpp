@@ -252,7 +252,12 @@ void RCOutput::dshot_collect_dma_locks(uint32_t time_out_us)
             // timer wrap with ChibiOS timers. Use CH_CFG_ST_TIMEDELTA
             // as minimum. Don't allow for a very long delay (over _dshot_period_us)
             // to prevent bugs in handling timer wrap
-            const uint32_t max_delay_us = _dshot_period_us;
+            uint32_t max_delay_us;
+            if (group.serial_nleds) {
+                max_delay_us = group.dshot_pulse_time_us;
+            } else {
+                max_delay_us = _dshot_period_us;
+            }
             const uint32_t min_delay_us = 10; // matches our CH_CFG_ST_TIMEDELTA
             wait_us = constrain_uint32(wait_us, min_delay_us, max_delay_us);
             mask = chEvtWaitOneTimeout(group.dshot_event_mask, chTimeUS2I(wait_us));
