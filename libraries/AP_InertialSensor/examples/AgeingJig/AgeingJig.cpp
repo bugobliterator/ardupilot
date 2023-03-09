@@ -52,7 +52,7 @@ enum stype{T_COM, T_BAR, T_INS, T_GYR, T_ACC};
 
 void log_sensor_health(uint16_t sensor_health);
 char* get_sensor_name(enum stype type, uint8_t devtype);
-uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus);
+uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus, uint8_t instance);
 void setup(void);
 void loop(void);
 
@@ -134,13 +134,19 @@ void log_sensor_health(uint16_t sensor_health)
 //    }
 // }
 
-uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
+uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus, uint8_t instance)
 {
     switch (type) 
     {
         case T_COM:
             switch (bus)
             {
+                case 0:
+                    switch (devtype)
+                    {
+                        case AP_Compass_Backend::DEVTYPE_AK09916:  return 0;
+                    }
+                    break;
                 case 1:
                     switch (devtype)
                     {
@@ -192,7 +198,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_GYR_L3GD20:     return 1;   //L3GD20
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:   return 1;   //ICM20948
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:   return 0;   //ICM20602
-                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM42688:   return 0;   //ICM42688
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM42688:   return instance;   //ICM42688
                     }
                     break;
             }
@@ -214,7 +220,7 @@ uint8_t lock_flag_bit(enum stype type, uint8_t devtype, uint8_t bus)
                         case AP_InertialSensor_Backend::DEVTYPE_ACC_LSM303D:   return 1;   //LSM303D
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20948:  return 1;   //ICM20948
                         case AP_InertialSensor_Backend::DEVTYPE_INS_ICM20602:  return 0;   //ICM20602
-                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM42688: hal.console->printf("ICM42688\n"); return 0;   //ICM42688
+                        case AP_InertialSensor_Backend::DEVTYPE_INS_ICM42688: hal.console->printf("ICM42688\n"); return instance;   //ICM42688
 
                     }
                     break;
@@ -258,14 +264,14 @@ void setup(void)
 
     //turn off the bit for sensors missing on boot
     for (uint8_t i = 0; i < 3; i++) {
-            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
-            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
+            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i)), i));
+            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i)), i));
     }
     for (uint8_t i = 0; i < 2; i++) {
-            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
+            _local_sensor_health_mask &= ~(1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i)), i));
     }
     for (uint8_t i = 0; i < 2; i++) {
-            _local_sensor_health_mask &= ~(1 << 8 << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
+            _local_sensor_health_mask &= ~(1 << 8 << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i)), i));
     }
     _local_sensor_health_mask ^= SENSOR_MASK;
 
@@ -276,20 +282,20 @@ void setup(void)
 
     for (uint8_t i = 0; i < 3; i++) {
         if (!AP::ins().get_accel_health(i)) {
-            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
+            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i)), i));
         }
         if (!AP::ins().get_gyro_health(i)) {
-            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
+            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i)), i));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::baro().healthy(i)) {
-            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
+            _setup_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i)), i));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::compass().healthy(i)) {
-            _setup_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
+            _setup_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i)), i));
         }
     }
 
@@ -338,25 +344,25 @@ void loop()
 
     for (uint8_t i = 0; i < 3; i++) {
         if (!AP::ins().get_accel_health(i)) {
-            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
-            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i))));
+            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i)), i));
+            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::ACCEL_HEALTH_OFF) << lock_flag_bit(T_ACC, AP_HAL::Device::devid_get_devtype(AP::ins().get_accel_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_accel_id(i)), i));
             
         }
         if (!AP::ins().get_gyro_health(i)) {
-            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
-            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i))));
+            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i)), i));
+            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::GYRO_HEALTH_OFF) << lock_flag_bit(T_GYR, AP_HAL::Device::devid_get_devtype(AP::ins().get_gyro_id(i)), AP_HAL::Device::devid_get_bus(AP::ins().get_gyro_id(i)), i));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::baro().healthy(i)) {
-            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
-            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i))));
+            _loop_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i)), i));
+            _instant_sensor_health_mask &= ~((1 << com::hex::equipment::jig::Status::BARO_HEALTH_OFF) << lock_flag_bit(T_BAR, AP_HAL::Device::devid_get_devtype(AP::baro().get_bus_id(i)), AP_HAL::Device::devid_get_bus(AP::baro().get_bus_id(i)), i));
         }
     }
     for (uint8_t i = 0; i < 2; i++) {
         if (!AP::compass().healthy(i)) {
-            _loop_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
-            _instant_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i))));
+            _loop_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i)), i));
+            _instant_sensor_health_mask &= ~((1 << 8) << lock_flag_bit(T_COM, AP_HAL::Device::devid_get_devtype(AP::compass().get_dev_id(i)), AP_HAL::Device::devid_get_bus(AP::compass().get_dev_id(i)), i));
         }
     }
 

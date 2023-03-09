@@ -49,6 +49,7 @@ extern const AP_HAL::HAL &hal;
 #define ICM_WHOAMI_VAL      0xEA
 
 #define AK09916_Device_ID   0x09
+#define AK09918_Device_ID   0x0c
 #define AK09916_MILLIGAUSS_SCALE 10.0f
 
 extern const AP_HAL::HAL &hal;
@@ -298,7 +299,8 @@ bool AP_Compass_AK09916::_check_id()
 
         /* Read AK09916's id */
         if (_bus->register_read(REG_DEVICE_ID, &deviceid) &&
-            deviceid == AK09916_Device_ID) {
+            ((deviceid == AK09916_Device_ID) || (deviceid == AK09918_Device_ID))) {
+            printf("AK09916: Found device id 0x%02x\n", deviceid);
             return true;
         }
     }
