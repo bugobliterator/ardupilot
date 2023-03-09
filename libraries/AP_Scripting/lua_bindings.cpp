@@ -38,8 +38,9 @@ int lua_micros(lua_State *L) {
 
     return 1;
 }
-static int lua_mavlink_receive(lua_State *L) {
-    check_arguments(L, 0, "receive");
+
+int lua_mavlink_receive(lua_State *L) {
+    binding_argcheck(L, 0);
 
     struct AP_Scripting::mavlink_msg msg;
     ObjectBuffer<struct AP_Scripting::mavlink_msg> *input = AP::scripting()->mavlink_data.input;
@@ -61,8 +62,8 @@ static int lua_mavlink_receive(lua_State *L) {
     }
 }
 
-static int lua_mavlink_register_msgid(lua_State *L) {
-    check_arguments(L, 1, "register_msgid");
+int lua_mavlink_register_msgid(lua_State *L) {
+    binding_argcheck(L, 1);
     luaL_checkstack(L, 1, "Out of stack");
     
     const int msgid = luaL_checkinteger(L, -1);
@@ -108,8 +109,8 @@ static int lua_mavlink_register_msgid(lua_State *L) {
     return 1;
 }
 
-static int lua_mavlink_send(lua_State *L) {
-    check_arguments(L, 3, "send");
+int lua_mavlink_send(lua_State *L) {
+    binding_argcheck(L, 3);
     
     const mavlink_channel_t chan = (mavlink_channel_t)luaL_checkinteger(L, 1);
     luaL_argcheck(L, (chan < MAVLINK_COMM_NUM_BUFFERS), 1, "channel out of range");
@@ -510,25 +511,6 @@ int lua_get_i2c_device(lua_State *L) {
     scripting->num_i2c_devices++;
 
     return 1;
-}
-static const luaL_Reg mavlink_functions[] =
-{
-    {"receive", lua_mavlink_receive},
-    {"register_msgid", lua_mavlink_register_msgid},
-    {"send", lua_mavlink_send},
-    {NULL, NULL}
-};
-
-void load_lua_bindings(lua_State *L) {
-    lua_pushstring(L, "logger");
-    luaL_newlib(L, AP_Logger_functions);
-    lua_settable(L, -3);
-
-    lua_pushstring(L, "mavlink");
-    luaL_newlib(L, mavlink_functions);
-    lua_settable(L, -3);
-
-    luaL_setfuncs(L, global_functions, 0);
 }
 
 int AP_HAL__I2CDevice_read_registers(lua_State *L) {
