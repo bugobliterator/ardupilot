@@ -504,3 +504,10 @@ LUAMOD_API int luaopen_base_sandbox(lua_State *L) {
   return 1;
 }
 
+LUAMOD_API int luaopen_base_global(lua_State *L) {
+  for (const luaL_Reg *l = base_funcs; l->name != NULL; l++) {
+    lua_pushcclosure(L, l->func, 0);  /* closure with those upvalues */
+    lua_setglobal(L, l->name);
+  }
+  return 1;
+}

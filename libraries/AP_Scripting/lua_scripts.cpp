@@ -23,6 +23,7 @@
 #define DISABLE_INTERRUPTS_FOR_SCRIPT_RUN 0
 
 extern const AP_HAL::HAL& hal;
+#define ENABLE_DEBUG_MODULE 0
 
 bool lua_scripts::overtime;
 jmp_buf lua_scripts::panic_jmp;
@@ -198,6 +199,19 @@ lua_scripts::script_info *lua_scripts::load_script(lua_State *L, char *filename)
 void lua_scripts::create_sandbox(lua_State *L) {
     lua_newtable(L);
     luaopen_base_sandbox(L);
+
+    lua_pushstring(L, "package");
+    luaopen_package(L);
+    lua_settable(L, -3);
+    // make require visible
+    lua_pushstring(L, "require");
+    lua_getglobal(L, "require");
+    lua_settable(L, -3);
+#if ENABLE_DEBUG_MODULE
+    lua_pushstring(L, "debug");
+    luaopen_debug(L);
+    lua_settable(L, -3);
+#endif
     lua_pushstring(L, "math");
     luaopen_math(L);
     lua_settable(L, -3);
@@ -215,6 +229,20 @@ void lua_scripts::create_sandbox(lua_State *L) {
     lua_settable(L, -3);
     load_generated_sandbox(L);
 
+}
+
+void lua_scripts::load_globals(lua_State *L) {
+    luaopen_base_global(L);
+    luaopen_math(L);
+    lua_setglobal(L, "math");
+    luaopen_table(L);
+    lua_setglobal(L, "table");
+    luaopen_string(L);
+    lua_setglobal(L, "string");
+    luaopen_io(L);
+    lua_setglobal(L, "io");
+    luaopen_utf8(L);
+    lua_setglobal(L, "utf8");
 }
 
 void lua_scripts::load_all_scripts_in_dir(lua_State *L, const char *dirname) {
@@ -470,7 +498,7 @@ void lua_scripts::run(void) {
 
     lua_atpanic(L, atpanic);
     load_generated_bindings(L);
-
+    load_globals(L);
 #ifndef HAL_CONSOLE_DISABLED
     const int loaded_mem = lua_gc(L, LUA_GCCOUNT, 0) * 1024 + lua_gc(L, LUA_GCCOUNTB, 0);
     DEV_PRINTF("Lua: State memory usage: %i + %i\n", inital_mem, loaded_mem - inital_mem);
