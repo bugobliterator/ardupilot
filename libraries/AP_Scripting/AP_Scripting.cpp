@@ -365,24 +365,7 @@ void AP_Scripting::send_message(const mavlink_channel_t chan) {
 
     struct mavlink_output data;
     if (mavlink_data.output->peek(data) && (data.chan == chan)) {
-        // FIXME: The data thats in this mavlink_msg_entry_t should be provided from the script, which allows
-        //        sending entirely new messages as outputs. At the moment we can only encode messages that
-        //        are known at compile time. This is fine as a starting point as this is symmetrical to the
-        //        decoding side of the scripting support
-        const mavlink_msg_entry_t *entry = mavlink_get_msg_entry(data.msgid);
-        if (entry == nullptr) {
-            return;
-        }
-        if (comm_get_txspace(chan) >= (GCS_MAVLINK::packet_overhead_chan(chan) + entry->max_msg_len)) {
-            _mav_finalize_message_chan_send(chan,
-                                            entry->msgid,
-                                            data.data,
-                                            entry->min_msg_len,
-                                            entry->max_msg_len,
-                                            entry->crc_extra);
 
-            UNUSED_RESULT(mavlink_data.output->pop(data));
-        }
     }
 }
 

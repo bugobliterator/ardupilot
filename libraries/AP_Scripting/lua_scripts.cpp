@@ -231,6 +231,7 @@ void lua_scripts::create_sandbox(lua_State *L) {
 
 }
 
+// for use by lua modules
 void lua_scripts::load_globals(lua_State *L) {
     luaopen_base_global(L);
     luaopen_math(L);

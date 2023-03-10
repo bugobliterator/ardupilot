@@ -15,5 +15,6 @@ int lua_removefile(lua_State *L);
 int SRV_Channels_get_safety_state(lua_State *L);
 int lua_get_PWMSource(lua_State *L);
 int lua_mavlink_receive(lua_State *L);
-int lua_mavlink_register_msgid(lua_State *L);
+int lua_mavlink_receive_msgid(lua_State *L);
+int lua_mavlink_intercept_msgid(lua_State *L);
 int lua_mavlink_send(lua_State *L);

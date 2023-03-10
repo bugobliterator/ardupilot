@@ -62,7 +62,7 @@ int lua_mavlink_receive(lua_State *L) {
     }
 }
 
-int lua_mavlink_register_msgid(lua_State *L) {
+int lua_mavlink_receive_msgid(lua_State *L) {
     binding_argcheck(L, 1);
     luaL_checkstack(L, 1, "Out of stack");
     
@@ -120,20 +120,22 @@ int lua_mavlink_send(lua_State *L) {
 
     const char *packet = luaL_checkstring(L, 3);
 
-    struct AP_Scripting::mavlink &mavlink_data = AP::scripting()->mavlink_data;
-
-    if (mavlink_data.output == nullptr) {
-        mavlink_data.output = new ObjectBuffer<struct AP_Scripting::mavlink_output>(AP_Scripting::mavlink_output_queue_size);
-        if (mavlink_data.output == nullptr) {
-            return luaL_error(L, "Unable to allocate MAVLink output queue");
-        }
+    // FIXME: The data that's in this mavlink_msg_entry_t should be provided from the script, which allows
+    //        sending entirely new messages as outputs. At the moment we can only encode messages that
+    //        are known at compile time. This is fine as a starting point as this is symmetrical to the
+    //        decoding side of the scripting support
+    const mavlink_msg_entry_t *entry = mavlink_get_msg_entry(msgid);
+    if (entry == nullptr) {
+        return;
     }
+    if (comm_get_txspace(chan) >= (GCS_MAVLINK::packet_overhead_chan(chan) + entry->max_msg_len)) {
+        _mav_finalize_message_chan_send(chan,
+                                        entry->msgid,
+                                        packet,
+                                        entry->min_msg_len,
+                                        entry->max_msg_len,
+                                        entry->crc_extra);
 
-    AP_Scripting::mavlink_output data {};
-    memcpy(data.data, packet, MIN(sizeof(data.data), lua_rawlen(L, 3)));
-    data.chan = chan;
-    data.msgid = msgid;
-    if (mavlink_data.output->push(data)) {
         lua_pushboolean(L, true);
     } else {
         lua_pushboolean(L, false);
