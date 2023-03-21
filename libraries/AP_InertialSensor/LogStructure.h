@@ -40,6 +40,7 @@ struct PACKED log_GYR {
     uint8_t instance;
     uint64_t sample_us;
     float GyrX, GyrY, GyrZ;
+    float temperature;
 };
 
 // @LoggerMessage: IMU
@@ -115,7 +116,7 @@ struct PACKED log_Vibe {
     { LOG_ACC_MSG, sizeof(log_ACC), \
       "ACC", "QBQfff",        "TimeUS,I,SampleUS,AccX,AccY,AccZ", "s#sooo", "F-F000" , true }, \
     { LOG_GYR_MSG, sizeof(log_GYR), \
-      "GYR", "QBQfff",        "TimeUS,I,SampleUS,GyrX,GyrY,GyrZ", "s#sEEE", "F-F000" , true }, \
+      "GYR", "QBQffff",        "TimeUS,I,SampleUS,GyrX,GyrY,GyrZ,T", "s#sEEEO", "F-F000-" , true }, \
     { LOG_IMU_MSG, sizeof(log_IMU), \
       "IMU",  "QBffffffIIfBBHH", "TimeUS,I,GyrX,GyrY,GyrZ,AccX,AccY,AccZ,EG,EA,T,GH,AH,GHz,AHz", "s#EEEooo--O--zz", "F-000000-----00" , true }, \
     { LOG_VIBE_MSG, sizeof(log_Vibe), \

@@ -342,7 +342,7 @@ bool AP_InertialSensor_Invensensev2::_accumulate(uint8_t *samples, uint8_t n_sam
         _rotate_and_correct_gyro(_gyro_instance, gyro);
 
         _notify_new_accel_raw_sample(_accel_instance, accel, 0, fsync_set);
-        _notify_new_gyro_raw_sample(_gyro_instance, gyro);
+        _notify_new_gyro_raw_sample(_gyro_instance, gyro, 0, temp);
 
         _temp_filtered = _temp_filter.apply(temp);
     }
@@ -420,7 +420,7 @@ bool AP_InertialSensor_Invensensev2::_accumulate_sensor_rate_sampling(uint8_t *s
         if (_accum.gyro_count % _gyro_fifo_downsample_rate == 0) {
             _accum.gyro *= _fifo_gyro_scale;
             _rotate_and_correct_gyro(_gyro_instance, _accum.gyro);
-            _notify_new_gyro_raw_sample(_gyro_instance, _accum.gyro);
+            _notify_new_gyro_raw_sample(_gyro_instance, _accum.gyro, 0, t2*temp_sensitivity + temp_zero);
             _accum.gyro.zero();
         }
     }

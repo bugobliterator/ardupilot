@@ -152,7 +152,7 @@ protected:
     // corrected (_rotate_and_correct_gyro)
     // The sample_us value must be provided for non-FIFO based
     // sensors, and should be set to zero for FIFO based sensors
-    void _notify_new_gyro_raw_sample(uint8_t instance, const Vector3f &accel, uint64_t sample_us=0) __RAMFUNC__;
+    void _notify_new_gyro_raw_sample(uint8_t instance, const Vector3f &accel, uint64_t sample_us=0, float temperature = 0.0f) __RAMFUNC__;
 
     // alternative interface using delta-angles. Rotation and correction is handled inside this function
     void _notify_new_delta_angle(uint8_t instance, const Vector3f &dangle);
@@ -314,10 +314,10 @@ private:
 
     bool should_log_imu_raw() const ;
     void log_accel_raw(uint8_t instance, const uint64_t sample_us, const Vector3f &accel) __RAMFUNC__;
-    void log_gyro_raw(uint8_t instance, const uint64_t sample_us, const Vector3f &gryo) __RAMFUNC__;
+    void log_gyro_raw(uint8_t instance, const uint64_t sample_us, const Vector3f &gryo, const float temperature) __RAMFUNC__;
 
     // logging
     void Write_ACC(const uint8_t instance, const uint64_t sample_us, const Vector3f &accel) const __RAMFUNC__; // Write ACC data packet: raw accel data
-    void Write_GYR(const uint8_t instance, const uint64_t sample_us, const Vector3f &gyro) const __RAMFUNC__;  // Write GYR data packet: raw gyro data
+    void Write_GYR(const uint8_t instance, const uint64_t sample_us, const Vector3f &gyro, const float temperature) const __RAMFUNC__;  // Write GYR data packet: raw gyro data
 
 };

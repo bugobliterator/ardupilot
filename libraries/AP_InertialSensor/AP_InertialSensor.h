@@ -379,6 +379,7 @@ public:
         int16_t *data_x;
         int16_t *data_y;
         int16_t *data_z;
+        int16_t *data_T;
         uint16_t data_write_offset; // units: samples
         uint16_t data_read_offset; // units: samples
         uint32_t last_sent_ms;

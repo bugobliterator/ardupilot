@@ -356,7 +356,7 @@ bool AP_InertialSensor_Invensensev3::accumulate_samples(const FIFOData *data, ui
         _rotate_and_correct_gyro(gyro_instance, gyro);
 
         _notify_new_accel_raw_sample(accel_instance, accel, 0);
-        _notify_new_gyro_raw_sample(gyro_instance, gyro);
+        _notify_new_gyro_raw_sample(gyro_instance, gyro, 0, temp);
 
         temp_filtered = temp_filter.apply(temp);
     }

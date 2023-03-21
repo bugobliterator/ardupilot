@@ -256,7 +256,8 @@ void AP_InertialSensor_Backend::apply_gyro_filters(const uint8_t instance, const
 
 void AP_InertialSensor_Backend::_notify_new_gyro_raw_sample(uint8_t instance,
                                                             const Vector3f &gyro,
-                                                            uint64_t sample_us)
+                                                            uint64_t sample_us,
+                                                            float temperature)
 {
     if ((1U<<instance) & _imu.imu_kill_mask) {
         return;
@@ -345,14 +346,14 @@ void AP_InertialSensor_Backend::_notify_new_gyro_raw_sample(uint8_t instance,
     // 5us
 #if AP_INERTIALSENSOR_BATCHSAMPLER_ENABLED
     if (!_imu.batchsampler.doing_post_filter_logging()) {
-        log_gyro_raw(instance, sample_us, gyro);
+        log_gyro_raw(instance, sample_us, gyro, temperature);
     }
     else {
-        log_gyro_raw(instance, sample_us, _imu._gyro_filtered[instance]);
+        log_gyro_raw(instance, sample_us, _imu._gyro_filtered[instance], temperature);
     }
 #else
     // assume pre-filter logging if batchsampler is not enabled
-    log_gyro_raw(instance, sample_us, gyro);
+    log_gyro_raw(instance, sample_us, gyro, temperature);
 #endif
 }
 
@@ -442,18 +443,18 @@ void AP_InertialSensor_Backend::_notify_new_delta_angle(uint8_t instance, const 
 
 #if AP_INERTIALSENSOR_BATCHSAMPLER_ENABLED
     if (!_imu.batchsampler.doing_post_filter_logging()) {
-        log_gyro_raw(instance, sample_us, gyro);
+        log_gyro_raw(instance, sample_us, gyro, 0);
     }
     else {
-        log_gyro_raw(instance, sample_us, _imu._gyro_filtered[instance]);
+        log_gyro_raw(instance, sample_us, _imu._gyro_filtered[instance], 0);
     }
 #else
     // assume we're doing pre-filter logging:
-    log_gyro_raw(instance, sample_us, gyro);
+    log_gyro_raw(instance, sample_us, gyro, 0);
 #endif
 }
 
-void AP_InertialSensor_Backend::log_gyro_raw(uint8_t instance, const uint64_t sample_us, const Vector3f &gyro)
+void AP_InertialSensor_Backend::log_gyro_raw(uint8_t instance, const uint64_t sample_us, const Vector3f &gyro, const float temperature)
 {
 #if HAL_LOGGING_ENABLED
     AP_Logger *logger = AP_Logger::get_singleton();
@@ -462,7 +463,7 @@ void AP_InertialSensor_Backend::log_gyro_raw(uint8_t instance, const uint64_t sa
         return;
     }
     if (should_log_imu_raw()) {
-        Write_GYR(instance, sample_us, gyro);
+        Write_GYR(instance, sample_us, gyro, temperature);
     } else {
 #if AP_INERTIALSENSOR_BATCHSAMPLER_ENABLED
         if (!_imu.batchsampler.doing_sensor_rate_logging()) {
