@@ -82,6 +82,7 @@ private:
     uint8_t _compass_instance;
     bool _initialized;
     enum Rotation _rotation;
+    uint8_t no_data;
 };
 
 

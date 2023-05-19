@@ -272,8 +272,15 @@ void AP_Compass_AK09916::_update()
     }
 
     if (!(regs.st1 & 0x01)) {
+        no_data++;
+        if (no_data == 5) {
+            _reset();
+            _setup_mode();
+            no_data = 0;
+        }
         return;
     }
+    no_data = 0;
 
     /* Check for overflow. See AK09916's datasheet*/
     if ((regs.st2 & 0x08)) {
