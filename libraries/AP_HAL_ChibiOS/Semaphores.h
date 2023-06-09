@@ -32,8 +32,35 @@ public:
     // methods within HAL_ChibiOS only
     bool check_owner(void);
     void assert_owner(void);
+    static void get_sem_chain(ExpandingString &str);
 protected:
+    // optimise 0
+    void update_sem_chain(void);
+
     // to avoid polluting the global namespace with the 'ch' variable,
     // we declare the lock as a uint32_t array, and cast inside the cpp file
-    uint32_t _lock[5];
+    uint32_t _lock[6];
+
+    struct sem_chain_branch {
+        Semaphore *sem;
+        sem_chain_branch *next_link;
+    };
+
+    struct sem_chain_trunk {
+        thread_reference_t thd;
+        sem_chain_branch *head_link;
+        sem_chain_trunk *next;
+    };
+    static sem_chain_trunk *sem_chain;
+    static uint16_t global_counter;
+    uint16_t sem_index;
+
+    char const *filename;
+    int line;
+};
+
+template <const char* (*name)(void) , int _line>
+class ChibiOS::CheckedSemaphore : public ChibiOS::Semaphore {
+public:
+    CheckedSemaphore() : Semaphore(name(), _line) {}
 };

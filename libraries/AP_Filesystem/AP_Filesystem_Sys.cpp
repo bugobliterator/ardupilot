@@ -52,6 +52,7 @@ static const SysFileList sysfs_file_list[] = {
 #endif
     {"crash_dump.bin"},
     {"storage.bin"},
+    {"semaphore_chain.txt"}
 };
 
 int8_t AP_Filesystem_Sys::file_in_sysfs(const char *fname) {
@@ -151,6 +152,9 @@ int AP_Filesystem_Sys::open(const char *fname, int flags, bool allow_absolute_pa
         if (hal.storage->get_storage_ptr(ptr, size)) {
             r.str->set_buffer((char*)ptr, size, size);
         }
+    }
+    if (strcmp(fname, "semaphore_chain.txt") == 0) {
+        HAL_Semaphore::get_sem_chain(*r.str);
     }
     
     if (r.str->get_length() == 0) {

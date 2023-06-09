@@ -3,6 +3,7 @@
 #include "AP_HAL_Namespace.h"
 
 #include <AP_Common/AP_Common.h>
+#include <AP_Common/ExpandingString.h>
 
 #define HAL_SEMAPHORE_BLOCK_FOREVER 0
 
