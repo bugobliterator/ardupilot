@@ -18,6 +18,7 @@
 #include <hal.h>
 #include <AP_HAL_ChibiOS/CANIface.h>
 #endif
+#include <AP_GPS/RTCM3_Parser.h>
 
 void setup();
 void loop();
@@ -101,6 +102,49 @@ MSG_CB(uavcan_equipment_indication_LightsCommand, LightsCommand);
 MSG_CB(com_hex_equipment_flow_Measurement, Measurement);
 
 
+struct {
+    uint16_t id;
+    uint8_t  count;
+} rtcm_packets[100];
+RTCM3_Parser rtcm_parser;
+uint32_t rtcm_count = 0;
+static void cb_RTCMStream(const CanardRxTransfer &transfer, const uavcan_equipment_gnss_RTCMStream& msg)
+{
+    count_msg("RTCMStream");
+    // parse rtcm stream
+    for (uint16_t i=0; i<msg.data.len; i++) {
+        if (rtcm_parser.read(msg.data.data[i])) {
+            // got a message
+            rtcm_count++;
+        }
+    }
+}
+
+RTCM3_Parser rtcm_parser2;
+uint32_t rtcm_count2 = 0;
+static void cb_MovingBaselineData(const CanardRxTransfer &transfer, const ardupilot_gnss_MovingBaselineData& msg)
+{
+    count_msg("MovingBaseline");
+    // parse rtcm stream
+    for (uint16_t i=0; i<msg.data.len; i++) {
+        if (rtcm_parser2.read(msg.data.data[i])) {
+            // got a message
+            rtcm_count2++;
+            for (uint8_t j=0; j<ARRAY_SIZE(rtcm_packets); j++) {
+                if (rtcm_packets[j].id == rtcm_parser2.get_id()) {
+                    rtcm_packets[j].count++;
+                    break;
+                }
+                if (rtcm_packets[j].id == 0) {
+                    rtcm_packets[j].id = rtcm_parser2.get_id();
+                    rtcm_packets[j].count++;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 uavcan_protocol_NodeStatus node_status;
 uavcan_protocol_GetNodeInfoResponse node_info;
 CanardInterface *_uavcan_iface_mgr;
@@ -164,6 +208,8 @@ void DroneCAN_sniffer::init(void)
 
     START_CB(uavcan_protocol_NodeStatus, NodeStatus);
     START_CB(uavcan_equipment_gnss_Fix2, Fix2);
+    START_CB(uavcan_equipment_gnss_RTCMStream, RTCMStream);
+    START_CB(ardupilot_gnss_MovingBaselineData, MovingBaselineData);
     START_CB(uavcan_equipment_gnss_Auxiliary, Auxiliary);
     START_CB(uavcan_equipment_ahrs_MagneticFieldStrength, MagneticFieldStrength);
     START_CB(uavcan_equipment_ahrs_MagneticFieldStrength2, MagneticFieldStrength2);
@@ -216,6 +262,19 @@ void DroneCAN_sniffer::print_stats(void)
         counters[i].max_period_us = 0;
         counters[i].min_period_us = 0;
     }
+    // also print rtcm stats
+    hal.console->printf("RTCM Pkts: %lu\n", (long unsigned)rtcm_count);
+    hal.console->printf("MB RTCM Pkts: %lu\n", (long unsigned)rtcm_count2);
+    for (uint16_t i=0;i<ARRAY_SIZE(rtcm_packets);i++) {
+        if (rtcm_packets[i].id == 0) {
+            break;
+        }
+        hal.console->printf("ID# 0x%x: %u\n", (unsigned)rtcm_packets[i].id, rtcm_packets[i].count);
+        rtcm_packets[i].count = 0;
+    }
+    memset(rtcm_packets, 0, sizeof(rtcm_packets));
+    rtcm_count = 0;
+    rtcm_count2 = 0;
     hal.console->printf("\n");
 }
 
