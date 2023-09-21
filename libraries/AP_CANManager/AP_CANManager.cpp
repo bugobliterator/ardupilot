@@ -651,6 +651,79 @@ void AP_CANManager::can_frame_callback(uint8_t bus, const AP_HAL::CANFrame &fram
 }
 #endif // HAL_GCS_ENABLED
 
+
+#if AP_FILESYSTEM_FILE_WRITING_ENABLED
+
+uint16_t crcAdd(uint16_t crc_val, const uint8_t* bytes, size_t len)
+{
+    while (len--)
+    {
+        crc_val = crcAddByte(crc_val, *bytes++);
+    }
+    return crc_val;
+}
+
+uint16_t crcAddByte(uint16_t crc_val, uint8_t byte)
+{
+    crc_val ^= (uint16_t) ((uint16_t) (byte) << 8U);
+    for (uint8_t j = 0; j < 8; j++)
+    {
+        if (crc_val & 0x8000U)
+        {
+            crc_val = (uint16_t) ((uint16_t) (crc_val << 1U) ^ 0x1021U);
+        }
+        else
+        {
+            crc_val = (uint16_t) (crc_val << 1U);
+        }
+    }
+    return crc_val;
+}
+
+#define CANLOGFILE_HEADER_SIZE 16
+void AP_CANManager::log_frame(const CANFrame& frame)
+{
+    if (logging_buffer_.space() > (CANLOGFILE_HEADER_SIZE+frame.dlcToDataLength(frame.dlc))) {
+        return;
+    }
+    uint16_t magic = 0x2934;
+    logging_buffer_.write((uint8_t*)&magic, sizeof(magic));
+    uint64_t timestamp_us = AP_HAL::native_micros64();
+    logging_buffer_.write((uint8_t*)&timestamp_us, sizeof(timestamp_us));
+    uint16_t crc = crcAdd(0xFFFF, frame.data, frame.dlcToDataLength(frame.dlc));
+    logging_buffer_.write((uint8_t*)&crc, sizeof(crc));
+    uint16_t length = frame.dlcToDataLength(frame.dlc);
+    logging_buffer_.write((uint8_t*)&length, sizeof(length));
+    uint16_t flags = frame.canfd ? 1 : 0;
+    logging_buffer_.write((uint8_t*)&flags, sizeof(flags));
+    uint32_t id = frame.id & (frame.isExtended() ? AP_HAL::CANFrame::FlagEFF : 0);
+    logging_buffer_.write((uint8_t*)&id, sizeof(id));
+    logging_buffer_.write(frame.data, length);
+}
+
+
+void AP_CANManager::can_log_update()
+{
+    if (enable_logging_) {
+        return;
+    }
+    int i = 0;
+    if (log_fd == -1) {
+        struct stat st;
+        char filename[sizeof(HAL_BOARD_LOG_DIRECTORY) + 32];
+        while (i++) {
+            snprintf(filename, sizeof(filename), HAL_BOARD_LOG_DIRECTORY "CAN%u_%u.clog", get_iface_num(), i);
+            if (AP::FS().stat(filename, &st) != 0) {
+                break;
+            }
+        }
+        if (AP::FS().open(filename, O_CREAT | O_WRONLY | O_TRUNC) < 0) {
+            return;
+        }
+    }
+}
+#endif // AP_FILESYSTEM_FILE_WRITING_ENABLED
+
 AP_CANManager& AP::can()
 {
     return *AP_CANManager::get_singleton();

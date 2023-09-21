@@ -20,6 +20,8 @@
 #include <stdint.h>
 #include "AP_HAL_Namespace.h"
 #include "AP_HAL_Boards.h"
+#include <AP_HAL/utility/RingBuffer.h>
+#include <AP_Filesystem/AP_Filesystem.h>
 
 class ExpandingString;
 
