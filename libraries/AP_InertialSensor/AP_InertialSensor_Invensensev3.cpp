@@ -55,6 +55,7 @@ extern const AP_HAL::HAL& hal;
 #define INV3REG_FIFO_CONFIG3  0x61
 #define INV3REG_SIGNAL_PATH_RESET 0x4b
 #define INV3REG_INTF_CONFIG0  0x4c
+#define INV3REG_INTF_CONFIG1  0x4d
 #define INV3REG_FIFO_COUNTH   0x2e
 #define INV3REG_FIFO_DATA     0x30
 #define INV3REG_BANK_SEL      0x76
@@ -66,6 +67,8 @@ extern const AP_HAL::HAL& hal;
 #define INV3REG_GYRO_CONFIG_STATIC3 0x0C
 #define INV3REG_GYRO_CONFIG_STATIC4 0x0D
 #define INV3REG_GYRO_CONFIG_STATIC5 0x0E
+#define INV3REG_INTF_CONFIG5        0x7B
+
 
 // ICM42688 bank2
 #define INV3REG_ACCEL_CONFIG_STATIC2 0x03
@@ -249,6 +252,17 @@ void AP_InertialSensor_Invensensev3::start()
     // initially run the bus at low speed
     dev->set_speed(AP_HAL::Device::SPEED_LOW);
 
+    uint8_t data = register_read_bank(1, INV3REG_INTF_CONFIG5);
+    data &= ~(0x3<<1);
+    data |= (0x2<<1);
+    register_write_bank(1, INV3REG_INTF_CONFIG5, data);
+    data = register_read(INV3REG_INTF_CONFIG1);
+    data |= (0x01<<2);
+    register_write(INV3REG_INTF_CONFIG1, data);
+
+    hal.scheduler->delay_microseconds(300);
+
+    // grab the used instances
     enum DevTypes devtype;
     fifo_config1 = 0x07;
 
@@ -800,9 +814,6 @@ void AP_InertialSensor_Invensensev3::set_filter_and_scaling(void)
     register_write_bank(2, INV3REG_ACCEL_CONFIG_STATIC2, accel_aaf_delt<<1); // ACCEL_AAF_DELT | enabled bit
     register_write_bank(2, INV3REG_ACCEL_CONFIG_STATIC3, (accel_aaf_deltsqr & 0xFF)); // ACCEL_AAF_DELTSQR
     register_write_bank(2, INV3REG_ACCEL_CONFIG_STATIC4, ((accel_aaf_bitshift<<4) & 0xF0) | ((accel_aaf_deltsqr>>8) & 0x0F)); // ACCEL_AAF_BITSHIFT | ACCEL_AAF_DELTSQR
-
-    // always use internal RC oscillator
-    register_write(INV3REG_INTF_CONFIG1, 0x90);
 
     // FIFO_MODE stream to fifo
     register_write(INV3REG_FIFO_CONFIG, 0x40);
