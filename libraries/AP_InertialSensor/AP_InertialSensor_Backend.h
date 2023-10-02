@@ -29,6 +29,10 @@
 
 #include "AP_InertialSensor.h"
 
+#ifndef HAL_DEFAULT_INS_HIGHRES_SAMPLE
+#define HAL_DEFAULT_INS_HIGHRES_SAMPLE 0
+#endif
+
 class AuxiliaryBus;
 class AP_Logger;
 
@@ -290,7 +294,7 @@ protected:
 
     // should highres sampling be enabled on this IMU?
     bool enable_highres_sampling(uint8_t instance) const {
-        return (_imu._highres_sampling_mask & (1U<<instance)) != 0;
+        return (HAL_DEFAULT_INS_HIGHRES_SAMPLE & (1U<<instance)) != 0;
     }
 
     // if fast sampling is enabled, the rate to use in kHz

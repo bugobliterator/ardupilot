@@ -284,6 +284,7 @@ void AP_InertialSensor_Invensensev3::start()
         return;
     }
 
+#if HAL_DEFAULT_INS_HIGHRES_SAMPLE
     // now we know who we are, other things can be checked for
     if (enable_highres_sampling(accel_instance)) {
         switch (inv3_type) {
@@ -312,7 +313,7 @@ void AP_InertialSensor_Invensensev3::start()
             temp_sensitivity = 1.0 / 128.0;
         }
     }
-
+#endif
     // always use FIFO
     fifo_reset();
 
@@ -421,6 +422,7 @@ bool AP_InertialSensor_Invensensev3::accumulate_samples(const FIFOData *data, ui
     return true;
 }
 
+#if HAL_DEFAULT_INS_HIGHRES_SAMPLE
 // high-resolution packets are always 20-bits, but not always 20-bits of data.
 // Scale factors account for the useless bits
 static inline float uint20_to_float(uint8_t msb, uint8_t bits, uint8_t lsb)
@@ -475,6 +477,7 @@ bool AP_InertialSensor_Invensensev3::accumulate_highres_samples(const FIFODataHi
     }
     return true;
 }
+#endif
 
 /*
   timer function called at ODR rate
@@ -502,8 +505,7 @@ void AP_InertialSensor_Invensensev3::read_fifo()
         break;
     }
 
-    const bool read_highres = highres_sampling;
-    const uint8_t fifo_sample_size = read_highres ? INV3_HIGHRES_SAMPLE_SIZE : INV3_SAMPLE_SIZE;
+    const uint8_t fifo_sample_size = highres_sampling ? INV3_HIGHRES_SAMPLE_SIZE : INV3_SAMPLE_SIZE;
 
     if (!block_read(reg_counth, (uint8_t*)&n_samples, 2)) {
         goto check_registers;
@@ -523,13 +525,13 @@ void AP_InertialSensor_Invensensev3::read_fifo()
         if (!block_read(reg_data, (uint8_t*)fifo_buffer, n * fifo_sample_size)) {
             goto check_registers;
         }
-
-        if (read_highres && !accumulate_highres_samples((FIFODataHighRes*)fifo_buffer, n)) {
+#if HAL_DEFAULT_INS_HIGHRES_SAMPLE
+        if (highres_sampling && !accumulate_highres_samples((FIFODataHighRes*)fifo_buffer, n)) {
             need_reset = true;
             break;
         }
-
-        if (!read_highres && !accumulate_samples((FIFOData*)fifo_buffer, n)) {
+#endif
+        if (!highres_sampling && !accumulate_samples((FIFOData*)fifo_buffer, n)) {
             need_reset = true;
             break;
         }
