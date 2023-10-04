@@ -288,6 +288,11 @@ protected:
         return (_imu._fast_sampling_mask & (1U<<instance)) != 0;
     }
 
+    // should highres sampling be enabled on this IMU?
+    bool enable_highres_sampling(uint8_t instance) const {
+        return (_imu._highres_sampling_mask & (1U<<instance)) != 0;
+    }
+
     // if fast sampling is enabled, the rate to use in kHz
     uint8_t get_fast_sampling_rate() const {
         return (1 << uint8_t(_imu._fast_sampling_rate));

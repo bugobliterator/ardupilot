@@ -53,6 +53,10 @@
 #define HAL_DEFAULT_INS_FAST_SAMPLE 1
 #endif
 
+#ifndef HAL_DEFAULT_INS_HIGHRES_SAMPLE
+#define HAL_DEFAULT_INS_HIGHRES_SAMPLE 0
+#endif
+
 extern const AP_HAL::HAL& hal;
 
 
@@ -680,6 +684,13 @@ const AP_Param::GroupInfo AP_InertialSensor::var_info[] = {
     // @Bitmask: 0:Log primary gyro only, 1:Log all gyros, 2:Post filter, 3: Pre and post filter
     // @User: Advanced
     AP_GROUPINFO("_RAW_LOG_OPT", 56, AP_InertialSensor, raw_logging_options, 0),
+
+    // @Param: _HIRES_SAMPLE
+    // @DisplayName: High resolution sampling mask
+    // @Description: Mask of IMUs to enable high resolution sampling on, if available
+    // @User: Advanced
+    // @Bitmask: 0:FirstIMU,1:SecondIMU,2:ThirdIMU
+    AP_GROUPINFO("_HIRES_SAMPLE",  57, AP_InertialSensor, _highres_sampling_mask,   HAL_DEFAULT_INS_HIGHRES_SAMPLE),
 
     /*
       NOTE: parameter indexes have gaps above. When adding new
