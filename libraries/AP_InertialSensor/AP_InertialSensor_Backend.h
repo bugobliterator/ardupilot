@@ -284,7 +284,7 @@ protected:
     }
 
     // should fast sampling be enabled on this IMU?
-    bool enable_fast_sampling(uint8_t instance) {
+    bool enable_fast_sampling(uint8_t instance) const {
         return (_imu._fast_sampling_mask & (1U<<instance)) != 0;
     }
 

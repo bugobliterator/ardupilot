@@ -239,22 +239,20 @@ void AP_InertialSensor_Invensensev3::start()
     // initially run the bus at low speed
     dev->set_speed(AP_HAL::Device::SPEED_LOW);
 
-    // grab the used instances
     enum DevTypes devtype;
+    fifo_config1 = 0x07;
+
     switch (inv3_type) {
     case Invensensev3_Type::IIM42652:
         devtype = DEVTYPE_INS_IIM42652;
-        fifo_config1 = 0x07;
         temp_sensitivity = 1.0 / 2.07;
         break;
     case Invensensev3_Type::ICM42688:
         devtype = DEVTYPE_INS_ICM42688;
-        fifo_config1 = 0x07;
         temp_sensitivity = 1.0 / 2.07;
         break;
     case Invensensev3_Type::ICM42605:
         devtype = DEVTYPE_INS_ICM42605;
-        fifo_config1 = 0x07;
         temp_sensitivity = 1.0 / 2.07;
         break;
     case Invensensev3_Type::ICM40605:
@@ -276,12 +274,22 @@ void AP_InertialSensor_Invensensev3::start()
     default:
         devtype = DEVTYPE_INS_ICM40609;
         temp_sensitivity = 1.0 / 2.07;
-        fifo_config1 = 0x07;
+        accel_scale = ACCEL_SCALE_32G;
         break;
     }
+
+    // register the devices first to get an id, since various masks depend on this
+    if (!_imu.register_gyro(gyro_instance, 1000, dev->get_bus_id_devtype(devtype)) ||
+        !_imu.register_accel(accel_instance, 1000, dev->get_bus_id_devtype(devtype))) {
+        return;
+    }
+
     // now we know who we are, other things can be checked for
     if (enable_highres_sampling(accel_instance)) {
         switch (inv3_type) {
+            case Invensensev3_Type::ICM42688: // HiRes 19bit
+            case Invensensev3_Type::IIM42652: // HiRes 19bit
+            case Invensensev3_Type::ICM42670: // HiRes 19bit
             case Invensensev3_Type::ICM45686: // HiRes 20bit
                 highres_sampling = dev->bus_type() == AP_HAL::Device::BUS_TYPE_SPI;
                 break;
@@ -292,10 +300,16 @@ void AP_InertialSensor_Invensensev3::start()
 
     // optionally enable high resolution mode
     if (highres_sampling) {
+        fifo_config1 |= (1U<<4);  // FIFO_HIRES_EN
+        gyro_scale = GYRO_SCALE_HIGHRES_2000DPS;
+        accel_scale = ACCEL_SCALE_HIGHRES_16G;
+        temp_sensitivity = 1.0 / 132.48;
         if (inv3_type == Invensensev3_Type::ICM45686) {
             temp_sensitivity = 1.0 / 128.0;
             accel_scale = ACCEL_SCALE_HIGHRES_32G;
             gyro_scale = GYRO_SCALE_HIGHRES_4000DPS;
+        } else if (inv3_type == Invensensev3_Type::ICM42670) {
+            temp_sensitivity = 1.0 / 128.0;
         }
     }
 
@@ -314,12 +328,7 @@ void AP_InertialSensor_Invensensev3::start()
     // pre-calculate backend period
     backend_period_us = 1000000UL / backend_rate_hz;
 
-    if (!_imu.register_gyro(gyro_instance, backend_rate_hz, dev->get_bus_id_devtype(devtype)) ||
-        !_imu.register_accel(accel_instance, backend_rate_hz, dev->get_bus_id_devtype(devtype))) {
-        return;
-    }
-
-    // update backend sample rate
+    // update backend sample rates now that we know them
     _set_accel_raw_sample_rate(accel_instance, backend_rate_hz);
     _set_gyro_raw_sample_rate(gyro_instance, backend_rate_hz);
 
@@ -867,8 +876,6 @@ bool AP_InertialSensor_Invensensev3::check_whoami(void)
     switch (whoami) {
     case INV3_ID_ICM40609:
         inv3_type = Invensensev3_Type::ICM40609;
-        // Accel scale 32g (1024 LSB/g)
-        accel_scale = (GRAVITY_MSS / 1024);
         return true;
     case INV3_ID_ICM42688:
         inv3_type = Invensensev3_Type::ICM42688;
@@ -988,7 +995,12 @@ bool AP_InertialSensor_Invensensev3::hardware_init(void)
         register_write_bank(INV3REG_BANK_MREG1, INV3REG_MREG1_SENSOR_CONFIG3, 0x40);
 
         // use 16 bit data, gyro+accel
-        register_write_bank(INV3REG_BANK_MREG1, INV3REG_MREG1_FIFO_CONFIG5, 0x3);
+        uint8_t fifo_config = 0x03;
+        // optionally enable high resolution mode
+        if (highres_sampling) {
+            fifo_config |= (1U<<3);  // FIFO_HIRES_EN
+        }
+        register_write_bank(INV3REG_BANK_MREG1, INV3REG_MREG1_FIFO_CONFIG5, fifo_config);
 
         // FIFO stop-on-full, disable bypass
         register_write(INV3REG_70_FIFO_CONFIG1, 0x2, true);
