@@ -69,6 +69,7 @@ static const struct SPIDriverInfo {
     uint8_t busid; // used for device IDs in parameters
     uint8_t dma_channel_rx;
     uint8_t dma_channel_tx;
+    ioline_t sck_line;
 } spi_devices[] = { HAL_SPI_BUS_LIST };
 
 // device list comes from hwdef.dat
@@ -380,11 +381,24 @@ bool SPIDevice::acquire_bus(bool set, bool skip_cs)
         bus.spicfg.cr1 = (uint16_t)(freq_flag | device_desc.mode);
         bus.spicfg.cr2 = 0;
 #endif
+        // read current pin mode of sck
+        const iomode_t sck_mode = palReadLineMode(spi_devices[device_desc.bus].sck_line);
+        if (device_desc.mode == SPIDEV_MODE0 || device_desc.mode == SPIDEV_MODE1) {
+            // Clock polarity is 0, so we need to set the clock line low before spi reset
+            palClearLine(spi_devices[device_desc.bus].sck_line);
+            palSetLineMode(spi_devices[device_desc.bus].sck_line, PAL_MODE_OUTPUT_PUSHPULL);
+        } else {
+            // Clock polarity is 1, so we need to set the clock line high before spi reset
+            palSetLine(spi_devices[device_desc.bus].sck_line);
+            palSetLineMode(spi_devices[device_desc.bus].sck_line, PAL_MODE_OUTPUT_PUSHPULL);
+        }
         if (bus.spi_started) {
             spiStop(spi_devices[device_desc.bus].driver);
             bus.spi_started = false;
         }
         spiStart(spi_devices[device_desc.bus].driver, &bus.spicfg);        /* Setup transfer parameters.       */
+        // restore sck pin mode
+        palSetLineMode(spi_devices[device_desc.bus].sck_line, sck_mode);
         bus.spi_started = true;
         if(!skip_cs) {
             spiSelectI(spi_devices[device_desc.bus].driver);                /* Slave Select assertion.          */
