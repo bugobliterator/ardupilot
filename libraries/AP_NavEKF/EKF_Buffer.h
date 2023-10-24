@@ -193,13 +193,42 @@ public:
         return *ret;
     }
 
+    // retrieves data from the ring buffer at a specified index
+    element_type& operator[](uint32_t index) const {
+        element_type *ret = (element_type *)ekf_imu_buffer::get(index);
+        return *ret;
+    }
+
     // returns the index for the ring buffer oldest data
-    uint8_t get_oldest_index() {
+    uint8_t get_oldest_index() const {
         return ekf_imu_buffer::get_oldest_index();
     }
 
     // returns the index for the ring buffer youngest data
-    inline uint8_t get_youngest_index() {
+    inline uint8_t get_youngest_index() const {
         return ekf_imu_buffer::get_youngest_index();
+    }
+
+    // get index of element before and after time_ms
+    void get_time_boundaries(uint32_t time_ms, uint8_t &lower_index, uint8_t &upper_index) const {
+        uint8_t oldest_index = get_oldest_index();
+        uint8_t youngest_index = get_youngest_index();
+        if (time_ms < (*this)[oldest_index].time_ms) {
+            lower_index = oldest_index;
+            upper_index = oldest_index;
+        } else if (time_ms > (*this)[youngest_index].time_ms) {
+            lower_index = youngest_index;
+            upper_index = youngest_index;
+        } else {
+            lower_index = oldest_index;
+            upper_index = youngest_index;
+            for (uint8_t index=oldest_index; index!=youngest_index; index=(index+1)%_size) {
+                if (time_ms < (*this)[index].time_ms) {
+                    upper_index = index;
+                    break;
+                }
+                lower_index = index;
+            }
+        }
     }
 };
