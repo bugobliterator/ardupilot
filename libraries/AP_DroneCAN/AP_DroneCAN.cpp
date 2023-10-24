@@ -116,7 +116,7 @@ const AP_Param::GroupInfo AP_DroneCAN::var_info[] = {
     // @Param: OPTION
     // @DisplayName: DroneCAN options
     // @Description: Option flags
-    // @Bitmask: 0:ClearDNADatabase,1:IgnoreDNANodeConflicts,2:EnableCanfd,3:IgnoreDNANodeUnhealthy,4:SendServoAsPWM,5:SendGNSS,6:UseHimarkServo,7:HobbyWingESC,8:EnableStats
+    // @Bitmask: 0:ClearDNADatabase,1:IgnoreDNANodeConflicts,2:EnableCanfd,3:IgnoreDNANodeUnhealthy,4:SendServoAsPWM,5:SendGNSS,6:UseHimarkServo,7:HobbyWingESC,8:EnableStats,9:FileDFLog
     // @User: Advanced
     AP_GROUPINFO("OPTION", 5, AP_DroneCAN, _options, 0),
     
@@ -340,6 +340,11 @@ void AP_DroneCAN::init(uint8_t driver_index, bool enable_filters)
     node_status.set_priority(CANARD_TRANSFER_PRIORITY_LOWEST);
     node_status.set_timeout_ms(1000);
 
+#if HAL_LOGGING_ENABLED
+    logger_status.set_priority(CANARD_TRANSFER_PRIORITY_LOWEST);
+    logger_status.set_timeout_ms(1000);
+#endif
+
     protocol_stats.set_priority(CANARD_TRANSFER_PRIORITY_LOWEST);
     protocol_stats.set_timeout_ms(3000);
 
@@ -508,6 +513,15 @@ void AP_DroneCAN::send_node_status(void)
     _node_status_last_send_ms = now;
     node_status_msg.uptime_sec = now / 1000;
     node_status.broadcast(node_status_msg);
+
+#if HAL_LOGGING_ENABLED
+    // send logger status if enabled
+    if (option_is_set(Options::ENABLE_FILE_LOG)) {
+        ardupilot_logger_LoggerStatus logger_status_msg;
+        logger_status_msg.status = AP::logger().logging_started()?ARDUPILOT_LOGGER_LOGGERSTATUS_STATUS_ACTIVE:ARDUPILOT_LOGGER_LOGGERSTATUS_STATUS_INACTIVE;
+        logger_status.broadcast(logger_status_msg);
+    }
+#endif
 
     if (option_is_set(Options::ENABLE_STATS)) {
         // also send protocol and can stats
@@ -1288,6 +1302,29 @@ void AP_DroneCAN::handle_debug(const CanardRxTransfer& transfer, const uavcan_pr
         // only log to onboard log
         AP::logger().Write_MessageF("CAN[%u] %s", transfer.source_node_id, msg.text.data);
     }
+#endif
+}
+
+/*
+  handle Log File
+ */
+void AP_DroneCAN::handle_logger_file(const CanardRxTransfer& transfer, const ardupilot_logger_File& msg)
+{
+#if HAL_LOGGING_ENABLED
+    struct log_File pkt {
+        LOG_PACKET_HEADER_INIT(LOG_FILE_MSG),
+    };
+    // copy file name
+    snprintf((char*)pkt.filename, sizeof(pkt.filename), "%d", transfer.source_node_id);
+    uint8_t filename_len = MIN(msg.filename.len, sizeof(pkt.filename)-strlen((char*)pkt.filename));
+    memcpy(&pkt.filename[strlen((char*)pkt.filename)], &msg.filename.data[msg.filename.len - filename_len], filename_len);
+
+    pkt.offset = msg.offset;
+    pkt.length = msg.data.len;
+    static_assert(sizeof(pkt.data) == sizeof(msg.data.data), "size mismatch");
+    memcpy(&pkt.data, &msg.data.data, sizeof(pkt.data));
+
+    AP::logger().WriteBlock(&pkt, sizeof(pkt));
 #endif
 }
 

@@ -34,6 +34,7 @@
 #include "AP_DroneCAN_DNA_Server.h"
 #include <canard.h>
 #include <dronecan_msgs.h>
+#include <AP_Logger/AP_Logger.h>
 
 #ifndef DRONECAN_SRV_NUMBER
 #define DRONECAN_SRV_NUMBER NUM_SERVO_CHANNELS
@@ -127,6 +128,7 @@ public:
         USE_HIMARK_SERVO          = (1U<<6),
         USE_HOBBYWING_ESC         = (1U<<7),
         ENABLE_STATS              = (1U<<8),
+        ENABLE_FILE_LOG           = (1U<<9),
     };
 
     // check if a option is set
@@ -277,6 +279,11 @@ private:
     Canard::Publisher<ardupilot_gnss_Heading> gnss_heading{canard_iface};
     Canard::Publisher<ardupilot_gnss_Status> gnss_status{canard_iface};
 #endif
+
+#if HAL_LOGGING_ENABLED
+    Canard::Publisher<ardupilot_logger_LoggerStatus> logger_status{canard_iface};
+#endif
+
     // incoming messages
     Canard::ObjCallback<AP_DroneCAN, ardupilot_indication_Button> safety_button_cb{this, &AP_DroneCAN::handle_button};
     Canard::Subscriber<ardupilot_indication_Button> safety_button_listener{safety_button_cb, _driver_index};
@@ -292,6 +299,11 @@ private:
 
     Canard::ObjCallback<AP_DroneCAN, uavcan_protocol_debug_LogMessage> debug_cb{this, &AP_DroneCAN::handle_debug};
     Canard::Subscriber<uavcan_protocol_debug_LogMessage> debug_listener{debug_cb, _driver_index};
+
+#if HAL_LOGGING_ENABLED
+    Canard::ObjCallback<AP_DroneCAN, ardupilot_logger_File> logger_file_cb{this, &AP_DroneCAN::handle_logger_file};
+    Canard::Subscriber<ardupilot_logger_File> logger_file_listener{logger_file_cb, _driver_index};
+#endif
 
     // param client
     Canard::ObjCallback<AP_DroneCAN, uavcan_protocol_param_GetSetResponse> param_get_set_res_cb{this, &AP_DroneCAN::handle_param_get_set_response};
@@ -353,6 +365,9 @@ private:
     void handle_ESC_status(const CanardRxTransfer& transfer, const uavcan_equipment_esc_Status& msg);
     static bool is_esc_data_index_valid(const uint8_t index);
     void handle_debug(const CanardRxTransfer& transfer, const uavcan_protocol_debug_LogMessage& msg);
+#if HAL_LOGGING_ENABLED
+    void handle_logger_file(const CanardRxTransfer& transfer, const ardupilot_logger_File& msg);
+#endif
     void handle_param_get_set_response(const CanardRxTransfer& transfer, const uavcan_protocol_param_GetSetResponse& rsp);
     void handle_param_save_response(const CanardRxTransfer& transfer, const uavcan_protocol_param_ExecuteOpcodeResponse& rsp);
     void handle_node_info_request(const CanardRxTransfer& transfer, const uavcan_protocol_GetNodeInfoRequest& req);
