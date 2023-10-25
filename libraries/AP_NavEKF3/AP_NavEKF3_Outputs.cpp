@@ -260,21 +260,47 @@ bool NavEKF3_core::getPosNE(Vector2f &posNE) const
 // Return true if the estimate is valid
 bool NavEKF3_core::getPosD_local(float &posD) const
 {
+    return getPosD_local(posD, 0);
+}
+
+// Write the calculated D position of the body frame origin relative to the EKF local origin at specified time
+// Return true if the estimate is valid
+bool NavEKF3_core::getPosD_local(float &posD, uint32_t time_ms) const
+{
+    if (time_ms == 0) {
+        // use latest estimate
+        posD = outputDataNew.position.z;
+    } else {
+        uint8_t output_low_index, output_high_index;
+        storedOutput.get_time_boundaries(time_ms, output_low_index, output_high_index);
+        if (output_low_index == storedOutput.get_youngest_index()) {
+            // time specified is in the future so use the latest estimate
+            posD = outputDataNew.position.z;
+        } else if (output_high_index == storedOutput.get_oldest_index()) {
+            // time specified is in later than oldest estimate
+            posD = storedOutput[output_high_index].position.z;
+        } else {
+            // interpolate between the position estimates
+            posD = linear_interpolate(storedOutput[output_low_index].position.z, storedOutput[output_high_index].position.z,
+                                      time_ms,
+                                      storedOutput[output_low_index].time_ms, storedOutput[output_high_index].time_ms);
+        }
+    }
+
     // The EKF always has a height estimate regardless of mode of operation
     // Correct for the IMU offset (EKF calculations are at the IMU)
     // Also correct for changes to the origin height
     if ((frontend->_originHgtMode & (1<<2)) == 0) {
         // Any sensor height drift corrections relative to the WGS-84 reference are applied to the origin.
-        posD = outputDataNew.position.z + posOffsetNED.z;
+        posD += posOffsetNED.z;
     } else {
         // The origin height is static and corrections are applied to the local vertical position
         // so that height returned by getLLH() = height returned by getOriginLLH - posD
-        posD = outputDataNew.position.z + posOffsetNED.z + 0.01f * (float)EKF_origin.alt - (float)ekfGpsRefHgt;
+        posD += posOffsetNED.z + 0.01f * (float)EKF_origin.alt - (float)ekfGpsRefHgt;
     }
 
     // Return the current height solution status
     return filterStatus.flags.vert_pos;
-
 }
 
 // Write the last calculated D position of the body frame origin relative to the public origin
@@ -304,7 +330,7 @@ bool NavEKF3_core::getHAGL(float &HAGL) const
 // If a calculated location isn't available, return a raw GPS measurement
 // The status will return true if a calculation or raw measurement is available
 // The getFilterStatus() function provides a more detailed description of data health and must be checked if data is to be used for flight control
-bool NavEKF3_core::getLLH(Location &loc) const
+bool NavEKF3_core::getLLH(Location &loc, uint32_t time_ms) const
 {
     Location origin;
     if (getOriginLLH(origin)) {
@@ -316,8 +342,35 @@ bool NavEKF3_core::getLLH(Location &loc) const
                 // The EKF is able to provide a position estimate
                 loc.lat = EKF_origin.lat;
                 loc.lng = EKF_origin.lng;
-                loc.offset(outputDataNew.position.x + posOffsetNED.x,
-                           outputDataNew.position.y + posOffsetNED.y);
+                if (time_ms == 0) {
+                    loc.offset(outputDataNew.position.x + posOffsetNED.x,
+                                outputDataNew.position.y + posOffsetNED.y);
+                } else {
+                    // calculate the position at the specified time
+                    double posX, posY;
+                    uint8_t output_low_index, output_high_index;
+                    storedOutput.get_time_boundaries(time_ms, output_low_index, output_high_index);
+                    if (output_low_index == storedOutput.get_youngest_index()) {
+                        // time specified is in the future so use the latest estimate
+                        posX = outputDataNew.position.x;
+                        posY = outputDataNew.position.y;
+                    } else if (output_high_index == storedOutput.get_oldest_index()) {
+                        // time specified is in later than oldest estimate
+                        posX = storedOutput[output_high_index].position.x;
+                        posY = storedOutput[output_high_index].position.y;
+                    } else {
+                        // interpolate between the position estimates
+                        posX = linear_interpolate(storedOutput[output_low_index].position.x, storedOutput[output_high_index].position.x,
+                                                  time_ms,
+                                                  storedOutput[output_low_index].time_ms, storedOutput[output_high_index].time_ms);
+                        posY = linear_interpolate(storedOutput[output_low_index].position.y, storedOutput[output_high_index].position.y,
+                                                  time_ms,
+                                                  storedOutput[output_low_index].time_ms, storedOutput[output_high_index].time_ms);
+                    }
+                    posX += posOffsetNED.x;
+                    posY += posOffsetNED.y;
+                    loc.offset(posX, posY);
+                }
                 return true;
             } else {
                 // We have been be doing inertial dead reckoning for too long so use raw GPS if available
@@ -349,6 +402,13 @@ bool NavEKF3_core::getLLH(Location &loc) const
         // The EKF is not navigating so use raw GPS if available
         return getGPSLLH(loc);
     }
+}
+
+// return the estimated latitude, longitude and height of the body frame origin relative to the EKF local origin
+// at specified time in WGS-84
+bool NavEKF3_core::getLLH(Location &loc) const
+{
+    return getLLH(loc, 0);
 }
 
 bool NavEKF3_core::getGPSLLH(Location &loc) const

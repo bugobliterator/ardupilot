@@ -862,6 +862,9 @@ void NavEKF3_core::calcOutputStates()
     Matrix3F Tbn_temp;
     outputDataNew.quat.rotation_matrix(Tbn_temp);
 
+    // set time of latest imu data the output data will correspond to
+    outputDataNew.time_ms = imuDataNew.time_ms;
+
     // transform body delta velocities to delta velocities in the nav frame
     Vector3F delVelNav  = Tbn_temp*delVelNewCorrected;
     delVelNav.z += GRAVITY_MSS*imuDataNew.delVelDT;

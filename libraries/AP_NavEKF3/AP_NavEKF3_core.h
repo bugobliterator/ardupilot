@@ -156,6 +156,9 @@ public:
     // get position D from local origin
     bool getPosD_local(float &posD) const;
 
+    // get position D from local origin at specified time
+    bool getPosD_local(float &posD, uint32_t time_ms) const;
+
     // Write the last calculated D position relative to the public origin
     // If a calculated solution is not available, use the best available data and return false
     // If false returned, do not use for flight control
@@ -219,6 +222,12 @@ public:
     // The status will return true if a calculation or raw measurement is available
     // The getFilterStatus() function provides a more detailed description of data health and must be checked if data is to be used for flight control
     bool getLLH(Location &loc) const;
+
+    // Return the last calculated latitude, longitude and height in WGS-84 at specified time
+    // If a calculated location isn't available, return a raw GPS measurement
+    // The status will return true if a calculation or raw measurement is available
+    // The getFilterStatus() function provides a more detailed description of data health and must be checked if data is to be used for flight control
+    bool getLLH(Location &loc, uint32_t time_ms) const;
 
     // return the latitude and longitude and height used to set the NED origin
     // All NED positions calculated by the filter are relative to this location
@@ -556,6 +565,7 @@ private:
         QuaternionF quat;           // quaternion defining rotation from local NED earth frame to body frame
         Vector3F    velocity;       // velocity of body frame origin in local NED earth frame (m/sec)
         Vector3F    position;       // position of body frame origin in local NED earth frame (m)
+        uint32_t    time_ms;        // time stamp of last imu data used in msec
     };
 
     struct imu_elements {
