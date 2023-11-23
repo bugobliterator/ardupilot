@@ -61,6 +61,7 @@ private:
     bool force_external;
     enum Rotation rotation;
     float _scaler = 1.0;
+    uint8_t bist;
 };
 
 #endif  // AP_COMPASS_RM3100_ENABLED

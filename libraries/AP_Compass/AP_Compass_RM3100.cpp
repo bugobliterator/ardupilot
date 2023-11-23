@@ -25,7 +25,7 @@
 #include <utility>
 #include <AP_Math/AP_Math.h>
 #include <stdio.h>
-
+#include <GCS_MAVLink/GCS.h>
 #define RM3100_POLL_REG        0x00
 
 #define RM3100_CMM_REG         0x01
@@ -139,6 +139,10 @@ bool AP_Compass_RM3100::init()
 
     _scaler = (1 / GAIN_CC200) * UTESLA_TO_MGAUSS; // has to be changed if using a different cycle count
 
+    // Do a BIST
+    dev->write_register(RM3100_BIST_REG, 0xFF); // BIST
+    hal.scheduler->delay(100);
+    dev->read_registers(RM3100_BIST_REG, &bist, 1);
     // lower retries for run
     dev->set_retries(3);
 
@@ -189,15 +193,18 @@ void AP_Compass_RM3100::timer()
     if (!dev->read_registers(RM3100_STATUS_REG, (uint8_t *)&status, 1)) {
         goto check_registers;
     }
+    hal.console->printf("RM3100: BIST %x\n", bist);
 
     if (!(status & 0x80)) {
         // data not available yet
         goto check_registers;
     }
+    // hal.console->printf("RM3100: status %x\n", status);
 
     if (!dev->read_registers(RM3100_MX2_REG, (uint8_t *)&data, sizeof(data))) {
         goto check_registers;
     }
+    // hal.console->printf("RM3100: read data %x\n", status);
 
     // the 24 bits of data for each axis are in 2s complement representation
     // each byte is shifted to its position in a 24-bit unsigned integer and from 8 more bits to be left-aligned in a 32-bit integer
