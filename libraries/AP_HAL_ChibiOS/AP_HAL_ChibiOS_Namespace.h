@@ -35,4 +35,5 @@ namespace ChibiOS {
     class SoftSigReaderInt;
     class CANIface;
     class Flash;
+    class EventHandle;
 }

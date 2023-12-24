@@ -29,8 +29,8 @@ public:
 
 void EventTest::setup(void)
 {
-    handle.register_event(1);
     handle.set_source(&src);
+    handle.add_events(1);
 
     hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&EventTest::thread1, void), "thd1", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0);
     hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&EventTest::thread2, void), "thd2", 2048, AP_HAL::Scheduler::PRIORITY_SPI, 0);
@@ -39,6 +39,7 @@ void EventTest::setup(void)
 
 void EventTest::thread2(void)
 {
+    handle.register_events();
     while (true) {
         auto ret = handle.wait(0xFFFFU);
         WITH_SEMAPHORE(sem);

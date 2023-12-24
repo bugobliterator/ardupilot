@@ -1000,9 +1000,10 @@ ChibiOS::EventSource CANIface::evt_src_;
 bool CANIface::set_event_handle(AP_HAL::EventHandle* handle)
 {
     CriticalSectionLocker lock;
-    event_handle_ = handle;
+    event_handle_ = (ChibiOS::EventHandle*)handle;
     event_handle_->set_source(&evt_src_);
-    return event_handle_->register_event(1 << self_index_);
+    event_handle_->add_events(self_index_);
+    return true;
 }
 #endif
 

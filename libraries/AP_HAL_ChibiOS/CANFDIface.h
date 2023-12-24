@@ -120,7 +120,7 @@ class ChibiOS::CANIface : public AP_HAL::CANIface
     bool irq_init_;
     bool initialised_;
     bool had_activity_;
-    AP_HAL::EventHandle* event_handle_;
+    ChibiOS::EventHandle* event_handle_;
 #if CH_CFG_USE_EVENTS == TRUE
     static ChibiOS::EventSource evt_src_;
 #endif

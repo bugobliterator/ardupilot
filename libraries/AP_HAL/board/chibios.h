@@ -65,7 +65,8 @@
 #define HAL_Semaphore ChibiOS::Semaphore
 
 #include <AP_HAL_ChibiOS/EventSource.h>
-#define HAL_EventHandle AP_HAL::EventHandle
+#include <AP_HAL_ChibiOS/EventHandle.h>
+#define HAL_EventHandle ChibiOS::EventHandle
 #define HAL_EventSource ChibiOS::EventSource
 #endif
 

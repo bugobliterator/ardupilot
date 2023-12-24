@@ -17,6 +17,7 @@
 #include "Scheduler.h"
 #include "Semaphores.h"
 #include "EventHandle.h"
+#include "EventSource.h"
 #include "Util.h"
 #include "OpticalFlow.h"
 #include "Flash.h"
