@@ -43,10 +43,29 @@
   for micros64()
 */
 
+inline systime_t get_system_ticks()
+{
+#if defined(AP_MICROS_SCALE_FACTOR_PCT) || defined(AP_BOARD_START_TIME)
+    uint64_t now = st_lld_get_counter();
+#endif
+#ifdef AP_MICROS_SCALE_FACTOR_PCT
+    now = (((uint64_t)now) * (100 + AP_MICROS_SCALE_FACTOR_PCT)) / 100;
+#endif
+#ifdef AP_BOARD_START_TIME
+    now += AP_BOARD_START_TIME;
+#endif
+
+#if defined(AP_MICROS_SCALE_FACTOR_PCT) || defined(AP_BOARD_START_TIME)
+    return now;
+#else
+    return st_lld_get_counter();
+#endif
+}
+
 #if CH_CFG_ST_RESOLUTION == 16
 static uint32_t system_time_u32_us(void)
 {
-    systime_t now = chVTGetSystemTimeX();
+    systime_t now = get_system_ticks();
 #if CH_CFG_ST_FREQUENCY != 1000000U
     #error "must use 32 bit timer if system clock not 1MHz"
 #endif
@@ -60,7 +79,7 @@ static uint32_t system_time_u32_us(void)
 #elif CH_CFG_ST_RESOLUTION == 32
 static uint32_t system_time_u32_us(void)
 {
-    systime_t now = chVTGetSystemTimeX();
+    systime_t now = get_system_ticks();
 #if CH_CFG_ST_FREQUENCY != 1000000U
     now *= 1000000U/CH_CFG_ST_FREQUENCY;
 #endif
@@ -72,11 +91,7 @@ static uint32_t system_time_u32_us(void)
 
 static uint32_t get_systime_us32(void)
 {
-    uint32_t now = system_time_u32_us();
-#ifdef AP_BOARD_START_TIME
-    now += AP_BOARD_START_TIME;
-#endif
-    return now;
+    return system_time_u32_us();
 }
 
 /*

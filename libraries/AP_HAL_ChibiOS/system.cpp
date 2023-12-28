@@ -350,11 +350,7 @@ __FASTRAMFUNC__ uint32_t micros()
 {
 #if CH_CFG_ST_RESOLUTION == 32 && CH_CFG_ST_FREQUENCY==1000000U
     // special case optimisation for 32 bit timers
-#ifdef AP_BOARD_START_TIME
-    return st_lld_get_counter() + AP_BOARD_START_TIME;
-#else
-    return st_lld_get_counter();
-#endif
+    return get_system_ticks();
 #else
     return hrt_micros32();
 #endif
@@ -363,9 +359,9 @@ __FASTRAMFUNC__ uint32_t micros()
 uint16_t micros16()
 {
 #if CH_CFG_ST_RESOLUTION == 32 && CH_CFG_ST_FREQUENCY==1000000U
-    return st_lld_get_counter() & 0xFFFF;
+    return get_system_ticks() & 0xFFFF;
 #elif CH_CFG_ST_RESOLUTION == 16 && CH_CFG_ST_FREQUENCY==1000000U
-    return st_lld_get_counter();
+    return get_system_ticks();
 #else
     return hrt_micros32() & 0xFFFF;
 #endif

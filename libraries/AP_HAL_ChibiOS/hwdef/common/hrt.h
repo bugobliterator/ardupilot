@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ch.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,6 +15,7 @@ uint32_t hrt_millis32I(void); // from locked context
 uint32_t hrt_millis32_from_ISR(void); // from an ISR
 uint64_t hrt_millis64(void);
 
+systime_t get_system_ticks(void);
 #ifdef __cplusplus
 }
 #endif
