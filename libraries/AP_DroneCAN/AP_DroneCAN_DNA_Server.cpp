@@ -158,23 +158,23 @@ Unique IDs hash.
 Returns 255 if no Node ID was detected */
 uint8_t AP_DroneCAN_DNA_Server::getNodeIDForUniqueID(const uint8_t unique_id[], uint8_t size)
 {
-    uint8_t node_id = 255;
-    NodeData node_data, cmp_node_data;
-    getHash(cmp_node_data, unique_id, size);
+    // uint8_t node_id = 255;
+    // NodeData node_data, cmp_node_data;
+    // getHash(cmp_node_data, unique_id, size);
 
-    for (int i = MAX_NODE_ID; i >= 0; i--) {
-        if (!isNodeIDOccupied(i)) { // No point in checking NodeID that's not taken
-            continue;
-        }
-        if (!readNodeData(node_data, i)) {
-            break;  //Storage module has failed, report that as no NodeID detected
-        }
-        if (memcmp(node_data.hwid_hash, cmp_node_data.hwid_hash, sizeof(NodeData::hwid_hash)) == 0) {
-            node_id = i;
-            break;
-        }
-    }
-    return node_id;
+    // for (int i = MAX_NODE_ID; i >= 0; i--) {
+    //     if (!isNodeIDOccupied(i)) { // No point in checking NodeID that's not taken
+    //         continue;
+    //     }
+    //     if (!readNodeData(node_data, i)) {
+    //         break;  //Storage module has failed, report that as no NodeID detected
+    //     }
+    //     if (memcmp(node_data.hwid_hash, cmp_node_data.hwid_hash, sizeof(NodeData::hwid_hash)) == 0) {
+    //         node_id = i;
+    //         break;
+    //     }
+    // }
+    return 125;
 }
 
 /* Hash the Unique ID and add it to the Server Record
