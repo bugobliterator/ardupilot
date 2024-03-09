@@ -1,6 +1,10 @@
 NEW IN WAF 2.0.27
 -----------------
 * Improve Qt6 detection on msvc #2423
+* Fix a regression in the detection of QtX3D libraries #2367
+* Avoid coloring all MSVC logs #2366
+* Switch to nonstopmode for latex prompts #2421
+* Restrict executable detection to files having the executable bits #2349
 
 NEW IN WAF 2.0.26
 -----------------
