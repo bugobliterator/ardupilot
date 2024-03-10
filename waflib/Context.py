@@ -18,13 +18,13 @@ else:
 	import imp
 
 # the following 3 constants are updated on each new release (do not touch)
-HEXVERSION=0x2001a00
+HEXVERSION=0x2001b00
 """Constant updated on new releases"""
 
-WAFVERSION="2.0.26"
+WAFVERSION="2.0.27"
 """Constant updated on new releases"""
 
-WAFREVISION="0fb985ce1932c6f3e7533f435e4ee209d673776e"
+WAFREVISION="c3e645e395505cb5faa115172b1fc9abdaeaf146"
 """Git revision when the waf version is updated"""
 
 WAFNAME="waf"
