@@ -13,7 +13,7 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 /*
- *   AP_CANManager - board specific configuration for CAN interface
+ *   Testing 123
  */
 
 #include <AP_HAL/AP_HAL.h>
