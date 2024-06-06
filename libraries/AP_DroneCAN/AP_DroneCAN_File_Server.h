@@ -22,9 +22,13 @@ class AP_DroneCAN_File_Server
     AP_DroneCAN &_ap_dronecan;
     CanardInterface &_canard_iface;
 
-    Canard::ObjCallback<AP_DroneCAN_File_Server, uavcan_protocol_file_WriteRequest> file_write_cb{this, &AP_DroneCAN_File_Server::handle_get_info_request};
+    void handle_write_request(const CanardRxTransfer& transfer, const uavcan_protocol_file_WriteRequest& req);
+    Canard::ObjCallback<AP_DroneCAN_File_Server, uavcan_protocol_file_WriteRequest> file_write_cb{this, &AP_DroneCAN_File_Server::handle_write_request};
     Canard::Server<uavcan_protocol_file_WriteRequest> _write_server{_canard_iface, file_write_cb};
-    uavcan_protocol_file_WriteResponse rsp;
+
+    void handle_read_request(const CanardRxTransfer& transfer, uavcan_protocol_file_ReadRequest& req);
+    Canard::ObjCallback<AP_DroneCAN_File_Server, uavcan_protocol_file_ReadRequest> file_read_cb{this, &AP_DroneCAN_File_Server::handle_read_request};
+    Canard::Server<uavcan_protocol_file_ReadRequest> _read_server{_canard_iface, file_read_cb};
 
 public:
     AP_DroneCAN_File_Server(AP_DroneCAN &ap_dronecan, CanardInterface &canard_iface, uint8_t driver_index);
@@ -33,28 +37,10 @@ public:
     // Do not allow copies
     CLASS_NO_COPY(AP_DroneCAN_File_Server);
 
-    //Initialises publisher and Server Record for specified uavcan driver
-    bool init(uint8_t own_unique_id[], uint8_t own_unique_id_len, uint8_t node_id);
-
     //Reset the Server Record
     void reset();
-
-    /* Checks if the node id has been verified against the record
-    Specific CAN drivers are expected to check use this method to 
-    verify if the node is healthy and has static node_id against 
-    hwid in the records */
-    bool isNodeIDVerified(uint8_t node_id) const;
 
     /* Subscribe to the messages to be handled for maintaining and allocating
     Node ID list */
     static void subscribe_msgs(AP_DroneCAN* ap_dronecan);
-
-    //report the server state, along with failure message if any
-    bool prearm_check(char* fail_msg, uint8_t fail_msg_len) const;
-
-    //Callbacks
-    void handle_get_info_request(const CanardRxTransfer& transfer, const uavcan_protocol_file_WriteRequest& req);
-
-    //Run through the list of seen node ids for verification
-    void verify_nodes();
 };
