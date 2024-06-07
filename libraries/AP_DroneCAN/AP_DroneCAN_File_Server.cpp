@@ -25,7 +25,7 @@ void AP_DroneCAN_File_Server::handle_write_request(const CanardRxTransfer& trans
 }
 
 
-void AP_DroneCAN_File_Server::handle_read_request(const CanardRxTransfer& transfer, uavcan_protocol_file_ReadRequest& req){
+void AP_DroneCAN_File_Server::handle_read_request(const CanardRxTransfer& transfer, const uavcan_protocol_file_ReadRequest& req){
     uavcan_protocol_file_ReadResponse rsp;
     int fd = AP::FS().open("@ROMFS/test.123", O_RDONLY, false);
     if (fd<0) {
@@ -38,6 +38,7 @@ void AP_DroneCAN_File_Server::handle_read_request(const CanardRxTransfer& transf
         return;
     }
     int ret = AP::FS().read(fd, rsp.data.data, req.path.path.len);
+    // int ret = AP::FS().read(fd, req.path.path.data, req.path.path.len);   // Giving const error
     if (ret < 0) {
         if (errno != 0) {
             rsp.error.value = errno;

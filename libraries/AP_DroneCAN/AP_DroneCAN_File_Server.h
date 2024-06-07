@@ -26,7 +26,7 @@ class AP_DroneCAN_File_Server
     Canard::ObjCallback<AP_DroneCAN_File_Server, uavcan_protocol_file_WriteRequest> file_write_cb{this, &AP_DroneCAN_File_Server::handle_write_request};
     Canard::Server<uavcan_protocol_file_WriteRequest> _write_server{_canard_iface, file_write_cb};
 
-    void handle_read_request(const CanardRxTransfer& transfer, uavcan_protocol_file_ReadRequest& req);
+    void handle_read_request(const CanardRxTransfer& transfer, const uavcan_protocol_file_ReadRequest& req);
     Canard::ObjCallback<AP_DroneCAN_File_Server, uavcan_protocol_file_ReadRequest> file_read_cb{this, &AP_DroneCAN_File_Server::handle_read_request};
     Canard::Server<uavcan_protocol_file_ReadRequest> _read_server{_canard_iface, file_read_cb};
 
