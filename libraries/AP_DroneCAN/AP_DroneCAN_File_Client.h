@@ -25,7 +25,7 @@ class AP_DroneCAN_File_Client
     // gets called at receive of write response
     void handle_write_response(const CanardRxTransfer& transfer, const uavcan_protocol_file_WriteResponse &msg);
     Canard::ObjCallback<AP_DroneCAN_File_Client, uavcan_protocol_file_WriteResponse> file_wr_cb{this, &AP_DroneCAN_File_Client::handle_write_response};
-    Canard::Client<uavcan_protocol_file_WriteResponse> _write_client;
+    Canard::Client<uavcan_protocol_file_WriteResponse> _write_client{_canard_iface, file_wr_cb};;
 
 public:
     AP_DroneCAN_File_Client(AP_DroneCAN &ap_dronecan, CanardInterface &canard_iface, uint8_t file_server_node_id);
@@ -37,8 +37,10 @@ public:
     FUNCTOR_TYPEDEF(FileRequestCb, void, AP_DroneCAN*, const int16_t);
 
     // sends request to open a file on the server
-    bool open_async(const char *name, uint16_t flags, FileRequestCb& file_request_cb);
+    bool open_async(const char *name, uint16_t flags, FileRequestCb *cb);
 
     // sends the write request to the server 
-    bool write_async(uint8_t data[], uint16_t data_len, FileRequestCb& file_request_cb);
+    bool write_async(uint8_t data[], uint16_t data_len, FileRequestCb *cb);
+
+    FileRequestCb *file_request_cb;
 };
