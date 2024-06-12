@@ -13,11 +13,21 @@
 #include "AP_Canard_iface.h"
 #include <dronecan_msgs.h>
 
+#define MAX_NUM_CLIENTS 5
+
 class AP_DroneCAN;
 //Forward declaring classes
 class AP_DroneCAN_File_Server
 {
+public:
+    AP_DroneCAN_File_Server(AP_DroneCAN &ap_dronecan, CanardInterface &canard_iface);
 
+    bool init();
+
+    // Do not allow copies
+    CLASS_NO_COPY(AP_DroneCAN_File_Server);
+
+private:
     HAL_Semaphore storage_sem;
     AP_DroneCAN &_ap_dronecan;
     CanardInterface &_canard_iface;
@@ -30,17 +40,14 @@ class AP_DroneCAN_File_Server
     Canard::ObjCallback<AP_DroneCAN_File_Server, uavcan_protocol_file_ReadRequest> file_read_cb{this, &AP_DroneCAN_File_Server::handle_read_request};
     Canard::Server<uavcan_protocol_file_ReadRequest> _read_server{_canard_iface, file_read_cb};
 
-public:
-    AP_DroneCAN_File_Server(AP_DroneCAN &ap_dronecan, CanardInterface &canard_iface, uint8_t driver_index);
+    struct FileClient {
+        int fd = -1;
+        uavcan_protocol_file_Path path;
+        uint8_t open_mode;
+        uint8_t client_node_id;
+        uint32_t last_request_time_ms;
+    } _clients[MAX_NUM_CLIENTS];
 
+    FileClient* get_free_client(const uavcan_protocol_file_Path &path, uint8_t client_node_id);
 
-    // Do not allow copies
-    CLASS_NO_COPY(AP_DroneCAN_File_Server);
-
-    //Reset the Server Record
-    void reset();
-
-    /* Subscribe to the messages to be handled for maintaining and allocating
-    Node ID list */
-    static void subscribe_msgs(AP_DroneCAN* ap_dronecan);
 };

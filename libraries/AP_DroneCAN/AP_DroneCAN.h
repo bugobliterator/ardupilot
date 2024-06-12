@@ -36,6 +36,8 @@
 #include <dronecan_msgs.h>
 #include <AP_SerialManager/AP_SerialManager_config.h>
 #include <AP_Relay/AP_Relay_config.h>
+#include "AP_DroneCAN_File_Client.h"
+#include "AP_DroneCAN_File_Server.h"
 
 #ifndef DRONECAN_SRV_NUMBER
 #define DRONECAN_SRV_NUMBER NUM_SERVO_CHANNELS
@@ -172,6 +174,8 @@ public:
     Canard::Publisher<uavcan_equipment_hardpoint_Command> relay_hardpoint{canard_iface};
 #endif
 
+    AP_DroneCAN_File_Client& get_file_client() { return _file_client; }
+
 private:
     void loop(void);
 
@@ -228,10 +232,13 @@ private:
     AP_Int16 _notify_state_hz;
     AP_Int16 _pool_size;
     AP_Int32 _esc_rv;
+    AP_Int8 _io_server_node;
 
     uint32_t *mem_pool;
 
     AP_DroneCAN_DNA_Server _dna_server;
+    AP_DroneCAN_File_Client _file_client;
+    AP_DroneCAN_File_Server _file_server;
 
     uint8_t _driver_index;
 
