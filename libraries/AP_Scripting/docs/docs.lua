@@ -1583,6 +1583,20 @@ function periph:get_yaw_earth() end
 ---@param text string
 function periph:can_printf(text) end
 
+-- can printf with severity level
+---@param severity integer
+---| '0' # Emergency: System is unusable. This is a "panic" condition.
+---| '1' # Alert: Action should be taken immediately. Indicates error in non-critical systems.
+---| '2' # Critical: Action must be taken immediately. Indicates failure in a primary system.
+---| '3' # Error: Indicates an error in secondary/redundant systems.
+---| '4' # Warning: Indicates about a possible future error if this is not resolved within a given timeframe. Example would be a low battery warning.
+---| '5' # Notice: An unusual event has occurred, though not an error condition. This should be investigated for the root cause.
+---| '6' # Info: Normal operational messages. Useful for logging. No action is required for these messages.
+---| '7' # Debug: Useful non-operational messages that can assist in debugging. These should not occur during normal operation.
+---@param text string
+function periph:can_printf_severity(severity, text) end
+
+
 -- desc
 ---@param hold_in_bootloader boolean
 function periph:reboot(hold_in_bootloader) end

@@ -513,6 +513,9 @@ class Board:
                 "-D__AP_LINE__=__LINE__",
             ]
 
+        if not cfg.options.disable_networking:
+            env.ROMFS_FILES += [('scripts/modules/web.lua','libraries/AP_Scripting/modules/webserver.lua'),
+                                ('scripts/webgui.lua','libraries/AP_Scripting/applets/net_webserver.lua')]
         # add files from ROMFS_custom
         custom_dir = 'ROMFS_custom'
         if os.path.exists(custom_dir):

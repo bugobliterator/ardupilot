@@ -288,3 +288,11 @@ define HAL_FORWARD_OTG2_SERIAL 7
 define HAL_HAVE_DUAL_USB_CDC 1
 define DEFAULT_SERIAL7_PROTOCOL SerialProtocol_MAVLink2
 define DEFAULT_SERIAL7_BAUD 2000000
+
+// ROMFS filesystem only
+define AP_FILESYSTEM_ROMFS_ENABLED 1
+
+// allow scripts to add parameters
+define AP_PARAM_DYNAMIC_ENABLED 1
+
+ROMFS_DIRECTORY libraries/AP_Networking/Web
