@@ -88,6 +88,8 @@ extern const AP_HAL::HAL& hal;
 
 #define debug_dronecan(level_debug, fmt, args...) do { AP::can().log_text(level_debug, "DroneCAN", fmt, ##args); } while (0)
 
+#define DRONECAN_ESC_CMD_MAX ((1<<13)-1)
+
 // Translation of all messages from DroneCAN structures into AP structures is done
 // in AP_DroneCAN and not in corresponding drivers.
 // The overhead of including definitions of DSDL is very high and it is best to
@@ -708,7 +710,7 @@ void AP_DroneCAN::handle_node_info_request(const CanardRxTransfer& transfer, con
 }
 
 int16_t AP_DroneCAN::scale_esc_output(uint8_t idx){
-    static const int16_t cmd_max = ((1<<13)-1);
+    static const int16_t cmd_max = DRONECAN_ESC_CMD_MAX;
     float scaled = 0;
 
     //Check if this channel has a reversible ESC. If it does, we can send negative commands.
@@ -1901,5 +1903,99 @@ bool AP_DroneCAN::write_aux_frame(AP_HAL::CANFrame &out_frame, const uint64_t ti
     }
     return canard_iface.write_aux_frame(out_frame, timeout_us);
 }
+
+#if AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED
+void AP_DroneCAN::handle_act_out_array(const CanardRxTransfer& transfer, const uavcan_equipment_actuator_ArrayCommand& msg)
+{
+    for (uint8_t i=0; i < msg.commands.len; i++) {
+        const auto &c = msg.commands.data[i];
+        auto act_id = c.actuator_id;
+        if (act_id >= DRONECAN_SRV_NUMBER) {
+            // invalid actuator id
+            continue;
+        }
+        auto &servo_conf = override_SRV_conf[act_id];
+        servo_conf.updated = true;
+        switch (c.command_type) {
+        case UAVCAN_EQUIPMENT_ACTUATOR_COMMAND_COMMAND_TYPE_UNITLESS:
+            if (SRV_Channels::srv_channel(act_id)) {
+                servo_conf.pulse = SRV_Channels::srv_channel(act_id)->pwm_from_scaled_value(c.command_value);
+            }
+            break;
+        case UAVCAN_EQUIPMENT_ACTUATOR_COMMAND_COMMAND_TYPE_PWM:
+            servo_conf.pulse = c.command_value;
+            break;
+        default:
+            // unsupported command type, ignore
+            servo_conf.updated = false;
+            break;
+        }
+    }
+}
+
+void AP_DroneCAN::handle_esc_raw(const CanardRxTransfer& transfer, const uavcan_equipment_esc_RawCommand& msg)
+{
+    for (uint8_t i=0; (i<msg.cmd.len) && (i<DRONECAN_SRV_NUMBER); i++) {
+        override_ESC_conf[i].scaled_value = msg.cmd.data[i];
+        override_ESC_conf[i].updated = true;
+    }
+}
+
+void AP_DroneCAN::handle_safety_state(const CanardRxTransfer& transfer, const ardupilot_indication_SafetyState& msg)
+{
+    if (msg.status == 255) {
+        override_safety_on = false;
+    } else {
+        override_safety_on = true;
+    }
+}
+
+void AP_DroneCAN::handle_arming_status(const CanardRxTransfer& transfer, const uavcan_equipment_safety_ArmingStatus& msg)
+{
+    if (msg.status == UAVCAN_EQUIPMENT_SAFETY_ARMINGSTATUS_STATUS_FULLY_ARMED) {
+        override_armed = true;
+    } else {
+        override_armed = false;
+    }
+}
+
+void AP_DroneCAN::actuator_passthru_update()
+{
+    if (!AP::vehicle()->is_standby_active()) {
+        return;
+    }
+
+    if ( !AP::arming().is_armed() && override_armed) {
+        // do arm
+        AP::arming().arm(AP_Arming::PRIMARY_CONTROLLER, true);
+        return;
+    } else if (AP::arming().is_armed() && !override_armed) {
+        // do force disarm
+        AP::arming().disarm(AP_Arming::PRIMARY_CONTROLLER, false);
+        return;
+    }
+    // update ESCs
+    for (uint8_t i=0; i<DRONECAN_SRV_NUMBER; i++) {
+        auto motor_function = SRV_Channels::get_motor_function(i);
+        uint8_t chan;
+        if (override_ESC_conf[i].updated && SRV_Channels::find_channel(motor_function, chan)) {
+            SRV_Channels::set_range(motor_function, DRONECAN_ESC_CMD_MAX);
+            auto pwm_value = SRV_Channels::srv_channel(chan)->pwm_from_scaled_value(override_ESC_conf[i].scaled_value);
+            SRV_Channels::set_output_pwm_chan_timeout(chan, pwm_value, 15);
+            override_ESC_conf[i].updated = false;
+        }
+    }
+
+    // update Servo
+    for (uint8_t i=0; i<DRONECAN_SRV_NUMBER; i++) {
+        bool not_motor = !SRV_Channel::is_motor(SRV_Channels::channel_function(i));
+        if (override_SRV_conf[i].updated && not_motor) {
+            SRV_Channels::set_output_pwm_chan_timeout(i, override_SRV_conf[i].pulse, 15);
+            override_SRV_conf[i].updated = false;
+        }
+    }
+}
+
+#endif // AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED
 
 #endif // HAL_NUM_CAN_IFACES

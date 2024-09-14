@@ -36,6 +36,7 @@
 #include <dronecan_msgs.h>
 #include <AP_SerialManager/AP_SerialManager_config.h>
 #include <AP_Relay/AP_Relay_config.h>
+#include <AP_Vehicle/AP_Vehicle_Type.h>
 
 #ifndef DRONECAN_SRV_NUMBER
 #define DRONECAN_SRV_NUMBER NUM_SERVO_CHANNELS
@@ -66,6 +67,14 @@
 
 #ifndef AP_DRONECAN_VOLZ_FEEDBACK_ENABLED
 #define AP_DRONECAN_VOLZ_FEEDBACK_ENABLED 0
+#endif
+
+#ifndef AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED
+#define AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED 1
+#endif
+
+#ifndef AP_DRONECAN_SEND_RC_INPUT
+#define AP_DRONECAN_SEND_RC_INPUT 0
 #endif
 
 #if AP_DRONECAN_SERIAL_ENABLED
@@ -174,6 +183,10 @@ public:
     // Hardpoint for relay
     // Needs to be public so relay can edge trigger as well as streaming
     Canard::Publisher<uavcan_equipment_hardpoint_Command> relay_hardpoint{canard_iface};
+#endif
+
+#if AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED
+    void actuator_passthru_update();
 #endif
 
 private:
@@ -390,6 +403,39 @@ private:
     void handle_hobbywing_StatusMsg1(const CanardRxTransfer& transfer, const com_hobbywing_esc_StatusMsg1& msg);
     void handle_hobbywing_StatusMsg2(const CanardRxTransfer& transfer, const com_hobbywing_esc_StatusMsg2& msg);
 #endif // AP_DRONECAN_HOBBYWING_ESC_SUPPORT
+
+#if AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED
+
+    // handle Actuator commands for passthrough
+    bool override_safety_on;
+    bool override_armed;
+    struct {
+        uint16_t pulse;
+        bool updated;
+    } override_SRV_conf[NUM_SERVO_CHANNELS];
+    struct {
+        uint16_t scaled_value;
+        bool updated;
+    } override_ESC_conf[DRONECAN_SRV_NUMBER];
+
+    Canard::ObjCallback<AP_DroneCAN, uavcan_equipment_actuator_ArrayCommand> act_out_array_passthru_cb{this, &AP_DroneCAN::handle_act_out_array};
+    Canard::Subscriber<uavcan_equipment_actuator_ArrayCommand> act_out_array_listener{act_out_array_passthru_cb, _driver_index};
+    Canard::ObjCallback<AP_DroneCAN, uavcan_equipment_esc_RawCommand> esc_raw_passthru_cb{this, &AP_DroneCAN::handle_esc_raw};
+    Canard::Subscriber<uavcan_equipment_esc_RawCommand> esc_raw_listener{esc_raw_passthru_cb, _driver_index};
+    Canard::ObjCallback<AP_DroneCAN, ardupilot_indication_SafetyState> safety_state_passthru_cb{this, &AP_DroneCAN::handle_safety_state};
+    Canard::Subscriber<ardupilot_indication_SafetyState> safety_state_listener{safety_state_passthru_cb, _driver_index};
+    Canard::ObjCallback<AP_DroneCAN, uavcan_equipment_safety_ArmingStatus> arming_status_passthru_cb{this, &AP_DroneCAN::handle_arming_status};
+    Canard::Subscriber<uavcan_equipment_safety_ArmingStatus> arming_status_listener{arming_status_passthru_cb, _driver_index};
+    void handle_act_out_array(const CanardRxTransfer& transfer, const uavcan_equipment_actuator_ArrayCommand& msg);
+    void handle_esc_raw(const CanardRxTransfer& transfer, const uavcan_equipment_esc_RawCommand& msg);
+    void handle_safety_state(const CanardRxTransfer& transfer, const ardupilot_indication_SafetyState& msg);
+    void handle_arming_status(const CanardRxTransfer& transfer, const uavcan_equipment_safety_ArmingStatus& msg);
+#endif
+
+#if AP_DRONECAN_SEND_RC_INPUT
+    Canard::Publsher<dronecan_sensors_rc_RCInput> rc_input{canard_iface};
+    void send_rc_input();
+#endif
 
 #if AP_DRONECAN_HIMARK_SERVO_SUPPORT
     void handle_himark_servoinfo(const CanardRxTransfer& transfer, const com_himark_servo_ServoInfo &msg);
