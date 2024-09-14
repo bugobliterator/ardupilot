@@ -253,6 +253,9 @@ public:
     // returns true if vehicle is in the process of taking off
     virtual bool is_taking_off() const { return false; }
 
+    // returns true if vehicle is in standby mode
+    virtual bool is_standby_active() const { return false; }
+
     // zeroing the RC outputs can prevent unwanted motor movement:
     virtual bool should_zero_rc_outputs_on_reboot() const { return false; }
 
