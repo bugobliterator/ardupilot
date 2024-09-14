@@ -897,6 +897,7 @@ private:
     void mode_change_failed(const Mode *mode, const char *reason);
     uint8_t get_mode() const override { return (uint8_t)flightmode->mode_number(); }
     bool current_mode_requires_mission() const override;
+    bool is_standby_active() const override { return standby_active; }
     void update_flight_mode();
     void notify_flight_mode();
 

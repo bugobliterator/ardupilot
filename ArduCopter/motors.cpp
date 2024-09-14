@@ -1,4 +1,5 @@
 #include "Copter.h"
+#include <AP_DroneCAN/AP_DroneCAN.h>
 
 #define ARM_DELAY               20  // called at 10hz so 2 seconds
 #define DISARM_DELAY            20  // called at 10hz so 2 seconds
@@ -135,7 +136,17 @@ void Copter::auto_disarm_check()
 // motors_output - send output to motors library which will adjust and send to ESCs and servos
 void Copter::motors_output()
 {
-#if ADVANCED_FAILSAFE
+#if AP_DRONECAN_ACTUATOR_PASSTHROUGH_ENABLED
+    for (uint8_t i=0; i<HAL_MAX_CAN_PROTOCOL_DRIVERS; i++) {
+        auto dronecan = AP_DroneCAN::get_dronecan(i);
+        // check if we are receiving valid override actuator commands over dronecan
+        if (dronecan) {
+            dronecan->actuator_passthru_update();
+        }
+    }
+#endif
+
+#if ADVANCED_FAILSAFE == ENABLED
     // this is to allow the failsafe module to deliberately crash
     // the vehicle. Only used in extreme circumstances to meet the
     // OBC rules
