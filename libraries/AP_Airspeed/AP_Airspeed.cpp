@@ -53,6 +53,7 @@
 #include "AP_Airspeed_NMEA.h"
 #include "AP_Airspeed_MSP.h"
 #include "AP_Airspeed_External.h"
+#include "AP_Airspeed_MPR.h"
 #include "AP_Airspeed_SITL.h"
 extern const AP_HAL::HAL &hal;
 
