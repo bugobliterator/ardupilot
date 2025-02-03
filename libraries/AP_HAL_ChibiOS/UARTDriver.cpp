@@ -256,7 +256,7 @@ void UARTDriver::_begin(uint32_t b, uint16_t rxS, uint16_t txS)
      */
     bool rx_size_by_baudrate = true;
 #if HAL_WITH_IO_MCU
-    if (this == &uart_io) {
+    if (sdef.get_index() == HAL_UART_IOMCU_IDX) {
         // iomcu doesn't need extra space, just speed
         rx_size_by_baudrate = false;
         min_tx_buffer = 0;

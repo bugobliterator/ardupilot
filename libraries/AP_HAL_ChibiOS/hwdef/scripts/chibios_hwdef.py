@@ -1916,9 +1916,6 @@ INCLUDE common.ld
                 # get index of serial port in serial_list
                 index = serial_list.index(self.config['IOMCU_UART'][0])
                 f.write('#define HAL_UART_IOMCU_IDX %u\n' % int(index))
-                f.write(
-                    '#define HAL_UART_IO_DRIVER constexpr ChibiOS::UARTDriver &uart_io = serial%sDriver;\n' % (index)
-                )
 
             f.write('#define HAL_HAVE_SERVO_VOLTAGE 1\n') # make the assumption that IO gurantees servo monitoring
             # all IOMCU capable boards have SBUS out

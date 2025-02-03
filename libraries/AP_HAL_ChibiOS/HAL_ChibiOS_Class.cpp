@@ -131,9 +131,8 @@ static ChibiOS::WSPIDeviceManager wspiDeviceManager;
 #endif
 
 #if HAL_WITH_IO_MCU
-HAL_UART_IO_DRIVER;
 #include <AP_IOMCU/AP_IOMCU.h>
-AP_IOMCU iomcu(uart_io);
+AP_IOMCU iomcu;
 #endif
 
 HAL_ChibiOS::HAL_ChibiOS() :
