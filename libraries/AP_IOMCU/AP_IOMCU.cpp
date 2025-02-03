@@ -55,8 +55,7 @@ enum ioevents {
 #define AP_IOMCU_FORCE_ENABLE_HEATER 0
 #endif
 
-AP_IOMCU::AP_IOMCU(AP_HAL::UARTDriver &_uart) :
-    uart(_uart)
+AP_IOMCU::AP_IOMCU()
 {
     singleton = this;
 }
@@ -77,12 +76,15 @@ AP_IOMCU *AP_IOMCU::singleton;
  */
 void AP_IOMCU::init(void)
 {
+    if (uart == nullptr) {
+        AP_HAL::panic("UART not initialized");
+    }
     // uart runs at 1.5MBit
-    uart.begin(1500*1000, 128, 128);
+    uart->begin(1500*1000, 128, 128);
 #ifdef HAL_IOMCU_UART_OPTIONS
-    uart.set_options(HAL_IOMCU_UART_OPTIONS);
+    uart->set_options(HAL_IOMCU_UART_OPTIONS);
 #endif
-    uart.set_unbuffered_writes(true);
+    uart->set_unbuffered_writes(true);
 
 #if IOMCU_DEBUG_ENABLE
     crc_is_ok = true;
@@ -122,8 +124,8 @@ void AP_IOMCU::thread_main(void)
     thread_ctx = chThdGetSelfX();
     chEvtSignal(thread_ctx, initial_event_mask);
 
-    uart.begin(1500*1000, 128, 128);
-    uart.set_unbuffered_writes(true);
+    uart->begin(1500*1000, 128, 128);
+    uart->set_unbuffered_writes(true);
 
 #if HAL_WITH_IO_MCU_BIDIR_DSHOT
     uint16_t erpm_period_ms = 10; // default 100Hz
@@ -593,7 +595,9 @@ void AP_IOMCU::read_servo()
  */
 void AP_IOMCU::discard_input(void)
 {
-    uart.discard_input();
+    if (uart != nullptr) {
+        uart->discard_input();
+    }
 }
 
 /*
@@ -601,10 +605,13 @@ void AP_IOMCU::discard_input(void)
  */
 size_t AP_IOMCU::write_wait(const uint8_t *pkt, uint8_t len)
 {
+    if (uart == nullptr) {
+        return 0;
+    }
     uint8_t wait_count = 5;
     size_t ret;
     do {
-        ret = uart.write(pkt, len);
+        ret = uart->write(pkt, len);
         if (ret == 0) {
             hal.scheduler->delay_microseconds(100);
             num_delayed++;
@@ -618,6 +625,9 @@ size_t AP_IOMCU::write_wait(const uint8_t *pkt, uint8_t len)
 */
 bool AP_IOMCU::read_registers(uint8_t page, uint8_t offset, uint8_t count, uint16_t *regs)
 {
+    if (uart == nullptr) {
+        return false;
+    }
     while (count > PKT_MAX_REGS) {
         if (!read_registers(page, offset, PKT_MAX_REGS, regs)) {
             return false;
@@ -662,15 +672,15 @@ bool AP_IOMCU::read_registers(uint8_t page, uint8_t offset, uint8_t count, uint1
     }
 
     // wait for the expected number of reply bytes or timeout
-    if (!uart.wait_timeout(count*2+4, 10)) {
+    if (!uart->wait_timeout(count*2+4, 10)) {
         debug("t=%lu timeout read page=%u offset=%u count=%u avail=%u\n",
-              AP_HAL::millis(), page, offset, count, uart.available());
+              AP_HAL::millis(), page, offset, count, uart->available());
         protocol_fail_count++;
         return false;
     }
 
     uint8_t *b = (uint8_t *)&pkt;
-    uint8_t n = uart.available();
+    uint8_t n = uart->available();
     if (n < offsetof(struct IOPacket, regs)) {
         debug("t=%lu small pkt %u\n", AP_HAL::millis(), n);
         protocol_fail_count++;
@@ -681,7 +691,7 @@ bool AP_IOMCU::read_registers(uint8_t page, uint8_t offset, uint8_t count, uint1
         protocol_fail_count++;
         return false;
     }
-    uart.read(b, MIN(n, sizeof(pkt)));
+    uart->read(b, MIN(n, sizeof(pkt)));
 
     uint8_t got_crc = pkt.crc;
     pkt.crc = 0;
@@ -720,6 +730,9 @@ bool AP_IOMCU::read_registers(uint8_t page, uint8_t offset, uint8_t count, uint1
 */
 bool AP_IOMCU::write_registers(uint8_t page, uint8_t offset, uint8_t count, const uint16_t *regs)
 {
+    if (uart == nullptr) {
+        return false;
+    }
     // The use of offset is very, very evil - it can either be a command within the page
     // or a genuine offset, offsets within PAGE_SETUP are assumed to be commands, otherwise to be an
     // actual offset
@@ -755,17 +768,17 @@ bool AP_IOMCU::write_registers(uint8_t page, uint8_t offset, uint8_t count, cons
     }
 
     // wait for the expected number of reply bytes or timeout
-    if (!uart.wait_timeout(4, 10)) {
+    if (!uart->wait_timeout(4, 10)) {
         debug("no reply for %u/%u/%u\n", page, offset, count);
         protocol_fail_count++;
         return false;
     }
 
     uint8_t *b = (uint8_t *)&pkt;
-    uint8_t n = uart.available();
+    uint8_t n = uart->available();
     for (uint8_t i=0; i<n; i++) {
         if (i < sizeof(pkt)) {
-            b[i] = uart.read();
+            b[i] = uart->read();
         }
     }
 

@@ -23,9 +23,12 @@ class AP_IOMCU
 #endif
 {
 public:
-    AP_IOMCU(AP_HAL::UARTDriver &uart);
+    AP_IOMCU();
 
     void init(void);
+
+    // set uart driver
+    void set_uart(AP_HAL::UARTDriver *uart_driver) { uart = uart_driver; }
 
     // write to one channel
     void write_channel(uint8_t chan, uint16_t pwm);
@@ -189,7 +192,7 @@ public:
     }
 
 private:
-    AP_HAL::UARTDriver &uart;
+    AP_HAL::UARTDriver *uart;
 
     void thread_main(void);
 
