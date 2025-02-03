@@ -31,6 +31,7 @@
 #include <AP_InertialSensor/AP_InertialSensor.h>
 #include "AP_SerialManager.h"
 #include <GCS_MAVLink/GCS.h>
+#include <AP_IOMCU/AP_IOMCU.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -585,9 +586,13 @@ void AP_SerialManager::init()
                                          AP_SERIALMANAGER_PPP_BUFSIZE_TX);
                     break;
 #endif
+#if HAL_WITH_IO_MCU
                 case SerialProtocol_IOMCU:
-                    // nothing to do, AP_IOMCU handles this
+                    if (AP::iomcu()) {
+                        AP::iomcu()->set_uart(uart);
+                    }
                     break;
+#endif
                 default:
                     uart->begin(state[i].baudrate());
             }
