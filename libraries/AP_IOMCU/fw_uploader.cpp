@@ -69,8 +69,12 @@ extern const AP_HAL::HAL &hal;
  */
 bool AP_IOMCU::upload_fw(void)
 {
+    if (uart == nullptr) {
+        debug("UART not initialized");
+        return false;
+    }
     // set baudrate for bootloader
-    uart.begin(HAL_IOMCU_BOOTLOADER_BAUDRATE, 256, 256);
+    uart->begin(HAL_IOMCU_BOOTLOADER_BAUDRATE, 256, 256);
 
     bool ret = false;
 
@@ -154,7 +158,7 @@ bool AP_IOMCU::recv_byte_with_timeout(uint8_t *c, uint32_t timeout_ms)
 {
     uint32_t start = AP_HAL::millis();
     do {
-        int16_t v = uart.read();
+        int16_t v = uart->read();
         if (v >= 0) {
             *c = uint8_t(v);
             return true;
@@ -200,7 +204,7 @@ void AP_IOMCU::drain(void)
  */
 bool AP_IOMCU::send(uint8_t c)
 {
-    if (uart.write(c) != 1) {
+    if (uart->write(c) != 1) {
         return false;
     }
     return true;
@@ -443,6 +447,9 @@ bool AP_IOMCU::verify_rev3(uint32_t fw_size_local)
  */
 bool AP_IOMCU::reboot()
 {
+    if (uart == nullptr) {
+        return false;
+    }
     send(PROTO_REBOOT);
     hal.scheduler->delay(200);
     send(PROTO_EOC);
