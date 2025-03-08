@@ -265,6 +265,29 @@ jobs:
             ls -l "$PLANE_BINARY"
           fi
 
+      - name: extract features v2 checks
+        shell: bash
+        run: |
+          cd pr/
+          echo "Checking if feature headers need to be updated in build_options.py..."
+          python3 Tools/scripts/extract_features_v2.py update-feature-headers --dry-run
+          if [ $? -ne 0 ]; then
+            echo "Error running header validation script"
+            exit 1
+          fi
+          
+          # Check if any changes would be made
+          output=$(python3 Tools/scripts/extract_features_v2.py update-feature-headers --dry-run 2>&1)
+          if echo "$output" | grep -q "Would update [1-9]"; then
+            echo "ERROR: Feature headers in build_options.py need to be updated"
+            echo "$output"
+            echo "Please run 'python3 Tools/scripts/extract_features_v2.py update-feature-headers' locally and commit the changes"
+            exit 1
+          else
+            echo "No header changes required in build_options.py"
+          fi
+
+
       - name: Full size compare with base branch
         shell: bash
         run: |
