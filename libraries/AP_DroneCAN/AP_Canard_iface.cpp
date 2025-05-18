@@ -10,10 +10,18 @@ extern const AP_HAL::HAL& hal;
 #define LOG_TAG "DroneCANIface"
 #include <canard.h>
 #include <AP_CANManager/AP_CANSensor.h>
-
+#include <stdio.h>
 #define DEBUG_PKTS 0
 
 #define CANARD_MSG_TYPE_FROM_ID(x)                         ((uint16_t)(((x) >> 8U)  & 0xFFFFU))
+
+static uint64_t g_last_raw_imu_accept_time_us = 0;
+static bool g_raw_imu_timing_active = false;
+static uint64_t g_sum_raw_imu_processing_time_us = 0;
+static uint32_t g_raw_imu_msg_count = 0;
+static uint64_t g_last_raw_imu_avg_print_time_ms = 0;
+static uint64_t g_min_raw_imu_processing_time_us = UINT64_MAX;
+static uint64_t g_max_raw_imu_processing_time_us = 0;
 
 DEFINE_HANDLER_LIST_HEADS();
 DEFINE_HANDLER_LIST_SEMAPHORES();
@@ -177,6 +185,45 @@ bool CanardInterface::respond(uint8_t destination_node_id, const Canard::Transfe
 
 void CanardInterface::onTransferReception(CanardInstance* ins, CanardRxTransfer* transfer) {
     CanardInterface* iface = (CanardInterface*) ins->user_reference;
+
+    if (transfer->data_type_id == UAVCAN_EQUIPMENT_AHRS_RAWIMU_ID && g_raw_imu_timing_active) {
+        uint64_t current_time_us = AP_HAL::micros64();
+        uint64_t diff_us = current_time_us - g_last_raw_imu_accept_time_us;
+
+        g_sum_raw_imu_processing_time_us += diff_us;
+        g_raw_imu_msg_count++;
+        if (diff_us < g_min_raw_imu_processing_time_us) {
+            g_min_raw_imu_processing_time_us = diff_us;
+        }
+        if (diff_us > g_max_raw_imu_processing_time_us) {
+            g_max_raw_imu_processing_time_us = diff_us;
+        }
+        g_raw_imu_timing_active = false; // Consume the timestamp
+
+        uint64_t now_ms = AP_HAL::millis64();
+        // Initialize print time on the first relevant message if not already set
+        if (g_last_raw_imu_avg_print_time_ms == 0 && g_raw_imu_msg_count > 0) {
+            g_last_raw_imu_avg_print_time_ms = now_ms;
+        }
+
+        if (now_ms - g_last_raw_imu_avg_print_time_ms >= 1000) {
+            if (g_raw_imu_msg_count > 0) {
+                float avg_time_us = static_cast<float>(g_sum_raw_imu_processing_time_us) / g_raw_imu_msg_count;
+                // Use hal.console->printf for ArduPilot environment
+                printf("RawIMU latency (us) avg: %.2f min: %llu max: %llu over %u msgs\n",
+                                    avg_time_us,
+                                    (unsigned long long)g_min_raw_imu_processing_time_us,
+                                    (unsigned long long)g_max_raw_imu_processing_time_us,
+                                    g_raw_imu_msg_count);
+            }
+            g_last_raw_imu_avg_print_time_ms = now_ms;
+            g_sum_raw_imu_processing_time_us = 0;
+            g_raw_imu_msg_count = 0;
+            g_min_raw_imu_processing_time_us = UINT64_MAX;
+            g_max_raw_imu_processing_time_us = 0;
+        }
+    }
+
     iface->handle_message(*transfer);
 }
 
@@ -186,6 +233,12 @@ bool CanardInterface::shouldAcceptTransfer(const CanardInstance* ins,
                                            CanardTransferType transfer_type,
                                            uint8_t source_node_id) {
     CanardInterface* iface = (CanardInterface*) ins->user_reference;
+    if (data_type_id == UAVCAN_EQUIPMENT_AHRS_RAWIMU_ID) {
+        // Overwrite if another RawIMU accept comes before reception of the previous one
+        g_last_raw_imu_accept_time_us = AP_HAL::micros64();
+        g_raw_imu_timing_active = true;
+    }
+
     return iface->accept_message(data_type_id, transfer_type, *out_data_type_signature);
 }
 

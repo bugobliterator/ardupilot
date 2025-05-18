@@ -114,6 +114,7 @@ class AP_DroneCAN_DNA_Server
     Bitmask<128> node_healthy; // reports healthy
 
     uint8_t last_logging_count;
+    bool _initialised;
 
     //Error State
     enum ServerState server_state;
@@ -160,6 +161,8 @@ public:
 
     //Run through the list of seen node ids for verification
     void verify_nodes();
+
+    bool initialised() {return _initialised;}
 };
 
 #endif

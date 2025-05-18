@@ -167,6 +167,7 @@ public:
     Canard::Publisher<uavcan_equipment_indication_LightsCommand> rgb_led{canard_iface};
     Canard::Publisher<uavcan_equipment_indication_BeepCommand> buzzer{canard_iface};
     Canard::Publisher<uavcan_equipment_gnss_RTCMStream> rtcm_stream{canard_iface};
+    Canard::Publisher<uavcan_navigation_GlobalNavigationSolution> global_nav_sol{canard_iface};
 
 #if HAL_MOUNT_XACTI_ENABLED
     // xacti specific publishers
@@ -184,6 +185,18 @@ public:
 #if AP_SCRIPTING_ENABLED
     bool get_FlexDebug(uint8_t node_id, uint16_t msg_id, uint32_t &timestamp_us, dronecan_protocol_FlexDebug &msg) const;
 #endif
+
+    // Broadcast specific sensor messages
+    bool send_gnss_fix2(uavcan_equipment_gnss_Fix2& msg);
+    bool send_static_pressure(uavcan_equipment_air_data_StaticPressure& msg);
+    bool send_static_temperature(uavcan_equipment_air_data_StaticTemperature& msg);
+    bool send_raw_imu(uavcan_equipment_ahrs_RawIMU& msg);
+    bool send_magnetic_field_strength2(uavcan_equipment_ahrs_MagneticFieldStrength2& msg);
+
+    // check if DroneCAN is initialised
+    bool is_initialized() {
+        return _initialized;
+    }
 
 private:
     void loop(void);
@@ -315,6 +328,12 @@ private:
     Canard::Publisher<ardupilot_indication_SafetyState> safety_state{canard_iface};
     Canard::Publisher<uavcan_equipment_safety_ArmingStatus> arming_status{canard_iface};
     Canard::Publisher<ardupilot_indication_NotifyState> notify_state{canard_iface};
+    Canard::Publisher<uavcan_equipment_air_data_StaticPressure> static_pressure_pub{canard_iface};
+    Canard::Publisher<uavcan_equipment_air_data_StaticTemperature> static_temperature_pub{canard_iface};
+    Canard::Publisher<uavcan_equipment_ahrs_RawIMU> raw_imu_pub{canard_iface};
+    Canard::Publisher<uavcan_equipment_gnss_Fix2> gnss_fix2_sim{canard_iface};
+    Canard::Publisher<uavcan_equipment_ahrs_MagneticFieldStrength2> mag_strength2_pub{canard_iface};
+
 
 #if AP_DRONECAN_HIMARK_SERVO_SUPPORT
     Canard::Publisher<com_himark_servo_ServoCmd> himark_out{canard_iface};

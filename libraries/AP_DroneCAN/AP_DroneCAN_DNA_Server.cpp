@@ -278,6 +278,7 @@ bool AP_DroneCAN_DNA_Server::init(uint8_t own_unique_id[], uint8_t own_unique_id
     node_verified.set(node_id);
     node_healthy.set(node_id);
     self_node_id = node_id;
+    _initialised = true;
     return true;
 }
 
@@ -287,6 +288,9 @@ seen list, So that we can raise issue if there are duplicates
 on the bus. */
 void AP_DroneCAN_DNA_Server::verify_nodes()
 {
+    if (!_initialised) {
+        return;
+    }
     uint32_t now = AP_HAL::millis();
     if ((now - last_verification_request) < 5000) {
         return;
@@ -337,7 +341,7 @@ Also starts the Service call for Node Info to complete the
 Verification process. */
 void AP_DroneCAN_DNA_Server::handleNodeStatus(const CanardRxTransfer& transfer, const uavcan_protocol_NodeStatus& msg)
 {
-    if (transfer.source_node_id > MAX_NODE_ID || transfer.source_node_id == 0) {
+    if (transfer.source_node_id > MAX_NODE_ID || transfer.source_node_id == 0 || !_initialised) {
         return;
     }
     if ((msg.health != UAVCAN_PROTOCOL_NODESTATUS_HEALTH_OK ||
@@ -369,7 +373,7 @@ Or register if the node id is available and not recorded for the
 received Unique ID */
 void AP_DroneCAN_DNA_Server::handleNodeInfo(const CanardRxTransfer& transfer, const uavcan_protocol_GetNodeInfoResponse& rsp)
 {
-    if (transfer.source_node_id > MAX_NODE_ID || transfer.source_node_id == 0) {
+    if (transfer.source_node_id > MAX_NODE_ID || transfer.source_node_id == 0 || !_initialised) {
         return;
     }
     /*
@@ -425,7 +429,7 @@ void AP_DroneCAN_DNA_Server::handleNodeInfo(const CanardRxTransfer& transfer, co
 // process node ID allocation messages for DNA
 void AP_DroneCAN_DNA_Server::handle_allocation(const CanardRxTransfer& transfer, const uavcan_protocol_dynamic_node_id_Allocation& msg)
 {
-    if (transfer.source_node_id != 0) {
+    if (transfer.source_node_id != 0 || !_initialised) {
         return; // ignore allocation messages that are not DNA requests
     }
     uint32_t now = AP_HAL::millis();
@@ -492,6 +496,9 @@ void AP_DroneCAN_DNA_Server::handle_allocation(const CanardRxTransfer& transfer,
 //report the server state, along with failure message if any
 bool AP_DroneCAN_DNA_Server::prearm_check(char* fail_msg, uint8_t fail_msg_len) const
 {
+    if (!_initialised) {
+        return true;
+    }
     switch (server_state) {
     case HEALTHY:
         return true;

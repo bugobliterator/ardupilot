@@ -51,7 +51,9 @@
 #include <AP_Mount/AP_Mount_Xacti.h>
 #include <string.h>
 #include <AP_Servo_Telem/AP_Servo_Telem.h>
-
+#include <SITL/SIM_DroneCAN.h>
+#include <SITL/SIM_RideAlong_DroneCAN_Master.h>
+#include <AP_HAL_SITL/HAL_SITL_Class.h>
 #if AP_DRONECAN_SERIAL_ENABLED
 #include "AP_DroneCAN_serial.h"
 #endif
@@ -327,6 +329,13 @@ void AP_DroneCAN::init(uint8_t driver_index, bool enable_filters)
         debug_dronecan(AP_CANManager::LOG_ERROR, "DroneCAN: init called more than once\n\r");
         return;
     }
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    HAL_SITL& hal_sitl = (HAL_SITL&)AP_HAL::get_HAL_mutable();
+    const uint8_t instance = hal_sitl.get_sitl_state()->get_instance();
+    _dronecan_node.set(_dronecan_node + 2*instance);
+#endif
+
     uint8_t node = _dronecan_node;
     if (node < 1 || node > 125) { // reset to default if invalid
         _dronecan_node.set(AP_DRONECAN_DEFAULT_NODE);
@@ -362,12 +371,18 @@ void AP_DroneCAN::init(uint8_t driver_index, bool enable_filters)
     unique_id[uid_len - 1] += node;
     memcpy(node_info_rsp.hardware_version.unique_id, unique_id, uid_len);
 
-    //Start Servers
-    if (!_dna_server.init(unique_id, uid_len, node)) {
-        debug_dronecan(AP_CANManager::LOG_ERROR, "DroneCAN: Failed to start DNA Server\n\r");
-        return;
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    // RideAlong slaves need to run there own dronecan DNA server
+    // disable it on master so we don't get into conflict with them.
+    if (!hal_sitl.get_sitl_state()->is_ridealong_master())
+#endif
+    {
+        //Start Servers
+        if (!_dna_server.init(unique_id, uid_len, node)) {
+            debug_dronecan(AP_CANManager::LOG_ERROR, "DroneCAN: Failed to start DNA Server\n\r");
+            return;
+        }
     }
-
     // Roundup all subscribers from supported drivers
     bool subscribed = true;
 #if AP_GPS_DRONECAN_ENABLED
@@ -407,6 +422,14 @@ void AP_DroneCAN::init(uint8_t driver_index, bool enable_filters)
 #endif
 #if AP_RPM_DRONECAN_ENABLED
     subscribed = subscribed && AP_RPM_DroneCAN::subscribe_msgs(this);
+#endif
+
+#if HAL_SIM_DRONECAN_ENABLED
+    subscribed = subscribed && SITL::SIM_DroneCAN::subscribe_msgs(this);
+#endif
+
+#if HAL_SIM_RIDEALONG_DRONECAN_MASTER_ENABLED
+    subscribed = subscribed && SITL::DroneCAN_Master::subscribe_msgs(this);
 #endif
 
     if (!subscribed) {
@@ -493,6 +516,26 @@ void AP_DroneCAN::init(uint8_t driver_index, bool enable_filters)
 
     node_info_server.set_timeout_ms(20);
 
+    global_nav_sol.set_timeout_ms(20);
+    global_nav_sol.set_priority(CANARD_TRANSFER_PRIORITY_LOW);
+
+
+    gnss_fix2_sim.set_timeout_ms(20);
+    gnss_fix2_sim.set_priority(CANARD_TRANSFER_PRIORITY_LOW);
+
+    // Initialize publishers for specific sensor messages
+    static_pressure_pub.set_timeout_ms(20);
+    static_pressure_pub.set_priority(CANARD_TRANSFER_PRIORITY_HIGH);
+
+    static_temperature_pub.set_timeout_ms(20);
+    static_temperature_pub.set_priority(CANARD_TRANSFER_PRIORITY_HIGH);
+
+    raw_imu_pub.set_timeout_ms(20);
+    raw_imu_pub.set_priority(CANARD_TRANSFER_PRIORITY_HIGH);
+
+    mag_strength2_pub.set_timeout_ms(20);
+    mag_strength2_pub.set_priority(CANARD_TRANSFER_PRIORITY_HIGH);
+
     // setup node status
     node_status_msg.health = UAVCAN_PROTOCOL_NODESTATUS_HEALTH_OK;
     node_status_msg.mode = UAVCAN_PROTOCOL_NODESTATUS_MODE_OPERATIONAL;
@@ -527,10 +570,11 @@ void AP_DroneCAN::loop(void)
             continue;
         }
 
+#if CONFIG_HAL_BOARD != HAL_BOARD_SITL
         // ensure that the DroneCAN thread cannot completely saturate
         // the CPU, preventing low priority threads from running
         hal.scheduler->delay_microseconds(100);
-
+#endif
         canard_iface.process(1);
 
         safety_state_send();
@@ -2010,4 +2054,29 @@ bool AP_DroneCAN::write_aux_frame(AP_HAL::CANFrame &out_frame, const uint32_t ti
     return canard_iface.write_aux_frame(out_frame, timeout_us);
 }
 
+
+bool AP_DroneCAN::send_gnss_fix2(uavcan_equipment_gnss_Fix2& msg)
+{
+    return gnss_fix2_sim.broadcast(msg);
+}
+
+bool AP_DroneCAN::send_static_pressure(uavcan_equipment_air_data_StaticPressure& msg)
+{
+    return static_pressure_pub.broadcast(msg);
+}
+
+bool AP_DroneCAN::send_static_temperature(uavcan_equipment_air_data_StaticTemperature& msg)
+{
+    return static_temperature_pub.broadcast(msg);
+}
+
+bool AP_DroneCAN::send_raw_imu(uavcan_equipment_ahrs_RawIMU& msg)
+{
+    return raw_imu_pub.broadcast(msg);
+}
+
+bool AP_DroneCAN::send_magnetic_field_strength2(uavcan_equipment_ahrs_MagneticFieldStrength2& msg)
+{
+    return mag_strength2_pub.broadcast(msg);
+}
 #endif // HAL_NUM_CAN_IFACES
