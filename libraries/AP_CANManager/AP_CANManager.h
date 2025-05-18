@@ -121,6 +121,9 @@ public:
     }
 #endif
 
+    bool is_initialized() {
+        return _initialized;
+    }
 private:
 
     // Parameter interface for CANIfaces
@@ -204,6 +207,8 @@ private:
     void can_logging_callback(uint8_t bus, const AP_HAL::CANFrame &frame, AP_HAL::CANIface::CanIOFlags flags);
     void check_logging_enable(void);
 #endif
+
+    bool _initialized;
 };
 
 namespace AP

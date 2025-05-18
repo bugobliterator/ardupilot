@@ -265,6 +265,7 @@ void AP_CANManager::init()
 #if AP_CAN_LOGGING_ENABLED
     hal.scheduler->register_io_process(FUNCTOR_BIND_MEMBER(&AP_CANManager::check_logging_enable, void));
 #endif
+    _initialized = true;
 }
 #else
 void AP_CANManager::init()
@@ -284,6 +285,7 @@ void AP_CANManager::init()
             _driver_type_cache[i] = (AP_CAN::Protocol) _drv_param[i]._driver_type.get();
         }
     }
+    _initialized = true;
 }
 #endif
 
