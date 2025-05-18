@@ -5,6 +5,26 @@ To launch the JSON backend run SITL with ```--model JSON:127.0.0.1``` where 127.
 Connection to SITL is made via a UDP link. The physics backend should listen for incoming messages on port 9002 it should then reply to the IP and port the messages were received from. This removes the need to configure a target
 IP and port for SITL in the physics backend. SITL will send a output message every 10 seconds allowing the physics backend to auto detect.
 
+## Ridealong Instances
+
+The JSON backend supports "ridealong" instances that share a single physics model. This is equivalent to having multiple flight controllers mounted on the same vehicle. This allows testing of multi-vehicle configurations where the vehicles share the same physical space, such as testing controller redundancy or comparing different flight controller configurations on the same simulated physical platform.
+
+To use ridealong instances:
+
+1. First, start a primary SITL instance with the console and map:
+   ```
+   ./Tools/autotest/sim_vehicle.py -v ArduCopter --console --map --slave 1
+   ```
+
+2. Then start a ridealong instance (with a different instance ID):
+   ```
+   ./Tools/autotest/sim_vehicle.py -v ArduCopter -f json:0.0.0.0 -I1
+   ```
+
+The two instances will share the same physics model and be lock-stepped together. The primary instance manages the physics simulation, while the ridealong instance receives the same sensor data but can operate its own control logic independently.
+
+You can add multiple ridealong instances by incrementing the instance ID with the `-I` parameter. For example, to add a third instance use `-I2`.
+
 SITL output
 Data is output from SITL in a binary format:
 ```
