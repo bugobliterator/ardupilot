@@ -61,11 +61,6 @@ void AP_Baro_SITL::_timer()
 
     float sim_alt = _sitl->state.altitude;
 
-    if (_sitl->baro[_instance].disable) {
-        // barometer is disabled
-        return;
-    }
-
     const auto drift_delta_t_ms = now - last_drift_delta_t_ms;
     last_drift_delta_t_ms = now;
     total_alt_drift += _sitl->baro[_instance].drift * drift_delta_t_ms * 0.001f;
