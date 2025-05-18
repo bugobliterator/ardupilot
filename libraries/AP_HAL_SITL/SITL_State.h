@@ -6,6 +6,7 @@
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 
 #include "SITL_State_common.h"
+#include <SITL/SIM_RideAlong_Master.h>
 
 #if defined(HAL_BUILD_AP_PERIPH)
 #include "SITL_Periph_State.h"
@@ -55,6 +56,14 @@ public:
     
     uint8_t get_instance() const { return _instance; }
 
+    bool is_ridealong_master() {
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
+        return ride_along != nullptr;
+#else
+        return false;
+#endif
+    }
+
 private:
     void _parse_command_line(int argc, char * const argv[]);
     void _set_param_default(const char *parm);
@@ -91,6 +100,8 @@ private:
     bool _use_fg_view;
     
     const char *_fg_address;
+    SITL::RideAlong_Master::ProtocolType _slave_protocol;
+    int32_t _slave_count;
 
     // delay buffer variables
     static const uint8_t wind_buffer_length = 50;

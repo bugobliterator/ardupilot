@@ -24,6 +24,8 @@
 
 #include <SITL/SIM_Frsky_D.h>
 #include <SITL/SIM_CRSF.h>
+#include <SITL/SIM_RideAlong_Master.h>
+
 // #include <SITL/SIM_Frsky_SPort.h>
 // #include <SITL/SIM_Frsky_SPortPassthrough.h>
 #include <SITL/SIM_PS_LD06.h>
@@ -158,9 +160,9 @@ public:
     // simulated InertialLabs INS
     SITL::InertialLabs *inertiallabs;
     
-#if HAL_SIM_JSON_MASTER_ENABLED
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
     // Ride along instances via JSON SITL backend
-    SITL::JSON_Master ride_along;
+    SITL::RideAlong_Master *ride_along;
 #endif
 
 #if HAL_SIM_AIS_ENABLED

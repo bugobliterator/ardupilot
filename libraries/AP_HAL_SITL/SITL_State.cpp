@@ -23,6 +23,7 @@
 
 #include <AP_Param/AP_Param.h>
 #include <SITL/SIM_JSBSim.h>
+#include <SITL/SIM_RideAlong_Master.h>
 #include <AP_HAL/utility/Socket_native.h>
 
 extern const AP_HAL::HAL& hal;
@@ -244,9 +245,11 @@ void SITL_State::_fdm_input_local(void)
     // construct servos structure for FDM
     _simulator_servos(input);
 
-#if HAL_SIM_JSON_MASTER_ENABLED
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
     // read servo inputs from ride along flight controllers
-    ride_along.receive(input);
+    if (ride_along != nullptr) {
+        ride_along->receive(input);
+    }
 #endif
 
     // replace outputs from multicast
@@ -265,9 +268,11 @@ void SITL_State::_fdm_input_local(void)
     }
 #endif
 
-#if HAL_SIM_JSON_MASTER_ENABLED
-    // output JSON state to ride along flight controllers
-    ride_along.send(_sitl->state,sitl_model->get_position_relhome());
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
+    // output state to ride along flight controllers
+    if (ride_along != nullptr) {
+        ride_along->send(_sitl->state,sitl_model->get_position_relhome());
+    }
 #endif
 
     sim_update();
@@ -476,6 +481,15 @@ void SITL_State::init(int argc, char * const argv[])
 {
     _scheduler = Scheduler::from(hal.scheduler);
     _parse_command_line(argc, argv);
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
+    if (_slave_count > 0) {
+        ride_along = SITL::RideAlong_Master::create(_slave_protocol, _slave_count);
+        if (ride_along == nullptr) {
+            AP_HAL::panic("Unable to create ride along instance");
+        }
+        ride_along->init(_slave_count);
+    }
+#endif
 }
 
 /*

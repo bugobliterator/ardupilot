@@ -37,6 +37,7 @@
 #include <SITL/SIM_Webots.h>
 #include <SITL/SIM_Webots_Python.h>
 #include <SITL/SIM_JSON.h>
+#include <SITL/SIM_DroneCAN.h>
 #include <SITL/SIM_Blimp.h>
 #include <SITL/SIM_NoVehicle.h>
 #include <SITL/SIM_StratoBlimp.h>
@@ -117,6 +118,7 @@ void SITL_State::_usage(void)
            "\t--start-time TIMESTR     set simulation start time in UNIX timestamp\n"
            "\t--sysid ID               set MAV_SYSID\n"
            "\t--slave number           set the number of JSON slaves\n"
+           "\t--slave-protocol PROTO   set slave protocol (json or dronecan, default json)\n"
         );
 }
 
@@ -180,6 +182,7 @@ static const struct {
     { "webots-python",      WebotsPython::create },
     { "webots",             Webots::create },
     { "JSON",               JSON::create },
+    { "DroneCAN",           SIM_DroneCAN::create },
     { "blimp",              Blimp::create },
     { "novehicle",          NoVehicle::create },
 #if AP_SIM_STRATOBLIMP_ENABLED
@@ -288,6 +291,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
 #if STORAGE_USE_FRAM
         CMDLINE_SET_STORAGE_FRAM_ENABLED,
 #endif
+        CMDLINE_SLAVE_PROTOCOL,
     };
 
     const struct GetOptLong::option options[] = {
@@ -349,6 +353,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         {"set-storage-fram-enabled", true,   0, CMDLINE_SET_STORAGE_FRAM_ENABLED},
 #endif
         {"vehicle",           true,   0, 'v'},
+        {"slave-protocol",    true,   0, CMDLINE_SLAVE_PROTOCOL},
         {0, false, 0, 0}
     };
 
@@ -540,12 +545,23 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
             _usage();
             exit(0);
         case CMDLINE_SLAVE: {
-#if HAL_SIM_JSON_MASTER_ENABLED
-            const int32_t slaves = atoi(gopt.optarg);
-            if (slaves > 0) {
-                ride_along.init(slaves);
-            }
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
+            _slave_count = atoi(gopt.optarg);
 #endif
+            break;
+        }
+        case CMDLINE_SLAVE_PROTOCOL: {
+            const char* protocol_str = gopt.optarg;
+            if (strcasecmp(protocol_str, "json") == 0) {
+                _slave_protocol = SITL::RideAlong_Master::ProtocolType::JSON;
+                printf("Setting slave protocol to JSON\n");
+            } else if (strcasecmp(protocol_str, "dronecan") == 0) {
+                _slave_protocol = SITL::RideAlong_Master::ProtocolType::DRONECAN;
+                printf("Setting slave protocol to DRONECAN\n");
+            } else {
+                printf("Invalid slave protocol '%s' - using JSON\n", protocol_str);
+                _slave_protocol = SITL::RideAlong_Master::ProtocolType::JSON;
+            }
             break;
         }
         default:
