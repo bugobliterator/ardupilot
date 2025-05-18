@@ -2113,8 +2113,10 @@ bool Compass::configured(uint8_t i)
     // back up cached value of dev_id
     int32_t dev_id_cache_value = _state[id].dev_id;
 
+#if CONFIG_HAL_BOARD != HAL_BOARD_SITL
     // load dev_id from eeprom
     _state[id].dev_id.load();
+#endif
 
     // if dev_id loaded from eeprom is different from detected dev id or dev_id loaded from eeprom is different from cached dev_id, compass is unconfigured
     if (_state[id].dev_id != _state[id].detected_dev_id || _state[id].dev_id != dev_id_cache_value) {
