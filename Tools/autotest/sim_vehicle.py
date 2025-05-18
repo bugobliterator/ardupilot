@@ -772,6 +772,8 @@ def start_vehicle(binary, opts, stuff, spawns=None):
         cmd.extend(["--sysid", str(opts.sysid)])
     if opts.slave is not None:
         cmd.extend(["--slave", str(opts.slave)])
+        if opts.slave_protocol is not None:
+            cmd.extend(["--slave-protocol", opts.slave_protocol])
     if opts.enable_fgview:
         cmd.extend(["--enable-fgview"])
     if opts.sitl_instance_args:
@@ -1345,6 +1347,10 @@ group_sim.add_option("", "--slave",
                      type='int',
                      default=0,
                      help="Set the number of JSON slave")
+group_sim.add_option("", "--slave-protocol",
+                     type='string',
+                     default="json",
+                     help="Set slave protocol (json or dronecan)")
 group_sim.add_option("", "--auto-sysid",
                      default=False,
                      action='store_true',
