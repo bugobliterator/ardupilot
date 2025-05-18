@@ -104,3 +104,7 @@ float AP_HAL::RCOutput::scale_esc_to_unity(uint16_t pwm) const
     return 2.0 * ((float) pwm - _esc_pwm_min) / (_esc_pwm_max - _esc_pwm_min) - 1.0;
 }
 
+uint16_t AP_HAL::RCOutput::scale_esc_to_pwm(float scaled) const
+{
+    return uint16_t(scaled * (_esc_pwm_max - _esc_pwm_min) + _esc_pwm_min);
+}

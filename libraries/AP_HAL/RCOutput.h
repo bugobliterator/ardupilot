@@ -150,6 +150,11 @@ public:
     float scale_esc_to_unity(uint16_t pwm) const;
 
     /*
+      scale esc from unity to pwm value
+     */
+    uint16_t scale_esc_to_pwm(float scaled) const;
+
+    /*
       return the erpm and error rate for a channel if available
      */
     virtual uint16_t get_erpm(uint8_t chan) const { return 0; }

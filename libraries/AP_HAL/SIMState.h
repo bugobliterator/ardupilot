@@ -48,6 +48,7 @@
 #include <AP_HAL/utility/Socket_native.h>
 
 #include <AP_HAL/AP_HAL_Namespace.h>
+#include <SITL/SIM_RideAlong_Master.h>
 
 class AP_HAL::SIMState {
 public:
@@ -197,10 +198,10 @@ private:
 
     // simulated InertialLabs INS-U
     SITL::InertialLabs *inertiallabs;
-    
-#if HAL_SIM_JSON_MASTER_ENABLED
-    // Ride along instances via JSON SITL backend
-    SITL::JSON_Master ride_along;
+
+#if HAL_SIM_RIDEALONG_MASTER_ENABLED
+    // Ride along instances via SITL backend
+    SITL::RideAlong_Master *ride_along;
 #endif
 
 #if HAL_SIM_AIS_ENABLED
