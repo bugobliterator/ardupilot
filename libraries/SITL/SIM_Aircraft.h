@@ -37,7 +37,7 @@
 #include "SIM_Buzzer.h"
 #include "SIM_Battery.h"
 #include <Filter/Filter.h>
-#include "SIM_JSON_Master.h"
+#include "SIM_RideAlong_Master.h"
 #include "ServoModel.h"
 #include "SIM_GPIO_LED_1.h"
 #include "SIM_GPIO_LED_2.h"

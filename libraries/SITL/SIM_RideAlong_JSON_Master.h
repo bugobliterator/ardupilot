@@ -19,31 +19,29 @@
 #pragma once
 
 #include <AP_HAL/AP_HAL_Boards.h>
+#include "SIM_RideAlong_Master.h"
 
-#ifndef HAL_SIM_JSON_MASTER_ENABLED
-#define HAL_SIM_JSON_MASTER_ENABLED (CONFIG_HAL_BOARD == HAL_BOARD_SITL)
-#endif
-
-#if HAL_SIM_JSON_MASTER_ENABLED
+#if HAL_SIM_RIDEALONG_JSON_MASTER_ENABLED
 
 #include "SITL_Input.h"
 #include <AP_HAL/utility/Socket_native.h>
 #include <AP_Math/AP_Math.h>
+#include "SIM_RideAlong_Master.h"
 
 namespace SITL {
 
-class JSON_Master {
+class JSON_Master : public RideAlong_Master {
 public:
     JSON_Master() {};
 
     // setup sockets
-    void init(const int32_t num_slaves);
+    void init(const int32_t num_slaves) override;
 
     // Receive PWM outs from ride along controlers
-    void receive(struct sitl_input &input);
+    void receive(struct sitl_input &input) override;
 
     // send vehicle state to ride along controlers
-    void send(const struct sitl_fdm &output, const Vector3d &position);
+    void send(const struct sitl_fdm &output, const Vector3d &position) override;
 
 private:
 
@@ -63,4 +61,4 @@ private:
 
 }
 
-#endif  // HAL_SIM_JSON_MASTER_ENABLED
+#endif  // HAL_SIM_RIDEALONG_JSON_MASTER_ENABLED

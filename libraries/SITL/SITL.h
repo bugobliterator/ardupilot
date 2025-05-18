@@ -598,6 +598,12 @@ public:
     // clamp simulation - servo channel starting at offset 1 (usually ailerons)
     AP_Int8 clamp_ch;
 
+    // Enum for ride-along protocol type
+    enum class RideAlongProtocol {
+        RIDE_ALONG_PROTOCOL_JSON = 0,
+        RIDE_ALONG_PROTOCOL_DRONECAN = 1,
+    };
+
 #if AP_SIM_INS_FILE_ENABLED
     enum INSFileMode {
         INS_FILE_NONE = 0,

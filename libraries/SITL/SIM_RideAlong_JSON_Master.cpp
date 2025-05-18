@@ -16,11 +16,10 @@
   Send and receive JSON backend data to alow a second AP instance to ride along
 */
 
-#include "SIM_JSON_Master.h"
+#include "SIM_RideAlong_JSON_Master.h"
 
-#if HAL_SIM_JSON_MASTER_ENABLED
+#if HAL_SIM_RIDEALONG_JSON_MASTER_ENABLED
 
-#include <AP_Logger/AP_Logger.h>
 #include <errno.h>
 #include <stdio.h>
 #include <SITL/SITL.h>
@@ -63,8 +62,6 @@ void JSON_Master::receive(struct sitl_input &input)
         return;
     }
 
-    uint8_t master_instance = AP::sitl()->ride_along_master.get();
-
     for (socket_list *list = &_list; list->next; list=list->next) {
         // cycle through all ride along instances
         struct servo_packet {
@@ -98,72 +95,15 @@ void JSON_Master::receive(struct sitl_input &input)
                 break;
             }
         }
-
-#if HAL_LOGGING_ENABLED
-        const bool use_servos = list->instance == master_instance;
-
-// @LoggerMessage: SLV1
-// @Description: Log data received from JSON simulator 1
-// @Field: TimeUS: Time since system startup (us)
-// @Field: Instance: Slave instance
-// @Field: magic: magic JSON protocol key
-// @Field: frame_rate: Slave instance's desired frame rate
-// @Field: frame_count: Slave instance's current frame count
-// @Field: active: 1 if the servo outputs are being used from this instance
-        AP::logger().WriteStreaming("SLV1", "TimeUS,Instance,magic,frame_rate,frame_count,active",
-                       "s#----",
-                       "F?????",
-                       "QBHHIB",
-                       AP_HAL::micros64(),
-                       list->instance,
-                       buffer.magic,
-                       buffer.frame_rate,
-                       buffer.frame_count,
-                       use_servos);
-
-// @LoggerMessage: SLV2
-// @Description: Log data received from JSON simulator 2
-// @Field: TimeUS: Time since system startup
-// @Field: Instance: Slave instance
-// @Field: C1: channel 1 output
-// @Field: C2: channel 2 output
-// @Field: C3: channel 3 output
-// @Field: C4: channel 4 output
-// @Field: C5: channel 5 output
-// @Field: C6: channel 6 output
-// @Field: C7: channel 7 output
-// @Field: C8: channel 8 output
-// @Field: C9: channel 9 output
-// @Field: C10: channel 10 output
-// @Field: C11: channel 11 output
-// @Field: C12: channel 12 output
-// @Field: C13: channel 13 output
-// @Field: C14: channel 14 output
-        AP::logger().WriteStreaming("SLV2", "TimeUS,Instance,C1,C2,C3,C4,C5,C6,C7,C8,C9,C10,C11,C12,C13,C14",
-                       "s#YYYYYYYYYYYYYY",
-                       "F?--------------",
-                       "QBHHHHHHHHHHHHHH",
-                       AP_HAL::micros64(),
-                       list->instance,
-                       buffer.pwm[0],
-                       buffer.pwm[1],
-                       buffer.pwm[2],
-                       buffer.pwm[3],
-                       buffer.pwm[4],
-                       buffer.pwm[5],
-                       buffer.pwm[6],
-                       buffer.pwm[7],
-                       buffer.pwm[8],
-                       buffer.pwm[9],
-                       buffer.pwm[10],
-                       buffer.pwm[11],
-                       buffer.pwm[12],
-                       buffer.pwm[13]);
-#endif
-
-        if (list->instance == master_instance) {
-            // Use the servo outs from this instance
-            memcpy(input.servos,buffer.pwm,sizeof(buffer.pwm));
+        if (buffer.magic == 18458) {
+            const input_frame frame {
+                .instance = list->instance,
+                .rate = buffer.frame_rate,
+                .count = buffer.frame_count,
+                .pwm = buffer.pwm,
+                .pwm_count = 16
+            };
+            process_input_frame(input, frame);
         }
     }
 }
@@ -191,4 +131,4 @@ void JSON_Master::send(const struct sitl_fdm &output, const Vector3d &position)
 }
 
 
-#endif  // HAL_SIM_JSON_MASTER_ENABLED
+#endif  // HAL_SIM_RIDEALONG_JSON_MASTER_ENABLED
