@@ -60,8 +60,8 @@ static const struct {
     { "COMPASS_OFS_X",     0.001 },
     { "COMPASS_OFS_Y",     0.001 },
     { "COMPASS_OFS_Z",     0.001 },
-    { "COMPASS_DEV_ID",    133635}, // DEV ID for DroneCAN IMU from NodeID 10
-    { "COMPASS_PRIO1_ID",  133635}, // DEV ID for DroneCAN IMU from NodeID 10
+    { "COMPASS_DEV_ID",    91395}, // DEV ID for DroneCAN IMU from NodeID 10
+    { "COMPASS_PRIO1_ID",  91395}, // DEV ID for DroneCAN IMU from NodeID 10
     { "COMPASS_USE2",           0},
     { "COMPASS_USE3",           0},
     { "GPS1_TYPE",              9},
