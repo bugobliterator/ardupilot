@@ -450,7 +450,7 @@ void CanardInterface::process(uint32_t duration_ms) {
         hal.scheduler->delay_microseconds(1000);
     }
 #else
-    const uint64_t deadline = AP_HAL::micros64() + duration_ms*1000;
+    uint64_t deadline = AP_HAL::micros64() + duration_ms*1000;
     while (true) {
         processRx();
         processTx();
@@ -460,8 +460,12 @@ void CanardInterface::process(uint32_t duration_ms) {
             canardCleanupStaleTransfers(&canard, AP_HAL::micros64());
         }
         const uint64_t now = AP_HAL::micros64();
+        if ((now + (duration_ms*1000)) < deadline) {
+            // time has changed, so change the deadline
+            deadline = now + (duration_ms*1000);
+        }
         if (now < deadline) {
-            IGNORE_RETURN(sem_handle.wait(deadline - now));
+            IGNORE_RETURN(sem_handle.wait(MIN(deadline - now, duration_ms * 1000)));
         } else {
             break;
         }

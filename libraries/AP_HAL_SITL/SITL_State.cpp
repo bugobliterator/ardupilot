@@ -153,7 +153,12 @@ void SITL_State::wait_clock(uint64_t wait_time_usec)
         // for purposes of sleeps treat low speedups as 1
         speedup = 1.0;
     }
+    uint64_t delay = (wait_time_usec - AP_HAL::micros64());
     while (AP_HAL::micros64() < wait_time_usec) {
+        // check if the time has changed
+        if (AP_HAL::micros64() + delay < wait_time_usec) {
+            wait_time_usec = AP_HAL::micros64() + delay;
+        }
         if (hal.scheduler->in_main_thread() ||
             Scheduler::from(hal.scheduler)->semaphore_wait_hack_required()) {
             _fdm_input_step();
