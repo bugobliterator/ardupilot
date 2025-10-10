@@ -101,6 +101,7 @@ SIM_DroneCAN::SIM_DroneCAN(const char *frame_str) :
             }
         }
     }
+    use_time_sync = false;
 }
 
 
@@ -229,10 +230,6 @@ void SIM_DroneCAN::update(const struct sitl_input &input)
     time_now_us += deltat * 1.0e6;
 
     if (is_positive(deltat) && deltat < 0.1) {
-        if (use_time_sync) {
-            // time in us to hz
-            adjust_frame_time(1.0 / deltat);
-        }
         // match actual frame rate with desired speedup
         time_advance();
     }
