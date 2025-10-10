@@ -147,7 +147,7 @@ void SIM_DroneCAN::handle_raw_imu(const uavcan_equipment_ahrs_RawIMU& msg)
 
 
     // Store IMU data from the message into the state struct
-    state.timestamp_s = msg.timestamp.usec / 1000000.0;
+    state.timestamp_us = msg.timestamp.usec;
 
     // Angular rates (body frame, rad/s)
     state.imu.gyro.x = msg.rate_gyro_latest[0];
@@ -220,20 +220,20 @@ void SIM_DroneCAN::update(const struct sitl_input &input)
 
     // Check data timestamp for time handling
     double deltat;
-    if (state.timestamp_s < last_timestamp_s) {
+    if (state.timestamp_us < last_timestamp_us) {
         // Physics time has gone backwards, don't reset AP
         printf("Detected physics reset\n");
         deltat = 0;
     } else {
-        deltat = state.timestamp_s - last_timestamp_s;
+        deltat = state.timestamp_us - last_timestamp_us;
     }
-    time_now_us += deltat * 1.0e6;
+    time_now_us += deltat;
 
     if (is_positive(deltat) && deltat < 0.1) {
         // match actual frame rate with desired speedup
         time_advance();
     }
-    last_timestamp_s = state.timestamp_s;
+    last_timestamp_us = state.timestamp_us;
     frame_counter++;
 
     // allow for changes in physics step

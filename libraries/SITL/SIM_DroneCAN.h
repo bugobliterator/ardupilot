@@ -53,7 +53,7 @@ public:
 private:
     // Internal state structure to store received data
     struct {
-        double timestamp_s; // from RawIMU.timestamp.usec
+        uint64_t timestamp_us;
         struct {
             Vector3f gyro;       // rad/s, from RawIMU.rate_gyro_latest
             Vector3f accel_body; // m/s^2, from RawIMU.accelerometer_latest
@@ -70,7 +70,7 @@ private:
     uint32_t last_receive_time_ms;
 
     // Timestamp for frame rate calculation
-    double last_timestamp_s;
+    uint64_t last_timestamp_us;
 
     // Frame counter for monitoring
     uint64_t frame_counter;
