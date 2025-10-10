@@ -23,6 +23,7 @@
 #if HAL_SIM_DRONECAN_ENABLED
 
 #include <stdio.h>
+#include <time.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Logger/AP_Logger.h>
 #include <AP_Math/AP_Math.h>
@@ -118,12 +119,31 @@ void SIM_DroneCAN::handle_raw_imu_trampoline(AP_DroneCAN *ap_dronecan, const Can
 // Handler for RawIMU messages (instance method)
 void SIM_DroneCAN::handle_raw_imu(const uavcan_equipment_ahrs_RawIMU& msg)
 {
+    // [DEBUG] Rate tracking for raw_imu messages using system clock
+    static uint32_t raw_imu_count = 0;
+    static uint64_t raw_imu_last_print_ns = 0;
 
     WITH_SEMAPHORE(raw_imu_sem);
 
     _initialized = true;
     // Record the receive time
     last_receive_time_ms = AP_HAL::millis();
+
+    // [DEBUG] Calculate and print raw_imu receive rate
+    raw_imu_count++;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+    if (raw_imu_last_print_ns == 0) {
+        raw_imu_last_print_ns = now_ns;
+    }
+    if (now_ns - raw_imu_last_print_ns >= 1000000000ULL) {
+        float raw_imu_rate_hz = (float)raw_imu_count / ((now_ns - raw_imu_last_print_ns) / 1000000000.0f);
+        printf("[DEBUG] raw_imu receive rate: %.2f Hz\n", raw_imu_rate_hz);
+        raw_imu_last_print_ns = now_ns;
+        raw_imu_count = 0;
+    }
+
 
     // Store IMU data from the message into the state struct
     state.timestamp_s = msg.timestamp.usec / 1000000.0;
