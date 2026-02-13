@@ -180,6 +180,11 @@ void Copter::init_ardupilot()
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
     custom_control.init();
 #endif
+// TAG: simulink-init
+#ifdef SIMULINK_APP_ENABLED
+    ac_simulink->init();
+#endif
+// END TAG: simulink-init
 
     // set landed flags
     set_land_complete(true);

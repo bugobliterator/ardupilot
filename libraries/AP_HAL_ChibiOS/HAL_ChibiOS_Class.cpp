@@ -157,7 +157,13 @@ HAL_ChibiOS::HAL_ChibiOS() :
 #endif
         &analogIn,
         &storageDriver,
+// TAG: simulink-disable-console
+#if defined(SIMULINK_APP_ENABLED) && defined(DISABLE_MAVLINK_USB)
+        &serial1Driver,
+#else
         &serial0Driver,
+#endif
+// END TAG: simulink-disable-console
         &gpioDriver,
         &rcinDriver,
         &rcoutDriver,

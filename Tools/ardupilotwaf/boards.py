@@ -160,6 +160,16 @@ class Board:
                 AP_CUSTOMCONTROL_ENABLED=0,
             )
             cfg.msg("Enabled custom controller", 'no', color='YELLOW')
+# TAG: simulink-lib-enable
+        if cfg.options.enable_simulink_app:
+            env.AP_LIBRARIES += [
+                'AC_Simulink'
+            ]
+            cfg.msg("Enabled Simulink controller", 'yes')
+            env.DEFINES.update(
+                SIMULINK_APP_ENABLED=1
+            )
+# END TAG: simulink-lib-enable
 
         # support enabling any option in build_options.py
         for opt in build_options.BUILD_OPTIONS:

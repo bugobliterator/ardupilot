@@ -117,6 +117,11 @@ const AP_Scheduler::Task Copter::scheduler_tasks[] = {
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
     FAST_TASK(run_custom_controller),
 #endif
+// TAG: simulink-fasttask
+#ifdef SIMULINK_APP_ENABLED
+    FAST_TASK(run_Simulink_step),
+#endif
+// END TAG: simulink-fasttask
 #if FRAME_CONFIG == HELI_FRAME
     FAST_TASK(heli_update_autorotation),
 #endif //HELI_FRAME

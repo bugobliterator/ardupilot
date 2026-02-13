@@ -72,6 +72,12 @@
 #include <AP_OpticalFlow/AP_OpticalFlow.h>
 #include <AP_Winch/AP_Winch_config.h>
 #include <AP_SurfaceDistance/AP_SurfaceDistance.h>
+// TAG: simulink-includes
+#ifdef SIMULINK_APP_ENABLED
+#include <AC_Simulink/AC_Simulink_Base.h>
+#include <AC_Simulink/AC_Simulink_Factory.h>
+#endif
+// END TAG: simulink-includes
 
 // Configuration
 #include "defines.h"
@@ -481,6 +487,11 @@ private:
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
     AC_CustomControl custom_control{ahrs_view, attitude_control, motors, scheduler.get_loop_period_s()};
 #endif
+// TAG: simulink-handle-classes
+#ifdef SIMULINK_APP_ENABLED
+    AC_Simulink_Base *ac_simulink = AC_Simulink_Factory::createSimulinkInstance();
+#endif
+// END TAG: simulink-handle-classes
 
 #if MODE_CIRCLE_ENABLED
     AC_Circle *circle_nav;
@@ -728,6 +739,11 @@ private:
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
     void run_custom_controller() { custom_control.update(); }
 #endif
+// TAG: simulink-step-definition
+#ifdef SIMULINK_APP_ENABLED
+    void run_Simulink_step() { ac_simulink->update(); }
+#endif
+// END TAG: simulink-step-definition
 
     // avoidance.cpp
     void low_alt_avoidance();

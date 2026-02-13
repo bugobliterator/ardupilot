@@ -286,6 +286,11 @@ submodules at specific revisions.
     g.add_option('--enable-custom-controller', action='store_true',
                  default=False,
                  help="Enables custom controller")
+# TAG: simulink-wscript-flag
+    g.add_option('--enable-simulink-app', action='store_true',
+                 default=False,
+                 help="Enables Simulink generated application")
+# END TAG: simulink-wscript-flag
 
     g.add_option('--enable-gps-logging', action='store_true',
                  default=False,

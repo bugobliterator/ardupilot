@@ -437,6 +437,11 @@ void AP_SerialManager::init()
         state[0].protocol != SerialProtocol_MAVLink2) {
         state[0].protocol.set(SerialProtocol_MAVLink2);
     }
+// TAG: simulink-disable-mavlink-usb
+#if defined(SIMULINK_APP_ENABLED) && defined(DISABLE_MAVLINK_USB)
+    state[0].protocol.set(SerialProtocol_None);
+#endif
+// END TAG: simulink-disable-mavlink-usb
 #endif
 
     init_console();
