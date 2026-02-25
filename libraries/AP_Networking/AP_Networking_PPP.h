@@ -2,7 +2,8 @@
 
 #include "AP_Networking_Config.h"
 
-#ifdef AP_NETWORKING_BACKEND_PPP
+#if AP_NETWORKING_BACKEND_PPP
+
 #include "AP_Networking_Backend.h"
 
 #ifndef AP_NETWORKING_PPP_NUM_INTERFACES
