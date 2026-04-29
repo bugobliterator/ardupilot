@@ -6,7 +6,8 @@ AC_Simulink_Empty::AC_Simulink_Empty() {}
 void AC_Simulink_Empty::init() {
 }
 
-void AC_Simulink_Empty::update() {
+Vector3f AC_Simulink_Empty::update() {
+    return Vector3f{};
 }
 
 void AC_Simulink_Empty::reset() {

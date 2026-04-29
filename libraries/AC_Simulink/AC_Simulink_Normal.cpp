@@ -5,7 +5,11 @@
 volatile boolean_T stopRequested;
 volatile boolean_T runModel;
 
-AC_Simulink_Normal::AC_Simulink_Normal() {}
+AC_Simulink_Normal* AC_Simulink_Normal::_singleton = nullptr;
+
+AC_Simulink_Normal::AC_Simulink_Normal() {
+    _singleton = this;
+}
 
 void AC_Simulink_Normal::init() {
     stopRequested = false;
@@ -14,10 +18,11 @@ void AC_Simulink_Normal::init() {
     runModel = this->getErrorStatus();
 }
 
-void AC_Simulink_Normal::update() {
+Vector3f AC_Simulink_Normal::update() {
     if (runModel) {
         MW_StringifyDefineFunction(MODEL, _step)();
     }
+    return _torque;
 }
 
 void AC_Simulink_Normal::reset() {

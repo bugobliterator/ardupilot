@@ -739,11 +739,6 @@ private:
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
     void run_custom_controller() { custom_control.update(); }
 #endif
-// TAG: simulink-step-definition
-#ifdef SIMULINK_APP_ENABLED
-    void run_Simulink_step() { ac_simulink->update(); }
-#endif
-// END TAG: simulink-step-definition
 
     // avoidance.cpp
     void low_alt_avoidance();

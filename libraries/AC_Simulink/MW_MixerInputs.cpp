@@ -1,4 +1,5 @@
 #include "MW_MixerInputs.h"
+#include "AC_Simulink_Normal.h"
 #include <GCS_MAVLink/GCS.h>
 #include <AP_Param/AP_Param.h>
 
@@ -7,20 +8,20 @@ void MW_MixerInputs_init() {
     }
 
 void MW_setTorque(float tauRoll, float tauPitch, float tauYaw) {
-    // Set the Roll, Pitch and Yaw torque values 
-    // When directly writing torque values to the motors, we reset the integrator terms
-    // of the main attitude controller to prevent residual PID accumulation from affecting control.
-    // This ensures clean torque application without interference from previous control states.
-    AP_Motors::get_singleton()->set_roll(tauRoll);
-    AC_AttitudeControl::get_singleton()->get_rate_roll_pid().set_integrator(0.0);
-    AP_Motors::get_singleton()->set_pitch(tauPitch);
-    AC_AttitudeControl::get_singleton()->get_rate_pitch_pid().set_integrator(0.0);
-    AP_Motors::get_singleton()->set_yaw(tauYaw);
-    AC_AttitudeControl::get_singleton()->get_rate_yaw_pid().set_integrator(0.0);
+    // Stash torques on the AC_Simulink_Normal singleton; AC_CustomControl_Simulink
+    // (or its caller) is responsible for forwarding them to AP_Motors and zeroing
+    // the standard rate-PID integrators.
+    AC_Simulink_Normal* sim = AC_Simulink_Normal::get_singleton();
+    if (sim != nullptr) {
+        sim->set_torque(tauRoll, tauPitch, tauYaw);
+    }
 }
 
 void MW_setThrust(float throttle) {
-    AP_Motors::get_singleton()->set_throttle(throttle);
+    AC_Simulink_Normal* sim = AC_Simulink_Normal::get_singleton();
+    if (sim != nullptr) {
+        sim->set_thrust(throttle);
+    }
 }
 void MW_customMixerSet(int8_t motorIndex,
                        const float* rollF,

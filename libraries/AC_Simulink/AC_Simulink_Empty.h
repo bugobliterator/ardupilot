@@ -11,7 +11,7 @@ public:
     ~AC_Simulink_Empty() override {}
 
     void init() override;
-    void update() override;
+    Vector3f update() override;
     void reset() override;
 
     CLASS_NO_COPY(AC_Simulink_Empty);
