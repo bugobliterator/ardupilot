@@ -710,7 +710,7 @@ class sitl(Board):
             env.CXXFLAGS.remove('-DHAL_NAVEKF2_AVAILABLE=0')
         except ValueError:
             pass
-        env.CXXFLAGS += ['-DHAL_NAVEKF2_AVAILABLE=1']
+        env.CXXFLAGS += ['-DHAL_NAVEKF2_AVAILABLE=1', '-DMODEL=PositionAttitudeControllerCopter', '-DMW_NORMAL_MODE']
 
         if self.with_can:
             cfg.define('HAL_NUM_CAN_IFACES', 2)
@@ -730,6 +730,7 @@ class sitl(Board):
         env.CXXFLAGS += [
             '-Werror=float-equal',
             '-Werror=missing-declarations',
+            '-Wno-error=float-equal'
         ]
 
         if not cfg.options.disable_networking and not 'clang' in cfg.env.COMPILER_CC:
