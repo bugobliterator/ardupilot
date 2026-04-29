@@ -7,6 +7,10 @@
 #include "AC_CustomControl_Backend.h"
 // #include "AC_CustomControl_Empty.h"
 #include "AC_CustomControl_PID.h"
+#if AP_CUSTOMCONTROL_SIMULINK_ENABLED
+#include "AC_CustomControl_Simulink.h"
+#endif
+#include <AC_AttitudeControl/AC_PosControl.h>
 #include <GCS_MAVLink/GCS.h>
 #include <AP_Logger/AP_Logger.h>
 
@@ -15,7 +19,7 @@ const AP_Param::GroupInfo AC_CustomControl::var_info[] = {
     // @Param: _TYPE
     // @DisplayName: Custom control type
     // @Description: Custom control type to be used
-    // @Values: 0:None, 1:Empty, 2:PID
+    // @Values: 0:None, 1:Empty, 2:PID, 3:Simulink
     // @RebootRequired: True
     // @User: Advanced
     AP_GROUPINFO_FLAGS("_TYPE", 1, AC_CustomControl, _controller_type, 0, AP_PARAM_FLAG_ENABLE),
@@ -23,7 +27,7 @@ const AP_Param::GroupInfo AC_CustomControl::var_info[] = {
     // @Param: _AXIS_MASK
     // @DisplayName: Custom Controller bitmask
     // @Description: Custom Controller bitmask to chose which axis to run
-    // @Bitmask: 0:Roll, 1:Pitch, 2:Yaw
+    // @Bitmask: 0:Roll, 1:Pitch, 2:Yaw, 3:Throttle
     // @User: Advanced
     AP_GROUPINFO("_AXIS_MASK", 2, AC_CustomControl, _custom_controller_mask, 0),
 
@@ -32,6 +36,11 @@ const AP_Param::GroupInfo AC_CustomControl::var_info[] = {
 
     // parameters for PID controller
     AP_SUBGROUPVARPTR(_backend, "2_", 7, AC_CustomControl, _backend_var_info[1]),
+
+#if AP_CUSTOMCONTROL_SIMULINK_ENABLED
+    // parameters for Simulink controller
+    AP_SUBGROUPVARPTR(_backend, "3_", 8, AC_CustomControl, _backend_var_info[2]),
+#endif
 
     AP_GROUPEND
 };
@@ -62,6 +71,12 @@ void AC_CustomControl::init(void)
             _backend = NEW_NOTHROW AC_CustomControl_PID(*this, _ahrs, _att_control, _motors, _dt);
             _backend_var_info[get_type()] = AC_CustomControl_PID::var_info;
             break;
+#if AP_CUSTOMCONTROL_SIMULINK_ENABLED
+        case CustomControlType::CONT_SIMULINK:
+            _backend = NEW_NOTHROW AC_CustomControl_Simulink(*this, _ahrs, _att_control, _motors, _dt);
+            _backend_var_info[get_type()] = AC_CustomControl_Simulink::var_info;
+            break;
+#endif
         default:
             return;
     }
@@ -72,8 +87,9 @@ void AC_CustomControl::init(void)
 }
 
 // run custom controller if it is activated by RC switch and appropriate type is selected
-void AC_CustomControl::update(void)
+void AC_CustomControl::update(bool landed)
 {
+    _landed = landed;
     if (is_safe_to_run()) {
         Vector3f motor_out_rpy;
 
@@ -96,6 +112,28 @@ void AC_CustomControl::motor_set(Vector3f rpy) {
     if (_custom_controller_mask & (uint8_t)CustomControlOption::YAW) {
         _motors->set_yaw(rpy.z);
         _att_control->get_rate_yaw_pid().set_integrator(0.0);
+    }
+    if ((_custom_controller_mask & (uint8_t)CustomControlOption::THROTTLE) && !_landed) {
+        // While ap.land_complete is true, the flight mode's takeoff slew (in
+        // _AutoTakeoff::run) is ramping _throttle_in toward 0.9 to trip liftoff
+        // detection. Overriding it here would deadlock the takeoff state machine,
+        // so defer to the flight mode until airborne. Once landed is cleared,
+        // take over throttle.
+
+        // route through set_throttle_out so althold lean-angle limit, _throttle_in,
+        // throttle_avg_max and the AP_Motors filter cutoff stay consistent with the
+        // throttle that's actually flying. Angle-boost is left off since the backend
+        // (e.g. Simulink PID_vz) already produces a normalized throttle.
+        _att_control->set_throttle_out(_backend->get_thrust(), false, 0.0f);
+
+        // zero AC_PosControl PID integrators on all axes so they don't wind up
+        // while the custom controller owns throttle. Mirrors the rate-PID resets above.
+        AC_PosControl* pos_control = AC_PosControl::get_singleton();
+        if (pos_control != nullptr) {
+            pos_control->get_vel_xy_pid().reset_I();
+            pos_control->get_vel_z_pid().reset_I();
+            pos_control->get_accel_z_pid().reset_I();
+        }
     }
 }
 

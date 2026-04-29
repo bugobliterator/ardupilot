@@ -22,6 +22,10 @@ public:
     // update controller, return roll, pitch, yaw controller output
     virtual Vector3f update() = 0;
 
+    // optional throttle output (range 0..1). only consumed by the front-end when
+    // the THROTTLE bit is set in the axis mask. default returns 0.
+    virtual float get_thrust() const { return 0.0f; }
+
     // reset controller to avoid build up or abrupt response upon switch, ex: integrator, filter
     virtual void reset() = 0;
 

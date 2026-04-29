@@ -737,7 +737,7 @@ private:
     void run_rate_controller();
 
 #if AC_CUSTOMCONTROL_MULTI_ENABLED
-    void run_custom_controller() { custom_control.update(); }
+    void run_custom_controller() { custom_control.update(ap.land_complete); }
 #endif
 
     // avoidance.cpp

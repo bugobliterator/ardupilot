@@ -14,7 +14,7 @@
 #include <AP_Motors/AP_MotorsMulticopter.h>
 
 #ifndef CUSTOMCONTROL_MAX_TYPES
-#define CUSTOMCONTROL_MAX_TYPES 2
+#define CUSTOMCONTROL_MAX_TYPES 3
 #endif
 
 class AC_CustomControl_Backend;
@@ -26,7 +26,7 @@ public:
     CLASS_NO_COPY(AC_CustomControl);  /* Do not allow copies */
 
     void init(void);
-    void update(void);
+    void update(bool landed);
     void motor_set(Vector3f motor_out);
     void set_custom_controller(bool enabled);
     void reset_main_att_controller(void);
@@ -49,17 +49,20 @@ protected:
         CONT_NONE            = 0,
         CONT_EMPTY           = 1,
         CONT_PID             = 2,
-    };            // controller that should be used     
+        CONT_SIMULINK        = 3,
+    };            // controller that should be used
 
     enum class  CustomControlOption {
         ROLL = 1 << 0,
         PITCH = 1 << 1,
         YAW = 1 << 2,
+        THROTTLE = 1 << 3,
     };
 
     // Intersampling period in seconds
     float _dt;
     bool _custom_controller_active;
+    bool _landed;
 
     // References to external libraries
     AP_AHRS_View*& _ahrs;
