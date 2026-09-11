@@ -45,6 +45,7 @@
 #include "actuator_telem.h"
 #include "networking.h"
 #include "serial_options.h"
+#include "serial_logger.h"
 #if AP_SIM_ENABLED
 #include <SITL/SITL.h>
 #endif
@@ -437,6 +438,10 @@ public:
     
 #if AP_PERIPH_SERIAL_OPTIONS_ENABLED
     SerialOptions serial_options;
+#endif
+
+#if AP_PERIPH_SERIAL_LOGGER_ENABLED
+    SerialLogger serial_logger;
 #endif
     
 #if AP_TEMPERATURE_SENSOR_ENABLED

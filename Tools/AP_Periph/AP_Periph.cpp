@@ -151,6 +151,10 @@ void AP_Periph_FW::init()
     serial_options.init();
 #endif
 
+#if AP_PERIPH_SERIAL_LOGGER_ENABLED
+    serial_logger.init();
+#endif
+
 #if AP_PERIPH_GPS_ENABLED
     gps.set_default_type_for_gps1(HAL_GPS1_TYPE_DEFAULT);
     if (gps.get_type(0) != AP_GPS::GPS_Type::GPS_TYPE_NONE && g.gps_port >= 0) {

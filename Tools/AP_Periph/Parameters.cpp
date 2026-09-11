@@ -768,6 +768,12 @@ const AP_Param::Info AP_Periph_FW::var_info[] = {
     GOBJECT(battery_bms, "BMS_",  BatteryBMS),
 #endif
 
+#if AP_PERIPH_SERIAL_LOGGER_ENABLED
+    // @Group: SLOG_
+    // @Path: serial_logger.cpp
+    GOBJECT(serial_logger, "SLOG_",  SerialLogger),
+#endif
+
     AP_VAREND
 };
 
