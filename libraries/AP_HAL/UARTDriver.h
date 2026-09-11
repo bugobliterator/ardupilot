@@ -236,6 +236,13 @@ public:
     // check that the current thread owns the uart making certain operations possible
     virtual bool is_owned_by_current_thread() const { return true; }
 
+#if HAL_UART_STATS_ENABLED
+    // Getters for cumulative tx and rx counts
+    virtual uint32_t get_total_tx_bytes() const { return 0; }
+    virtual uint32_t get_total_rx_bytes() const { return 0; }
+    virtual uint32_t get_total_dropped_rx_bytes() const { return 0; }
+#endif
+
 protected:
     // key for a locked port
     uint32_t lock_write_key;
@@ -276,13 +283,6 @@ protected:
 
     // Helper to check if flow control is enabled given the passed setting
     bool flow_control_enabled(enum flow_control flow_control_setting) const;
-
-#if HAL_UART_STATS_ENABLED
-    // Getters for cumulative tx and rx counts
-    virtual uint32_t get_total_tx_bytes() const { return 0; }
-    virtual uint32_t get_total_rx_bytes() const { return 0; }
-    virtual uint32_t get_total_dropped_rx_bytes() const { return 0; }
-#endif
 
     // option bits for port
     uint16_t _last_options;
