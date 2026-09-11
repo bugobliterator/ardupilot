@@ -22,7 +22,9 @@
 #include "shared_dma.h"
 #include "Semaphores.h"
 
+#ifndef RX_BOUNCE_BUFSIZE
 #define RX_BOUNCE_BUFSIZE 64U
+#endif
 #define TX_BOUNCE_BUFSIZE 64U
 
 // enough for serial0 to serial9, plus IOMCU

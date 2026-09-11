@@ -1147,7 +1147,7 @@ void UARTDriver::_rx_timer_tick(void)
         bool enabled = (rxdma->stream->CR & STM32_DMA_CR_EN);
 #endif
         if (!enabled) {
-            uint8_t len = RX_BOUNCE_BUFSIZE - dmaStreamGetTransactionSize(rxdma);
+            uint16_t len = RX_BOUNCE_BUFSIZE - dmaStreamGetTransactionSize(rxdma);
             if (len != 0) {
                 const uint32_t written = _readbuf.write(rx_bounce_buf[rx_bounce_idx], len);
                 _rx_stats_bytes += len;
