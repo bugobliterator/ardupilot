@@ -458,6 +458,9 @@ void UARTDriver::_begin(uint32_t b, uint16_t rxS, uint16_t txS)
                 sercfg.cr3 |= USART_CR3_DMAT;
             }
             sercfg.irq_cb = rx_irq_cb;
+            // with RX DMA the ChibiOS serial ISR must never take bytes from
+            // the data register; they belong to the DMA stream
+            sercfg.external_rx_buffer = rx_dma_enabled;
 #if HAL_HAVE_LOW_NOISE_UART
             if (sdef.low_noise_line) {
                 // we can mark UART to sample on one bit instead of default 3 bits
@@ -590,8 +593,13 @@ void UARTDriver::rx_irq_cb(void* self)
 #else
     volatile uint16_t sr = ((SerialDriver*)(uart_drv->sdef.serial))->usart->SR;
     if(sr & USART_SR_IDLE) {
-        volatile uint16_t dr = ((SerialDriver*)(uart_drv->sdef.serial))->usart->DR;
-        (void)dr;
+        // IDLE is cleared by a DR read after the SR read. If a byte is
+        // waiting in DR leave it for the DMA: its read clears IDLE too, and
+        // taking it here would lose it from the stream
+        if (!(sr & USART_SR_RXNE)) {
+            volatile uint16_t dr = ((SerialDriver*)(uart_drv->sdef.serial))->usart->DR;
+            (void)dr;
+        }
         //disable dma, triggering DMA transfer complete interrupt
         uart_drv->rxdma->stream->CR &= ~STM32_DMA_CR_EN;
     }
