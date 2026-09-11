@@ -586,6 +586,7 @@ void UARTDriver::rx_irq_cb(void* self)
 #if defined(STM32F7) || defined(STM32H7)
     //disable dma, triggering DMA transfer complete interrupt
     uart_drv->rxdma->stream->CR &= ~STM32_DMA_CR_EN;
+    uart_drv->_rx_stats_idle_flushes++;
 #elif defined(STM32F3) || defined(STM32G4) || defined(STM32L4) || defined(STM32L4PLUS)
     //disable dma, triggering DMA transfer complete interrupt
     dmaStreamDisable(uart_drv->rxdma);
@@ -626,6 +627,16 @@ __RAMFUNC__ void UARTDriver::rxbuff_full_irq(void* self, uint32_t flags)
     // out to minimise the time with DMA disabled, which allows us to
     // handle much higher receiver baudrates
     dmaStreamDisable(uart_drv->rxdma);
+    // diagnostics: did the transfer count move between the sample above and
+    // the disable (a byte landing in the buffer that len would not cover)?
+    const uint16_t len_after = RX_BOUNCE_BUFSIZE - dmaStreamGetTransactionSize(uart_drv->rxdma);
+    if (len_after != len) {
+        uart_drv->_rx_stats_ndtr_moved++;
+        uart_drv->_rx_stats_ndtr_moved_bytes += uint16_t(len_after - len);
+    }
+    if (flags & (STM32_DMA_ISR_TEIF | STM32_DMA_ISR_DMEIF | STM32_DMA_ISR_FEIF)) {
+        uart_drv->_rx_stats_dma_errors++;
+    }
     uart_drv->dma_rx_enable();
     
     if (len > 0) {
@@ -1168,6 +1179,7 @@ void UARTDriver::_rx_timer_tick(void)
             }
             // DMA disabled by idle interrupt never got a chance to be handled
             // we will enable it here
+            _rx_stats_tick_restarts++;
             dmaStreamDisable(rxdma);
             dma_rx_enable();
         }
@@ -1396,6 +1408,7 @@ __RAMFUNC__ void UARTDriver::update_rts_line(void)
     if (_rts_is_active && space < _rts_threshold) {
         _rts_is_active = false;
         palSetLine(arts_line);
+        _rts_deasserts++;
     } else if (!_rts_is_active && space > _rts_threshold+16) {
         _rts_is_active = true;
         palClearLine(arts_line);

@@ -225,6 +225,18 @@ private:
     uint32_t _tx_stats_bytes;
     uint32_t _rx_stats_bytes;
     uint32_t _rx_stats_dropped_bytes;
+    // diagnostics for the DMA receive path: partial-buffer flushes from the
+    // IDLE interrupt, and restarts done by the timer tick when it found the
+    // stream disabled before the completion interrupt ran
+    uint32_t _rx_stats_idle_flushes;
+    uint32_t _rx_stats_tick_restarts;
+    // times the software RTS line was raised (receive ring nearly full)
+    uint32_t _rts_deasserts;
+    // RX DMA completion diagnostics: transfer count changed between the
+    // length sample and the stream disable, and DMA TE/DME/FE flags seen
+    uint32_t _rx_stats_ndtr_moved;
+    uint32_t _rx_stats_ndtr_moved_bytes;
+    uint32_t _rx_stats_dma_errors;
 
     // we remember config options from set_options to apply on sdStart()
     uint32_t _cr1_options;
