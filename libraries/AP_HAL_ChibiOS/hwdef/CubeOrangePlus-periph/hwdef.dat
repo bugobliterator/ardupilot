@@ -1,0 +1,54 @@
+# CubeOrange+ as a raw serial logger (OpenLager replacement)
+include ../CubeOrangePlus/hwdef.dat
+
+undef IOMCU_UART
+undef USART6
+undef ROMFS
+undef HAL_HAVE_SAFETY_SWITCH
+undef HAL_CHIBIOS_ARCH_FMUV3
+undef BOOTLOADER_DEV_LIST
+undef BOARD_VALIDATE
+undef IMU
+
+# same board ID as the vehicle firmware so the stock bootloader accepts it
+APJ_BOARD_ID AP_HW_CUBEORANGEPLUS
+# stock bootloader is kept; no embedded bootloader image for this target
+define AP_BOOTLOADER_FLASHING_ENABLED 0
+
+# setup build for a peripheral firmware
+env AP_PERIPH 1
+
+define AP_CAN_SLCAN_ENABLED 1
+define AP_PERIPH_SERIAL_LOGGER_ENABLED 1
+define HAL_CAN_DRIVER_DEFAULT 1
+# static node ID: a logger usually sits on a bus with no allocator, and the
+# dynamic-allocation retry message would otherwise fill the USB console
+define HAL_CAN_DEFAULT_NODE_ID 125
+define HAL_GPIO_PIN_LED HAL_GPIO_PIN_FMU_LED_AMBER
+
+# per-port byte counters, used by the SLOG status line (dropped bytes)
+define HAL_UART_STATS_ENABLED 1
+
+# listen for reboot command from uploader.py on the USB port
+define HAL_PERIPH_LISTEN_FOR_SERIAL_UART_REBOOT_CMD_PORT 0
+
+# the logger needs the card: SDMMC1 and HAL_OS_FATFS_IO stay from the base hwdef
+
+# 1 KB RX DMA bounce buffers: ISR every 0.8 ms at 1.25 MB/s instead of every 51 us
+define RX_BOUNCE_BUFSIZE 1024
+
+# TELEM1 RTS pin, used by the logger's bench RTS pulse
+define HAL_SLOG_RTS_LINE PAL_LINE(GPIOD, 4U)
+# TELEM1 RX DMA stream, sampled around the pulse to show TX actually paused
+define HAL_SLOG_RX_DMA_STREAM STM32_UART_USART2_RX_DMA_STREAM
+
+# log files are streamed on request over the USB console port (OTG1, SERIAL0);
+# the second CDC port carries SLCAN frame text and is not quiet
+define HAL_SLOG_DUMP_SERIAL 0
+
+# TELEM1 RX DMA stream is never shared and wins arbitration
+DMA_NOSHARE USART2*
+DMA_PRIORITY USART2*
+
+MAIN_STACK 0x2000
+PROCESS_STACK 0x6000
