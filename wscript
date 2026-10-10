@@ -972,7 +972,6 @@ def build(bld):
 
     if bld.env.SCRIPTING_M4:
         bld.env.AP_LIBRARIES_OBJECTS_KW['use'] += ['cubeframework']
-        bld.cubeframework()
 
     _build_cmd_tweaks(bld)
 
@@ -984,10 +983,12 @@ def build(bld):
     bld.add_group('dynamic_sources')
     _build_dynamic_sources(bld)
 
-    if bld.env.SCRIPTING_M4:
-        bld.scripting_m4_image()
-
     bld.add_group('build')
+    if bld.env.SCRIPTING_M4:
+        # not before the build group: posting a cxx stlib/program earlier runs the compile
+        # database dry run, which globs generated DroneCAN sources before they exist
+        bld.cubeframework()
+        bld.scripting_m4_image()
     bld.get_board().build(bld)
     _build_common_taskgens(bld)
 

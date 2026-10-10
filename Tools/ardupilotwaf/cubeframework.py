@@ -46,7 +46,8 @@ def cubeframework(bld):
         return bld.stlib(name='cubeframework', target='cubeframework',
                          source=_cf(CF_CHIBIOS_SOURCES), features=['ch_ap_library'],
                          defines=['USE_CHIBIOS=1'], includes=[bld.bldnode.abspath()],
-                         cxxflags=CF_CXXFLAGS, use=[])
+                         cxxflags=CF_CXXFLAGS,
+                         use=[])  # ap_library's compile database dry run reads .use
     # HSEM.h picks the M7 semaphore mapping from __CORTEX_M
     return bld.stlib(name='cubeframework', target='cubeframework',
                      source=_cf(CF_POSIX_SOURCES), defines=['__CORTEX_M=7'],
@@ -60,6 +61,14 @@ def scripting_m4_image(bld):
         _chibios_image(bld)
     else:
         _sitl_program(bld)
+    bld.add_pre_fun(_add_image_target)
+
+
+def _add_image_target(bld):
+    # the image is no vehicle's dependency; build it with any targeted build (run after
+    # the build commands have set bld.targets)
+    if bld.targets:
+        bld.targets += ',scripting_m4_image'
 
 
 def _chibios_image(bld):
@@ -78,11 +87,11 @@ def _chibios_image(bld):
         bld.env.get_flat('MAKE'), bld.options.jobs, makefile.abspath(),
         src.find_dir('modules/ChibiOS').abspath(), src.abspath(), out.abspath(),
         bin_dir.abspath(), out.abspath(), out.abspath(), bin_dir.abspath())
-    bld(rule=rule, source=sources, target=targets, name='scripting_m4_image', group='dynamic_sources')
+    bld(rule=rule, source=sources, target=targets, name='scripting_m4_image')
 
 
 def _sitl_program(bld):
-    bld.program(target='bin/scripting_m4', name='scripting_m4_image', group='dynamic_sources',
+    bld.program(target='bin/scripting_m4', name='scripting_m4_image',
                 source=[M4_DIR + '/m4_service.cpp', M4_DIR + '/sitl/main.cpp'] + _cf(CF_POSIX_SOURCES),
                 includes=['libraries/AP_Scripting', CUBEFRAMEWORK],
                 defines=['__CORTEX_M=4'], cxxflags=CF_CXXFLAGS, use=[])
