@@ -52,6 +52,12 @@ extern "C" uint32_t m4_latch_restart_grant(void)
     return restart_grant_at_start;
 }
 
+extern "C" bool m4_restart_granted(void)
+{
+    return restart_grant_latched &&
+           supervisor_block(shared_window())->restart_grant.load() != restart_grant_at_start;
+}
+
 extern "C" void m4_park_forever(void)
 {
     __disable_irq();

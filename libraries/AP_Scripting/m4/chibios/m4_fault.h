@@ -7,6 +7,7 @@
   ChibiOS. Restarts happen only when the M7 grants one.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -20,6 +21,8 @@ __attribute__((noreturn)) void m4_park_forever(void);
 // latch SupervisorBlock.restart_grant at start-up; after a fault the M4
 // restarts once the M7 has moved it off this value. Returns the latched value.
 uint32_t m4_latch_restart_grant(void);
+// true once the M7 has moved restart_grant off the latched value
+bool m4_restart_granted(void);
 
 #ifdef __cplusplus
 }

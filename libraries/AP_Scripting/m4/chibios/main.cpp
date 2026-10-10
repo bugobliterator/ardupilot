@@ -98,7 +98,10 @@ static void doorbell_callback(uint8_t group)
 static void restart_callback(uint8_t group)
 {
     (void)group;
-    m4_warm_restart();   // the M7 asked: e.g. the service loop stopped beating
+    // the M7 stores the grant before ringing; a late or repeated ring is ignored
+    if (m4_restart_granted()) {
+        m4_warm_restart();   // e.g. the service loop stopped beating
+    }
 }
 
 static uint32_t millis_now()
