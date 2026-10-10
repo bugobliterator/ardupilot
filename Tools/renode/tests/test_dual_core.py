@@ -141,3 +141,15 @@ def test_hsem_model(renode, images):  # noqa: F811
         assert result[name] == expected, '%s = 0x%X\n%s' % (name, result[name], output)
     assert result['m7_core2_raw_status'] & (1 << 7), output
     assert values[len(HSEM_FIELDS):] == [0, 0], output
+
+
+def test_hsem_debugger_access_has_no_side_effects(renode, images):  # noqa: F811
+    idle, probe = images('idle_m7', 'probe_m4')
+    output = renode(platform_script(idle, probe) + '\n'.join([
+        'sysbus ReadDoubleWord 0x58026480 cpu',              # RLR[0] through the CPU context
+        'sysbus ReadDoubleWord 0x58026400',                  # R[0]
+        'sysbus WriteDoubleWord 0x58026404 0x80000300 cpu',  # R[1] lock through the CPU context
+        'sysbus ReadDoubleWord 0x58026404',
+        'sysbus ReadDoubleWord 0x58026518',                  # C2ISR
+    ]) + '\n')
+    assert monitor_values(output) == ['0x00000000'] * 4, output

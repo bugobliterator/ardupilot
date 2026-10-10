@@ -7,7 +7,9 @@
 //  - on every free sets the semaphore's bit in C1ISR and C2ISR; CnMISR = CnISR &
 //    CnIER drives C1IRQ (HSEM1, M7 IRQ 125) and C2IRQ (HSEM2, M4 IRQ 126)
 //  - implements HSEM_CR: free every semaphore of a COREID when KEY matches KEYR
-// Accesses without a CPU initiator (monitor, debugger) have no side effects.
+// Lock, take and free paths act only for a CPU executing guest code on its own
+// thread; monitor and debugger accesses (also those issued in a CPU context)
+// leave semaphores unchanged. Monitor writes to CR, ICR, IER and KEYR take effect.
 using System;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Logging;
@@ -128,6 +130,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             if(owner[index] == core && processId[index] == writtenProcess)
             {
                 Free(index);
+                UpdateInterrupts();
             }
         }
 
@@ -154,7 +157,6 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             processId[index] = 0;
             interruptStatus[0] |= 1u << index;
             interruptStatus[1] |= 1u << index;
-            UpdateInterrupts();
         }
 
         private uint SemaphoreValue(int index)
@@ -164,7 +166,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         private uint InitiatorCoreId()
         {
-            if(!machine.SystemBus.TryGetCurrentCPU(out var cpu))
+            if(!machine.SystemBus.TryGetCurrentCPU(out var cpu) || !cpu.OnPossessedThread)
             {
                 return 0;
             }
