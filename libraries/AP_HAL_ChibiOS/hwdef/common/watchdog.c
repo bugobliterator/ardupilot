@@ -92,6 +92,12 @@ static volatile bool lockup_paused;
  */
 void stm32_watchdog_init(void)
 {
+#if defined(RCC_GCR_WW1RSC) && defined(AP_CUBEFRAMEWORK_ENABLED) && AP_CUBEFRAMEWORK_ENABLED
+    // ES0445 2.3.1: a core-scoped watchdog reset can lock the AXI bus; make
+    // both cores' watchdog resets reset the whole system. Only boards that run
+    // the Cortex-M4 (AP_CUBEFRAMEWORK_ENABLED) set this
+    RCC->GCR |= RCC_GCR_WW1RSC | RCC_GCR_WW2RSC;
+#endif
     // setup the watchdog timeout
     // t = 4 * 2^PR * (RLR+1) / 32KHz
     IWDGD.KR = 0x5555;
@@ -209,6 +215,18 @@ bool stm32_was_software_reset(void)
     stm32_watchdog_save_reason();
     return (reset_reason & WDG_RESET_IS_SFT) != 0;
 }
+
+#if defined(RCC_RSR_SFT2RSTF)
+/*
+  return true if the Cortex-M4 raised the last reset (its SYSRESETREQ, IWDG2
+  or WWDG2), dual-core H7 only
+ */
+bool stm32_was_cm4_reset(void)
+{
+    stm32_watchdog_save_reason();
+    return (reset_reason & (RCC_RSR_SFT2RSTF | RCC_RSR_IWDG2RSTF | RCC_RSR_WWDG2RSTF)) != 0;
+}
+#endif
 
 /*
   save persistent watchdog data
