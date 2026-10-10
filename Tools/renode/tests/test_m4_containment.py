@@ -290,3 +290,25 @@ def test_m4_lockup_turns_scripting_off(start_m4lua):
     m4lua.wait_text(re.escape('Scripting: M4 restarting (1/3)'))
     m4lua.wait_text(re.escape('Scripting: M4 not responding, off until reboot'))
     m4lua.wait_alive(20)
+
+
+def test_m4_off_parks_a_stalled_m4(start_m4lua):
+    m4_elf = Path(os.environ.get('M4LUA_M4_ELF', BUILD / 'scripting_m4.elf'))
+    symbols = subprocess.check_output(['arm-none-eabi-nm', '-S', str(m4_elf)], text=True)
+    park = re.search(r'(?m)^([0-9a-f]{8}) ([0-9a-f]{8}) T m4_park_forever$', symbols)
+    assert park, 'm4_park_forever not in %s' % m4_elf
+    park_start = int(park.group(1), 16)
+    park_end = park_start + int(park.group(2), 16)
+    m4lua = start_m4lua()
+    m4lua.wait_m4_started()
+    # no restarts: the stall, with interrupts on, turns scripting off at once
+    m4lua.set('SCR_M4_RST_MAX', 0)
+    m4lua.set('SCR_M4_INJECT', 3)
+    m4lua.wait_text(r'Scripting: M4 heartbeat lost')
+    m4lua.wait_text(re.escape('Scripting: M4 fault limit, off until reboot'))
+    m4lua.wait_alive(5)
+    # Off rang the restart doorbell: the M4 left the stall loop and parked
+    for _ in range(3):
+        pc = int(m4lua.monitor_value('cpu2 PC', r'(0x[0-9A-Fa-f]+)'), 16)
+        assert park_start <= pc < park_end, 'M4 not parked after Off: PC=0x%08X' % pc
+        m4lua.wait_alive(2)
