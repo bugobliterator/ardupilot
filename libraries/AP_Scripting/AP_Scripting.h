@@ -26,6 +26,7 @@
 #include <AP_Filesystem/AP_Filesystem.h>
 #include <AP_HAL/I2CDevice.h>
 #include "AP_Scripting_CANSensor.h"
+#include "AP_ScriptingM4.h"
 #include <AP_Networking/AP_Networking_Config.h>
 
 #ifndef SCRIPTING_MAX_NUM_I2C_DEVICE
@@ -211,6 +212,10 @@ private:
 
     static AP_Scripting *_singleton;
     int current_env_ref;
+
+#if AP_SCRIPTING_M4_ENABLED
+    AP_ScriptingM4 _m4;
+#endif
 };
 
 namespace AP {

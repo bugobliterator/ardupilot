@@ -165,6 +165,12 @@ const AP_Param::GroupInfo AP_Scripting::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("THD_PRIORITY", 14, AP_Scripting, _thd_priority, uint8_t(ThreadPriority::NORMAL)),
 
+#if AP_SCRIPTING_M4_ENABLED
+    // @Group: M4_
+    // @Path: AP_ScriptingM4.cpp
+    AP_SUBGROUPINFO(_m4, "M4_", 19, AP_Scripting, AP_ScriptingM4),
+#endif
+
 #if AP_SCRIPTING_SERIALDEVICE_ENABLED
     // @Param: SDEV_EN
     // @DisplayName: Scripting serial device enable
@@ -231,6 +237,12 @@ void AP_Scripting::init(void) {
             }
         }
     }
+#endif
+
+#if AP_SCRIPTING_M4_ENABLED
+    // scripts run on the Cortex-M4; the M7 hosts and supervises them
+    _m4.init();
+    return;
 #endif
 
     AP_HAL::Scheduler::priority_base priority = AP_HAL::Scheduler::PRIORITY_SCRIPTING;
@@ -425,6 +437,10 @@ bool AP_Scripting::arming_checks(size_t buflen, char *buffer) const
     if (!enabled() || option_is_set(DebugOption::DISABLE_PRE_ARM)) {
         return true;
     }
+
+#if AP_SCRIPTING_M4_ENABLED
+    return _m4.arming_checks(buflen, buffer);
+#endif
 
     if (_thread_failed) {
         hal.util->snprintf(buffer, buflen, "Scripting: %s", "failed to start");
