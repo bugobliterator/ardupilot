@@ -19,6 +19,10 @@ enum class MsgType : uint8_t {
     Pong = 2,        // M7 -> M4: reply with the M7-side timings
     Stats = 3,       // M4 -> M7: round-trip statistics, once per second
     FaultInject = 4, // M7 -> M4: test-only fault request
+    Call = 5,        // M4 -> M7: Lua call, a Reply follows
+    Reply = 6,       // M7 -> M4: results of a Call
+    Notify = 7,      // M4 -> M7: Lua call without a reply
+    Ready = 8,       // M7 -> M4: the M7 serves calls of this session
 };
 
 enum class FaultKind : uint8_t {
@@ -64,6 +68,38 @@ struct __attribute__((packed)) FaultInjectMsg {
     uint32_t kind;         // FaultKind
 };
 
+// largest RPC frame (Call, Notify, Reply), header included
+static const uint16_t MAX_FRAME = 1024;
+
+struct __attribute__((packed)) CallHeader {
+    MsgHeader header;   // Call or Notify
+    uint16_t method;    // SystemMethod, or a generated binding id
+    uint8_t argc;       // encoded values that follow
+    uint8_t reserved;
+};
+
+enum class ReplyStatus : uint8_t {
+    Ok = 0,
+    ArgError = 1,       // bad argument error_arg; the message is the first value
+    Error = 2,          // Lua error; the message is the first value
+    UnknownMethod = 3,
+    Malformed = 4,      // the M7 could not decode the call
+};
+
+struct __attribute__((packed)) ReplyHeader {
+    MsgHeader header;      // Reply, seq of the call
+    uint8_t status;        // ReplyStatus
+    uint8_t count;         // encoded values that follow
+    uint8_t error_arg;     // Lua stack index of the bad argument (ArgError)
+    uint8_t reserved;
+    uint32_t m7_wake_us;   // doorbell interrupt to host thread running
+    uint32_t m7_exec_us;   // host time spent on this call
+};
+
+struct __attribute__((packed)) ReadyMsg {
+    MsgHeader header;
+};
+
 static const uint16_t MAX_MESSAGE = 64;
 static_assert(sizeof(StatsMsg) <= MAX_MESSAGE, "receive buffers hold any message");
 
@@ -79,6 +115,11 @@ inline uint16_t message_length(uint8_t type)
         return sizeof(StatsMsg);
     case MsgType::FaultInject:
         return sizeof(FaultInjectMsg);
+    case MsgType::Call:
+    case MsgType::Reply:
+    case MsgType::Notify:
+    case MsgType::Ready:
+        return 0;   // variable length: handled by the Call Path parse_header()
     }
     return 0;
 }

@@ -104,7 +104,11 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     }
     case MsgType::Ping:
     case MsgType::Stats:
-        return;   // M4 -> M7 only
+    case MsgType::Call:
+    case MsgType::Reply:
+    case MsgType::Notify:
+    case MsgType::Ready:
+        return;   // M4 -> M7 only, or not served before the Call Path
     }
 }
 
