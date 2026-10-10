@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -19599,6 +19600,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.MAV_CMD_MISSION_START_p1_p2,
             self.ScriptingFlipMode,
             self.ScriptingBindingStats,
+            self.ScriptingM4Containment,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22057,6 +22059,80 @@ RTL_ALT_M 111
             if expected not in names:
                 raise NotAchievedException("no SRPC for %s (got %s)" % (expected, names))
 
+    def ScriptingM4Containment(self):
+        '''faults of the SITL M4 scripting process never reach the vehicle; restarts are capped'''
+        self.context_push()
+        # the M4 heartbeat runs on wall-clock time
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_M4_RST_MAX": 3,
+            "LOG_DISARMED": 1,
+        })
+        self.reboot_sitl()
+        pid_text = self.wait_statustext(r"Scripting: M4 process pid \d+", regex=True, check_context=True, timeout=30)
+        m4_pid = int(re.search(r"pid (\d+)", pid_text.text).group(1))
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.wait_ready_to_arm()
+        self.takeoff(10, mode="LOITER")
+        self.set_rc(3, 1500)
+        steps = (
+            (1, r"Scripting: M4 signal \d+ addr=0x"),
+            (5, r"Scripting: M4 protocol errors"),
+            (3, r"Scripting: M4 heartbeat lost"),
+        )
+        for used, (kind, reason) in enumerate(steps, start=1):
+            self.set_parameter("SCR_M4_INJECT", kind)
+            self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
+            self.wait_statustext("Scripting: M4 restarting (%u/3)" % used, check_context=True, timeout=10)
+            self.wait_statustext("Scripting: M4 restarted (%u/3)" % used, check_context=True, timeout=10)
+            self.assert_mode("LOITER")
+            if not self.armed():
+                raise NotAchievedException("disarmed after an M4 fault")
+            self.wait_altitude(8, 12, relative=True, timeout=10)
+
+        # killing the M4 process counts as a fault too; the budget is spent
+        os.kill(m4_pid, signal.SIGKILL)
+        self.wait_statustext("Scripting: M4 process exit", check_context=True, timeout=10)
+        self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=10)
+        self.assert_mode("LOITER")
+        self.wait_altitude(8, 12, relative=True, timeout=10)
+        self.land_and_disarm()
+        self.assert_prearm_failure("Scripting core not running", other_prearm_failures_fatal=False)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        states = set()
+        restarts_used = 0
+        pings = 0
+        while True:
+            m = dfreader.recv_match(type=["M4ST", "SRPC"])
+            if m is None:
+                break
+            if m.get_type() == "M4ST":
+                states.add(m.St)
+                restarts_used = max(restarts_used, m.Rst)
+            elif m.Name == "m4:ping":
+                pings += m.N
+                if m.P99 < m.P50:
+                    raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
+        # the restarting state lasts far less than the 1 Hz row interval, so only running and off are required
+        if not {2, 4}.issubset(states):
+            raise NotAchievedException("M4ST states seen: %s" % states)
+        if restarts_used != 3:
+            raise NotAchievedException("M4ST restarts used: %u" % restarts_used)
+        if pings == 0:
+            raise NotAchievedException("no SRPC m4:ping round trips logged")
+
+        # a lockup ignores the restart request: scripting turns off at once
+        self.reboot_sitl()
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.set_parameter("SCR_M4_INJECT", 4)
+        self.wait_statustext("Scripting: M4 heartbeat lost", check_context=True, timeout=10)
+        self.wait_statustext("Scripting: M4 not responding, off until reboot", check_context=True, timeout=10)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24175,6 +24251,7 @@ return update, 1000
             "RTLStoppingDistanceSpeed": "Currently fails due to vehicle going off-course",
             "ScriptingOSD": "Requires SFML which is not available in CI",
             "ScriptingBindingStats": "Requires AP_SCRIPTING_BINDING_STATS_ENABLED build",
+            "ScriptingM4Containment": "Requires --enable-scripting-m4 SITL build",
         }
 
 
