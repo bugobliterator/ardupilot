@@ -23,6 +23,7 @@
 #include <AP_ScriptingM4_Layout.h>
 
 #include "../m4_service.h"
+#include "lua_port.h"
 
 using namespace ScriptingM4;
 using CubePilotFW::Channel;
@@ -34,11 +35,6 @@ static char **self_argv;
 static pid_t parent;
 static uint32_t restart_grant_at_start;
 static LuaLink call_link;   // not `link`: <unistd.h> declares link()
-
-// nothing posts a call until the Lua thread exists (M4 Lua Runtime task)
-static void wake_lua()
-{
-}
 
 static void sleep_ms(long ms)
 {
@@ -194,11 +190,15 @@ int main(int argc, char **argv)
                         restart_grant_at_start);
 
     static M4Service service;
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_lua };
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, lua_port_wake };
     service.init(channel, window, call_link, platform);
+    if (!lua_port_start(call_link)) {
+        fprintf(stderr, "scripting_m4: no Lua thread\n");
+        return 1;
+    }
     while (true) {
         if (getppid() != parent || block->run_permit.load() != 1) {
-            return 0;
+            _exit(0);   // not exit(): the Lua thread still runs on the statics
         }
         service.step();
         // POSIX HSEM has no interrupt: poll with a bounded sleep
