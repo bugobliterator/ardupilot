@@ -32,8 +32,11 @@ static const int32_t SEVERITY_CRITICAL = 2;
 static const int32_t SEVERITY_DEBUG = 7;
 // longest idle sleep: Lua-thread fault requests are taken this promptly
 static const uint32_t MAX_SLEEP_MS = 100;
-// m4:list_script tries per index before the list counts as failed
+// m4:list_script tries per index before the list counts as failed, spaced out and
+// within LIST_WINDOW_MS, so a slow first build_list (CRCs over the SD card) is waited for
 static const uint8_t LIST_ATTEMPTS = 3;
+static const uint32_t LIST_RETRY_MS = 3000;
+static const uint32_t LIST_WINDOW_MS = 10000;
 
 struct Script {
     int env_ref;               // the script's environment table
@@ -336,7 +339,14 @@ enum class ListEntry : uint8_t {
 // m4:list_script(index); a failed call (e.g. timed out while the M7 builds the list) is retried
 static ListEntry list_script(int32_t index)
 {
+    const uint32_t start_ms = port_millis();
     for (uint8_t attempt = 0; attempt < LIST_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+            if (port_millis() - start_ms + LIST_RETRY_MS > LIST_WINDOW_MS) {
+                break;
+            }
+            sleep_ms(LIST_RETRY_MS);
+        }
         RpcWriter &args = rpc.begin(SystemMethod::ListScript);
         args.integer(index);
         if (rpc.invoke() == 0 && rpc.status() == ReplyStatus::Ok && rpc.count() == 1) {
@@ -347,7 +357,6 @@ static ListEntry list_script(int32_t index)
                 return ListEntry::End;
             }
         }
-        take_fault_request();
     }
     return ListEntry::Failed;
 }
