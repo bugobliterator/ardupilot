@@ -22088,6 +22088,8 @@ RTL_ALT_M 111
         if len(steps) != restart_max:
             raise NotAchievedException("fault steps do not match the restart limit")
         for used, (kind, reason) in enumerate(steps, start=1):
+            # each step's waits match only the texts this step produces
+            self.context_clear_collection("STATUSTEXT")
             self.set_parameter("SCR_M4_INJECT", kind)
             self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
             self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
@@ -22098,6 +22100,7 @@ RTL_ALT_M 111
             self.wait_altitude(8, 12, relative=True, timeout=10)
 
         # killing the M4 process counts as a fault too; the budget is spent
+        self.context_clear_collection("STATUSTEXT")
         os.kill(m4_pid, signal.SIGKILL)
         self.wait_statustext("Scripting: M4 process exit", check_context=True, timeout=10)
         self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=10)
