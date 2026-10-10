@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
+#include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
@@ -88,6 +89,11 @@ void AP_ScriptingM4::host_thread()
     while (true) {
         if (_state == State::Off) {
             platform_m4_exited();   // SITL: reap the stopped process
+            const uint32_t off_ms = AP_HAL::millis();
+            if (off_ms - _stats_start_ms >= 1000) {
+                log_supervisor(off_ms, off_ms - _stats_start_ms);
+                _stats_start_ms = off_ms;
+            }
             hal.scheduler->delay(100);
             continue;
         }
@@ -110,6 +116,7 @@ void AP_ScriptingM4::host_thread()
 #endif
         _host_busy_us += AP_HAL::micros() - _woke_us;
         if (now_ms - _stats_start_ms >= 1000) {
+            log_supervisor(now_ms, now_ms - _stats_start_ms);
             _stats_start_ms = now_ms;
             _requests = 0;
             _protocol_errors = 0;
@@ -166,12 +173,73 @@ void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
         return;
     }
     case ScriptingM4::MsgType::Stats:
-        return;   // logged by the RPC stats plumbing
+        log_rpc_stats(buf);
+        return;
     case ScriptingM4::MsgType::Pong:
     case ScriptingM4::MsgType::FaultInject:
         _protocol_errors++;   // M7 -> M4 only
         return;
     }
+}
+
+// SRPC as in AP_Scripting_BindingStats.cpp; SemMax carries the largest M7-side time of one request
+void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
+{
+    ScriptingM4::StatsMsg stats;
+    memcpy(&stats, buf, sizeof(stats));
+    const uint32_t now_ms = AP_HAL::millis();
+    _m4_round_trips.count = stats.count;
+    _m4_round_trips.p50_us = stats.p50_us;
+    _m4_round_trips.p99_us = stats.p99_us;
+    _m4_round_trips.max_us = stats.max_us;
+    // the M4 keeps a window it could not send, so a report may cover more than a second
+    _m4_round_trips.window_ms = _m4_stats_ms != 0 ? now_ms - _m4_stats_ms : 1000;
+    _m4_stats_ms = now_ms;
+    _m4_pings_lost += stats.lost;
+#if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
+    AP::logger().WriteStreaming("SRPC", "TimeUS,Id,Name,N,P50,P99,Max,SemMax,Tot",
+                                "s#--sssss", "F---FFFFF", "QHZIIIIIQ",
+                                AP_HAL::micros64(), uint16_t(0), "m4:ping", stats.count,
+                                stats.p50_us, stats.p99_us, stats.max_us, stats.m7_max_us,
+                                uint64_t(stats.total_us));
+#endif
+}
+
+// @LoggerMessage: M4ST
+// @Description: Scripting M4 supervisor, once per second (M4 scripting builds)
+// @Field: TimeUS: Time since system startup
+// @Field: St: supervisor state (0 held, 1 starting, 2 running, 3 restarting, 4 off)
+// @Field: HB: M4 heartbeat counter
+// @Field: Ses: M4 peer header session
+// @Field: Rst: restarts used
+// @Field: Flt: M4 fault count
+// @Field: FPC: PC of the last M4 fault
+// @Field: Req: M4 messages served in the last second
+// @Field: PErr: protocol errors in the last second
+// @Field: Drop: replies dropped because the M4's ring was full
+// @Field: Lost: M4 pings without a reply since the previous row
+void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
+{
+#if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
+    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost",
+                                "s----------", "F----------", "QBIIBIIIHHI",
+                                AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
+                                _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
+                                _protocol_errors, _dropped, _m4_pings_lost);
+#endif
+    _m4_pings_lost = 0;
+    if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {
+        return;
+    }
+    _last_summary_ms = now_ms;
+    const uint32_t per_second = uint32_t(uint64_t(_m4_round_trips.count) * 1000 / MAX(_m4_round_trips.window_ms, 1U));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting RPC %u/s p50<%u p99<%u max %uus",
+                  unsigned(per_second), unsigned(_m4_round_trips.p50_us),
+                  unsigned(_m4_round_trips.p99_us), unsigned(_m4_round_trips.max_us));
+    // busy microseconds per millisecond = per mille of one core
+    const uint32_t host_permille = _host_busy_us / MAX(elapsed_ms, 1U);
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting M7 host %u.%u%% CPU",
+                  unsigned(host_permille / 10), unsigned(host_permille % 10));
 }
 
 void AP_ScriptingM4::supervise(uint32_t now_ms)
@@ -208,6 +276,7 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         _m4_heartbeat_ms = now_ms;
         // re-handshake: drop whatever either side queued before this start
         _channel->resetAfterRestart();
+        _m4_stats_ms = 0;
         if (_state == State::Starting) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: M4 started");
         } else {

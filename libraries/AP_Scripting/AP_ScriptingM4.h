@@ -50,6 +50,8 @@ private:
     void host_thread();
     bool serve();
     void handle_message(const uint8_t *buf, uint16_t len);
+    void log_rpc_stats(const uint8_t *buf);
+    void log_supervisor(uint32_t now_ms, uint32_t elapsed_ms);
     void supervise(uint32_t now_ms);
     void check_started(uint32_t now_ms);
     void check_running(uint32_t now_ms);
@@ -92,6 +94,17 @@ private:
     uint16_t _dropped;
     uint32_t _host_busy_us;
     bool _summary_enabled;
+
+    struct {
+        uint32_t count;
+        uint32_t p50_us;
+        uint32_t p99_us;
+        uint32_t max_us;
+        uint32_t window_ms;     // time the report covers; longer than 1 s after a failed send on the M4
+    } _m4_round_trips;          // last Stats report from the M4
+    uint32_t _m4_stats_ms;      // when it arrived
+    uint32_t _m4_pings_lost;    // lost pings reported since the last M4ST row
+    uint32_t _last_summary_ms;
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
     int _m4_pid;

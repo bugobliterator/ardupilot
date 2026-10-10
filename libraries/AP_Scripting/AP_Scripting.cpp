@@ -534,6 +534,9 @@ bool AP_Scripting::is_handling_command(uint16_t cmd_id)
 // Update called at 1Hz from AP_Vehicle
 void AP_Scripting::update() {
 
+#if AP_SCRIPTING_M4_ENABLED
+    _m4.set_summary_enabled(option_is_set(DebugOption::LOG_RUNTIME));
+#endif
     save_checksum();
 
 }
