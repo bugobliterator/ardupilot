@@ -57,8 +57,18 @@ static uint32_t cycles_now()
     return uint32_t(now_us());   // one "cycle" per microsecond
 }
 
+// SIG_IGN survives execv and discards pending copies: a SIGUSR1 racing the
+// restart must not hit the new image before it installs its handler
+static void ignore_restart_signal()
+{
+    struct sigaction ign {};
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGUSR1, &ign, nullptr);
+}
+
 extern "C" void on_restart_signal(int)
 {
+    ignore_restart_signal();
     execv(self_path, self_argv);
     _exit(71);
 }
@@ -74,6 +84,7 @@ extern "C" void on_fault_signal(int sig, siginfo_t *info, void *)
         }
         sleep_ms(1);
     }
+    ignore_restart_signal();
     execv(self_path, self_argv);
     _exit(71);
 }
@@ -142,8 +153,7 @@ int main(int argc, char **argv)
         close(fd);
     }
     if (realpath(argv[0], self_path) == nullptr) {
-        fprintf(stderr, "scripting_m4: realpath %s: %s\n", argv[0], strerror(errno));
-        return 1;
+        snprintf(self_path, sizeof(self_path), "%s", argv[0]);
     }
     const char *name = getenv("CUBEFW_SHM_NAME");
     if (name == nullptr) {
