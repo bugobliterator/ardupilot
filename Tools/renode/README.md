@@ -450,14 +450,19 @@ Both cores run serially with a 100 us quantum.
 `FLASH_RESERVE_END_KB` (CubeOrangePlus-M4Lua); run.py also sets the flash
 controller's `BOOT4_CUR` from the ELF.
 
-    Tools/renode/run.py CubeOrangePlus --m4-elf /path/to/m4.elf
+    Tools/renode/run.py CubeOrangePlus-M4Lua --m4-elf build/CubeOrangePlus-M4Lua/bin/scripting_m4.elf
 
 The M4 has its own NVIC and DWT; it sees the rest of the bus as the M7 does.
+The option bytes the M7 checks before releasing the M4 are modelled read-only:
+`OPTSR_CUR` reports `BCM4=0` and `BOOT4_CUR` the M4 boot address.
 Not modelled: TCM privacy, the 0x10000000 D2 SRAM aliases, peripheral
-interrupts to the M4, and option bytes. `AP_STM32H7_HSEM` provides the
+interrupts to the M4, and option-byte programming. `AP_STM32H7_HSEM` provides the
 semaphores and their HSEM1/HSEM2 interrupts. `tests/test_dual_core.py` covers
 hold and release, the HSEM, and a CubeFramework boot handshake
-(`CUBEFRAMEWORK_DIR=/path/to/CubeFramework`).
+(`CUBEFRAMEWORK_DIR=/path/to/CubeFramework`). `tests/test_m4_containment.py`
+boots the CubeOrangePlus-M4Lua Copter firmware with its M4 scripting image,
+injects faults on the M4 and checks that the M7 restarts it up to the
+`SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
 
 ### Graphical launcher
 
