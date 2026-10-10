@@ -34,6 +34,8 @@ PROGRAMS = {
     'hsem_m4': ('m4', ['hsem_m4.c'], False, {}),
     # Tail of bank 2 and backup SRAM: also usable next to real ArduPilot M7
     # firmware, which uses neither.
+    'handshake_m7': ('m7', ['handshake_m7.cpp'], True, {}),
+    'handshake_m4': ('m4', ['handshake_m4.cpp'], True, {}),
     'probe_m4': ('m4', ['probe_m4.c'], False,
                  {'flash': (0x081E0000, 0x20000), 'ram': (0x38800000, 0xF00)}),
 }

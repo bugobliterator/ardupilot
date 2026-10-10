@@ -153,3 +153,42 @@ def test_hsem_debugger_access_has_no_side_effects(renode, images):  # noqa: F811
         'sysbus ReadDoubleWord 0x58026518',                  # C2ISR
     ]) + '\n')
     assert monitor_values(output) == ['0x00000000'] * 4, output
+
+
+MAILBOX = 0x38000000
+MAILBOX_FIELDS = [
+    'm7_stage', 'm7_peer_status', 'round_trips', 'm7_doorbell_irqs', 'm7_error',
+    'm4_stage', 'm4_peer_status', 'pings_answered', 'm4_doorbell_irqs', 'm4_cpu_id',
+    'm4_error', 'done',
+]
+PEER_HEADER_MAGIC = 0x48504643  # "CFPH"
+PEER_COMPATIBLE = 2
+STAGE_ROUND_TRIPS = 5
+STAGE_FINISHED = 6
+DONE_MAGIC = 0x444F4E45  # "DONE"
+ROUND_TRIPS = 100
+
+
+def test_boot_handshake(renode, images):  # noqa: F811
+    cubeframework = dual_core_images.cubeframework_dir()
+    if cubeframework is None:
+        pytest.skip('set CUBEFRAMEWORK_DIR to a CubeFramework checkout with Channel and PeerHeader')
+    m7, m4 = images('handshake_m7', 'handshake_m4', cubeframework=cubeframework)
+    reads = ['sysbus ReadDoubleWord 0x%08X' % (MAILBOX + 4 * index) for index in range(len(MAILBOX_FIELDS))]
+    output = renode(platform_script(m7, m4) + '\n'.join([
+        'emulation RunFor "0.2"',
+        'cpu2 IsHalted',
+        'sysbus ReadDoubleWord 0x30040000',  # M7 peer header magic
+        'sysbus ReadDoubleWord 0x30040040',  # M4 peer header magic
+    ] + reads) + '\n')
+    values = monitor_values(output)
+    assert values[0] == 'False', output
+    assert values[1:3] == ['0x%08X' % PEER_HEADER_MAGIC] * 2, output
+    box = dict(zip(MAILBOX_FIELDS, (int(value, 16) for value in values[3:])))
+    assert box['m7_error'] == 0 and box['m4_error'] == 0, box
+    assert box['m7_peer_status'] == PEER_COMPATIBLE and box['m4_peer_status'] == PEER_COMPATIBLE, box
+    assert box['m4_cpu_id'] == CORTEX_M4_CPUID, box
+    assert box['round_trips'] == ROUND_TRIPS and box['pings_answered'] == ROUND_TRIPS, box
+    assert box['m7_stage'] == STAGE_FINISHED and box['m4_stage'] == STAGE_ROUND_TRIPS, box
+    assert box['done'] == DONE_MAGIC, box
+    assert box['m7_doorbell_irqs'] >= 1 and box['m4_doorbell_irqs'] >= 1, box
