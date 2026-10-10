@@ -15,6 +15,14 @@ DWT memory-access notifications and post-instruction debug events. The existing
 `AP_DWT.cs` frontend exposes four comparators when these CPU APIs are present;
 unpatched Renode retains its cycle counter with no advertised comparators.
 
+`cortex-m-privilege.patch` applies after the USB debug extensions patch. It
+makes the MPU honour `MPU_CTRL.PRIVDEFENA` for privileged accesses, keeps the
+PPB (0xE0000000-0xE00FFFFF) out of the MPU, and raises a precise BusFault with
+`BFAR` for unprivileged PPB data accesses (escalated to HardFault when BusFault
+is disabled). The STM32H757 Cortex-M4 sandbox relies on all three. Unprivileged
+STIR (`CCR.USERSETMPEND`) and ITM `TPR` are not modelled: every unprivileged
+PPB data access faults.
+
 Apply these from the Renode Infrastructure directory (including its tlib
 checkout), then rebuild both native ARM-M and managed components. The patches
 were developed against Infrastructure `add012af003a0f620d3da52828262676f374d121`
@@ -25,6 +33,7 @@ patch -p1 < /path/to/ardupilot/Tools/renode/patches/usbip-device-state.patch
 patch -p1 < /path/to/ardupilot/Tools/renode/patches/usbip-unlink.patch
 patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-debug-monitor.patch
 patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-usb-debug-extensions.patch
+patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-privilege.patch
 ```
 
 Skip patches already applied by your Renode build setup. From the Renode root:
@@ -38,6 +47,7 @@ Run the CPU regression tests from the ArduPilot root:
 
 ```sh
 python3 -m pytest -q Tools/renode/tests/test_usb_debug_cpu.py
+python3 -m pytest -q Tools/renode/tests/test_cortex_m_privilege.py
 ```
 
 These CPU tests require the patched CPU APIs. They report a skip with an
