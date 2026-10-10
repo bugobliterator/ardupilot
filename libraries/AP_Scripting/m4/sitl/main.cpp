@@ -66,8 +66,14 @@ static void ignore_restart_signal()
     sigaction(SIGUSR1, &ign, nullptr);
 }
 
+static_assert(std::atomic<uint32_t>::is_always_lock_free, "window atomics are read in signal handlers");
+
 extern "C" void on_restart_signal(int)
 {
+    // the M7 stores the grant before signalling; a late or repeated signal is ignored
+    if (supervisor_block(window)->restart_grant.load() == restart_grant_at_start) {
+        return;
+    }
     ignore_restart_signal();
     execv(self_path, self_argv);
     _exit(71);
