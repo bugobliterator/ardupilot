@@ -1,7 +1,7 @@
 // Cortex-M4 (CPU2) of the STM32H747/H757. Load after stm32h743_base.repl:
 //   machine LoadPlatformDescription @Tools/renode/platforms/stm32h757_m4.repl
-// Needs AP_STM32H7_RCC, AP_NVIC_RettobaseFix and AP_DWT (included by
-// scripts/ardupilot_h743.resc).
+// Needs AP_STM32H7_RCC, AP_STM32H7_HSEM, AP_NVIC_RettobaseFix and AP_DWT
+// (included by scripts/ardupilot_h743.resc).
 //  - cpu2 shares the M7's bus except its own PPB (nvic2, dwt2). Not modelled:
 //    the M7-private ITCM/DTCM stay visible to cpu2, the 0x10000000 D2 SRAM
 //    aliases are absent, and peripheral interrupts reach only the M7 NVIC
@@ -43,3 +43,7 @@ rcc:
     Cpu2: cpu2
     Nvic2: nvic2
     Dwt2: dwt2
+
+hsem:
+    Cpu2: cpu2
+    C2IRQ -> nvic2@126

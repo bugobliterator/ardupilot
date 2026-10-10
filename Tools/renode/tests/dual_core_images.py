@@ -30,6 +30,8 @@ CORES = {
 PROGRAMS = {
     'idle_m7': ('m7', ['idle_m7.c'], False, {}),
     'release_m7': ('m7', ['release_m7.c'], False, {}),
+    'hsem_m7': ('m7', ['hsem_m7.c'], False, {}),
+    'hsem_m4': ('m4', ['hsem_m4.c'], False, {}),
     # Tail of bank 2 and backup SRAM: also usable next to real ArduPilot M7
     # firmware, which uses neither.
     'probe_m4': ('m4', ['probe_m4.c'], False,

@@ -17,14 +17,18 @@ PROBE = 0x38800F00
 PROBE_BOOT_ADDRESS = 0x081E0000
 CORTEX_M4_CPUID = 0x410FC240
 TEST_START = 'dual-core test start'
+# The AP_* peripherals the H743 base and the overlay instantiate. Not a
+# directory filter over stm32/ and common/: AP_STM32_Timer_Actuators.cs needs
+# AP_Physics and AP_SPIMultiplexer.cs needs AP_Sigrok, which the filter does
+# not include, so they fail to compile; compiling every include of the board
+# script would also exceed the 60 s fixture timeout.
 PLATFORM_PERIPHERALS = ['AP_STM32_IWDG', 'AP_STM32H7_FlashController', 'AP_STM32_ADC_v3', 'AP_STM32H7_PWR',
-                        'AP_STM32H7_RCC', 'AP_NVIC_RettobaseFix', 'AP_DWT', 'AP_STM32H7_SDMMC', 'AP_STM32_OTG']
+                        'AP_STM32H7_RCC', 'AP_STM32H7_HSEM', 'AP_NVIC_RettobaseFix', 'AP_DWT',
+                        'AP_STM32H7_SDMMC', 'AP_STM32_OTG']
 
 
 def peripheral_includes():
     resc = (RENODE_DIR / 'scripts' / 'ardupilot_h743.resc').read_text()
-    # Only the peripherals the H743 base and the overlay instantiate: compiling
-    # every include of the board script would exceed the fixture timeout.
     names = '|'.join(PLATFORM_PERIPHERALS)
     pattern = r'include \$repo/Tools/renode/peripherals/(stm32|common)/(%s)\.cs$' % names
     return [line for line in resc.splitlines() if re.match(pattern, line)]
@@ -96,3 +100,44 @@ def test_m7_write_releases_m4(renode, images):  # noqa: F811
         'sysbus ReadDoubleWord 0x%08X' % PROBE,
     ]) + '\n')
     assert monitor_values(output) == ['False', '0x00000008', '0x5055344D'], output
+
+
+HSEM_RESULT = 0x38001000
+HSEM_FIELDS = [
+    'm7_two_step_lock', 'm7_wrong_coreid', 'm4_lock_while_held', 'm4_foreign_free',
+    'm4_read_lock', 'm7_irq_masked_status', 'm7_irq_count', 'm7_core2_raw_status',
+    'm4_irq_masked_status', 'm4_irq_count', 'm7_wrong_key', 'm7_cleared_10',
+    'm7_cleared_11', 'm7_cleared_5', 'm4_step', 'm7_step',
+]
+HSEM_EXPECTED = {
+    'm7_two_step_lock': 0x80000300,
+    'm7_wrong_coreid': 0,
+    'm4_lock_while_held': 0x80000300,
+    'm4_foreign_free': 0x80000300,
+    'm4_read_lock': 0x80000100,
+    'm7_irq_masked_status': 1 << 7,
+    'm7_irq_count': 1,
+    'm4_irq_masked_status': 1 << 9,
+    'm4_irq_count': 1,
+    'm7_wrong_key': 0x80000300,
+    'm7_cleared_10': 0,
+    'm7_cleared_11': 0,
+    'm7_cleared_5': 0,
+    'm4_step': 2,
+    'm7_step': 3,
+}
+
+
+def test_hsem_model(renode, images):  # noqa: F811
+    m7, m4 = images('hsem_m7', 'hsem_m4')
+    reads = ['sysbus ReadDoubleWord 0x%08X' % (HSEM_RESULT + 4 * index) for index in range(len(HSEM_FIELDS))]
+    output = renode(platform_script(m7, m4) + '\n'.join(['emulation RunFor "0.05"'] + reads + [
+        'sysbus ReadDoubleWord 0x580264B0',  # RLR[12] from the monitor: no lock
+        'sysbus ReadDoubleWord 0x58026430',  # R[12]
+    ]) + '\n')
+    values = [int(value, 16) for value in monitor_values(output)]
+    result = dict(zip(HSEM_FIELDS, values))
+    for name, expected in HSEM_EXPECTED.items():
+        assert result[name] == expected, '%s = 0x%X\n%s' % (name, result[name], output)
+    assert result['m7_core2_raw_status'] & (1 << 7), output
+    assert values[len(HSEM_FIELDS):] == [0, 0], output

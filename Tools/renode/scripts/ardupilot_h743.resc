@@ -15,6 +15,7 @@ include $repo/Tools/renode/peripherals/stm32/AP_STM32_ADC_v3.cs
 include $repo/Tools/renode/peripherals/stm32/AP_STM32DMA_Circular.cs
 include $repo/Tools/renode/peripherals/stm32/AP_STM32H7_PWR.cs
 include $repo/Tools/renode/peripherals/stm32/AP_STM32H7_RCC.cs
+include $repo/Tools/renode/peripherals/stm32/AP_STM32H7_HSEM.cs
 include $repo/Tools/renode/peripherals/stm32/AP_STM32H7_Ethernet.cs
 include $repo/Tools/renode/peripherals/common/AP_NVIC_RettobaseFix.cs
 include $repo/Tools/renode/peripherals/common/AP_DWT.cs
