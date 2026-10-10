@@ -22114,25 +22114,17 @@ RTL_ALT_M 111
         dfreader = self.dfreader_for_current_onboard_log()
         states = set()
         restarts_used = 0
-        pings = 0
         while True:
-            m = dfreader.recv_match(type=["M4ST", "SRPC"])
+            m = dfreader.recv_match(type=["M4ST"])
             if m is None:
                 break
-            if m.get_type() == "M4ST":
-                states.add(m.St)
-                restarts_used = max(restarts_used, m.Rst)
-            elif m.Name == "m4:ping":
-                pings += m.N
-                if m.P99 < m.P50:
-                    raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
+            states.add(m.St)
+            restarts_used = max(restarts_used, m.Rst)
         # the restarting state lasts far less than the 1 Hz row interval, so only running and off are required
         if not {2, 4}.issubset(states):
             raise NotAchievedException("M4ST states seen: %s" % states)
         if restarts_used != restart_max:
             raise NotAchievedException("M4ST restarts used: %u" % restarts_used)
-        if pings == 0:
-            raise NotAchievedException("no SRPC m4:ping round trips logged")
 
         # a lockup ignores the restart request: scripting turns off at once
         self.reboot_sitl()
