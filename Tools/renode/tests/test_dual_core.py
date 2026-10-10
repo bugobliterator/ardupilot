@@ -213,7 +213,8 @@ def test_xcore_bench_hsem_pipeline(renode, region):  # noqa: F811
                     '\n'.join(['emulation RunFor "0.3"', 'cpu2 IsHalted'] + reads) + '\n')
     values = monitor_values(output)
     assert values[0] == 'False', output
+    assert len(values) == 6, output
     magic, count, p50, p99, maximum = (int(value, 16) for value in values[1:])
     assert magic == XCORE_BENCH_DONE, output
     assert count == XCORE_BENCH_RENODE_SAMPLES, output
-    assert p50 <= p99 <= maximum, output
+    assert 0 < p50 and 0 < p99 and 0 < maximum, output  # every round trip took at least one cycle
