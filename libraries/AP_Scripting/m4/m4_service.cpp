@@ -1,5 +1,6 @@
 #include "m4_service.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <string.h>
 #include <CubePilotFW/PeerHeader.h>
@@ -15,6 +16,10 @@ void M4Service::init(Channel &channel, uint8_t *window, const M4Platform &platfo
     _channel = &channel;
     _window = window;
     _platform = platform;
+    if (_platform.cycles_per_us == 0) {
+        _platform.cycles_per_us = 1;
+    }
+    _rx_stalled = false;
     _round_trips.reset();
     _round_trip_total_us = 0;
     _m7_max_us = 0;
@@ -40,7 +45,11 @@ void M4Service::step()
     if (now_ms - _last_stats_ms >= 1000) {
         send_stats(now_ms);
     }
-    PeerHeader::beat(_window, PeerHeader::Core::M4);
+    // a receive error other than empty leaves the frame queued: stop beating so
+    // the M7 sees a stale heartbeat and restarts us, which clears the ring
+    if (!_rx_stalled) {
+        PeerHeader::beat(_window, PeerHeader::Core::M4);
+    }
 }
 
 void M4Service::drain()
@@ -49,8 +58,11 @@ void M4Service::drain()
     for (uint8_t i = 0; i < 16; i++) {
         uint8_t buf[MAX_MESSAGE];
         uint16_t len = 0;
-        if (_channel->receive(buf, sizeof(buf), &len) != 0) {
-            // -EAGAIN: empty; a corrupt ring was resynchronised by SpscRing
+        const int ret = _channel->receive(buf, sizeof(buf), &len);
+        if (ret != 0) {
+            if (ret != -EAGAIN) {
+                _rx_stalled = true;   // e.g. -EMSGSIZE or -EBADMSG: the frame is not consumed
+            }
             return;
         }
         handle(buf, len);
@@ -122,10 +134,10 @@ void M4Service::send_stats(uint32_t now_ms)
     stats.total_us = _round_trip_total_us;
     stats.m7_max_us = _m7_max_us;
     stats.lost = _lost;
-    _last_stats_ms = now_ms;
     if (_channel->send(&stats, sizeof(stats)) != 0) {
-        return;   // keep the window, report it with the next one
+        return;   // keep the window and retry on the next step
     }
+    _last_stats_ms = now_ms;
     _round_trips.reset();
     _round_trip_total_us = 0;
     _m7_max_us = 0;

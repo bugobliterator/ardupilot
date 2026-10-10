@@ -48,6 +48,7 @@ private:
     uint32_t _last_ping_ms;
     uint32_t _last_stats_ms;
     bool _ping_outstanding;
+    bool _rx_stalled;
 };
 
 }  // namespace ScriptingM4
