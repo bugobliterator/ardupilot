@@ -37,6 +37,7 @@ M7_PEER_MAGIC = 0x30040000
 M4_PEER_MAGIC = 0x30040040
 PEER_MAGIC = 0x48504643
 STEP_TIMEOUT = 300     # wall seconds: Renode runs both cores well below real time
+START_TIMEOUT = 120    # wall seconds from MAVLink connect to "Scripting: M4 started" (11-17 s seen)
 M4_PC = r'PC=0x081[C-F][0-9A-F]{4}'
 
 
@@ -148,7 +149,9 @@ class M4Run:
 
     def wait_m4_started(self):
         '''The M7 released the M4 (BOOT_C2, cpu2 running) and the M4 published its peer header.'''
-        self.wait_text(r'Scripting: M4 (started|.*off until reboot)')
+        started = time.monotonic()
+        self.wait_text(r'Scripting: M4 (started|.*off until reboot)', timeout=START_TIMEOUT)
+        print('M4 start text %.0f s after connect' % (time.monotonic() - started), flush=True)
         assert self.texts[self.next_text - 1] == 'Scripting: M4 started', 'M7 did not start the M4'
         assert not self.m4_halted(), 'cpu2 is halted after "Scripting: M4 started"'
         assert self.read_word(RCC_GCR) & BOOT_C2, 'RCC_GCR.BOOT_C2 not set'
@@ -157,6 +160,24 @@ class M4Run:
 
     def set(self, name, value):
         set_parameter(self.mav, self.process, self.log_path, name, value)
+
+    def get(self, name):
+        deadline = time.monotonic() + STEP_TIMEOUT
+        while time.monotonic() < deadline:
+            self.mav.mav.param_request_read_send(self.mav.target_system, self.mav.target_component,
+                                                 name.encode('ascii'), -1)
+            retry = time.monotonic() + 2
+            while time.monotonic() < retry:
+                self.check()
+                message = self.mav.recv_match(type='PARAM_VALUE', blocking=True, timeout=1)
+                if message is None:
+                    continue
+                param_id = message.param_id
+                if isinstance(param_id, bytes):
+                    param_id = param_id.decode(errors='replace')
+                if param_id.rstrip('\x00') == name:
+                    return message.param_value
+        raise RuntimeError('timed out reading %s\n%s' % (name, log_tail(self.log_path)))
 
     def wait_alive(self, seconds):
         '''The M7 keeps running: time_boot_ms advances over the next seconds of wall time.'''
@@ -213,8 +234,15 @@ def start_m4lua(tmp_path):
     try:
         yield start
     finally:
+        # stop every Renode even if one stop fails, then report the first failure
+        errors = []
         for run in runs:
-            run.stop()
+            try:
+                run.stop()
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
 
 
 def test_m4_fault_containment(start_m4lua):
@@ -226,6 +254,9 @@ def test_m4_fault_containment(start_m4lua):
     first.wait_alive(10)
     first.stop()
     m4lua = start_m4lua()
+    for name in ('FRAME_CLASS', 'FRAME_TYPE'):
+        value = m4lua.get(name)
+        assert value == 1, 'board state did not persist across the relaunch: %s=%s' % (name, value)
     m4lua.wait_m4_started()
     gcr = m4lua.read_word(RCC_GCR)
     assert gcr & RESET_SCOPE == RESET_SCOPE, 'ES0445 reset scope not set: RCC_GCR=0x%08X' % gcr
