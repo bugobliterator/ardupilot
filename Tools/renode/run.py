@@ -551,11 +551,26 @@ def make_elf_binary(source, destination):
     return destination
 
 
+def m4_image_placement_error(m4_base, m4_size, app_flash_end, flash_size):
+    '''Why an M4 image cannot load at m4_base, or None. It must sit after the M7
+    application's flash region (which FLASH_RESERVE_END_KB ends, keeping the
+    crash log clear) and inside flash.'''
+    flash_end = 0x08000000 + flash_size
+    if m4_base < app_flash_end:
+        return ('M4 image at 0x%08X is inside the application flash region (ends 0x%08X); '
+                'reserve it with FLASH_RESERVE_END_KB' % (m4_base, app_flash_end))
+    if m4_base + m4_size > flash_end:
+        return 'M4 image 0x%08X..0x%08X runs past the end of flash (0x%08X)' % (
+            m4_base, m4_base + m4_size, flash_end)
+    return None
+
+
 def m4_monitor_commands(root, boot_address):
     '''Load the H757 Cortex-M4 overlay; the M4 stays halted until RCC_GCR.BOOT_C2.'''
     return [
         'machine LoadPlatformDescription @%s' % (root / 'Tools' / 'renode' / 'platforms' / M4_PLATFORM),
         'sysbus.rcc Cm4BootAddress 0x%08X' % boot_address,
+        'sysbus.flashController Cm4BootAddress 0x%08X' % boot_address,
         'cpu2 PerformanceInMips 150',
         'machine SetSerialExecution true',
         # Cross-core doorbells cost up to a quantum; 10 ms would dominate every RPC.
@@ -1085,11 +1100,11 @@ def main():
             m4_bin = make_elf_binary(m4_elf, outdir / 'current-m4.bin')
         except (OSError, ValueError) as error:
             sys.exit('bad --m4-elf: %s' % error)
+        error = m4_image_placement_error(m4_boot_address, m4_bin.stat().st_size,
+                                         generated['app_flash_end'], flash_size)
+        if error:
+            sys.exit(error)
         m4_offset = m4_boot_address - 0x08000000
-        application_end = firmware_offset + firmware_bin.stat().st_size
-        if m4_offset < application_end or m4_offset + m4_bin.stat().st_size > flash_size:
-            sys.exit('M4 image at 0x%08X overlaps the application (ends 0x%08X) or the end of flash' %
-                     (m4_boot_address, 0x08000000 + application_end))
         overlay_flash_image(flash_img, m4_bin, m4_offset)
     initial_loads = [
         'sysbus LoadBinary @%s 0x08000000' % flash_img,

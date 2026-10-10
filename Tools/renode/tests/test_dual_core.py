@@ -35,6 +35,16 @@ def peripheral_includes():
     return [line for line in resc.splitlines() if re.match(pattern, line)]
 
 
+def platform_script_without_images():
+    lines = ['$repo=@%s' % ROOT] + peripheral_includes() + [
+        'mach create "dualcore"',
+        'machine LoadPlatformDescription @%s' % (RENODE_DIR / 'platforms' / 'stm32h743_base.repl'),
+        'machine LoadPlatformDescription @%s' % (RENODE_DIR / 'platforms' / 'stm32h757_m4.repl'),
+        'echo "%s"' % TEST_START,
+    ]
+    return '\n'.join(lines) + '\n'
+
+
 def platform_script(m7_elf, m4_elf, m4_boot_address=None):
     lines = ['$repo=@%s' % ROOT] + peripheral_includes() + [
         'mach create "dualcore"',
@@ -218,3 +228,15 @@ def test_xcore_bench_hsem_pipeline(renode, region):  # noqa: F811
     assert magic == XCORE_BENCH_DONE, output
     assert count == XCORE_BENCH_RENODE_SAMPLES, output
     assert 0 < p50 and 0 < p99 and 0 < maximum, output  # every round trip took at least one cycle
+
+
+def test_flash_boot4_reports_cm4_boot_address(renode):  # noqa: F811
+    '''FLASH_BOOT4_CUR serves BOOT_CM4_ADD0 for the M7's boot-option check.'''
+    output = renode(platform_script_without_images() + '\n'.join([
+        'sysbus.flashController Cm4BootAddress 0x081C0000',
+        'sysbus ReadDoubleWord 0x52002048',
+        'sysbus ReadDoubleWord 0x5200201C',
+    ]) + '\n')
+    boot4, optsr = (int(value, 16) for value in monitor_values(output))
+    assert boot4 == 0x1FF0081C, output
+    assert optsr & (1 << 22) == 0, output   # BCM4=0: the M4 is held

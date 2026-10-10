@@ -446,6 +446,9 @@ Cortex-M4 (`platforms/stm32h757_m4.repl`), writes the M4 image into flash at
 its ELF load address and holds the M4 until the M7 sets `RCC_GCR.BOOT_C2`
 (the `BCM4=0` option-byte behaviour). The M4 then starts from that address.
 Both cores run serially with a 100 us quantum.
+`--m4-elf` needs a board whose hwdef reserves the M4 area with
+`FLASH_RESERVE_END_KB` (CubeOrangePlus-M4Lua); run.py also sets the flash
+controller's `BOOT4_CUR` from the ELF.
 
     Tools/renode/run.py CubeOrangePlus --m4-elf /path/to/m4.elf
 

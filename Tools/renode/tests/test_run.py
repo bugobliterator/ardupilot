@@ -218,5 +218,22 @@ def test_m4_monitor_commands():
     commands = renode_run.m4_monitor_commands(Path('/repo'), 0x081E0000)
     assert commands[0] == 'machine LoadPlatformDescription @/repo/Tools/renode/platforms/stm32h757_m4.repl'
     assert 'sysbus.rcc Cm4BootAddress 0x081E0000' in commands
+    assert 'sysbus.flashController Cm4BootAddress 0x081E0000' in commands
     assert 'machine SetSerialExecution true' in commands
     assert 'emulation SetGlobalQuantum "0.0001"' in commands
+
+
+def test_m4_image_placement_error():
+    end = 0x081C0000
+    assert renode_run.m4_image_placement_error(0x081C0000, 0x40000, end, 0x200000) is None
+    assert 'application flash region' in renode_run.m4_image_placement_error(0x081A0000, 0x1000, end, 0x200000)
+    assert 'past the end of flash' in renode_run.m4_image_placement_error(0x081F0000, 0x20000, end, 0x200000)
+
+
+def test_generate_reports_app_flash_end(tmp_path):
+    import gen_board
+    root = MODULE_PATH.parents[2]
+    generated = gen_board.generate(root, 'CubeOrangePlus-M4Lua', tmp_path / 'generated', None, 5762, tmp_path)
+    assert generated['app_flash_end'] == 0x081C0000
+    generated = gen_board.generate(root, 'CubeOrangePlus', tmp_path / 'stock', None, 5762, tmp_path)
+    assert generated['app_flash_end'] == 0x08200000
