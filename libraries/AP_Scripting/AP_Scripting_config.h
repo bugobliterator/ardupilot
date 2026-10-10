@@ -8,6 +8,11 @@
 #define AP_SCRIPTING_ENABLED (HAL_PROGRAM_SIZE_LIMIT_KB > 1024)
 #endif
 
+// time every binding call and semaphore wait; logs SRPC (measurement builds only)
+#ifndef AP_SCRIPTING_BINDING_STATS_ENABLED
+#define AP_SCRIPTING_BINDING_STATS_ENABLED 0
+#endif
+
 #ifndef AP_SCRIPTING_HEAP_EXPANSION_ALWAYS_ENABLED
 #define AP_SCRIPTING_HEAP_EXPANSION_ALWAYS_ENABLED 0
 #endif

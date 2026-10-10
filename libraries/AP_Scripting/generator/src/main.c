@@ -371,6 +371,7 @@ struct method {
   struct argument * arguments;
   uint32_t flags; // filled out with TYPE_FLAGS
   char *dependency;
+  int stats_id;
 };
 
 enum alias_type {
@@ -388,6 +389,7 @@ struct method_alias {
   int num_ret;
   enum alias_type type;
   char *dependency;
+  int stats_id;
 };
 
 struct userdata_field {
@@ -436,6 +438,19 @@ struct userdata {
 static struct userdata *parsed_userdata;
 static struct userdata *parsed_ap_objects;
 static struct userdata *parsed_globals;
+
+#define MAX_STATS_IDS 2048
+static const char *stats_names[MAX_STATS_IDS];
+static int next_stats_id = 0;
+static int assign_stats_id(const char *ud_name, const char *method_name) {
+  if (next_stats_id >= MAX_STATS_IDS) {
+    error(ERROR_GENERAL, "Too many bindings for stats ids");
+  }
+  char *n = (char *)allocate(strlen(ud_name) + strlen(method_name) + 2);
+  sprintf(n, "%s:%s", ud_name, method_name);
+  stats_names[next_stats_id] = n;
+  return next_stats_id++;
+}
 
 void sanitize_character(char **str, char character) {
   char *position = strchr(*str, character);
@@ -1992,8 +2007,10 @@ int emit_references(const struct argument *arg, const char * tab) {
   return return_count;
 }
 
-void emit_userdata_method(const struct userdata *data, const struct method *method) {
+void emit_userdata_method(const struct userdata *data, struct method *method) {
   int arg_count = 1;
+
+  method->stats_id = assign_stats_id(data->rename ? data->rename : data->name, method->rename ? method->rename : method->name);
 
   start_dependency(source, data->dependency);
   start_dependency(source, method->dependency);
@@ -2062,6 +2079,10 @@ void emit_userdata_method(const struct userdata *data, const struct method *meth
   const char *ud_name = (data->flags & UD_FLAG_LITERAL)?data->name:"ud";
   const char *ud_access = (data->flags & UD_FLAG_REFERENCE)?".":"->";
 
+  const int has_semaphore = data->flags & (UD_FLAG_SEMAPHORE | UD_FLAG_SEMAPHORE_POINTER | UD_FLAG_SCHEDULER_SEMAPHORE);
+  if (has_semaphore) {
+    fprintf(source, "    BINDING_SEM_WAIT_BEGIN();\n");
+  }
   if (data->flags & UD_FLAG_SEMAPHORE) {
     fprintf(source, "    %s%sget_semaphore().take_blocking();\n", ud_name, ud_access);
   } else if (data->flags & UD_FLAG_SEMAPHORE_POINTER) {
@@ -2070,6 +2091,9 @@ void emit_userdata_method(const struct userdata *data, const struct method *meth
     fprintf(source, "#if AP_SCHEDULER_ENABLED\n");
     fprintf(source, "    AP::scheduler().get_semaphore().take_blocking();\n");
     fprintf(source, "#endif\n");
+  }
+  if (has_semaphore) {
+    fprintf(source, "    BINDING_SEM_WAIT_END(%d);\n", method->stats_id);
   }
 
   int static_cast = TRUE;
@@ -2495,7 +2519,7 @@ void emit_index(struct userdata *head) {
     struct method *method = node->methods;
     while (method) {
       start_dependency(source, method->dependency);
-      fprintf(source, "    {\"%s\", %s_%s},\n", method->rename ? method->rename :  method->name, node->sanitized_name, method->name);
+      fprintf(source, "    {\"%s\", BINDING_FN(%d, %s_%s)},\n", method->rename ? method->rename :  method->name, method->stats_id, node->sanitized_name, method->name);
       end_dependency(source, method->dependency);
       method = method->next;
     }
@@ -2512,9 +2536,21 @@ void emit_index(struct userdata *head) {
     while(alias) {
       start_dependency(source, alias->dependency);
       if (alias->type == ALIAS_TYPE_MANUAL) {
-        fprintf(source, "    {\"%s\", %s},\n", alias->alias, alias->name);
+        alias->stats_id = assign_stats_id(node->rename ? node->rename : node->name, alias->alias);
+        fprintf(source, "    {\"%s\", BINDING_FN(%d, %s)},\n", alias->alias, alias->stats_id, alias->name);
       } else if (alias->type == ALIAS_TYPE_NONE) {
-        fprintf(source, "    {\"%s\", %s_%s},\n", alias->alias, node->sanitized_name, alias->name);
+        // share the target method's id so calls and semaphore waits land in one entry
+        alias->stats_id = -1;
+        for (struct method *target = node->methods; target != NULL; target = target->next) {
+          if (strcmp(target->name, alias->name) == 0) {
+            alias->stats_id = target->stats_id;
+            break;
+          }
+        }
+        if (alias->stats_id < 0) {
+          error(ERROR_GENERAL, "Alias %s has no target method %s", alias->alias, alias->name);
+        }
+        fprintf(source, "    {\"%s\", BINDING_FN(%d, %s_%s)},\n", alias->alias, alias->stats_id, node->sanitized_name, alias->name);
       }
       end_dependency(source, alias->dependency);
       alias = alias->next;
@@ -2617,7 +2653,8 @@ void emit_userdata_new_funcs(void) {
         error(ERROR_GLOBALS, "Globals only support manual methods");
       }
       start_dependency(source, manual_aliases->dependency);
-      fprintf(source, "    {\"%s\", %s},\n", manual_aliases->alias, manual_aliases->name);
+      manual_aliases->stats_id = assign_stats_id("global", manual_aliases->alias);
+      fprintf(source, "    {\"%s\", BINDING_FN(%d, %s)},\n", manual_aliases->alias, manual_aliases->stats_id, manual_aliases->name);
       end_dependency(source, manual_aliases->dependency);
       manual_aliases = manual_aliases->next;
     }
@@ -2975,6 +3012,7 @@ int main(int argc, char **argv) {
   fprintf(source, "#include \"lua_generated_bindings.h\"\n");
   fprintf(source, "#include <AP_Scripting/lua_boxed_numerics.h>\n");
   fprintf(source, "#include <AP_Scripting/lua_bindings.h>\n");
+  fprintf(source, "#include <AP_Scripting/AP_Scripting_BindingStats.h>\n");
 
   // for set_and_print_new_error_message deprecate warning
   fprintf(source, "#include <AP_Scripting/lua_scripts.h>\n");
@@ -3015,6 +3053,16 @@ int main(int argc, char **argv) {
 
   emit_userdata_new_funcs();
   emit_loaders();
+
+  fprintf(source, "#if AP_SCRIPTING_BINDING_STATS_ENABLED\n");
+  fprintf(source, "extern const uint16_t binding_stats_count;\n");
+  fprintf(source, "extern const char *const binding_stats_names[];\n");
+  fprintf(source, "const uint16_t binding_stats_count = %d;\n", next_stats_id);
+  fprintf(source, "const char *const binding_stats_names[] = {\n");
+  for (int i = 0; i < next_stats_id; i++) {
+    fprintf(source, "    \"%s\",\n", stats_names[i]);
+  }
+  fprintf(source, "};\n#endif\n\n");
 
   // after everything is defined
   fprintf(source, "#include <AP_Scripting/generator/gen/generated_cpp_loader.h>\n\n");
