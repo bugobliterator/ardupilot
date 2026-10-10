@@ -7,6 +7,8 @@
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Param/AP_Param.h>
+#include "AP_ScriptingM4_Protocol.h"
+#include "AP_ScriptingM4_Server.h"
 
 namespace CubePilotFW {
 class Channel;
@@ -14,10 +16,10 @@ class Channel;
 
 /*
   M7 side of Lua scripting on the Cortex-M4: boots the M4 image, serves its
-  requests and supervises it (heartbeat, fault record, restart budget). The M7
-  never waits on the M4: shared-memory operations never block, ring-full is a
-  counted drop, and the host thread waits only on its own doorbell semaphore,
-  with a timeout.
+  Lua calls (AP_ScriptingM4_Server) and supervises it (heartbeat, fault
+  record, restart budget). The M7 never waits on the M4: shared-memory
+  operations never block, ring-full is a counted drop, and the host thread
+  waits only on its own doorbell semaphore, with a timeout.
  */
 class AP_ScriptingM4 {
 public:
@@ -34,13 +36,22 @@ public:
 
     // start the M4 and the host thread; called once from AP_Scripting::init()
     void init();
+    // the core state, then the last script error (as the in-process checks)
     bool arming_checks(size_t buflen, char *buffer) const;
     void set_summary_enabled(bool enabled) { _summary_enabled = enabled; }
     State state() const { return _state; }
+    uint32_t loaded_checksum() const { return _server.loaded_checksum(); }
+    uint32_t running_checksum() const { return _server.running_checksum(); }
 
     static const struct AP_Param::GroupInfo var_info[];
 
 private:
+    enum class ServeResult : uint8_t {
+        Idle,     // the ring is empty
+        Busy,     // the per-wake budget ran out with frames left
+        Stuck,    // nothing can be served now: not running, or a protocol error
+    };
+
     AP_Int8 _restart_max;
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
     AP_Int8 _inject;
@@ -48,8 +59,10 @@ private:
 #endif
 
     void host_thread();
-    bool serve();
+    ServeResult serve();
     void handle_message(const uint8_t *buf, uint16_t len);
+    void handle_call(const uint8_t *buf, uint16_t len, const ScriptingM4::MsgHeader &header, uint32_t start_us);
+    void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
     void log_supervisor(uint32_t now_ms, uint32_t elapsed_ms);
     void supervise(uint32_t now_ms);
@@ -87,6 +100,12 @@ private:
     uint32_t _woke_us;
     uint32_t _wake_latency_us;
 
+    AP_ScriptingM4_Server _server;
+    uint8_t _rx_frame[ScriptingM4::MAX_FRAME];
+    uint8_t _tx_frame[ScriptingM4::MAX_FRAME];
+    uint32_t _session_calls;          // calls and notifies of the current M4 session
+    uint32_t _ready_sent_ms;
+
     // counters of the current one-second window
     uint32_t _stats_start_ms;
     uint32_t _requests;
@@ -96,14 +115,13 @@ private:
     bool _summary_enabled;
 
     struct {
-        uint32_t count;
-        uint32_t p50_us;
-        uint32_t p99_us;
-        uint32_t max_us;
-        uint32_t window_ms;     // time the report covers; longer than 1 s after a failed send on the M4
-    } _m4_round_trips;          // last Stats report from the M4
-    uint32_t _m4_stats_ms;      // when it arrived
-    uint32_t _m4_pings_lost;    // lost pings reported since the last M4ST row
+        uint32_t count;           // calls timed since the last summary
+        uint32_t busiest_count;   // calls of the busiest method in one report
+        uint32_t p50_us;          // that method's p50
+        uint32_t p99_us;          // largest p99 reported
+        uint32_t max_us;          // largest round trip reported
+    } _rpc_summary;
+    uint32_t _m4_calls_lost;      // calls without a reply since the last M4ST row
     uint32_t _last_summary_ms;
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL

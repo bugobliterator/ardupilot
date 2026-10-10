@@ -11,12 +11,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "AP_ScriptingM4_Placement.h"
+#include "AP_ScriptingM4_Rpc.h"
 
 namespace ScriptingM4 {
 
 // peer header contract: a mismatched M4 image is refused (spec §5)
-static const uint32_t PROTOCOL_VERSION = 1;
-static const uint32_t CONTRACT_HASH = 0x4D344231;   // "M4B1": this phase's message set
+static const uint32_t PROTOCOL_VERSION = RPC_PROTOCOL_VERSION;
+static const uint32_t CONTRACT_HASH = SYSTEM_CONTRACT_HASH;
 
 static const uint32_t WINDOW_SIZE = AP_SCRIPTING_M4_WINDOW_SIZE;
 static const uint32_t SUPERVISOR_BLOCK_SIZE = 32;
@@ -29,9 +30,10 @@ static const uint32_t SUPERVISOR_MAGIC = 0x5350344D;   // "M4PS"
 static const uint32_t HEARTBEAT_TIMEOUT_MS = 200;
 static const uint32_t START_TIMEOUT_MS = 2000;
 static const uint32_t RESTART_TIMEOUT_MS = 500;
-// M4 request pacing
-static const uint32_t PING_INTERVAL_MS = 20;
-static const uint32_t PING_TIMEOUT_MS = 100;
+// a Lua call without a reply this long fails in the script (-ETIMEDOUT)
+static const uint32_t CALL_TIMEOUT_MS = 1000;
+// FaultKind::Flood fills the M4 -> M7 ring this long
+static const uint32_t FLOOD_MS = 2000;
 
 // written only by the M7; the M4 reads it at start, every loop and while parked
 struct SupervisorBlock {

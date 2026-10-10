@@ -33,6 +33,12 @@ static char self_path[PATH_MAX];
 static char **self_argv;
 static pid_t parent;
 static uint32_t restart_grant_at_start;
+static LuaLink call_link;   // not `link`: <unistd.h> declares link()
+
+// nothing posts a call until the Lua thread exists (M4 Lua Runtime task)
+static void wake_lua()
+{
+}
 
 static void sleep_ms(long ms)
 {
@@ -188,8 +194,8 @@ int main(int argc, char **argv)
                         restart_grant_at_start);
 
     static M4Service service;
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault };
-    service.init(channel, window, platform);
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_lua };
+    service.init(channel, window, call_link, platform);
     while (true) {
         if (getppid() != parent || block->run_permit.load() != 1) {
             return 0;

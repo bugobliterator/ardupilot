@@ -10,17 +10,22 @@
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
 #include "AP_ScriptingM4_Layout.h"
-#include "AP_ScriptingM4_Protocol.h"
+#include "AP_ScriptingM4_Rpc.h"
 
 extern const AP_HAL::HAL& hal;
 
 namespace PeerHeader = CubePilotFW::PeerHeader;
+using ScriptingM4::MsgType;
 
 // one wake serves at most this many requests or this long (spec §7)
 static const uint8_t MAX_REQUESTS_PER_WAKE = 32;
 static const uint32_t MAX_SERVE_US = 200;
+// after a pass that hit either limit: a flooding M4 gets one pass per pause
+static const uint32_t SERVE_BACKOFF_US = 500;
 // protocol errors within one second that count as a failure
 static const uint16_t PROTOCOL_ERROR_LIMIT = 3;
+// Ready is repeated this often until the first call of a session
+static const uint32_t READY_REPEAT_MS = 1000;
 
 AP_ScriptingM4 *AP_ScriptingM4::_singleton;
 
@@ -36,7 +41,7 @@ const AP_Param::GroupInfo AP_ScriptingM4::var_info[] = {
     // @Param: INJECT
     // @DisplayName: Scripting M4 fault injection
     // @Description: Test only. Changing this to a non-zero value makes the M4 scripting core fault in that way
-    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption
+    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write
     // @User: Advanced
     AP_GROUPINFO("INJECT", 2, AP_ScriptingM4, _inject, 0),
 #endif
@@ -85,7 +90,7 @@ void AP_ScriptingM4::doorbell_isr(uint8_t group)
 
 void AP_ScriptingM4::host_thread()
 {
-    bool serving = false;   // the last serve() left frames it can take on the next pass
+    ServeResult last = ServeResult::Idle;
     while (true) {
         if (_state == State::Off) {
             platform_m4_exited();   // SITL: reap the stopped process
@@ -97,9 +102,12 @@ void AP_ScriptingM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
-        // a ring that cannot be served now (not running, or a frame stuck after
-        // a protocol error) must not make this loop spin: wait for the timeout
-        if (_channel->prepareSleep() || !serving) {
+        if (last == ServeResult::Busy) {
+            // the budget ran out: pause so a flooding M4 costs bounded M7 time (spec §7)
+            hal.scheduler->delay_microseconds(SERVE_BACKOFF_US);
+        } else if (_channel->prepareSleep() || last == ServeResult::Stuck) {
+            // a ring that cannot be served now (not running, or a frame stuck after
+            // a protocol error) must not make this loop spin: wait for the timeout
             IGNORE_RETURN(_doorbell.wait(platform_wait_us()));
         }
         _channel->wake();
@@ -107,10 +115,13 @@ void AP_ScriptingM4::host_thread()
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
-        serving = serve();
+        last = serve();
         const uint32_t now_ms = AP_HAL::millis();
         PeerHeader::beat(_shared, PeerHeader::Core::M7);
         supervise(now_ms);
+        if (_state == State::Running) {
+            _server.update(now_ms);
+        }
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
         send_fault_inject();
 #endif
@@ -126,30 +137,29 @@ void AP_ScriptingM4::host_thread()
     }
 }
 
-// serve a bounded batch of M4 requests; false if the ring cannot be served now
-bool AP_ScriptingM4::serve()
+// serve a bounded batch of M4 messages
+AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
 {
     if (_state != State::Running) {
-        return false;   // frames from before a (re)start are dropped by the re-handshake
+        return ServeResult::Stuck;   // frames from before a (re)start are dropped by the re-handshake
     }
     for (uint8_t i = 0; i < MAX_REQUESTS_PER_WAKE; i++) {
         if (AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
-            return true;
+            return ServeResult::Busy;
         }
-        uint8_t buf[ScriptingM4::MAX_MESSAGE];
         uint16_t len = 0;
-        const int ret = _channel->receive(buf, sizeof(buf), &len);
+        const int ret = _channel->receive(_rx_frame, sizeof(_rx_frame), &len);
         if (ret == -EAGAIN) {
-            return true;
+            return ServeResult::Idle;
         }
         if (ret != 0) {
             // -EBADMSG: corrupt or desynchronised ring; -EMSGSIZE: an oversized frame stays queued
             _protocol_errors++;
-            return false;
+            return ServeResult::Stuck;
         }
-        handle_message(buf, len);
+        handle_message(_rx_frame, len);
     }
-    return true;
+    return ServeResult::Busy;
 }
 
 void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
@@ -161,50 +171,94 @@ void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
         return;
     }
     _requests++;
-    switch (ScriptingM4::MsgType(header.type)) {
-    case ScriptingM4::MsgType::Ping: {
-        ScriptingM4::PongMsg pong;
-        ScriptingM4::fill_header(pong.header, ScriptingM4::MsgType::Pong, sizeof(pong), header.seq);
-        pong.m7_wake_us = _wake_latency_us;
-        pong.m7_exec_us = AP_HAL::micros() - start_us;
-        if (_channel->send(&pong, sizeof(pong)) != 0) {
-            _dropped++;
-        }
+    switch (MsgType(header.type)) {
+    case MsgType::Call:
+    case MsgType::Notify:
+        handle_call(buf, len, header, start_us);
         return;
-    }
-    case ScriptingM4::MsgType::Stats:
+    case MsgType::Stats:
         log_rpc_stats(buf);
         return;
-    case ScriptingM4::MsgType::Pong:
-    case ScriptingM4::MsgType::FaultInject:
-    case ScriptingM4::MsgType::Call:
-    case ScriptingM4::MsgType::Reply:
-    case ScriptingM4::MsgType::Notify:
-    case ScriptingM4::MsgType::Ready:
-        _protocol_errors++;   // M7 -> M4 only, or RPC frames not served yet
+    case MsgType::Reply:
+    case MsgType::FaultInject:
+    case MsgType::Ready:
+        _protocol_errors++;   // M7 -> M4 only
         return;
     }
 }
 
-// SRPC as in AP_Scripting_BindingStats.cpp; SemMax carries the largest M7-side time of one request
+// a Lua call: decode, let the server check and run it, reply with the M7 timings
+void AP_ScriptingM4::handle_call(const uint8_t *buf, uint16_t len, const ScriptingM4::MsgHeader &header,
+                                 uint32_t start_us)
+{
+    using namespace ScriptingM4;
+    CallHeader call;
+    memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(CallHeader)
+    _session_calls++;
+    RpcValue args[MAX_VALUES];
+    RpcWriter results;
+    results.begin(_tx_frame, sizeof(_tx_frame), sizeof(ReplyHeader));
+    uint8_t error_arg = 0;
+    ReplyStatus status = ReplyStatus::Malformed;
+    if (call.argc <= MAX_VALUES && decode_values(buf + sizeof(call), len - sizeof(call), call.argc, args)) {
+        status = _server.handle(call.method, args, call.argc, results, error_arg);
+    }
+    if (status == ReplyStatus::Malformed || status == ReplyStatus::UnknownMethod) {
+        // no M4 runtime of this contract sends such a frame
+        _protocol_errors++;
+        results.begin(_tx_frame, sizeof(_tx_frame), sizeof(ReplyHeader));
+    }
+    if (MsgType(header.type) == MsgType::Notify) {
+        return;
+    }
+    if (!results.ok()) {
+        static const char too_large[] = "M4: results too large";
+        results.begin(_tx_frame, sizeof(_tx_frame), sizeof(ReplyHeader));
+        results.string(too_large, sizeof(too_large) - 1);
+        status = ReplyStatus::Error;
+    }
+    ReplyHeader reply {};
+    fill_header(reply.header, MsgType::Reply, results.length(), header.seq);
+    reply.status = uint8_t(status);
+    reply.count = results.count();
+    reply.error_arg = error_arg;
+    reply.m7_wake_us = _wake_latency_us;
+    reply.m7_exec_us = AP_HAL::micros() - start_us;
+    memcpy(_tx_frame, &reply, sizeof(reply));
+    if (_channel->send(_tx_frame, results.length()) != 0) {
+        _dropped++;   // the M4 times the call out
+    }
+}
+
+void AP_ScriptingM4::send_ready(uint32_t now_ms)
+{
+    ScriptingM4::ReadyMsg ready;
+    ScriptingM4::fill_header(ready.header, MsgType::Ready, sizeof(ready), 0);
+    _ready_sent_ms = now_ms;
+    if (_channel->send(&ready, sizeof(ready)) != 0) {
+        _dropped++;
+    }
+}
+
+// SRPC as in AP_Scripting_BindingStats.cpp, one row per method; SemMax carries the largest
+// M7-side time of one call
 void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 {
     ScriptingM4::StatsMsg stats;
     memcpy(&stats, buf, sizeof(stats));
-    const uint32_t now_ms = AP_HAL::millis();
-    _m4_round_trips.count = stats.count;
-    _m4_round_trips.p50_us = stats.p50_us;
-    _m4_round_trips.p99_us = stats.p99_us;
-    _m4_round_trips.max_us = stats.max_us;
-    // the M4 keeps a window it could not send, so a report may cover more than a second
-    _m4_round_trips.window_ms = _m4_stats_ms != 0 ? now_ms - _m4_stats_ms : 1000;
-    _m4_stats_ms = now_ms;
-    _m4_pings_lost += stats.lost;
+    _m4_calls_lost += stats.lost;
+    _rpc_summary.count += stats.count;
+    _rpc_summary.p99_us = MAX(_rpc_summary.p99_us, stats.p99_us);
+    _rpc_summary.max_us = MAX(_rpc_summary.max_us, stats.max_us);
+    if (stats.count > _rpc_summary.busiest_count) {
+        _rpc_summary.busiest_count = stats.count;
+        _rpc_summary.p50_us = stats.p50_us;
+    }
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
     AP::logger().WriteStreaming("SRPC", "TimeUS,Id,Name,N,P50,P99,Max,SemMax,Tot",
                                 "s#--sssss", "F---FFFFF", "QHZIIIIIQ",
-                                AP_HAL::micros64(), uint16_t(0), "m4:ping", stats.count,
-                                stats.p50_us, stats.p99_us, stats.max_us, stats.m7_max_us,
+                                AP_HAL::micros64(), stats.method, ScriptingM4::method_name(stats.method),
+                                stats.count, stats.p50_us, stats.p99_us, stats.max_us, stats.m7_max_us,
                                 uint64_t(stats.total_us));
 #endif
 }
@@ -221,7 +275,7 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: Req: M4 messages served in the last second
 // @Field: PErr: protocol errors in the last second
 // @Field: Drop: replies dropped because the M4's ring was full
-// @Field: Lost: M4 pings without a reply since the previous row
+// @Field: Lost: M4 calls without a reply since the previous row
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
@@ -229,17 +283,19 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
                                 "s----------", "F----------", "QBIIBIIIHHI",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
-                                _protocol_errors, _dropped, _m4_pings_lost);
+                                _protocol_errors, _dropped, _m4_calls_lost);
 #endif
-    _m4_pings_lost = 0;
+    _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {
         return;
     }
+    const uint32_t window_ms = _last_summary_ms != 0 ? now_ms - _last_summary_ms : 10000;
     _last_summary_ms = now_ms;
-    const uint32_t per_second = uint32_t(uint64_t(_m4_round_trips.count) * 1000 / MAX(_m4_round_trips.window_ms, 1U));
+    const uint32_t per_second = uint32_t(uint64_t(_rpc_summary.count) * 1000 / MAX(window_ms, 1U));
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting RPC %u/s p50<%u p99<%u max %uus",
-                  unsigned(per_second), unsigned(_m4_round_trips.p50_us),
-                  unsigned(_m4_round_trips.p99_us), unsigned(_m4_round_trips.max_us));
+                  unsigned(per_second), unsigned(_rpc_summary.p50_us),
+                  unsigned(_rpc_summary.p99_us), unsigned(_rpc_summary.max_us));
+    memset(&_rpc_summary, 0, sizeof(_rpc_summary));
     // busy microseconds per millisecond = per mille of one core
     const uint32_t host_permille = _host_busy_us / MAX(elapsed_ms, 1U);
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting M7 host %u.%u%% CPU",
@@ -280,7 +336,9 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         _m4_heartbeat_ms = now_ms;
         // re-handshake: drop whatever either side queued before this start
         _channel->resetAfterRestart();
-        _m4_stats_ms = 0;
+        _server.reset();
+        _session_calls = 0;
+        memset(&_rpc_summary, 0, sizeof(_rpc_summary));
         if (_state == State::Starting) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: M4 started");
         } else {
@@ -288,6 +346,8 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
                           unsigned(_restarts_used), unsigned(restart_limit()));
         }
         enter(State::Running, now_ms);
+        // the M4 forwards Lua calls only after this
+        send_ready(now_ms);
         return;
     }
     const uint32_t timeout_ms = _state == State::Starting ? ScriptingM4::START_TIMEOUT_MS
@@ -342,6 +402,10 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
     }
     if (_protocol_errors >= PROTOCOL_ERROR_LIMIT) {
         failure("protocol errors");
+        return;
+    }
+    if (_session_calls == 0 && now_ms - _ready_sent_ms >= READY_REPEAT_MS) {
+        send_ready(now_ms);
     }
 }
 
@@ -390,7 +454,7 @@ bool AP_ScriptingM4::arming_checks(size_t buflen, char *buffer) const
         hal.util->snprintf(buffer, buflen, "Scripting core not running");
         return false;
     }
-    return true;
+    return _server.arming_checks(buflen, buffer);
 }
 
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
@@ -405,7 +469,7 @@ void AP_ScriptingM4::send_fault_inject()
         return;
     }
     ScriptingM4::FaultInjectMsg inject;
-    ScriptingM4::fill_header(inject.header, ScriptingM4::MsgType::FaultInject, sizeof(inject), 0);
+    ScriptingM4::fill_header(inject.header, MsgType::FaultInject, sizeof(inject), 0);
     inject.kind = uint32_t(kind);
     if (_channel->send(&inject, sizeof(inject)) != 0) {
         _dropped++;

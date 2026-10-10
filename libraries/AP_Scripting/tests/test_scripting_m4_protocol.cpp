@@ -5,32 +5,48 @@ using namespace ScriptingM4;
 
 TEST(ScriptingM4Protocol, AcceptsWholeKnownMessages)
 {
-    PongMsg pong {};
-    fill_header(pong.header, MsgType::Pong, sizeof(pong), 7);
-    uint8_t buf[MAX_MESSAGE] {};
-    memcpy(buf, &pong, sizeof(pong));
+    uint8_t buf[MAX_FRAME] {};
     MsgHeader header;
-    EXPECT_TRUE(parse_header(buf, sizeof(pong), header));
+    ReadyMsg ready {};
+    fill_header(ready.header, MsgType::Ready, sizeof(ready), 7);
+    memcpy(buf, &ready, sizeof(ready));
+    EXPECT_TRUE(parse_header(buf, sizeof(ready), header));
     EXPECT_EQ(header.seq, 7U);
-    EXPECT_EQ(header.type, uint8_t(MsgType::Pong));
+    EXPECT_EQ(header.type, uint8_t(MsgType::Ready));
+    // a Reply carries values after its header: any length from the header up to MAX_FRAME
+    ReplyHeader reply {};
+    fill_header(reply.header, MsgType::Reply, sizeof(reply) + 5, 9);
+    memcpy(buf, &reply, sizeof(reply));
+    EXPECT_TRUE(parse_header(buf, sizeof(reply) + 5, header));
+    CallHeader call {};
+    fill_header(call.header, MsgType::Notify, sizeof(call), 3);
+    memcpy(buf, &call, sizeof(call));
+    EXPECT_TRUE(parse_header(buf, sizeof(call), header));
 }
 
 TEST(ScriptingM4Protocol, RejectsShortWrongLengthAndUnknown)
 {
-    uint8_t buf[MAX_MESSAGE] {};
+    uint8_t buf[MAX_FRAME + 4] {};
     MsgHeader header;
-    EXPECT_FALSE(parse_header(buf, 3, header));                  // shorter than a header
-    PingMsg ping {};
-    fill_header(ping.header, MsgType::Ping, sizeof(ping), 1);
-    memcpy(buf, &ping, sizeof(ping));
-    EXPECT_FALSE(parse_header(buf, sizeof(ping) + 4, header));   // trailing bytes
-    ping.header.length = sizeof(ping) + 4;
-    memcpy(buf, &ping, sizeof(ping));
-    EXPECT_FALSE(parse_header(buf, sizeof(ping), header));       // header length disagrees
-    ping.header.length = sizeof(ping);
-    ping.header.type = 99;
-    memcpy(buf, &ping, sizeof(ping));
-    EXPECT_FALSE(parse_header(buf, sizeof(ping), header));       // unknown type
+    EXPECT_FALSE(parse_header(buf, 3, header));                       // shorter than a header
+    ReadyMsg ready {};
+    fill_header(ready.header, MsgType::Ready, sizeof(ready), 1);
+    memcpy(buf, &ready, sizeof(ready));
+    EXPECT_FALSE(parse_header(buf, sizeof(ready) + 4, header));       // trailing bytes
+    CallHeader call {};
+    fill_header(call.header, MsgType::Call, sizeof(call) - 1, 1);
+    memcpy(buf, &call, sizeof(call));
+    EXPECT_FALSE(parse_header(buf, sizeof(call) - 1, header));        // shorter than a call header
+    fill_header(call.header, MsgType::Call, MAX_FRAME + 4, 1);
+    memcpy(buf, &call, sizeof(call));
+    EXPECT_FALSE(parse_header(buf, MAX_FRAME + 4, header));           // longer than a frame
+    fill_header(call.header, MsgType::Call, sizeof(call), 1);
+    call.header.type = 99;
+    memcpy(buf, &call, sizeof(call));
+    EXPECT_FALSE(parse_header(buf, sizeof(call), header));            // unknown type
+    call.header.type = 1;                                             // the retired Ping
+    memcpy(buf, &call, sizeof(call));
+    EXPECT_FALSE(parse_header(buf, sizeof(call), header));
 }
 
 TEST(ScriptingM4Protocol, FaultNames)
@@ -40,6 +56,8 @@ TEST(ScriptingM4Protocol, FaultNames)
     EXPECT_STREQ(fault_name(0x00008200, 0), "BusFault");              // PRECISERR | BFARVALID
     EXPECT_STREQ(fault_name(0x00010000, 0), "UsageFault");            // UNDEFINSTR
     EXPECT_STREQ(fault_name(0, 0), "HardFault");
+    EXPECT_TRUE(lua_thread_fault(FaultKind::LuaAircr));
+    EXPECT_FALSE(lua_thread_fault(FaultKind::Flood));
 }
 
 AP_GTEST_MAIN()

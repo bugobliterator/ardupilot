@@ -96,6 +96,11 @@ public:
     };
     uint16_t get_disabled_dir() { return _dir_disable;}
 
+    // SCR_ parameters the M4 scripting core receives at its start (m4:config)
+    int32_t heap_size() const { return _script_heap_size; }
+    int32_t vm_steps() const { return _script_vm_exec_count; }
+    uint8_t debug_options() const { return _debug_options; }
+
     // the number of and storage for i2c devices
     uint8_t num_i2c_devices;
     AP_HAL::I2CDevice *_i2c_dev[SCRIPTING_MAX_NUM_I2C_DEVICE];

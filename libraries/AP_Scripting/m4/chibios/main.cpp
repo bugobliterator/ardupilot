@@ -24,6 +24,12 @@ namespace PeerHeader = CubePilotFW::PeerHeader;
 static Channel channel;
 static M4Service service;
 static binary_semaphore_t doorbell;
+static LuaLink call_link;   // not `link`: <unistd.h> declares link()
+
+// nothing posts a call until the Lua thread exists (Unprivileged Lua Image task)
+static void wake_lua()
+{
+}
 
 static uint8_t *shared_window()
 {
@@ -214,8 +220,8 @@ int main(void)
     channel.resetAfterRestart();
     PeerHeader::publish(window, PeerHeader::Core::M4, PROTOCOL_VERSION, CONTRACT_HASH, restarts);
 
-    const M4Platform platform { millis_now, cycles_now, AP_SCRIPTING_M4_CORE_CLOCK_HZ / 1000000U, inject_fault };
-    service.init(channel, window, platform);
+    const M4Platform platform { millis_now, cycles_now, AP_SCRIPTING_M4_CORE_CLOCK_HZ / 1000000U, inject_fault, wake_lua };
+    service.init(channel, window, call_link, platform);
     while (true) {
         if (block->run_permit.load() != 1) {
             m4_park_forever();
