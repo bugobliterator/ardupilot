@@ -1,0 +1,22 @@
+# CubeOrangePlus with ArduPilot Lua scripting on the Cortex-M4 (experimental).
+# Addresses: libraries/AP_Scripting/AP_ScriptingM4_Placement.h
+
+include ../CubeOrangePlus/hwdef.dat
+
+# the M4 image: last 256 KB of flash (bank 2 sectors 14-15) at 0x081C0000,
+# outside the M7 image and its crash log
+FLASH_RESERVE_END_KB 256
+
+# D2 SRAM1/2 are the M4's RAM and SRAM3 the shared window: not M7 heap
+env USE_ALT_RAM_MAP 1
+
+# build the M4 image and the M7 scripting host (Tools/ardupilotwaf/cubeframework.py)
+env SCRIPTING_M4 1
+define AP_CUBEFRAMEWORK_ENABLED 1
+
+# start the M4 at boot
+define SCRIPTING_ENABLE_DEFAULT 1
+
+# the variant bootloader (hwdef-bl.dat) is not built into Tools/bootloaders
+# or flashed from the app yet
+define AP_BOOTLOADER_FLASHING_ENABLED 0

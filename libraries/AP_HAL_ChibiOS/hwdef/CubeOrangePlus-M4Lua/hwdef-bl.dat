@@ -1,0 +1,5 @@
+# bootloader for CubeOrangePlus-M4Lua
+include ../CubeOrangePlus/hwdef-bl.dat
+
+# the M4 image (last 256 KB) stays outside the bootloader's erase and program range
+FLASH_RESERVE_END_KB 256
