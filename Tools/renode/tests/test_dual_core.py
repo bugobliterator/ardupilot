@@ -1,6 +1,7 @@
 # AP_FLAKE8_CLEAN
 """Dual-core STM32H757 Renode platform: M4 hold and release, HSEM, boot handshake."""
 
+import os
 import re
 
 from pathlib import Path
@@ -192,3 +193,27 @@ def test_boot_handshake(renode, images):  # noqa: F811
     assert box['m7_stage'] == STAGE_FINISHED and box['m4_stage'] == STAGE_ROUND_TRIPS, box
     assert box['done'] == DONE_MAGIC, box
     assert box['m7_doorbell_irqs'] >= 1 and box['m4_doorbell_irqs'] >= 1, box
+
+
+XCORE_BENCH_BASE = {'SRAM3': 0x30040000, 'SRAM4': 0x38000000}
+XCORE_BENCH_DONE = 0x58424E44  # "XBND"
+XCORE_BENCH_RENODE_SAMPLES = 1000
+
+
+@pytest.mark.parametrize('region', sorted(XCORE_BENCH_BASE))
+def test_xcore_bench_hsem_pipeline(renode, region):  # noqa: F811
+    '''Functional only: the round trips complete. Renode cycle counts are not a measurement.'''
+    bench = os.environ.get('XCORE_BENCH_DIR')
+    if not bench:
+        pytest.skip('set XCORE_BENCH_DIR to the CubeFramework xcore_bench worktree')
+    build = Path(bench).expanduser() / ('build-xb-renode-%s-HSEM' % region) / 'examples' / 'xcore_bench'
+    base = XCORE_BENCH_BASE[region]
+    reads = ['sysbus ReadDoubleWord 0x%08X' % (base + 4 * word) for word in range(8, 13)]
+    output = renode(platform_script(build / 'xcore_bench_m7', build / 'xcore_bench_m4') +
+                    '\n'.join(['emulation RunFor "0.3"', 'cpu2 IsHalted'] + reads) + '\n')
+    values = monitor_values(output)
+    assert values[0] == 'False', output
+    magic, count, p50, p99, maximum = (int(value, 16) for value in values[1:])
+    assert magic == XCORE_BENCH_DONE, output
+    assert count == XCORE_BENCH_RENODE_SAMPLES, output
+    assert p50 <= p99 <= maximum, output
