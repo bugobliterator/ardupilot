@@ -1,0 +1,11 @@
+#pragma once
+/*
+  M4 Lua build: lua_common_defs.h without AP_HAL. The M7 lists and serves the
+  scripts, so the directory below only feeds luaconf.h's unused LUA_LDIR.
+  The functions are defined by m4/m4_lua.cpp.
+ */
+#define SCRIPTING_DIRECTORY "/APM/scripts"
+
+int lua_get_current_env_ref(void);
+const char *lua_get_modules_path(void);
+void lua_abort(void) __attribute__((noreturn));

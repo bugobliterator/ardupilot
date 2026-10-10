@@ -26,6 +26,12 @@
 // M4 RAM: D2 SRAM1 + SRAM2
 #define AP_SCRIPTING_M4_RAM_BASE         0x30000000U
 #define AP_SCRIPTING_M4_RAM_SIZE         (256U * 1024U)
+// M4 RAM split (m4/chibios/scripting_m4.ld): privileged RAM first (kernel, service,
+// stacks; MPU region privileged-only), then Lua RAM (Lua thread, newlib, Lua heap)
+#define AP_SCRIPTING_M4_PRIV_RAM_SIZE    (32U * 1024U)
+#define AP_SCRIPTING_M4_LUA_STACK_SIZE   (16U * 1024U)
+// the Lua heap the M4 image guarantees (linker assert); the SITL M4 caps its heap here too
+#define AP_SCRIPTING_M4_LUA_HEAP_MIN     (192U * 1024U)
 
 // M4 core clock: CubeOrangePlus sys_ck 400 MHz, D1HPRE /2 (stm32h7_mcuconf.h, 24 MHz HSE)
 #define AP_SCRIPTING_M4_CORE_CLOCK_HZ    200000000U
