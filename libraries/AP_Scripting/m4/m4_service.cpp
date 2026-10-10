@@ -108,7 +108,7 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     case MsgType::Reply:
     case MsgType::Notify:
     case MsgType::Ready:
-        return;   // M4 -> M7 only, or not served before the Call Path
+        return;   // M4 -> M7 only, or RPC frames not served yet
     }
 }
 

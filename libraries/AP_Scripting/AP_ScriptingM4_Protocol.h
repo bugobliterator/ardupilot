@@ -119,7 +119,7 @@ inline uint16_t message_length(uint8_t type)
     case MsgType::Reply:
     case MsgType::Notify:
     case MsgType::Ready:
-        return 0;   // variable length: handled by the Call Path parse_header()
+        return 0;   // variable length: length checked by the RPC frame parser
     }
     return 0;
 }

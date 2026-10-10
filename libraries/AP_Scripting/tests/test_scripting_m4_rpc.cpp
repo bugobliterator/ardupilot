@@ -49,6 +49,21 @@ TEST(ScriptingM4Rpc, DecodeRejectsBadInput)
     EXPECT_FALSE(decode_values(buf, len, 2, values));
     const uint8_t long_string[] = { uint8_t(ValueTag::String), 0xFF, 0xFF };
     EXPECT_FALSE(decode_values(long_string, sizeof(long_string), 1, values));   // length past the frame
+    const uint8_t short_integer[] = { uint8_t(ValueTag::Integer), 1, 2, 3 };
+    EXPECT_FALSE(decode_values(short_integer, sizeof(short_integer), 1, values));
+    const uint8_t short_number[] = { uint8_t(ValueTag::Number), 1, 2, 3 };
+    EXPECT_FALSE(decode_values(short_number, sizeof(short_number), 1, values));
+    const uint8_t short_opaque[] = { uint8_t(ValueTag::Opaque) };
+    EXPECT_FALSE(decode_values(short_opaque, sizeof(short_opaque), 1, values));
+    const uint8_t unknown_tag[] = { 255 };
+    EXPECT_FALSE(decode_values(unknown_tag, sizeof(unknown_tag), 1, values));
+    EXPECT_FALSE(decode_values(buf, len, 0, values));                 // bytes with no value expected
+    EXPECT_TRUE(decode_values(buf, 0, 0, values));                    // empty
+    static uint8_t oversized[3 + MAX_STRING + 1];
+    oversized[0] = uint8_t(ValueTag::String);
+    const uint16_t oversized_length = MAX_STRING + 1;
+    memcpy(&oversized[1], &oversized_length, sizeof(oversized_length));
+    EXPECT_FALSE(decode_values(oversized, sizeof(oversized), 1, values));   // MAX_STRING + 1 inside the frame
 }
 
 TEST(ScriptingM4Rpc, WriterRefusesOverflow)
@@ -133,6 +148,37 @@ TEST(ScriptingM4Rpc, ArgsConvertLikeLua)
     EXPECT_EQ(std::string(text, len), "2.5");
 }
 
+TEST(ScriptingM4Rpc, ArgsRejectStringsBeyondInt32)
+{
+    // Lua reads these as floats without an integer representation, whatever the host long size
+    const char *const texts[] = { "3000000000", "2147483648", "-3000000000", "99999999999999999999" };
+    for (const char *text : texts) {
+        uint8_t buf[64];
+        RpcWriter writer;
+        writer.begin(buf, sizeof(buf), 0);
+        writer.string(text, strlen(text));
+        RpcValue values[MAX_VALUES];
+        ASSERT_TRUE(decode_values(buf, writer.length(), writer.count(), values));
+        RpcArgs args(values, writer.count());
+        int32_t value = 0;
+        EXPECT_FALSE(args.integer(1, value)) << text;
+        EXPECT_STREQ(args.message(), "number has no integer representation") << text;
+    }
+    uint8_t buf[64];
+    RpcWriter writer;
+    writer.begin(buf, sizeof(buf), 0);
+    writer.string("2147483647", 10);
+    writer.string("-2147483648", 11);
+    RpcValue values[MAX_VALUES];
+    ASSERT_TRUE(decode_values(buf, writer.length(), writer.count(), values));
+    RpcArgs args(values, writer.count());
+    int32_t value = 0;
+    ASSERT_TRUE(args.integer(1, value));
+    EXPECT_EQ(value, INT32_MAX);
+    ASSERT_TRUE(args.integer(2, value));
+    EXPECT_EQ(value, INT32_MIN);
+}
+
 TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
 {
     struct Info {
@@ -152,7 +198,7 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
         hash = fnv1a_string(table[i].name, fnv1a_word((uint32_t(table[i].id) << 1) | uint32_t(table[i].kind), hash));
     }
     EXPECT_EQ(hash, SYSTEM_CONTRACT_HASH);
-    EXPECT_NE(SYSTEM_CONTRACT_HASH, 0x4D344231U);   // the M4 Boot & Supervisor contract
+    EXPECT_NE(SYSTEM_CONTRACT_HASH, 0x4D344231U);   // the contract of the ping/pong protocol
     EXPECT_STREQ(method_name(uint16_t(SystemMethod::GcsSendText)), "gcs:send_text");
     EXPECT_STREQ(method_name(999), "m4:unknown");
     EXPECT_EQ(method_kind(uint16_t(SystemMethod::ScriptError)), MethodKind::Notify);

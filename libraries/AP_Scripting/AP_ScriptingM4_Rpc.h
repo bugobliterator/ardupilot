@@ -26,7 +26,7 @@ enum class ValueTag : uint8_t {
     Integer = 3,   // int32 (LUA_32BITS)
     Number = 4,    // float (LUA_32BITS)
     String = 5,    // uint16 length, then the bytes, no terminator
-    // 6 Blob (pure-data userdata) and 7 Handle (M7 object): Generated Bindings
+    // 6 Blob (pure-data userdata) and 7 Handle (M7 object) are reserved
     Opaque = 8,    // a value that cannot cross (table, function, ...): uint8 Lua type, for error texts
 };
 
@@ -117,11 +117,11 @@ private:
         return true;
     }
 
-    uint8_t *_buf;
-    uint16_t _capacity;
-    uint16_t _length;
-    uint8_t _count;
-    bool _ok;
+    uint8_t *_buf = nullptr;
+    uint16_t _capacity = 0;
+    uint16_t _length = 0;
+    uint8_t _count = 0;
+    bool _ok = false;
 };
 
 // decodes exactly count values from data[0, length); false on truncation, an unknown tag or trailing bytes
@@ -203,7 +203,7 @@ inline const char *value_type_name(const RpcValue *value)
     case ValueTag::String:
         return "string";
     case ValueTag::Opaque: {
-        static const char *const names[] = { "nil", "boolean", "userdata", "number", "string",
+        static const char *const names[] = { "nil", "boolean", "light userdata", "number", "string",
                                               "table", "function", "userdata", "thread" };
         return value->lua_type < sizeof(names) / sizeof(names[0]) ? names[value->lua_type] : "userdata";
     }
@@ -325,7 +325,7 @@ private:
     }
 
     // Lua's coercion to a number: numbers, and strings that read fully as a decimal
-    // number (hexadecimal strings are not converted here)
+    // number (hexadecimal strings convert through strtof(), without Lua's integer wrap-around)
     bool to_number(const RpcValue *v, bool &is_integer, int32_t &integer, float &number)
     {
         if (v == nullptr) {
@@ -347,7 +347,7 @@ private:
         memcpy(_text, v->string, v->length);
         _text[v->length] = 0;
         char *end = nullptr;
-        const long as_long = strtol(_text, &end, 10);
+        const long long as_long = strtoll(_text, &end, 10);
         if (end != _text && only_spaces(end) && as_long >= INT32_MIN && as_long <= INT32_MAX) {
             is_integer = true;
             integer = int32_t(as_long);
@@ -391,7 +391,7 @@ enum class MethodKind : uint8_t {
   System methods: id, symbol, name (SRPC rows, the contract hash), kind.
   Ids below FIRST_BINDING_METHOD are theirs; generated bindings start there.
   gcs:send_text and print stand in for the generated and manual bindings
-  until the Generated Bindings sub-phase.
+  until the generated bindings exist.
  */
 #define SCRIPTING_M4_SYSTEM_METHODS(X) \
     X(1, Config, "m4:config", Call) \

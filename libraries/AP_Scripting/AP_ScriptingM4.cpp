@@ -181,7 +181,7 @@ void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
     case ScriptingM4::MsgType::Reply:
     case ScriptingM4::MsgType::Notify:
     case ScriptingM4::MsgType::Ready:
-        _protocol_errors++;   // M7 -> M4 only, or not served before the Call Path
+        _protocol_errors++;   // M7 -> M4 only, or RPC frames not served yet
         return;
     }
 }
