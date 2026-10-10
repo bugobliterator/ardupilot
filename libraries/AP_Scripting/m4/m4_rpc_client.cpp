@@ -2,7 +2,12 @@
 
 #include <errno.h>
 #include <string.h>
-#include <lua/src/lua.hpp>
+// the Lua headers alone: lua.hpp pulls in AP_Filesystem, which the M4 image does not have
+extern "C" {
+#include <lua/src/lua.h>
+#include <lua/src/lualib.h>
+#include <lua/src/lauxlib.h>
+}
 #include "m4_port.h"
 
 namespace ScriptingM4 {

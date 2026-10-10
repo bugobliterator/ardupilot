@@ -11,7 +11,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <lua/src/lua.hpp>
+// the Lua headers alone: lua.hpp pulls in AP_Filesystem, which the M4 image does not have
+extern "C" {
+#include <lua/src/lua.h>
+#include <lua/src/lualib.h>
+#include <lua/src/lauxlib.h>
+}
 #include <AP_ScriptingM4_Rpc.h>
 #include "m4_port.h"
 #include "m4_rpc_client.h"
