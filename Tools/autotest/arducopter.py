@@ -19601,6 +19601,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingFlipMode,
             self.ScriptingBindingStats,
             self.ScriptingM4Containment,
+            self.ScriptingM4Scripts,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22135,6 +22136,87 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+    def ScriptingM4Scripts(self):
+        '''example and test scripts run unchanged in the SITL M4 scripting process'''
+        # instruction limit at its default: math.lua runs past it, as in ScriptStats
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_DEBUG_OPTS": 8,   # LOG_RUNTIME: SCR and SRPC rows
+            "LOG_DISARMED": 1,
+            # SCR is a streaming message: rows of one script pass come within the rate limit
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_example_script_context("hello_world.lua")
+        self.install_test_scripts_context(["math.lua"])
+        self.reboot_sitl()
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
+                             check_context=True, timeout=30)
+        self.wait_statustext("hello, world", check_context=True, timeout=30)
+        self.wait_statustext("math.lua exceeded time limit", check_context=True, timeout=60)
+        # the prearm text is cut at 50 characters: match its start
+        self.assert_prearm_failure("Scripting: ./scripts/math.lua", other_prearm_failures_fatal=False)
+        self.delay_sim_time(3, reason="the M4 reports call times once a second")
+        dfreader = self.dfreader_for_current_onboard_log()
+        runs = set()
+        calls = set()
+        while True:
+            m = dfreader.recv_match(type=["SCR", "SRPC"])
+            if m is None:
+                break
+            if m.get_type() == "SCR":
+                runs.add(m.Name)
+            else:
+                calls.add(m.Name)
+                if m.P99 < m.P50:
+                    raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
+        for expected in ("hello_world.lua", "math.lua"):
+            if expected not in runs:
+                raise NotAchievedException("no SCR row for %s (got %s)" % (expected, runs))
+        for expected in ("m4:config", "m4:read_script", "gcs:send_text"):
+            if expected not in calls:
+                raise NotAchievedException("no SRPC row for %s (got %s)" % (expected, calls))
+        self.context_pop()
+
+        # correctness at the M4 image's heap, with room for the instruction count
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_VM_I_COUNT": 1000000,
+            "SCR_HEAP_SIZE": 196608,   # AP_SCRIPTING_M4_LUA_HEAP_MIN
+        })
+        self.install_test_scripts_context(["math.lua", "strings.lua", "m4_loop.lua"])
+        self.install_example_script_context("fault_handling.lua")
+        self.reboot_sitl()
+        for text in ("Math tests passed", "String tests passed", "Test 100 fault_count 100", "M4 loop 3"):
+            self.wait_statustext(text, check_context=True, timeout=120)
+        self.context_pop()
+
+        # errors: remote-call texts, and a script out of heap stops while the others run on
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_HEAP_SIZE": 196608,
+        })
+        self.install_test_scripts_context(["m4_errors.lua", "m4_heap_exhaust.lua", "m4_loop.lua"])
+        self.reboot_sitl()
+        # lstring.c MEMERRMSG: ArduPilot's out-of-memory text
+        for text in ("M4 errors passed", "M4 print works", "not enough mem, increase SCR_HEAP_SIZE"):
+            self.wait_statustext(text, check_context=True, timeout=60)
+        self.context_clear_collection("STATUSTEXT")
+        self.wait_statustext("M4 loop", check_context=True, timeout=10)
+        self.assert_prearm_failure("Scripting: not enough mem", other_prearm_failures_fatal=False)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24254,6 +24336,7 @@ return update, 1000
             "ScriptingOSD": "Requires SFML which is not available in CI",
             "ScriptingBindingStats": "Requires AP_SCRIPTING_BINDING_STATS_ENABLED build",
             "ScriptingM4Containment": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4Scripts": "Requires --enable-scripting-m4 SITL build",
         }
 
 
