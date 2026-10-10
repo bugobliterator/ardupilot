@@ -37,7 +37,7 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     }
     const uint32_t boot_address = (FLASH->BOOT4_CUR & FLASH_BOOT4_BCM4_ADD0) << 16;
     if (boot_address != AP_SCRIPTING_M4_FLASH_BASE) {
-        hal.util->snprintf(reason, reason_len, "boot opts 0x%08X", unsigned(boot_address));
+        hal.util->snprintf(reason, reason_len, "boot addr %08X", unsigned(boot_address));
         return false;
     }
     const uint32_t *vectors = reinterpret_cast<const uint32_t *>(AP_SCRIPTING_M4_FLASH_BASE);

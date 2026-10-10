@@ -79,7 +79,7 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     setenv("CUBEFW_SHM_NAME", name, 1);
     _shared = cubefw_posix_attach(name);
     if (_shared == nullptr) {
-        hal.util->snprintf(reason, reason_len, "shm %s", strerror(errno));
+        hal.util->snprintf(reason, reason_len, "shm errno %d", errno);
         return false;
     }
     kill_stale_m4(ScriptingM4::supervisor_block(_shared));
@@ -111,7 +111,7 @@ bool AP_ScriptingM4::spawn_m4(char *reason, size_t reason_len)
     pid_t pid = 0;
     const int err = posix_spawn(&pid, path, nullptr, nullptr, argv, environ);
     if (err != 0) {
-        hal.util->snprintf(reason, reason_len, "spawn %s", strerror(err));
+        hal.util->snprintf(reason, reason_len, "spawn errno %d", err);
         return false;
     }
     _m4_pid = pid;

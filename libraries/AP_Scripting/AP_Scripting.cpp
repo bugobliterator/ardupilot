@@ -439,6 +439,11 @@ bool AP_Scripting::arming_checks(size_t buflen, char *buffer) const
     }
 
 #if AP_SCRIPTING_M4_ENABLED
+    // the M4 reports no script checksums: a required checksum can never be met
+    if (_required_loaded_checksum != -1 || _required_running_checksum != -1) {
+        hal.util->snprintf(buffer, buflen, "Scripting: checksums unsupported with M4");
+        return false;
+    }
     return _m4.arming_checks(buflen, buffer);
 #endif
 
