@@ -183,3 +183,40 @@ def test_convert_hex_firmware_ignores_bootloader(tmp_path):
         source, destination, APP_BASE, FLASH_SIZE)
 
     assert destination.read_bytes() == b'\x01\x02\x03'
+
+
+def test_elf_load_base_uses_lowest_loaded_segment(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dual_core_images
+    try:
+        elf = dual_core_images.build('probe_m4', tmp_path)
+    except FileNotFoundError as error:
+        pytest.skip(str(error))
+    assert renode_run.elf_load_base(elf) == 0x081E0000
+
+
+def test_make_elf_binary_skips_empty_ram_sections(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dual_core_images
+    try:
+        elf = dual_core_images.build('probe_m4', tmp_path)
+    except FileNotFoundError as error:
+        pytest.skip(str(error))
+    image = renode_run.make_elf_binary(elf, tmp_path / 'm4.bin').read_bytes()
+    assert 0 < len(image) < 0x1000
+    assert struct.unpack_from('<I', image, 0)[0] >> 24 == 0x38
+
+
+def test_elf_load_base_rejects_non_elf(tmp_path):
+    source = tmp_path / 'image.bin'
+    source.write_bytes(bytes(64))
+    with pytest.raises(ValueError):
+        renode_run.elf_load_base(source)
+
+
+def test_m4_monitor_commands():
+    commands = renode_run.m4_monitor_commands(Path('/repo'), 0x081E0000)
+    assert commands[0] == 'machine LoadPlatformDescription @/repo/Tools/renode/platforms/stm32h757_m4.repl'
+    assert 'sysbus.rcc Cm4BootAddress 0x081E0000' in commands
+    assert 'machine SetSerialExecution true' in commands
+    assert 'emulation SetGlobalQuantum "0.0001"' in commands

@@ -212,6 +212,11 @@ every pause-at-a-breakpoint into a reboot).
   sources addressed by ArduPilot's logical `GPIO(n)` numbers. They feed the
   physical pads selected by the hwdef and therefore traverse the normal STM32
   SYSCFG/EXTI path used by AP_RPM and AP_WheelEncoder.
+- `platforms/stm32h757_m4.repl` — optional Cortex-M4 overlay (`cpu2`, own NVIC
+  and DWT) loaded by `run.py --m4-elf` and the dual-core tests.
+- `peripherals/stm32/AP_STM32H7_HSEM.cs` — RM0399 hardware semaphores with
+  per-core interrupts.
+- `tests/dual_core/` — bare-metal M7/M4 stub images for the dual-core tests.
 - `peripherals/stm32/AP_STM32H7_Ethernet.cs` — preserves the receive-buffer
   address that STM32H7 hardware leaves in RDES0 when the DWC DMA writes receive
   status, and maps STM32's no-source-replacement setting onto the model's MAC0
@@ -433,6 +438,23 @@ and launcher control endpoint remain on TCP because those integrations do not
 currently provide compatible Unix-socket transports. The graphical launcher
 automatically chooses another free monitor port when its preferred port is
 occupied or still in TCP `TIME_WAIT` after a previous run.
+
+### Dual-core STM32H757
+
+H757 boards (CubeOrangePlus) run single-core by default. `--m4-elf` adds the
+Cortex-M4 (`platforms/stm32h757_m4.repl`), writes the M4 image into flash at
+its ELF load address and holds the M4 until the M7 sets `RCC_GCR.BOOT_C2`
+(the `BCM4=0` option-byte behaviour). The M4 then starts from that address.
+Both cores run serially with a 100 us quantum.
+
+    Tools/renode/run.py CubeOrangePlus --m4-elf /path/to/m4.elf
+
+The M4 has its own NVIC and DWT; it sees the rest of the bus as the M7 does.
+Not modelled: TCM privacy, the 0x10000000 D2 SRAM aliases, peripheral
+interrupts to the M4, and option bytes. `AP_STM32H7_HSEM` provides the
+semaphores and their HSEM1/HSEM2 interrupts. `tests/test_dual_core.py` covers
+hold and release, the HSEM, and a CubeFramework boot handshake
+(`CUBEFRAMEWORK_DIR=/path/to/CubeFramework`).
 
 ### Graphical launcher
 
