@@ -60,6 +60,7 @@ private:
     bool _listed;
     int _fd;
     int32_t _fd_index;
+    int32_t _next_read_index;   // lowest script index read_script may still open
     mutable HAL_Semaphore _error_sem;
     char _last_error[128];
     uint8_t _error_prints;

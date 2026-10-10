@@ -7,6 +7,7 @@
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include "AP_Scripting.h"
+#include "AP_ScriptingM4_Placement.h"
 #include "lua_common_defs.h"
 
 extern const AP_HAL::HAL& hal;
@@ -53,6 +54,7 @@ void AP_ScriptingM4_Server::reset()
         _table.clear();
     }
     _listed = false;
+    _next_read_index = 0;
     WITH_SEMAPHORE(_error_sem);
     _last_error[0] = 0;
     _error_prints = ERROR_REPRINTS;
@@ -178,7 +180,8 @@ void AP_ScriptingM4_Server::list_dir(const char *dirname)
     AP::FS().closedir(d);
 }
 
-// m4:read_script(index, offset) -> up to READ_CHUNK bytes ("" at the end), or nil if unreadable
+// m4:read_script(index, offset) -> up to READ_CHUNK bytes ("" at the end), or nil if unreadable;
+// an error once the script has been closed (end, unreadable, or a later script opened)
 ReplyStatus AP_ScriptingM4_Server::read_script(RpcArgs &args, RpcWriter &results, uint8_t &error_arg)
 {
     int32_t index = 0;
@@ -191,10 +194,19 @@ ReplyStatus AP_ScriptingM4_Server::read_script(RpcArgs &args, RpcWriter &results
         results.nil();
         return ReplyStatus::Ok;
     }
+    // scripts are read once each, in list order: an M4 that goes back cannot make
+    // the M7 reopen (and on ROMFS decompress) a file again
+    if (index < _next_read_index) {
+        static const char out_of_order[] = "M4: script read out of order";
+        results.string(out_of_order, sizeof(out_of_order) - 1);
+        return ReplyStatus::Error;
+    }
     if (_fd < 0 || _fd_index != index) {
         close_file();
+        _next_read_index = index;
         _fd = AP::FS().open(path, O_RDONLY);
         if (_fd < 0) {
+            _next_read_index = index + 1;
             results.nil();
             return ReplyStatus::Ok;
         }
@@ -220,6 +232,7 @@ void AP_ScriptingM4_Server::close_file()
 {
     if (_fd >= 0) {
         AP::FS().close(_fd);
+        _next_read_index = _fd_index + 1;
     }
     _fd = -1;
     _fd_index = -1;
@@ -325,7 +338,9 @@ ReplyStatus AP_ScriptingM4_Server::started(RpcArgs &args)
 {
     int32_t scripts = 0;
     int32_t heap = 0;
-    if (!args.count_is(2) || !args.integer_in(1, 0, MAX_SCRIPTS, scripts) || !args.integer_in(2, 0, INT32_MAX, heap)) {
+    // the heap lives in M4 RAM: the bound also keeps the text within 50 characters
+    if (!args.count_is(2) || !args.integer_in(1, 0, MAX_SCRIPTS, scripts) ||
+        !args.integer_in(2, 0, int32_t(AP_SCRIPTING_M4_RAM_SIZE), heap)) {
         return ReplyStatus::Malformed;
     }
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: started on M4 (%u scripts, heap %uKB)",
