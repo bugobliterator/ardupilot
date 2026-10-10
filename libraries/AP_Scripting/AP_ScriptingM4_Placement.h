@@ -5,8 +5,9 @@
   place that chooses the shared window, the doorbells and the M4 image
   addresses: the M7 MPU set-up (hwdef/common/stm32h7_mcuconf.h), the M7
   supervisor, the M4 image and the SITL M4 process all read it. The M4 image
-  linker script (m4/chibios/scripting_m4.ld) and FLASH_RESERVE_END_KB in
-  hwdef/CubeOrangePlus-M4Lua repeat the flash numbers and must match.
+  linker script (m4/chibios/scripting_m4.ld, asserted against this file at
+  link time) and FLASH_RESERVE_END_KB in hwdef/CubeOrangePlus-M4Lua repeat
+  the flash numbers and must match.
  */
 
 // shared window: SRAM3 (D2), non-cacheable and shareable on the M7

@@ -7,7 +7,11 @@ USE_OPT = -Os -ggdb -fomit-frame-pointer -falign-functions=16
 USE_COPT =
 USE_CPPOPT = -std=gnu++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics -fno-use-cxa-atexit
 USE_LINK_GC = yes
-USE_LDOPT =
+# scripting_m4.ld asserts its flash0 against AP_ScriptingM4_Placement.h;
+# a value missing from the header becomes 0 and fails the assert
+PLACEMENT_H = $(AP_ROOT)/libraries/AP_Scripting/AP_ScriptingM4_Placement.h
+placement_value = $(shell value=$$(sed -n 's/^.define $(1)  *//p' '$(PLACEMENT_H)' | tr -d U); echo $$(($${value:-0})))
+USE_LDOPT = --defsym=placement_flash_base=$(call placement_value,AP_SCRIPTING_M4_FLASH_BASE),--defsym=placement_flash_size=$(call placement_value,AP_SCRIPTING_M4_FLASH_SIZE)
 USE_LTO = no
 USE_VERBOSE_COMPILE = no
 USE_SMART_BUILD = yes

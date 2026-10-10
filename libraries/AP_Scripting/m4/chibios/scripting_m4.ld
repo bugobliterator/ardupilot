@@ -43,6 +43,10 @@ REGION_ALIAS("DATA_RAM_LMA", flash0);
 REGION_ALIAS("BSS_RAM", ram0);
 REGION_ALIAS("HEAP_RAM", ram0);
 
+/* placement_flash_*: from AP_ScriptingM4_Placement.h, passed by the Makefile */
+ASSERT(ORIGIN(flash0) == placement_flash_base && LENGTH(flash0) == placement_flash_size,
+       "scripting_m4.ld flash0 does not match AP_ScriptingM4_Placement.h")
+
 INCLUDE rules_stacks.ld
 INCLUDE rules_code.ld
 INCLUDE rules_data.ld
