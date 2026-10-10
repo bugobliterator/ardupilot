@@ -269,6 +269,10 @@ submodules at specific revisions.
                  default=False,
                  help="Enable onboard scripting engine")
 
+    g.add_option('--enable-scripting-m4', action='store_true',
+                 default=False,
+                 help="SITL: run Lua scripting in a second process over the CubeFramework transport (M4 two-process mode)")
+
     g.add_option('--no-gcs', action='store_true',
                  default=False,
                  help="Disable GCS code")
@@ -548,6 +552,13 @@ def configure(cfg):
 
     cfg.msg('Setting board to', cfg.options.board)
     cfg.get_board().configure(cfg)
+
+    if cfg.options.enable_scripting_m4:
+        if cfg.env.BOARD_CLASS != 'SITL':
+            cfg.fatal('--enable-scripting-m4 is for SITL; hardware uses --board CubeOrangePlus-M4Lua')
+        cfg.env.SCRIPTING_M4 = '1'
+    if cfg.env.SCRIPTING_M4:
+        cfg.load('cubeframework')
 
     cfg.load('waf_unit_test')
     cfg.load('mavgen')
@@ -959,6 +970,10 @@ def build(bld):
         bld.env.AP_LIBRARIES_OBJECTS_KW['use'] += ['littlefs']
         bld.littlefs()
 
+    if bld.env.SCRIPTING_M4:
+        bld.env.AP_LIBRARIES_OBJECTS_KW['use'] += ['cubeframework']
+        bld.cubeframework()
+
     _build_cmd_tweaks(bld)
 
     if bld.env.SUBMODULE_UPDATE:
@@ -968,6 +983,9 @@ def build(bld):
 
     bld.add_group('dynamic_sources')
     _build_dynamic_sources(bld)
+
+    if bld.env.SCRIPTING_M4:
+        bld.scripting_m4_image()
 
     bld.add_group('build')
     bld.get_board().build(bld)
