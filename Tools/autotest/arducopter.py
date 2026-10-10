@@ -19598,6 +19598,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.MissionRTLYawBehaviour,
             self.MAV_CMD_MISSION_START_p1_p2,
             self.ScriptingFlipMode,
+            self.ScriptingBindingStats,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22034,6 +22035,28 @@ RTL_ALT_M 111
         self.assert_parameter_value("RTL_ALT_M", 750)
         self.assert_parameter_value("DISARM_DELAY", 20)
 
+    def ScriptingBindingStats(self):
+        '''binding stats build logs SRPC and sends a GCS summary'''
+        self.set_parameter("SCR_ENABLE", 1)
+        self.install_test_script_context("binding_bench.lua")
+        self.reboot_sitl()
+        self.set_parameter("SCR_DEBUG_OPTS", 8)  # LOG_RUNTIME enables SRPC logging and the summary
+        self.wait_statustext("BENCH ahrs:get_location", timeout=30)
+        self.wait_statustext("Scripting bindings:", timeout=30)
+        self.delay_sim_time(5, "collect SRPC log entries")
+        dfreader = self.dfreader_for_current_onboard_log()
+        names = set()
+        while True:
+            m = dfreader.recv_match(type="SRPC")
+            if m is None:
+                break
+            names.add(m.Name)
+            if m.P99 < m.P50:
+                raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
+        for expected in ("ahrs:get_location", "vehicle:get_mode"):
+            if expected not in names:
+                raise NotAchievedException("no SRPC for %s (got %s)" % (expected, names))
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24151,6 +24174,7 @@ return update, 1000
             "SMART_RTL_Repeat": "Currently fails due to issue with loop detection",
             "RTLStoppingDistanceSpeed": "Currently fails due to vehicle going off-course",
             "ScriptingOSD": "Requires SFML which is not available in CI",
+            "ScriptingBindingStats": "Requires AP_SCRIPTING_BINDING_STATS_ENABLED build",
         }
 
 
