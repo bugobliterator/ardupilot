@@ -65,6 +65,7 @@ private:
     char _last_error[128];
     uint8_t _error_prints;
     uint32_t _last_error_print_ms;
+    bool _started;   // m4:started of this session received; under _error_sem
 };
 
 #endif  // AP_SCRIPTING_M4_ENABLED

@@ -36,7 +36,8 @@ public:
 
     // start the M4 and the host thread; called once from AP_Scripting::init()
     void init();
-    // the core state, then the last script error (as the in-process checks)
+    // the core state, the last script error (as the in-process checks), then
+    // whether this session's scripts have started
     bool arming_checks(size_t buflen, char *buffer) const;
     void set_summary_enabled(bool enabled) { _summary_enabled = enabled; }
     State state() const { return _state; }

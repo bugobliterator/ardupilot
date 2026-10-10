@@ -58,6 +58,7 @@ void AP_ScriptingM4_Server::reset()
     WITH_SEMAPHORE(_error_sem);
     _last_error[0] = 0;
     _error_prints = ERROR_REPRINTS;
+    _started = false;
 }
 
 ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *values, uint8_t argc,
@@ -343,6 +344,10 @@ ReplyStatus AP_ScriptingM4_Server::started(RpcArgs &args)
         !args.integer_in(2, 0, int32_t(AP_SCRIPTING_M4_RAM_SIZE), heap)) {
         return ReplyStatus::Malformed;
     }
+    {
+        WITH_SEMAPHORE(_error_sem);
+        _started = true;
+    }
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: started on M4 (%u scripts, heap %uKB)",
                   unsigned(scripts), unsigned(heap / 1024));
     return ReplyStatus::Ok;
@@ -407,6 +412,12 @@ bool AP_ScriptingM4_Server::arming_checks(size_t buflen, char *buffer) const
     WITH_SEMAPHORE(_error_sem);
     if (_last_error[0] != 0) {
         hal.util->snprintf(buffer, buflen, "Scripting: %s", _last_error);
+        return false;
+    }
+    // fail closed until the M4 has listed and loaded its scripts: a lost error
+    // report must not let the vehicle arm without them
+    if (!_started) {
+        hal.util->snprintf(buffer, buflen, "Scripting: M4 scripts not started");
         return false;
     }
     return true;

@@ -454,6 +454,11 @@ bool AP_ScriptingM4::arming_checks(size_t buflen, char *buffer) const
         hal.util->snprintf(buffer, buflen, "Scripting core not running");
         return false;
     }
+    if (_state != State::Running) {
+        // (re)starting: the server still holds the previous session
+        hal.util->snprintf(buffer, buflen, "Scripting: M4 scripts not started");
+        return false;
+    }
     return _server.arming_checks(buflen, buffer);
 }
 
