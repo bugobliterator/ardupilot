@@ -151,6 +151,7 @@ bool AP_ScriptingM4::platform_m4_exited()
 void AP_ScriptingM4::platform_stop()
 {
     if (_m4_pid > 0) {
+        kill(_m4_pid, SIGUSR1);   // with run_permit=0 the M4 exits, as the M4 image parks
         kill(_m4_pid, SIGKILL);   // reaped by platform_m4_exited() from the Off loop
     }
 }

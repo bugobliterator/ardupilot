@@ -91,7 +91,11 @@ bool AP_ScriptingM4::platform_m4_exited()
 
 void AP_ScriptingM4::platform_stop()
 {
-    // nothing to stop: there is no per-core reset (ES0445 2.3.1); run_permit=0 parks the M4
+    // there is no per-core reset (ES0445 2.3.1): with run_permit=0 the restart
+    // doorbell parks an M4 that is stalled with interrupts on
+    if (_shared != nullptr) {
+        platform_request_restart();
+    }
 }
 
 uint32_t AP_ScriptingM4::platform_wait_us() const

@@ -369,6 +369,7 @@ void AP_ScriptingM4::go_off(const char *reason)
     if (_shared != nullptr) {
         ScriptingM4::supervisor_block(_shared)->run_permit.store(0);
     }
+    // after run_permit: stopping rings the restart doorbell, which the M4 reads as park
     platform_stop();
     enter(State::Off, AP_HAL::millis());
 }

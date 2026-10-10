@@ -70,8 +70,12 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free, "window atomics are re
 
 extern "C" void on_restart_signal(int)
 {
+    SupervisorBlock *block = supervisor_block(window);
+    if (block->run_permit.load() == 0) {
+        _exit(0);   // the M7 turned scripting off: park for good
+    }
     // the M7 stores the grant before signalling; a late or repeated signal is ignored
-    if (supervisor_block(window)->restart_grant.load() == restart_grant_at_start) {
+    if (block->restart_grant.load() == restart_grant_at_start) {
         return;
     }
     ignore_restart_signal();

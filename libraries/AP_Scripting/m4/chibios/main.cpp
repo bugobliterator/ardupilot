@@ -98,6 +98,9 @@ static void doorbell_callback(uint8_t group)
 static void restart_callback(uint8_t group)
 {
     (void)group;
+    if (supervisor_block(shared_window())->run_permit.load() == 0) {
+        m4_park_forever();   // the M7 turned scripting off
+    }
     // the M7 stores the grant before ringing; a late or repeated ring is ignored
     if (m4_restart_granted()) {
         m4_warm_restart();   // e.g. the service loop stopped beating
