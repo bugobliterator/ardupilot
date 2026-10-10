@@ -22065,9 +22065,11 @@ RTL_ALT_M 111
         # the M4 heartbeat runs on wall-clock time
         self.set_parameter("SIM_SPEEDUP", 1)
         self.context_collect("STATUSTEXT")
+        # not the parameter default (3), so the cap is shown to come from the parameter
+        restart_max = 4
         self.set_parameters({
             "SCR_ENABLE": 1,
-            "SCR_M4_RST_MAX": 3,
+            "SCR_M4_RST_MAX": restart_max,
             "LOG_DISARMED": 1,
         })
         self.reboot_sitl()
@@ -22081,12 +22083,15 @@ RTL_ALT_M 111
             (1, r"Scripting: M4 signal \d+ addr=0x"),
             (5, r"Scripting: M4 protocol errors"),
             (3, r"Scripting: M4 heartbeat lost"),
+            (1, r"Scripting: M4 signal \d+ addr=0x"),
         )
+        if len(steps) != restart_max:
+            raise NotAchievedException("fault steps do not match the restart limit")
         for used, (kind, reason) in enumerate(steps, start=1):
             self.set_parameter("SCR_M4_INJECT", kind)
             self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
-            self.wait_statustext("Scripting: M4 restarting (%u/3)" % used, check_context=True, timeout=10)
-            self.wait_statustext("Scripting: M4 restarted (%u/3)" % used, check_context=True, timeout=10)
+            self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
+            self.wait_statustext("Scripting: M4 restarted (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
             self.assert_mode("LOITER")
             if not self.armed():
                 raise NotAchievedException("disarmed after an M4 fault")
@@ -22097,6 +22102,8 @@ RTL_ALT_M 111
         self.wait_statustext("Scripting: M4 process exit", check_context=True, timeout=10)
         self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=10)
         self.assert_mode("LOITER")
+        if not self.armed():
+            raise NotAchievedException("disarmed after the M4 process was killed")
         self.wait_altitude(8, 12, relative=True, timeout=10)
         self.land_and_disarm()
         self.assert_prearm_failure("Scripting core not running", other_prearm_failures_fatal=False)
@@ -22119,7 +22126,7 @@ RTL_ALT_M 111
         # the restarting state lasts far less than the 1 Hz row interval, so only running and off are required
         if not {2, 4}.issubset(states):
             raise NotAchievedException("M4ST states seen: %s" % states)
-        if restarts_used != 3:
+        if restarts_used != restart_max:
             raise NotAchievedException("M4ST restarts used: %u" % restarts_used)
         if pings == 0:
             raise NotAchievedException("no SRPC m4:ping round trips logged")
