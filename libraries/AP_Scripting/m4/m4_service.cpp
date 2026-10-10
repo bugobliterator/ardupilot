@@ -26,6 +26,7 @@ void M4Service::init(Channel &channel, uint8_t *window, LuaLink &link, const M4P
     _ready = false;
     _rx_stalled = false;
     _flooding = false;
+    _call_timed = false;
     _last_stats_ms = platform.millis();
 }
 
@@ -33,16 +34,23 @@ void M4Service::step()
 {
     drain();
     const uint32_t now_ms = _platform.millis();
-    if (_link->state.load() == LuaLink::Sent && now_ms - _call_sent_ms > CALL_TIMEOUT_MS) {
-        MethodStats *stats = stats_for(_call_method);
-        if (stats != nullptr) {
-            stats->lost++;
+    const uint8_t state = _link->state.load();
+    if (state == LuaLink::Posted && !_call_timed) {
+        // the call timeout runs from posting: waiting for Ready or ring space counts too
+        _call_timed = true;
+        _call_posted_ms = now_ms;
+    }
+    if ((state == LuaLink::Posted || state == LuaLink::Sent) && now_ms - _call_posted_ms > CALL_TIMEOUT_MS) {
+        if (state == LuaLink::Sent) {
+            MethodStats *stats = stats_for(_call_method);
+            if (stats != nullptr) {
+                stats->lost++;
+            }
         }
         complete(-ETIMEDOUT);
-    }
-    // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
-    if (_ready && _link->state.load() == LuaLink::Posted) {
-        forward_call(now_ms);
+    } else if (_ready && state == LuaLink::Posted) {
+        // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
+        forward_call();
     }
     if (_flooding) {
         if (now_ms - _flood_until_ms < 0x80000000U) {
@@ -141,7 +149,7 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
     }
 }
 
-void M4Service::forward_call(uint32_t now_ms)
+void M4Service::forward_call()
 {
     // the request was written by the Lua thread (unprivileged on the M4 image): check it
     // before it reaches the M7, as the M7 checks it again
@@ -172,12 +180,12 @@ void M4Service::forward_call(uint32_t now_ms)
     _call_seq = header.seq;
     _call_method = call.method;
     _call_sent_cycles = sent_cycles;
-    _call_sent_ms = now_ms;
     _link->state.store(LuaLink::Sent);
 }
 
 void M4Service::complete(int32_t result)
 {
+    _call_timed = false;
     _link->result = result;
     _link->state.store(LuaLink::Done);
     _platform.wake_lua();

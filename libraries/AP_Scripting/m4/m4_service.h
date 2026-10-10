@@ -61,7 +61,7 @@ private:
     void handle(const uint8_t *buf, uint16_t len);
     void handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header);
     void handle_fault_inject(const uint8_t *buf);
-    void forward_call(uint32_t now_ms);
+    void forward_call();
     void complete(int32_t result);
     MethodStats *stats_for(uint16_t method);
     void send_stats(uint32_t now_ms);
@@ -77,11 +77,12 @@ private:
     uint32_t _call_seq;
     uint16_t _call_method;
     uint32_t _call_sent_cycles;
-    uint32_t _call_sent_ms;
+    uint32_t _call_posted_ms;   // when step() first saw the call Posted
     uint32_t _last_stats_ms;
     uint32_t _flood_until_ms;
     bool _flooding;
     bool _ready;
+    bool _call_timed;            // _call_posted_ms belongs to the current call
     bool _rx_stalled;
     uint8_t _rx[MAX_FRAME];
 };
