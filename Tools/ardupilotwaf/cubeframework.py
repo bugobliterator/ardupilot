@@ -20,6 +20,14 @@ CF_POSIX_SOURCES = CF_SOURCES + ['CubePilotFW/pal/Posix.cpp', 'CubePilotFW/pal/P
 # CubeFramework keeps its own warning set, not ArduPilot's -Werror list
 CF_CXXFLAGS = ['-Wno-error', '-Wno-cast-align', '-Wno-shadow']
 M4_DIR = 'libraries/AP_Scripting/m4'
+LUA_DIR = 'libraries/AP_Scripting/lua/src'
+# the Lua core the M4 runtime links: no io, package, os, debug, coroutine, bit32 or utf8
+# library (io and require come with the IO and Manual Bindings sub-phase)
+M4_LUA_SOURCES = ['lapi.c', 'lauxlib.c', 'lbaselib.c', 'lcode.c', 'lctype.c', 'ldebug.c', 'ldo.c',
+                  'ldump.c', 'lfunc.c', 'lgc.c', 'llex.c', 'lmathlib.c', 'lmem.c', 'lobject.c',
+                  'lopcodes.c', 'lparser.c', 'lstate.c', 'lstring.c', 'lstrlib.c', 'ltable.c',
+                  'ltablib.c', 'ltm.c', 'lundump.c', 'lvm.c', 'lzio.c']
+M4_RUNTIME_SOURCES = ['m4_service.cpp', 'm4_lua.cpp', 'm4_rpc_client.cpp']
 
 
 def _cf(paths):
@@ -91,7 +99,12 @@ def _chibios_image(bld):
 
 
 def _sitl_program(bld):
+    # the shim directory comes first: the Lua core finds its AP headers there
     bld.program(target='bin/scripting_m4', name='scripting_m4_image',
-                source=[M4_DIR + '/m4_service.cpp', M4_DIR + '/sitl/main.cpp'] + _cf(CF_POSIX_SOURCES),
-                includes=['libraries/AP_Scripting', CUBEFRAMEWORK],
-                defines=['__CORTEX_M=4'], cxxflags=CF_CXXFLAGS, use=[])
+                source=(['%s/%s' % (M4_DIR, path) for path in M4_RUNTIME_SOURCES] +
+                        [M4_DIR + '/sitl/main.cpp', M4_DIR + '/sitl/lua_port.cpp'] +
+                        ['%s/%s' % (LUA_DIR, path) for path in M4_LUA_SOURCES] +
+                        _cf(CF_POSIX_SOURCES)),
+                includes=[M4_DIR + '/shim', 'libraries/AP_Scripting', CUBEFRAMEWORK],
+                defines=['__CORTEX_M=4'], cxxflags=CF_CXXFLAGS, cflags=['-Wno-error'],
+                linkflags=['-pthread'], use=[])
