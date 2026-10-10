@@ -32,6 +32,8 @@ struct Snapshot {
 uint8_t top(Snapshot *out, uint8_t max);
 void reset_window();
 const char *name(uint16_t id);
+// logs and resets the window at 1 Hz; call only from the scripting thread
+void update(uint32_t now_ms);
 
 }
 

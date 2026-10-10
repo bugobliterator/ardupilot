@@ -20,6 +20,7 @@
 #include "lua_scripts.h"
 #include <AP_HAL/AP_HAL.h>
 #include "AP_Scripting.h"
+#include "AP_Scripting_BindingStats.h"
 #include <AP_Logger/AP_Logger.h>
 
 #include <AP_Scripting/lua_generated_bindings.h>
@@ -625,6 +626,11 @@ int lua_scripts::run_engine(lua_State *L) {
 
             // garbage collect after each script, this shouldn't matter, but seems to resolve a memory leak
             lua_gc(L, LUA_GCCOLLECT, 0);
+#if AP_SCRIPTING_BINDING_STATS_ENABLED
+            if (option_is_set(AP_Scripting::DebugOption::LOG_RUNTIME)) {
+                AP_Scripting_BindingStats::update(AP_HAL::millis());
+            }
+#endif
 
         } else {
             if (option_is_set(AP_Scripting::DebugOption::NO_SCRIPTS_TO_RUN)) {
