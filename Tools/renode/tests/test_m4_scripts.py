@@ -54,6 +54,7 @@ def host_thread_stack(run, local_path):
     assert ret.error_code == 0, 'get threads.txt: %s' % ret
     ret = ftp.process_ftp_reply('OpenFileRO', timeout=60)
     assert ret.error_code == 0, 'get threads.txt failed: %s' % ret
+    ftp.cmd_cancel()   # a @SYS file has no known size: end the read session so no burst reads linger
     match = re.search(r'(?m)^ScriptingM4\s.*STACK=\s*(\d+)/\s*(\d+)', Path(local_path).read_text())
     assert match, 'no ScriptingM4 thread in threads.txt'
     return int(match.group(1)), int(match.group(2))
