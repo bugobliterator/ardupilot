@@ -565,6 +565,14 @@ void AP_Scripting::save_checksum() {
         return;
     }
 
+#if AP_SCRIPTING_M4_ENABLED
+    // wait until this session's scripts have started: the M4's table is stale or empty before
+    char reason[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN + 1] {};
+    if (!_m4.arming_checks(sizeof(reason), reason)) {
+        return;
+    }
+#endif
+
     // Save two checksum parameters to there current values
     _required_loaded_checksum.set_and_save(loaded_checksum() & checksum_param_mask);
     _required_running_checksum.set_and_save(running_checksum() & checksum_param_mask);

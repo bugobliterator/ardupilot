@@ -13,6 +13,8 @@ TEST(ScriptingM4ScriptTable, ChecksumsFollowTheInProcessRules)
     EXPECT_STREQ(table.path(1), "./scripts/b.lua");
     EXPECT_EQ(table.path(2), nullptr);
     EXPECT_EQ(table.path(-1), nullptr);
+    ASSERT_TRUE(table.mark_served(0));
+    ASSERT_TRUE(table.mark_served(1));
     EXPECT_TRUE(table.mark_loaded(0));
     EXPECT_TRUE(table.mark_loaded(1));
     EXPECT_EQ(table.loaded_checksum(), 0x33U);
@@ -28,8 +30,14 @@ TEST(ScriptingM4ScriptTable, UntrustedReportsChangeNothing)
     table.clear();
     ASSERT_TRUE(table.add("./scripts/a.lua", 0x11));
     EXPECT_FALSE(table.mark_stopped(0));     // never loaded
+    EXPECT_FALSE(table.mark_loaded(0));      // never served
+    EXPECT_EQ(table.loaded_checksum(), 0U);
+    EXPECT_EQ(table.running_checksum(), 0U);
+    ASSERT_TRUE(table.mark_served(0));
+    EXPECT_FALSE(table.mark_served(5));      // out of range
     EXPECT_TRUE(table.mark_loaded(0));
     EXPECT_FALSE(table.mark_loaded(0));      // twice
+    EXPECT_FALSE(table.mark_served(0));      // after loading
     EXPECT_FALSE(table.mark_loaded(5));      // out of range
     EXPECT_FALSE(table.mark_loaded(-1));
     EXPECT_TRUE(table.mark_stopped(0));

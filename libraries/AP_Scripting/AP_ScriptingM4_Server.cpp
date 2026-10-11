@@ -221,6 +221,11 @@ ReplyStatus AP_ScriptingM4_Server::read_script(RpcArgs &args, RpcWriter &results
     if (n <= 0) {
         close_file();
     }
+    if (n == 0) {
+        // end of file: the M4 has been served the whole script
+        WITH_SEMAPHORE(_table_sem);
+        _table.mark_served(index);
+    }
     if (n < 0) {
         results.nil();
         return ReplyStatus::Ok;

@@ -35,11 +35,22 @@ public:
     uint8_t count() const { return _count; }
     const char *path(int32_t index) const { return valid(index) ? _path[index] : nullptr; }
 
-    // in-process rules: a loaded script adds its CRC to both checksums,
-    // a stopped one takes it out of the running checksum
-    bool mark_loaded(int32_t index)
+    // the M7 has served the script's bytes to the M4 up to the end of the file
+    bool mark_served(int32_t index)
     {
         if (!valid(index) || _state[index] != LISTED) {
+            return false;
+        }
+        _state[index] = SERVED;
+        return true;
+    }
+
+    // in-process rules: a loaded script adds its CRC to both checksums,
+    // a stopped one takes it out of the running checksum; only a served
+    // script can be loaded
+    bool mark_loaded(int32_t index)
+    {
+        if (!valid(index) || _state[index] != SERVED) {
             return false;
         }
         _state[index] = RUNNING;
@@ -63,8 +74,9 @@ public:
 
 private:
     static const uint8_t LISTED = 1;
-    static const uint8_t RUNNING = 2;
-    static const uint8_t STOPPED = 3;
+    static const uint8_t SERVED = 2;
+    static const uint8_t RUNNING = 3;
+    static const uint8_t STOPPED = 4;
 
     bool valid(int32_t index) const { return index >= 0 && index < int32_t(_count); }
 
