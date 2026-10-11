@@ -28,6 +28,11 @@ TEST(ScriptingM4Handles, LookupChecksEverything)
     EXPECT_EQ(table.lookup(4, 0, 5), nullptr);   // wrong type
     EXPECT_EQ(table.lookup(3, 1, 5), nullptr);   // past the entries
     EXPECT_EQ(table.lookup(3, 0, 6), nullptr);   // another session
+    EXPECT_EQ(table.lookup(3, HandleTable::CAPACITY, 5), nullptr);
+    EXPECT_EQ(table.lookup(3, 0xFFFF, 5), nullptr);
+    EXPECT_EQ(table.lookup(0, 0, 5), nullptr);
+    HandleTable fresh;
+    EXPECT_EQ(fresh.lookup(3, 0, 0), nullptr);   // generation 0 before any reset
 }
 
 TEST(ScriptingM4Handles, HandlesAreSessionScoped)
@@ -68,6 +73,17 @@ TEST(ScriptingM4Quota, BurstThenRate)
     EXPECT_TRUE(quota.allow(QuotaClass::Text, 1000 + 1000 / text.per_second));   // one call's worth refilled
     EXPECT_EQ(quota.take_hits(), 2U);
     EXPECT_EQ(quota.take_hits(), 0U);
+}
+
+TEST(ScriptingM4Quota, RefillAcrossMillisWrap)
+{
+    Quota quota;
+    const uint32_t start = 0xFFFFFFF0U;
+    quota.reset(start);
+    while (quota.allow(QuotaClass::Text, start)) {
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::Text, start + 49));   // wraps to 0x21, 49 ms
+    EXPECT_TRUE(quota.allow(QuotaClass::Text, start + 50));    // 50 ms: one call
 }
 
 TEST(ScriptingM4Quota, ClassesAreIndependent)
