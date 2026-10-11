@@ -19604,6 +19604,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4Scripts,
             self.ScriptingM4Checksums,
             self.ScriptingM4Bindings,
+            self.ScriptingM4TargetLocation,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22415,6 +22416,121 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+        # examples, unchanged: their texts and messages as in-process
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.context_collect("NAMED_VALUE_FLOAT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_DEBUG_OPTS": 8,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_script_context("binding_bench.lua")
+        self.install_example_script_context("copy_userdata.lua")
+        self.install_example_script_context("simple_loop.lua")
+        self.install_example_script_context("ahrs-print-home-and-origin.lua")
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(4 scripts", regex=True, check_context=True, timeout=30)
+        self.wait_statustext("vdiff=(100.00,300.00)", check_context=True, timeout=30)
+        self.wait_statustext(r"locdiff=\(\d+\.\d\d,\d+\.\d\d\)", regex=True, check_context=True, timeout=30)
+        self.wait_statustext("hello, world", check_context=True, timeout=30)
+        self.wait_statustext("Home - Lat:", check_context=True, timeout=60)
+        self.wait_statustext("BENCH ahrs:get_location n=", check_context=True, timeout=60)
+        if not any(m.name == "Lua Float" for m in self.context_collection("NAMED_VALUE_FLOAT")):
+            raise NotAchievedException("no NAMED_VALUE_FLOAT from simple_loop.lua")
+        self.delay_sim_time(3, reason="the M4 reports call counts once a second")
+        totals = self.m4_srpc_totals()
+        # binding_bench's heavy methods are in the top-N rows; lighter ones can fold into m4:other
+        for name in ("ahrs:get_location", "vehicle:get_mode", "param:get", "global:millis",
+                     "gps:status", "battery:voltage", "SRV_Channels:get_output_pwm", "mount:get_mode"):
+            if totals.get(name, 0) == 0:
+                raise NotAchievedException("no SRPC rows for %s (got %s)" % (name, sorted(totals)))
+        self.context_pop()
+        self.reboot_sitl()
+
+        # quotas (spec §7): texts past the burst are dropped, storage writes past it return false
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_script_context("m4_quota.lua")
+        self.reboot_sitl()
+        report = self.wait_statustext(r"M4 quota saved \d+", regex=True, check_context=True, timeout=60)
+        saved = int(re.search(r"saved (\d+)", report.text).group(1))
+        if not 100 <= saved < 150:
+            raise NotAchievedException("param:set_and_save returned true %u times of 150" % saved)
+        received = len([m for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 quota text")])
+        if received >= 200:
+            raise NotAchievedException("no statustext was dropped by the quota")
+        self.delay_sim_time(2, reason="M4ST rows at 1 Hz")
+        dfreader = self.dfreader_for_current_onboard_log()
+        hits = 0
+        while True:
+            m = dfreader.recv_match(type="M4ST")
+            if m is None:
+                break
+            hits += m.QHit
+        if hits < 100:
+            raise NotAchievedException("M4ST.QHit sums to %u" % hits)
+        self.assert_mode("STABILIZE")
+        self.context_pop()
+        self.reboot_sitl()
+
+        # the last script error is the prearm failure until a new M4 session clears it
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_USER1": 1,
+        })
+        self.install_test_script_context("m4_error_once.lua")
+        self.reboot_sitl()
+        self.wait_statustext("m4 error once", check_context=True, timeout=30)
+        self.assert_prearm_failure("Scripting: ./scripts/m4_error_once.lua", other_prearm_failures_fatal=False)
+        self.set_parameter("SCR_USER1", 0)
+        self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: one restart
+        self.wait_statustext(r"Scripting: M4 restarted \(1/\d\)", regex=True, check_context=True, timeout=20)
+        self.wait_statustext("M4 error_once idle", check_context=True, timeout=30)
+        self.wait_ready_to_arm(timeout=120)   # the EKF restarts with SIM_SPEEDUP 1
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ScriptingM4TargetLocation(self):
+        '''set-target-location.lua flies its guided return on the SITL M4 scripting process'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "RC7_OPTION": 0,   # RC7 is the script's trigger
+        })
+        self.install_example_script_context("set-target-location.lua")
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(1 scripts", regex=True, check_context=True, timeout=30)
+        self.wait_ready_to_arm()
+        self.takeoff(20, mode="LOITER")
+        # away from home, so that the script's return is a flight
+        self.set_rc(2, 1300)
+        self.delay_sim_time(8, reason="fly away from home")
+        self.set_rc(2, 1500)
+        self.set_rc(7, 2000)
+        # the script: GUIDED, a target 10 m above home, LAND within 2 m of it
+        self.wait_mode("GUIDED", timeout=30)
+        self.wait_mode("LAND", timeout=120)
+        self.wait_disarmed(timeout=120)
+        self.set_rc(7, 1000)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24537,6 +24653,7 @@ return update, 1000
             "ScriptingM4Scripts": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Checksums": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Bindings": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4TargetLocation": "Requires --enable-scripting-m4 SITL build",
         }
 
 
