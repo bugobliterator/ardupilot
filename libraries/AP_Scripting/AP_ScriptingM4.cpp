@@ -26,6 +26,11 @@ static const uint32_t SERVE_BACKOFF_US = 500;
 static const uint16_t PROTOCOL_ERROR_LIMIT = 3;
 // Ready is repeated this often until the first call of a session
 static const uint32_t READY_REPEAT_MS = 1000;
+#if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
+// SCR_M4_INJECT value handled on the M7, past the M4's FaultKind values
+static const int8_t INJECT_REFUSE_BINDINGS = 10;
+static_assert(INJECT_REFUSE_BINDINGS > ScriptingM4::FAULT_KIND_MAX, "not sent to the M4");
+#endif
 
 AP_ScriptingM4 *AP_ScriptingM4::_singleton;
 
@@ -41,7 +46,7 @@ const AP_Param::GroupInfo AP_ScriptingM4::var_info[] = {
     // @Param: INJECT
     // @DisplayName: Scripting M4 fault injection
     // @Description: Test only. Changing this to a non-zero value makes the M4 scripting core fault in that way
-    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write
+    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write,10:Bindings image refused
     // @User: Advanced
     AP_GROUPINFO("INJECT", 2, AP_ScriptingM4, _inject, 0),
 #endif
@@ -117,6 +122,10 @@ void AP_ScriptingM4::host_thread()
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
+#if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
+        // the M4 asks for the image at every start: a value set before a start acts on it
+        _server.set_refuse_bindings(_inject.get() == INJECT_REFUSE_BINDINGS);
+#endif
         last = serve();
         const uint32_t now_ms = AP_HAL::millis();
         PeerHeader::beat(_shared, PeerHeader::Core::M7);

@@ -411,6 +411,14 @@ ReplyStatus AP_ScriptingM4_Server::bindings(RpcArgs &args, RpcWriter &results, u
     if (!args.count_is(0)) {
         return arg_error(args, results, error_arg);
     }
+#if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
+    if (_refuse_bindings) {
+        // an error reply, not Malformed: a refused image is no protocol error
+        static const char refused[] = "M4: bindings refused";
+        results.string(refused, sizeof(refused) - 1);
+        return ReplyStatus::Error;
+    }
+#endif
     uint8_t info[BINDING_INFO_SIZE];
     ScriptingM4Remote::binding_info(info);
     results.string(reinterpret_cast<const char *>(info), sizeof(info));

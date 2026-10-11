@@ -44,6 +44,10 @@ public:
     bool arming_checks(size_t buflen, char *buffer) const;
     uint32_t loaded_checksum() const;
     uint32_t running_checksum() const;
+#if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
+    // test only: m4:bindings answers an error, so the M4 runs no script
+    void set_refuse_bindings(bool refuse) { _refuse_bindings = refuse; }
+#endif
 
 private:
     using Status = ScriptingM4::ReplyStatus;
@@ -83,6 +87,9 @@ private:
     ScriptingM4::HandleTable _handles;
     ScriptingM4::Quota _quota;
     ScriptingM4Remote::RemoteCall _call;   // the generated dispatch's call state (about 2.8 KB)
+#if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
+    bool _refuse_bindings;
+#endif
 };
 
 #endif  // AP_SCRIPTING_M4_ENABLED
