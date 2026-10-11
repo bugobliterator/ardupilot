@@ -22240,6 +22240,13 @@ RTL_ALT_M 111
         self.set_parameter("SCR_RUN_CHECKSUM", running)
         self.set_parameter("SCR_LD_CHECKSUM", 1)
         self.assert_prearm_failure("Scripting: loaded CRC incorrect", other_prearm_failures_fatal=False)
+        # a restarted M4 serves and loads the script again: the checksums hold again
+        self.set_parameter("SCR_LD_CHECKSUM", loaded)
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_M4_INJECT", 1)
+        self.wait_statustext("Scripting: M4 restarted (1/", check_context=True, timeout=30)
+        self.wait_statustext("M4 loop 2", check_context=True, timeout=30)
+        self.wait_ready_to_arm()
         self.context_pop()
         self.reboot_sitl()
 
