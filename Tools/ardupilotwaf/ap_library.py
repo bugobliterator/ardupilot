@@ -63,7 +63,7 @@ _macros_re = re.compile(r'\b(%s)\b' % '|'.join(_vehicle_macros))
 
 # some cpp files are not available at the time we run this check so need to be
 # unilaterally added
-_vehicle_cpp_need_macros = ['lua_generated_bindings.cpp']
+_vehicle_cpp_need_macros = ['lua_generated_bindings.cpp', 'lua_remote_dispatch.cpp']
 _macros_cpp_re = re.compile(r'\b(%s)\b' % '|'.join(_vehicle_cpp_need_macros))
 
 def _remove_comments(s):
