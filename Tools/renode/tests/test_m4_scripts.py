@@ -125,11 +125,12 @@ def start_with_scripts(start_m4lua, paths, parameters):  # noqa: F811
 def test_m4_runs_scripts(start_m4lua, tmp_path):  # noqa: F811
     run = start_with_scripts(start_m4lua,
                              ['examples/hello_world.lua', 'tests/strings.lua', 'tests/math.lua',
-                              'tests/m4_loop.lua'],
+                              'tests/m4_loop.lua', 'examples/fault_handling.lua'],
                              {'SCR_VM_I_COUNT': 1000000, 'SCR_DEBUG_OPTS': 8,   # 8: LOG_RUNTIME, SCR and SRPC rows
                               'LOG_DISARMED': 1, 'LOG_DARM_RATEMAX': 0, 'LOG_FILE_RATEMAX': 0})
-    run.wait_text(r'^Scripting: started on M4 \(4 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
-    wait_all(run, [r'^hello, world$', r'^String tests passed$', r'^Math tests passed$', r'^M4 loop 3$'],
+    run.wait_text(r'^Scripting: started on M4 \(5 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
+    wait_all(run, [r'^hello, world$', r'^String tests passed$', r'^Math tests passed$', r'^M4 loop 3$',
+                   r'^Test 100 fault_count 100$'],
              SCRIPT_TIMEOUT)
     # the stats pipeline: per-method round trips summarised every 10 s (LOG_RUNTIME)
     run.wait_text(r'^Scripting RPC \d+/s p50<\d+ p99<\d+ max \d+us$', timeout=SCRIPT_TIMEOUT)
