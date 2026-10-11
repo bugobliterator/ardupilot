@@ -22260,6 +22260,36 @@ RTL_ALT_M 111
         self.wait_statustext("M4 loop", check_context=True, timeout=10)
         self.assert_prearm_failure("Scripting: not enough mem", other_prearm_failures_fatal=False)
         self.context_pop()
+
+        # gcs:send_text over the Text quota (20/s, burst 40) is dropped and counted in M4ST.QHit
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_scripts_context(["m4_text_flood.lua"])
+        self.reboot_sitl()
+        self.wait_statustext("M4 text flood done", check_context=True, timeout=60)
+        self.delay_sim_time(2, reason="M4ST is written once a second")
+        received = len([m for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 flood ")])
+        self.progress("M4 flood texts received: %u of 200" % received)
+        if received >= 100:
+            raise NotAchievedException("M4 text flood not limited: %u of 200 received" % received)
+        dfreader = self.dfreader_for_current_onboard_log()
+        quota_hits = 0
+        while True:
+            m = dfreader.recv_match(type=["M4ST"])
+            if m is None:
+                break
+            quota_hits += m.QHit
+        self.progress("M4ST QHit total: %u" % quota_hits)
+        if quota_hits < 100:
+            raise NotAchievedException("M4ST QHit %u: expected most of the 200 texts refused" % quota_hits)
+        self.context_pop()
         self.reboot_sitl()
 
     def ScriptingM4Checksums(self):
