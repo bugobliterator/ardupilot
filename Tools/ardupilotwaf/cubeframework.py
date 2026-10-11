@@ -85,15 +85,18 @@ def _chibios_image(bld):
     sources = (src.ant_glob(M4_DIR + '/**/*') +
                src.ant_glob('libraries/AP_Scripting/AP_ScriptingM4_*.h') +
                [src.find_node('libraries/AP_Scripting/AP_Scripting_BindingHistogram.h')] +
+               src.ant_glob(LUA_DIR + '/*.h') +
+               [src.find_node('%s/%s' % (LUA_DIR, path)) for path in M4_LUA_SOURCES] +
+               [src.find_node('libraries/AP_HAL_ChibiOS/ap_setjmp.c')] +
                src.ant_glob(CUBEFRAMEWORK + '/CubePilotFW/**/*.h') +
                [src.find_node(path) for path in _cf(CF_CHIBIOS_SOURCES)])
     out = bld.bldnode.make_node('scripting_m4')
     bin_dir = bld.bldnode.make_node('bin')
     targets = [bin_dir.find_or_declare('scripting_m4.elf'), bin_dir.find_or_declare('scripting_m4.bin')]
-    rule = ("'%s' -s -j%u -f '%s' CHIBIOS='%s' AP_ROOT='%s' BUILDDIR='%s' && "
+    rule = ("'%s' -s -j%u -f '%s' CHIBIOS='%s' AP_ROOT='%s' BUILDDIR='%s' M4_LUA_SOURCES='%s' && "
             "mkdir -p '%s' && cp '%s/scripting_m4.elf' '%s/scripting_m4.bin' '%s'") % (
         bld.env.get_flat('MAKE'), bld.options.jobs, makefile.abspath(),
-        src.find_dir('modules/ChibiOS').abspath(), src.abspath(), out.abspath(),
+        src.find_dir('modules/ChibiOS').abspath(), src.abspath(), out.abspath(), ' '.join(M4_LUA_SOURCES),
         bin_dir.abspath(), out.abspath(), out.abspath(), bin_dir.abspath())
     bld(rule=rule, source=sources, target=targets, name='scripting_m4_image')
 
