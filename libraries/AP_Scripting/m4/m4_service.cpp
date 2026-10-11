@@ -240,6 +240,9 @@ void M4Service::send_stats(uint32_t now_ms)
     _last_stats_ms = now_ms;
 }
 
+// flood() passes that found the ring full: tests read it to show a flood filled the ring
+static volatile uint32_t flood_ring_full;
+
 void M4Service::flood()
 {
     // valid Notify frames until the ring is full: the M7 must bound the time it spends on them
@@ -251,6 +254,7 @@ void M4Service::flood()
     for (uint16_t i = 0; i < 256; i++) {
         noop.header.seq = ++_seq;
         if (_channel->send(&noop, sizeof(noop)) != 0) {
+            flood_ring_full = flood_ring_full + 1;
             return;
         }
     }
