@@ -110,6 +110,14 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn(guard, body('write_AP_ESC_Telem_Backend__TelemetryData'))
         self.assertIn(guard, body('read_AP_ESC_Telem_Backend__TelemetryData'))
         self.assertIn('< ScriptingM4::QUOTA_CLASSES', dispatch)
+        # described fields match their members: width, and an array's length
+        write_frame = body('write_AP_HAL__CANFrame')
+        self.assertIn('static_assert(sizeof(ud->data) / sizeof(ud->data[0]) == size_t(int(ARRAY_SIZE(ud->data)))', write_frame)
+        self.assertIn('static_assert(sizeof(ud->dlc) == sizeof(uint8_t)', write_frame)
+        self.assertIn('static_assert(sizeof(ud->fuel_pressure_status) <= sizeof(int32_t)', body('write_EFI_State'))
+        # every blob's wire form fits a blob value
+        self.assertEqual(dispatch.count('<= ScriptingM4::MAX_BLOB'), 17)
+        self.assertIn('+ wire_size_Cylinder_Status(nullptr)', dispatch)
 
     def test_changed_row_changes_the_hash(self):
         _, _, before = self.generate('hash_before', [])

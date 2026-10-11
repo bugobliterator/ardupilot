@@ -3689,6 +3689,80 @@ static void remote_emit_hidden(FILE *f, int write, const struct remote_hidden *h
   fprintf(f, "    }\n");
 }
 
+// a described field as the wire carries it: the member's width (an enum fits int32), and an
+// array's declared length is the member's, so M4 bytes are never decoded past it
+static void remote_emit_field_asserts(FILE *f, const struct userdata *node, const struct userdata_field *field) {
+  const char *member = remote_format("ud->%s", field->name);
+  const char *element = field->array_len ? remote_format("ud->%s[0]", field->name) : member;
+  if (field->array_len != NULL) {
+    fprintf(f, "    static_assert(sizeof(%s) / sizeof(%s) == size_t(%s), \"%s.%s is described with another length\");\n",
+            member, element, field->array_len, node->name, field->name);
+  }
+  const char *ctype = remote_wire_ctype(&field->type);
+  switch (field->type.type) {
+    case TYPE_BOOLEAN:
+      // may be a bitfield (Location): sizeof cannot apply; the wire carries 0 or 1
+      break;
+    case TYPE_ENUM:
+      fprintf(f, "    static_assert(sizeof(%s) <= sizeof(%s), \"%s.%s is wider than its wire form\");\n",
+              element, ctype, node->name, field->name);
+      break;
+    case TYPE_USERDATA:
+      fprintf(f, "    static_assert(std::is_same<std::remove_cv<std::remove_reference<decltype(%s)>::type>::type, %s>::value, \"%s.%s is described with another type\");\n",
+              element, field->type.data.ud.name, node->name, field->name);
+      break;
+    default:
+      if (ctype != NULL) {
+        fprintf(f, "    static_assert(sizeof(%s) == sizeof(%s), \"%s.%s has another width than its wire form\");\n",
+                element, ctype, node->name, field->name);
+      }
+      break;
+  }
+}
+
+// the wire form's length on this board, by the same depends guards as the codec; a function of
+// ud because array lengths are described through it (ARRAY_SIZE(ud->data)), only inside sizeof
+static void remote_emit_wire_size(FILE *f, int type_index, int *emitted) {
+  if (emitted[type_index]) {
+    return;
+  }
+  emitted[type_index] = TRUE;
+  const struct userdata *node = remote_types[type_index].node;
+  // nested types first: their constant is part of this one
+  for (const struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+    if (field->type.type == TYPE_USERDATA) {
+      remote_emit_wire_size(f, remote_type_id(field->type.data.ud.name) - 1, emitted);
+    }
+  }
+  start_dependency(f, node->dependency);
+  fprintf(f, "static constexpr size_t wire_size_%s(__attribute__((unused)) const %s *ud)\n{\n    return 0\n",
+          node->sanitized_name, node->name);
+  for (const struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+    start_dependency(f, field->dependency);
+    const char *term = (field->type.type == TYPE_USERDATA) ?
+                       remote_format("wire_size_%s(nullptr)", field->type.data.ud.sanitized_name) :
+                       remote_format("sizeof(%s)", remote_wire_ctype(&field->type));
+    if (field->array_len != NULL) {
+      fprintf(f, "    + %s * size_t(%s)\n", term, field->array_len);
+    } else {
+      fprintf(f, "    + %s\n", term);
+    }
+    end_dependency(f, field->dependency);
+  }
+  for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
+    if (strcmp(hidden->type, node->name) == 0) {
+      struct type t;
+      memset(&t, 0, sizeof(t));
+      t.type = hidden->kind;
+      fprintf(f, "    + sizeof(%s)\n", remote_wire_ctype(&t));
+    }
+  }
+  fprintf(f, "    ;\n}\n");
+  fprintf(f, "static_assert(wire_size_%s(nullptr) <= ScriptingM4::MAX_BLOB, \"%s's wire form is longer than a blob\");\n",
+          node->sanitized_name, node->name);
+  end_dependency(f, node->dependency);
+}
+
 // write_/read_/decode_/encode_<type>: the described fields in order, then the hidden members.
 // The writer and the reader take the same depends guards, so a board's wire form is one length
 static void remote_emit_codec(FILE *f, const struct remote_type *rt) {
@@ -3708,6 +3782,9 @@ static void remote_emit_codec(FILE *f, const struct remote_type *rt) {
         error(ERROR_GENERAL, "remote: %s.%s has a valid_mask: give the mask a wire member first", node->name, field->name);
       }
       start_dependency(f, field->dependency);
+      if (write) {
+        remote_emit_field_asserts(f, node, field);
+      }
       remote_emit_wire_member(f, write, field->name, field->array_len, &field->type);
       end_dependency(f, field->dependency);
     }
@@ -3845,6 +3922,13 @@ static void remote_emit_dispatch(FILE *f) {
       fprintf(f, "static bool read_%s(WireReader &r, %s *ud);\n", rt->node->sanitized_name, rt->node->name);
       fprintf(f, "static void write_%s(WireWriter &w, const %s *ud);\n", rt->node->sanitized_name, rt->node->name);
       end_dependency(f, rt->node->dependency);
+    }
+  }
+  fprintf(f, "\n");
+  int wire_size_emitted[REMOTE_MAX_TYPES] = { 0 };
+  for (int i = 0; i < remote_type_count; i++) {
+    if (remote_types[i].kind == REMOTE_BLOB) {
+      remote_emit_wire_size(f, i, wire_size_emitted);
     }
   }
   fprintf(f, "\n");
