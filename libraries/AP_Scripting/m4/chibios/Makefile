@@ -124,3 +124,42 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	        exit status \
 	    }' || { rm -f '$<'; exit 1; }
 	@touch '$@'
+
+# Privileged objects may call only each other, ChibiOS, CubeFramework and the
+# stateless libc/libgcc helpers below: newlib's errno, malloc, stdio and locale
+# state is in Lua RAM, where Lua can rewrite it. Outside ChibiOS itself none may
+# allocate from memcore, a heap, a pool or the factory: those hand out Lua RAM.
+# lua_port.o's _sbrk sets errno and lua_thread enters lua_main, both on the Lua thread.
+PRIVILEGED_OBJECTS = $(filter-out $(addprefix $(OBJDIR)/,$(LUA_RAM_OBJECTS)),$(OBJS))
+CHIBIOS_OBJECTS = $(addprefix $(OBJDIR)/,$(notdir $(ALLCSRC:.c=.o) $(ALLCPPSRC:.cpp=.o) $(ALLASMSRC:.s=.o) $(ALLXASMSRC:.S=.o)))
+PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen
+LUA_PORT_LUA_IMPORTS = __errno _ZN11ScriptingM48lua_mainEv
+all: $(BUILDDIR)/privileged_imports.ok
+$(BUILDDIR)/privileged_imports.ok: $(BUILDDIR)/$(PROJECT).elf
+	@{ $(TRGT)nm -A -g --defined-only $(PRIVILEGED_OBJECTS) | sed 's/^/D /'; \
+	   $(TRGT)nm -A -u $(PRIVILEGED_OBJECTS) | sed 's/^/U /'; } | \
+	awk -v chibios_list='$(CHIBIOS_OBJECTS)' -v libc_list='$(PRIVILEGED_LIBC)' \
+	    -v lua_port='$(OBJDIR)/lua_port.o' -v lua_port_list='$(LUA_PORT_LUA_IMPORTS)' ' \
+	    BEGIN { \
+	        split(chibios_list, names, " "); for (i in names) chibios[names[i]] = 1; \
+	        split(libc_list, names, " "); for (i in names) libc[names[i]] = 1; \
+	        split(lua_port_list, names, " "); for (i in names) lua_port_imports[names[i]] = 1 \
+	    } \
+	    { object = $$2; sub(/:.*/, "", object); symbol = $$NF } \
+	    $$1 == "D" { defined[symbol] = 1; next } \
+	    { imports[++count] = object " " symbol } \
+	    END { \
+	        status = 0; \
+	        for (i = 1; i <= count; i++) { \
+	            split(imports[i], entry, " "); object = entry[1]; symbol = entry[2]; \
+	            if (symbol ~ /^(chCoreAlloc|chHeapAlloc|chPool|chFactory|chThdCreateFromHeap|chThdCreateFromMemoryPool)/) { \
+	                if (!(object in chibios)) { print "scripting_m4: privileged " object " allocates with " symbol; status = 1 } \
+	                continue \
+	            } \
+	            if (symbol in libc || symbol ~ /^__aeabi_/ || symbol ~ /^__[a-z0-9_]+__$$/ || symbol in defined) continue; \
+	            if (object == lua_port && symbol in lua_port_imports) continue; \
+	            print "scripting_m4: privileged " object " uses " symbol; status = 1 \
+	        } \
+	        exit status \
+	    }' || { rm -f '$<'; exit 1; }
+	@touch '$@'
