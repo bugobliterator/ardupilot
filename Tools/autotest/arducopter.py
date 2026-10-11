@@ -22080,7 +22080,7 @@ RTL_ALT_M 111
         pid_text = self.wait_statustext(r"Scripting: M4 process pid \d+", regex=True, check_context=True, timeout=30)
         m4_pid = int(re.search(r"pid (\d+)", pid_text.text).group(1))
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
-        self.wait_statustext("M4 loop 2", check_context=True, timeout=30)
+        self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
         self.wait_ready_to_arm()
         self.takeoff(10, mode="LOITER")
         self.set_rc(3, 1500)
@@ -22096,13 +22096,14 @@ RTL_ALT_M 111
         for m in self.context_collection("STATUSTEXT"):
             if "Scripting: M4" in m.text:
                 raise NotAchievedException("M4 request flood gave '%s'" % m.text)
-        self.wait_statustext("M4 loop", check_context=True, timeout=10)
+        self.wait_statustext(r"M4 loop \d+$", regex=True, check_context=True, timeout=10)
 
         steps = (
             (1, r"Scripting: M4 signal \d+ addr=0x"),   # fault in the service
             (5, r"Scripting: M4 protocol errors"),      # ring corruption
             (3, r"Scripting: M4 heartbeat lost"),       # service stall
-            (9, r"Scripting: M4 signal \d+ addr=0x"),   # stray write from the Lua thread
+            # stray write from the Lua thread: SITL's stand-in writes to address 8
+            (9, r"Scripting: M4 signal \d+ addr=0x00000008$"),
         )
         if len(steps) != restart_max:
             raise NotAchievedException("fault steps do not match the restart limit")
@@ -22113,8 +22114,10 @@ RTL_ALT_M 111
             self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
             self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
             self.wait_statustext("Scripting: M4 restarted (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
-            # the scripts load again and their calls reach the M7
-            self.wait_statustext("M4 loop 2", check_context=True, timeout=15)
+            # the scripts load again (the counter starts over) and their calls reach the M7;
+            # the collection was cleared after the previous session's "M4 loop 2"
+            self.wait_statustext(r"M4 loop 1$", regex=True, check_context=True, timeout=15)
+            self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=15)
             self.assert_mode("LOITER")
             if not self.armed():
                 raise NotAchievedException("disarmed after an M4 fault")
@@ -22135,6 +22138,8 @@ RTL_ALT_M 111
         dfreader = self.dfreader_for_current_onboard_log()
         states = set()
         restarts_used = 0
+        sessions = set()
+        requests_max = 0
         calls = 0
         while True:
             m = dfreader.recv_match(type=["M4ST", "SRPC"])
@@ -22143,6 +22148,9 @@ RTL_ALT_M 111
             if m.get_type() == "M4ST":
                 states.add(m.St)
                 restarts_used = max(restarts_used, m.Rst)
+                requests_max = max(requests_max, m.Req)
+                if m.St == 2:
+                    sessions.add(m.Ses)
             elif m.Name == "gcs:send_text":
                 calls += m.N
                 if m.P99 < m.P50:
@@ -22152,8 +22160,16 @@ RTL_ALT_M 111
             raise NotAchievedException("M4ST states seen: %s" % states)
         if restarts_used != restart_max:
             raise NotAchievedException("M4ST restarts used: %u" % restarts_used)
+        # one M4 session per restart: each lasts seconds, so the 1 Hz rows see all of them
+        sessions = sorted(sessions)
+        if sessions != list(range(sessions[0], sessions[0] + restart_max + 1)):
+            raise NotAchievedException("M4ST running sessions: %s" % sessions)
         if calls == 0:
             raise NotAchievedException("no SRPC gcs:send_text round trips logged")
+        # the flood's proxy in SITL: the M7 served more in one second than one flood() pass sends (256)
+        self.progress("M4ST most requests in one second: %u" % requests_max)
+        if requests_max <= 256:
+            raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
 
         # a lockup ignores the restart request: scripting turns off at once
         self.reboot_sitl()
