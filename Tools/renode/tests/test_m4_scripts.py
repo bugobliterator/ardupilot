@@ -160,6 +160,23 @@ def test_m4_heap_hog_stops_alone(start_m4lua):  # noqa: F811
     run.wait_alive(10)
 
 
+def test_m4_long_numeral_with_full_heap(start_m4lua):  # noqa: F811
+    # a 3000-digit numeral parsed with the Lua heap full would take newlib's reserve and
+    # fault the M4: it reads as not a number instead (AP_LUA_MAX_NUMBER_TEXT)
+    run = start_with_scripts(start_m4lua, ['tests/m4_number_text.lua', 'tests/m4_loop.lua'],
+                             {'SCR_HEAP_SIZE': 300000, 'SCR_VM_I_COUNT': 1000000})
+    run.wait_text(r'^Scripting: started on M4 \(2 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
+    session = run.read_word(M4_SESSION)
+    first_text = len(run.texts)
+    run.wait_text(r'^M4 number text ok$', timeout=SCRIPT_TIMEOUT)
+    run.wait_text(r'^M4 loop \d+$', timeout=SCRIPT_TIMEOUT)
+    supervisor = [text for text in run.texts[first_text:] if text.startswith('Scripting: M4')]
+    assert not supervisor, 'the long numeral gave %s' % supervisor
+    assert run.read_word(M4_SESSION) == session, 'the M4 restarted after the long numeral'
+    assert not run.m4_halted(), 'cpu2 halted after the long numeral'
+    run.wait_alive(10)
+
+
 def m4_symbols(elf):
     '''Demangled nm -S listing of the M4 image.'''
     if shutil.which('arm-none-eabi-nm') is None:
