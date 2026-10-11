@@ -22465,7 +22465,9 @@ RTL_ALT_M 111
         self.reboot_sitl()
         report = self.wait_statustext(r"M4 quota saved \d+", regex=True, check_context=True, timeout=60)
         saved = int(re.search(r"saved (\d+)", report.text).group(1))
-        if not 100 <= saved < 150:
+        # the Storage burst is 100 (AP_ScriptingM4_Quota.h) and refills 10/s while the loop runs
+        storage_burst = 100
+        if not storage_burst <= saved < 150:
             raise NotAchievedException("param:set_and_save returned true %u times of 150" % saved)
         received = len([m for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 quota text")])
         if received >= 200:
@@ -22481,6 +22483,7 @@ RTL_ALT_M 111
         if hits < 100:
             raise NotAchievedException("M4ST.QHit sums to %u" % hits)
         self.assert_mode("STABILIZE")
+        self.set_parameter("SCR_USER3", 0)   # set_and_save left it in storage
         self.context_pop()
         self.reboot_sitl()
 
@@ -22500,6 +22503,14 @@ RTL_ALT_M 111
         self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: one restart
         self.wait_statustext(r"Scripting: M4 restarted \(1/\d\)", regex=True, check_context=True, timeout=20)
         self.wait_statustext("M4 error_once idle", check_context=True, timeout=30)
+        # the restarted session no longer reports the old error as a prearm failure
+        self.context_clear_collection("STATUSTEXT")
+        for i in range(4):
+            self.send_mavlink_run_prearms_command()
+            self.delay_sim_time(1, reason="prearm checks run")
+        for m in self.context_collection("STATUSTEXT"):
+            if "m4_error_once.lua" in m.text:
+                raise NotAchievedException("the old script error is still a prearm failure: %s" % m.text)
         self.wait_ready_to_arm(timeout=120)   # the EKF restarts with SIM_SPEEDUP 1
         self.context_pop()
         self.reboot_sitl()
@@ -22522,11 +22533,25 @@ RTL_ALT_M 111
         self.set_rc(2, 1300)
         self.delay_sim_time(8, reason="fly away from home")
         self.set_rc(2, 1500)
+        self.wait_groundspeed(0, 1, timeout=30)
+        away = self.distance_to_home()
+        self.progress("%.1f m from home before the script's return" % away)
+        if away < 10:
+            raise NotAchievedException("only %.1f m from home before the return" % away)
         self.set_rc(7, 2000)
         # the script: GUIDED, a target 10 m above home, LAND within 2 m of it
         self.wait_mode("GUIDED", timeout=30)
         self.wait_mode("LAND", timeout=120)
+        landing_distance = self.distance_to_home()
+        landing_altitude = self.get_altitude(relative=True)
+        self.progress("LAND entered %.1f m from home at %.1f m" % (landing_distance, landing_altitude))
+        if landing_distance > 5:
+            raise NotAchievedException("LAND %.1f m from home" % landing_distance)
+        if not 5 <= landing_altitude <= 15:
+            raise NotAchievedException("LAND at %.1f m, target was 10 m above home" % landing_altitude)
         self.wait_disarmed(timeout=120)
+        if self.distance_to_home() > 5:
+            raise NotAchievedException("landed %.1f m from home" % self.distance_to_home())
         self.set_rc(7, 1000)
         self.context_pop()
         self.reboot_sitl()
