@@ -88,6 +88,17 @@ TEST(ScriptingM4Quota, BurstThenRate)
     EXPECT_EQ(quota.take_hits(), 0U);
 }
 
+TEST(ScriptingM4Quota, HitsSurviveReset)
+{
+    Quota quota;
+    quota.reset(0);
+    while (quota.allow(QuotaClass::Text, 0)) {
+    }
+    quota.reset(10);                                             // the M4 restarted
+    EXPECT_EQ(quota.take_hits(), 1U);
+    EXPECT_TRUE(quota.allow(QuotaClass::Text, 10));              // buckets full again
+}
+
 TEST(ScriptingM4Quota, RefillAcrossMillisWrap)
 {
     Quota quota;

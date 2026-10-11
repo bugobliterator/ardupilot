@@ -34,13 +34,14 @@ static const QuotaLimit QUOTA_LIMITS[QUOTA_CLASSES] = {
 
 class Quota {
 public:
+    // full buckets; the hits not yet taken are kept, so a session's last refusals
+    // still reach M4ST after a restart
     void reset(uint32_t now_ms)
     {
         for (uint8_t i = 0; i < QUOTA_CLASSES; i++) {
             _buckets[i].millicalls = uint32_t(QUOTA_LIMITS[i].burst) * 1000;
             _buckets[i].last_ms = now_ms;
         }
-        _hits = 0;
     }
 
     // true if a call of this class may run now (and takes it from the bucket)

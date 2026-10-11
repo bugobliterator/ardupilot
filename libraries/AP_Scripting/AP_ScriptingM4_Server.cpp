@@ -375,6 +375,11 @@ ReplyStatus AP_ScriptingM4_Server::gcs_send_text(RpcArgs &args, RpcWriter &resul
         !args.string(3, text, length)) {
         return arg_error(args, results, error_arg);
     }
+    // an M4 flooding statustexts must not push out the vehicle's own; this method keeps
+    // a quota under any later name (the runtime's texts)
+    if (!_quota.allow(QuotaClass::Text, AP_HAL::millis())) {
+        return ReplyStatus::Ok;   // dropped, as from a full statustext queue
+    }
     char message[256];
     copy_text(message, sizeof(message), text, length);
     GCS_SEND_TEXT(MAV_SEVERITY(severity), "%s", message);
