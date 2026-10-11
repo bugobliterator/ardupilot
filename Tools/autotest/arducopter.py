@@ -19602,6 +19602,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingBindingStats,
             self.ScriptingM4Containment,
             self.ScriptingM4Scripts,
+            self.ScriptingM4Checksums,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22217,6 +22218,31 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+    def ScriptingM4Checksums(self):
+        '''SCR_LD_CHECKSUM and SCR_RUN_CHECKSUM hold for scripts on the SITL M4 process'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameter("SCR_ENABLE", 1)
+        self.install_test_script_context("m4_loop.lua")
+        self.reboot_sitl()
+        self.wait_statustext("M4 loop 2", check_context=True, timeout=30)
+        self.set_parameter("SCR_DEBUG_OPTS", 32)   # SAVE_CHECKSUM
+        self.wait_statustext("Scripting: saved checksums", check_context=True, timeout=10)
+        loaded = int(self.get_parameter("SCR_LD_CHECKSUM"))
+        running = int(self.get_parameter("SCR_RUN_CHECKSUM"))
+        # m4_loop.lua keeps running: both checksums are its CRC
+        if loaded in (-1, 0) or running != loaded:
+            raise NotAchievedException("checksums loaded %d running %d" % (loaded, running))
+        self.wait_ready_to_arm()
+        self.set_parameter("SCR_RUN_CHECKSUM", 1)
+        self.assert_prearm_failure("Scripting: running CRC incorrect", other_prearm_failures_fatal=False)
+        self.set_parameter("SCR_RUN_CHECKSUM", running)
+        self.set_parameter("SCR_LD_CHECKSUM", 1)
+        self.assert_prearm_failure("Scripting: loaded CRC incorrect", other_prearm_failures_fatal=False)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24337,6 +24363,7 @@ return update, 1000
             "ScriptingBindingStats": "Requires AP_SCRIPTING_BINDING_STATS_ENABLED build",
             "ScriptingM4Containment": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Scripts": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4Checksums": "Requires --enable-scripting-m4 SITL build",
         }
 
 
