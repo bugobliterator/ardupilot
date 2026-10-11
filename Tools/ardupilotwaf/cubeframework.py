@@ -76,7 +76,11 @@ def _add_image_target(bld):
     # the image is no vehicle's dependency; build it with any targeted build (run after
     # the build commands have set bld.targets)
     if bld.targets:
-        bld.targets += ',scripting_m4_image'
+        # cubeframework first: posted from inside a vehicle library's use processing,
+        # this stlib runs the compile database dry run there, which posts the other
+        # targets; a test program's use of 'ap' then clears dronecan_libs'
+        # tmp_use_objects and the vehicle library is archived without DroneCAN
+        bld.targets = 'cubeframework,' + bld.targets + ',scripting_m4_image'
 
 
 def _chibios_image(bld):
