@@ -66,7 +66,9 @@ def download_dataflash(run, local_path):
             download_log(run.mav, run.process, run.log_path, local_path, timeout=LOG_DOWNLOAD_TIMEOUT)
             return
         except RuntimeError as error:
-            assert 'timed out downloading' in str(error), error
+            if not any(text in str(error) for text in
+                       ('timed out downloading', 'timed out waiting for LOG_ENTRY', 'timed out listing')):
+                raise
             print('log download attempt %u stalled' % (attempt + 1), flush=True)
             run.mav.mav.log_request_end_send(run.mav.target_system, run.mav.target_component)
     raise RuntimeError('DataFlash log download stalled 5 times')

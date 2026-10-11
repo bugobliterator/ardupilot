@@ -66,7 +66,7 @@ def test_m4_generated_bindings(start_m4lua, tmp_path):  # noqa: F811
         assert totals.get(name, 0) <= count, \
             'SRPC %s: %u calls logged, the script made %u' % (name, totals.get(name, 0), count)
     # every binding call is logged once: the binding rows and m4:other add up to the script's
-    # total (the M4 runtime's own m4:* calls and print are not the script's)
+    # total (the system rows, m4:sysother included, and print are not the script's)
     logged = sum(count for name, count in totals.items()
                  if name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print'))
     print('SRPC binding calls logged %u, script made %u' % (logged, script_total), flush=True)
