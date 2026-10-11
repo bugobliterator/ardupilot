@@ -8,25 +8,34 @@
 #include <stdint.h>
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
+#include "AP_ScriptingM4_Handles.h"
+#include "AP_ScriptingM4_Quota.h"
+#include "AP_ScriptingM4_Remote.h"
 #include "AP_ScriptingM4_Rpc.h"
 #include "AP_ScriptingM4_ScriptTable.h"
 
 /*
   M7 side of the M4's system methods: configuration, the script list and
   script reads (SD card and ROMFS), script lifecycle reports (loaded,
-  stopped, errors, run statistics), and gcs:send_text and print until the
-  generated bindings take them over. Arguments come from the untrusted M4
-  and are checked as luaL_check* does in-process, with the same texts.
+  stopped, errors, run statistics), print, the m4:bindings image, and the
+  generated binding calls (ids from FIRST_BINDING_METHOD) with their quotas
+  and handles. Arguments come from the untrusted M4 and are checked as
+  luaL_check* does in-process, with the same texts.
   Runs on the scripting host thread; arming_checks() and the checksums are
-  also read from other threads.
+  also read from other threads. handle() and reset() are host thread only:
+  the generated dispatch keeps per-call state that no other thread may touch.
  */
 class AP_ScriptingM4_Server {
 public:
     AP_ScriptingM4_Server();
     CLASS_NO_COPY(AP_ScriptingM4_Server);
 
-    // a new M4 session: the script list, the open file, the checksums and the last error go
-    void reset();
+    // a new M4 session (its peer-header session number): the script list, the open file,
+    // the checksums, the last error and the previous session's handles go. Host thread
+    // only, never during a call; called at every M4 start and restart
+    void reset(uint32_t session);
+    // calls the quotas refused since the last call (M4ST QHit)
+    uint32_t take_quota_hits() { return _quota.take_hits(); }
     // one Call or Notify; for a Call the results, or the error text, go to results
     ScriptingM4::ReplyStatus handle(uint16_t method, const ScriptingM4::RpcValue *args, uint8_t argc,
                                     ScriptingM4::RpcWriter &results, uint8_t &error_arg);
@@ -49,6 +58,11 @@ private:
     Status started(ScriptingM4::RpcArgs &args);
     Status gcs_send_text(ScriptingM4::RpcArgs &args, ScriptingM4::RpcWriter &results, uint8_t &error_arg);
     Status print(ScriptingM4::RpcArgs &args, ScriptingM4::RpcWriter &results, uint8_t &error_arg);
+    Status bindings(ScriptingM4::RpcArgs &args, ScriptingM4::RpcWriter &results, uint8_t &error_arg);
+    Status binding_call(uint16_t method, const ScriptingM4::RpcValue *args, uint8_t argc,
+                        ScriptingM4::RpcWriter &results, uint8_t &error_arg);
+    void set_error(uint8_t severity, const char *text);
+    static void remote_warning(void *context, uint8_t severity, const char *text);
     void build_list();
     void list_dir(const char *dirname);
     void close_file();
@@ -66,6 +80,9 @@ private:
     uint8_t _error_prints;
     uint32_t _last_error_print_ms;
     bool _started;   // m4:started of this session received; under _error_sem
+    ScriptingM4::HandleTable _handles;
+    ScriptingM4::Quota _quota;
+    ScriptingM4Remote::RemoteCall _call;   // the generated dispatch's call state (about 2.8 KB)
 };
 
 #endif  // AP_SCRIPTING_M4_ENABLED

@@ -498,7 +498,8 @@ enum class MethodKind : uint8_t {
     X(8, Started, "m4:started", Notify) \
     X(9, Noop, "m4:noop", Notify) \
     X(10, GcsSendText, "gcs:send_text", Call) \
-    X(11, Print, "global:print", Call)
+    X(11, Print, "global:print", Call) \
+    X(12, Bindings, "m4:bindings", Call)
 
 enum class SystemMethod : uint16_t {
 #define SCRIPTING_M4_METHOD_ENUM(id, symbol, name, kind) symbol = id,

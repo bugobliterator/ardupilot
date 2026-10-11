@@ -7,6 +7,7 @@
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include "AP_Scripting.h"
+#include "AP_ScriptingM4_Bindings.h"
 #include "AP_ScriptingM4_Placement.h"
 #include "lua_common_defs.h"
 
@@ -44,9 +45,12 @@ AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
     _fd(-1),
     _fd_index(-1)
 {
+    _call.handles = &_handles;
+    _call.warn = remote_warning;
+    _call.warn_context = this;
 }
 
-void AP_ScriptingM4_Server::reset()
+void AP_ScriptingM4_Server::reset(uint32_t session)
 {
     close_file();
     {
@@ -55,6 +59,10 @@ void AP_ScriptingM4_Server::reset()
     }
     _listed = false;
     _next_read_index = 0;
+    // handles of the previous session are stale from here on, even if the M4 repeats
+    // its session number: the table is emptied unconditionally
+    _handles.reset(session);
+    _quota.reset(AP_HAL::millis());
     WITH_SEMAPHORE(_error_sem);
     _last_error[0] = 0;
     _error_prints = ERROR_REPRINTS;
@@ -64,6 +72,9 @@ void AP_ScriptingM4_Server::reset()
 ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *values, uint8_t argc,
                                           RpcWriter &results, uint8_t &error_arg)
 {
+    if (method >= FIRST_BINDING_METHOD) {
+        return binding_call(method, values, argc, results, error_arg);
+    }
     RpcArgs args(values, argc);
     switch (SystemMethod(method)) {
     case SystemMethod::Config:
@@ -88,6 +99,8 @@ ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *value
         return gcs_send_text(args, results, error_arg);
     case SystemMethod::Print:
         return print(args, results, error_arg);
+    case SystemMethod::Bindings:
+        return bindings(args, results, error_arg);
     }
     return ReplyStatus::UnknownMethod;
 }
@@ -288,13 +301,7 @@ ReplyStatus AP_ScriptingM4_Server::script_error(RpcArgs &args)
     }
     char message[sizeof(_last_error)];
     copy_text(message, sizeof(message), text, length);
-    {
-        WITH_SEMAPHORE(_error_sem);
-        memcpy(_last_error, message, sizeof(_last_error));
-        _error_prints = 0;
-        _last_error_print_ms = AP_HAL::millis();
-    }
-    GCS_SEND_TEXT(MAV_SEVERITY(severity), "Lua: %s", message);
+    set_error(uint8_t(severity), message);
     return ReplyStatus::Ok;
 }
 
@@ -382,10 +389,57 @@ ReplyStatus AP_ScriptingM4_Server::print(RpcArgs &args, RpcWriter &results, uint
     if (!args.count_is(1) || !args.string(1, text, length)) {
         return arg_error(args, results, error_arg);
     }
+    if (!_quota.allow(QuotaClass::Text, AP_HAL::millis())) {
+        return ReplyStatus::Ok;   // dropped, as gcs:send_text over its quota
+    }
     char message[256];
     copy_text(message, sizeof(message), text, length);
     GCS_SEND_TEXT(MAV_SEVERITY_DEBUG, "%s", message);
     return ReplyStatus::Ok;
+}
+
+// m4:bindings() -> what this firmware compiled in and the enum values (AP_ScriptingM4_Bindings.h)
+ReplyStatus AP_ScriptingM4_Server::bindings(RpcArgs &args, RpcWriter &results, uint8_t &error_arg)
+{
+    if (!args.count_is(0)) {
+        return arg_error(args, results, error_arg);
+    }
+    uint8_t info[BINDING_INFO_SIZE];
+    ScriptingM4Remote::binding_info(info);
+    results.string(reinterpret_cast<const char *>(info), sizeof(info));
+    return ReplyStatus::Ok;
+}
+
+// a generated binding (gen-bindings -r): its quota, then the in-process code through the adapter
+ReplyStatus AP_ScriptingM4_Server::binding_call(uint16_t method, const RpcValue *values, uint8_t argc,
+                                                RpcWriter &results, uint8_t &error_arg)
+{
+    const uint8_t flags = ScriptingM4Remote::method_flags(method);
+    if (!_quota.allow(QuotaClass(flags >> 4), AP_HAL::millis())) {
+        if ((flags & ScriptingM4Remote::METHOD_QUOTA_FALSE) != 0) {
+            results.boolean(false);   // over its quota the call fails, as it can in-process
+        }
+        return ReplyStatus::Ok;       // or it is dropped, like a statustext that finds its queue full
+    }
+    return ScriptingM4Remote::dispatch(method, values, argc, _call, results, error_arg);
+}
+
+// lua_scripts::set_and_print_new_error_message(): printed, and kept as the prearm failure
+void AP_ScriptingM4_Server::set_error(uint8_t severity, const char *text)
+{
+    {
+        WITH_SEMAPHORE(_error_sem);
+        hal.util->snprintf(_last_error, sizeof(_last_error), "%s", text);
+        _error_prints = 0;
+        _last_error_print_ms = AP_HAL::millis();
+    }
+    GCS_SEND_TEXT(MAV_SEVERITY(severity), "Lua: %s", text);
+}
+
+// a generated binding's warning (deprecated method, userdata creation with arguments)
+void AP_ScriptingM4_Server::remote_warning(void *context, uint8_t severity, const char *text)
+{
+    static_cast<AP_ScriptingM4_Server *>(context)->set_error(MIN(severity, uint8_t(MAV_SEVERITY_DEBUG)), text);
 }
 
 void AP_ScriptingM4_Server::update(uint32_t now_ms)

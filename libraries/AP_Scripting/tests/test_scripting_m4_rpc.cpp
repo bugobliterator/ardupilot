@@ -205,6 +205,13 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     EXPECT_LT(uint16_t(SystemMethod::Print), FIRST_BINDING_METHOD);
 }
 
+TEST(ScriptingM4Rpc, BindingsMethod)
+{
+    EXPECT_STREQ(method_name(uint16_t(SystemMethod::Bindings)), "m4:bindings");
+    EXPECT_EQ(method_kind(uint16_t(SystemMethod::Bindings)), MethodKind::Call);
+    EXPECT_LT(uint16_t(SystemMethod::Bindings), FIRST_BINDING_METHOD);
+}
+
 TEST(ScriptingM4Rpc, BlobAndHandleRoundTrip)
 {
     uint8_t buf[MAX_FRAME];

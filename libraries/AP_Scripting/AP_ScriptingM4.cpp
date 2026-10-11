@@ -73,8 +73,10 @@ void AP_ScriptingM4::init()
         return;
     }
     enter(State::Starting, now_ms);
+    // binding calls run vehicle code (mode changes, set_target_location) on this thread,
+    // which the in-process scripting thread ran with 17 KB
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ScriptingM4::host_thread, void),
-                                      "ScriptingM4", 4096, AP_HAL::Scheduler::PRIORITY_SCRIPTING, 0)) {
+                                      "ScriptingM4", 8192, AP_HAL::Scheduler::PRIORITY_SCRIPTING, 0)) {
         go_off("no host thread");
     }
 }
@@ -276,14 +278,15 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: PErr: protocol errors in the last second
 // @Field: Drop: replies dropped because the M4's ring was full
 // @Field: Lost: M4 calls without a reply since the previous row
+// @Field: QHit: M4 binding calls refused by their quota since the previous row
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
-    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost",
-                                "s----------", "F----------", "QBIIBIIIHHI",
+    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit",
+                                "s-----------", "F-----------", "QBIIBIIIHHII",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
-                                _protocol_errors, _dropped, _m4_calls_lost);
+                                _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits());
 #endif
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {
@@ -336,7 +339,7 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         _m4_heartbeat_ms = now_ms;
         // re-handshake: drop whatever either side queued before this start
         _channel->resetAfterRestart();
-        _server.reset();
+        _server.reset(_m4_session);
         _session_calls = 0;
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
         if (_state == State::Starting) {

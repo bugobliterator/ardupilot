@@ -35,6 +35,19 @@ TEST(ScriptingM4Handles, LookupChecksEverything)
     EXPECT_EQ(fresh.lookup(3, 0, 0), nullptr);   // generation 0 before any reset
 }
 
+TEST(ScriptingM4Handles, ResetWithTheSameSessionEmpties)
+{
+    // the M4 picks its session number: a restart may repeat it, and the reset at
+    // every session start must still drop the previous session's handles
+    HandleTable table;
+    table.reset(5);
+    int a = 0;
+    ASSERT_EQ(table.insert(3, &a), 0);
+    table.reset(5);
+    EXPECT_EQ(table.count(), 0);
+    EXPECT_EQ(table.lookup(3, 0, 5), nullptr);
+}
+
 TEST(ScriptingM4Handles, HandlesAreSessionScoped)
 {
     HandleTable table;
