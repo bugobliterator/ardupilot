@@ -79,6 +79,9 @@ extern "C" void m4_warm_restart(void)
         NVIC->ICPR[i] = 0xFFFFFFFFU;
     }
     SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
+    // e.g. an SVC whose stacking faulted stays pending and would enter the new image
+    SCB->SHCSR &= ~(SCB_SHCSR_SVCALLPENDED_Msk | SCB_SHCSR_MEMFAULTPENDED_Msk |
+                    SCB_SHCSR_BUSFAULTPENDED_Msk | SCB_SHCSR_USGFAULTPENDED_Msk);
     FPU->FPCCR &= ~FPU_FPCCR_LSPACT_Msk;
     MPU->CTRL = 0;   // main() programs it again
     __DSB();
