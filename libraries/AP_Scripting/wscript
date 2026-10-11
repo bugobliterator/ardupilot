@@ -13,7 +13,7 @@ BINDING_CFLAGS="-std=c99 -Wno-error=missing-field-initializers -Wall -Werror -We
 BINDING_CC="gcc"
 
 def configure(cfg):
-    cfg.env.AP_LIB_EXTRA_SOURCES['AP_Scripting'] = ['lua_generated_bindings.cpp']
+    cfg.env.AP_LIB_EXTRA_SOURCES['AP_Scripting'] = ['lua_generated_bindings.cpp', 'lua_remote_dispatch.cpp']
 
 def relpath(bld, node):
     '''make a build relative path. This is needed for CI to pass on azure'''
@@ -49,7 +49,7 @@ def build(bld):
         docs_command = "-d %s" % docs_rel
 
     remote = [bld.bldnode.find_or_declare('libraries/AP_Scripting/lua_remote_%s' % name)
-              for name in ('contract.h', 'tables.cpp', 'local.cpp')]
+              for name in ('contract.h', 'tables.cpp', 'local.cpp', 'dispatch.cpp')]
 
     bld(
         # build the bindings, and the M4 remote tables (gen-bindings -r)

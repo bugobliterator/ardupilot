@@ -83,6 +83,34 @@ class GenBindingsRemote(unittest.TestCase):
         self.assert_refused('label', ['singleton AP_AHRS method ' + 'a' * 60 + ' boolean'],
                             'is longer than an SRPC name')
 
+    def test_dispatch_codecs(self):
+        code, output, _ = self.generate('dispatch', [])
+        self.assertEqual(code, 0, output)
+        with open(os.path.join(self.tmp, 'dispatch', 'remote_dispatch.cpp')) as f:
+            dispatch = f.read()
+
+        def body(function):
+            # the definition, not the declaration before it
+            start = re.search(r'^static \w+ ' + function + r'\(.*\) \{$', dispatch, re.M).start()
+            return dispatch[start:dispatch.index('\n}\n', start)]
+
+        # Location: described fields with their setter ranges, then the hidden loiter_ccw as 0 or 1
+        read_location = body('read_Location')
+        self.assertIn('wide < int64_t(-900000000) || wide > int64_t(900000000)', read_location)
+        self.assertTrue(read_location.rstrip().endswith('return true;'))
+        last_read = read_location[read_location.rindex('if (!r.read(v))'):]
+        self.assertIn('if (v > 1)', last_read)
+        self.assertIn('ud->loiter_ccw = (v != 0);', last_read)
+        self.assertIn('w.write(uint8_t(ud->loiter_ccw ? 1 : 0));', body('write_Location'))
+        # EFI_State's hidden enum members are range-checked; hidden members have their wire width
+        self.assertIn('v > uint8_t(Engine_State::FAULT)', body('read_EFI_State'))
+        self.assertIn('static_assert(sizeof(ud->present_types) == sizeof(uint16_t)', dispatch)
+        # a field with depends changes the wire length: writer and reader take the same guard
+        guard = '#if AP_EXTENDED_ESC_TELEM_ENABLED\n'
+        self.assertIn(guard, body('write_AP_ESC_Telem_Backend__TelemetryData'))
+        self.assertIn(guard, body('read_AP_ESC_Telem_Backend__TelemetryData'))
+        self.assertIn('< ScriptingM4::QUOTA_CLASSES', dispatch)
+
     def test_changed_row_changes_the_hash(self):
         _, _, before = self.generate('hash_before', [])
         code, output, after = self.generate('hash_after', ["userdata Vector2f field extra float'skip_check read write"])

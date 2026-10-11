@@ -2943,7 +2943,9 @@ void emit_docs(struct userdata *node, int is_userdata, int emit_creation) {
 // ---------------------------------------------------------------------------
 // Remote mode (-r): Lua on the Cortex-M4 of CubeOrangePlus-M4Lua. The M4 gets
 // the binding tables (<prefix>_tables.cpp) and the local boxed numerics
-// (<prefix>_local.cpp); <prefix>_contract.h holds what both images share.
+// (<prefix>_local.cpp); <prefix>_contract.h holds what both images share. The M7
+// gets the dispatch (<prefix>_dispatch.cpp): the in-process binding functions
+// and the blobs' wire codecs, compiled against AP_ScriptingM4_Remote.h.
 // Method ids: FIRST_BINDING_METHOD + the stats id for methods, aliases and
 // manual functions, then fields, operators and constructors. Ids cover the
 // whole description; what a board compiled in is runtime data (m4:bindings).
@@ -3570,6 +3572,408 @@ static void remote_emit_local(FILE *f) {
   source = saved;
 }
 
+static const char *remote_wire_ctype(const struct type *t) {
+  switch (t->type) {
+    case TYPE_BOOLEAN: return "uint8_t";
+    case TYPE_FLOAT:   return "float";
+    case TYPE_INT8_T:  return "int8_t";
+    case TYPE_INT16_T: return "int16_t";
+    case TYPE_INT32_T: return "int32_t";
+    case TYPE_UINT8_T: return "uint8_t";
+    case TYPE_UINT16_T: return "uint16_t";
+    case TYPE_UINT32_T: return "uint32_t";
+    case TYPE_ENUM:    return "int32_t";
+    case TYPE_NONE:
+    case TYPE_STRING:
+    case TYPE_LITERAL:
+    case TYPE_USERDATA:
+    case TYPE_AP_OBJECT:
+      break;
+  }
+  return NULL;
+}
+
+// one value of a blob's wire form: write it from, or read it into, member
+static void remote_emit_wire_value(FILE *f, int write, const char *member, const struct type *t, const char *indent) {
+  if (t->type == TYPE_USERDATA) {
+    if (!remote_in_list(remote_blob_userdata, t->data.ud.name)) {
+      error(ERROR_GENERAL, "remote: blob member %s is a %s, which the M4 cannot hold", member, t->data.ud.name);
+    }
+    if (write) {
+      fprintf(f, "%swrite_%s(w, &%s);\n", indent, t->data.ud.sanitized_name, member);
+    } else {
+      fprintf(f, "%sif (!read_%s(r, &%s)) {\n%s    return false;\n%s}\n", indent, t->data.ud.sanitized_name, member, indent, indent);
+    }
+    return;
+  }
+  const char *ctype = remote_wire_ctype(t);
+  if (ctype == NULL) {
+    error(ERROR_GENERAL, "remote: blob member %s has no wire form", member);
+  }
+  if (write) {
+    if (t->type == TYPE_BOOLEAN) {
+      fprintf(f, "%sw.write(uint8_t(%s ? 1 : 0));\n", indent, member);
+    } else {
+      fprintf(f, "%sw.write(%s(%s));\n", indent, ctype, member);
+    }
+    return;
+  }
+  fprintf(f, "%s{\n", indent);
+  fprintf(f, "%s    %s v;\n", indent, ctype);
+  fprintf(f, "%s    if (!r.read(v)) {\n%s        return false;\n%s    }\n", indent, indent, indent);
+  if (t->type == TYPE_BOOLEAN) {
+    fprintf(f, "%s    if (v > 1) {\n%s        return false;\n%s    }\n", indent, indent, indent);
+    fprintf(f, "%s    %s = (v != 0);\n", indent, member);
+  } else {
+    // the range the field's setter checks: a blob carries nothing a setter would refuse
+    if ((t->range != NULL) && !(t->flags & TYPE_FLAGS_NO_RANGE_CHECK)) {
+      if (t->type == TYPE_FLOAT) {
+        fprintf(f, "%s    if (!(v >= float(%s) && v <= float(%s))) {\n", indent, t->range->low, t->range->high);
+      } else {
+        // widened in a variable: a bound at the wire type's own limit is no -Wtype-limits error
+        fprintf(f, "%s    const int64_t wide = v;\n", indent);
+        fprintf(f, "%s    if (wide < int64_t(%s) || wide > int64_t(%s)) {\n", indent, t->range->low, t->range->high);
+      }
+      fprintf(f, "%s        return false;\n%s    }\n", indent, indent);
+    }
+    if (t->type == TYPE_ENUM) {
+      fprintf(f, "%s    %s = static_cast<%s>(v);\n", indent, member, t->data.enum_name);
+    } else {
+      fprintf(f, "%s    %s = v;\n", indent, member);
+    }
+  }
+  fprintf(f, "%s}\n", indent);
+}
+
+static void remote_emit_wire_member(FILE *f, int write, const char *name, const char *array_len, const struct type *t) {
+  if (array_len != NULL) {
+    fprintf(f, "    for (int i = 0; i < int(%s); i++) {\n", array_len);
+    remote_emit_wire_value(f, write, remote_format("ud->%s[i]", name), t, "        ");
+    fprintf(f, "    }\n");
+  } else {
+    remote_emit_wire_value(f, write, remote_format("ud->%s", name), t, "    ");
+  }
+}
+
+// a hidden member travels as its declared kind; an enum member as uint8_t, checked 0..enum_max
+static void remote_emit_hidden(FILE *f, int write, const struct remote_hidden *hidden) {
+  if ((hidden->kind != TYPE_BOOLEAN) && (hidden->kind != TYPE_UINT8_T) && (hidden->kind != TYPE_UINT16_T)) {
+    error(ERROR_GENERAL, "remote: hidden member %s.%s needs a bool, uint8_t or uint16_t kind", hidden->type, hidden->member);
+  }
+  struct type t;
+  memset(&t, 0, sizeof(t));
+  t.type = hidden->kind;
+  const char *member = remote_format("ud->%s", hidden->member);
+  if (write && (hidden->kind != TYPE_BOOLEAN)) {
+    // the wire width is the member's (a hidden bool may be a bitfield: Location.loiter_ccw)
+    fprintf(f, "    static_assert(sizeof(%s) == sizeof(%s), \"%s.%s has another width than its wire form\");\n",
+            member, remote_wire_ctype(&t), hidden->type, hidden->member);
+  }
+  if (hidden->enum_type == NULL) {
+    remote_emit_wire_value(f, write, member, &t, "    ");
+    return;
+  }
+  if (hidden->kind != TYPE_UINT8_T) {
+    error(ERROR_GENERAL, "remote: hidden enum member %s.%s needs the uint8_t kind", hidden->type, hidden->member);
+  }
+  if (write) {
+    fprintf(f, "    w.write(uint8_t(%s));\n", member);
+    return;
+  }
+  fprintf(f, "    {\n");
+  fprintf(f, "        uint8_t v;\n");
+  fprintf(f, "        if (!r.read(v) || v > uint8_t(%s)) {\n", hidden->enum_max);
+  fprintf(f, "            return false;\n");
+  fprintf(f, "        }\n");
+  fprintf(f, "        %s = static_cast<%s>(v);\n", member, hidden->enum_type);
+  fprintf(f, "    }\n");
+}
+
+// write_/read_/decode_/encode_<type>: the described fields in order, then the hidden members.
+// The writer and the reader take the same depends guards, so a board's wire form is one length
+static void remote_emit_codec(FILE *f, const struct remote_type *rt) {
+  struct userdata *node = rt->node;
+  start_dependency(f, node->dependency);
+  fprintf(f, "static_assert(std::is_trivially_destructible<%s>::value, \"remote blobs are never destroyed\");\n\n", node->name);
+  for (int write = 1; write >= 0; write--) {
+    if (write) {
+      fprintf(f, "static void write_%s(WireWriter &w, const %s *ud) {\n", node->sanitized_name, node->name);
+    } else {
+      fprintf(f, "static bool read_%s(WireReader &r, %s *ud) {\n", node->sanitized_name, node->name);
+    }
+    for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+      // the setter sets the mask bit: the mask crosses as a hidden member
+      const char *valid_mask = field->type.valid_mask.name;
+      if ((valid_mask != NULL) && !remote_hidden_member(node->name, valid_mask)) {
+        error(ERROR_GENERAL, "remote: %s.%s has a valid_mask: give the mask a wire member first", node->name, field->name);
+      }
+      start_dependency(f, field->dependency);
+      remote_emit_wire_member(f, write, field->name, field->array_len, &field->type);
+      end_dependency(f, field->dependency);
+    }
+    for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
+      if (strcmp(hidden->type, node->name) == 0) {
+        remote_emit_hidden(f, write, hidden);
+      }
+    }
+    if (!write) {
+      fprintf(f, "    return true;\n");
+    }
+    fprintf(f, "}\n\n");
+  }
+  fprintf(f, "static bool decode_%s(WireReader &r, void *storage) {\n", node->sanitized_name);
+  fprintf(f, "    %s *ud = new (storage) %s();\n", node->name, node->name);
+  fprintf(f, "    return read_%s(r, ud) && r.done();\n}\n\n", node->sanitized_name);
+  fprintf(f, "static void encode_%s(WireWriter &w, const void *object) {\n", node->sanitized_name);
+  fprintf(f, "    write_%s(w, static_cast<const %s *>(object));\n}\n\n", node->sanitized_name, node->name);
+  end_dependency(f, node->dependency);
+}
+
+static void remote_emit_blob_support(FILE *f, const struct remote_type *rt, int type_id) {
+  struct userdata *node = rt->node;
+  start_dependency(f, node->dependency);
+  fprintf(f, "%s * check_%s(lua_State *L, int arg) {\n", node->name, node->sanitized_name);
+  fprintf(f, "    return static_cast<%s *>(remote_check_blob(L, arg, %d));\n}\n\n", node->name, type_id);
+  fprintf(f, "%s * new_%s(lua_State *L) {\n", node->name, node->sanitized_name);
+  fprintf(f, "    void *ud = remote_new_blob(L, %d, sizeof(%s));\n", type_id, node->name);
+  fprintf(f, "    new (ud) %s();\n", node->name);
+  fprintf(f, "    return static_cast<%s *>(ud);\n}\n\n", node->name);
+  if ((node->creation == NULL) && should_emit_creation(node)) {
+    fprintf(f, "static int lua_new_%s(lua_State *L) {\n", node->sanitized_name);
+    fprintf(f, "    static bool warned = false;\n");
+    fprintf(f, "    if (!warned && userdata_zero_arg_check(L)) {\n");
+    fprintf(f, "        warned = true;\n");
+    fprintf(f, "    }\n");
+    fprintf(f, "    new_%s(L);\n", node->sanitized_name);
+    fprintf(f, "    return 1;\n}\n\n");
+  }
+  end_dependency(f, node->dependency);
+}
+
+static void remote_emit_handle_support(FILE *f, const struct remote_type *rt, int type_id) {
+  struct userdata *node = rt->node;
+  start_dependency(f, node->dependency);
+  fprintf(f, "%s ** check_%s(lua_State *L, int arg) {\n", node->name, node->sanitized_name);
+  fprintf(f, "    return reinterpret_cast<%s **>(remote_check_handle(L, arg, %d));\n}\n\n", node->name, type_id);
+  fprintf(f, "%s ** new_%s(lua_State *L) {\n", node->name, node->sanitized_name);
+  fprintf(f, "    return reinterpret_cast<%s **>(remote_new_handle(L, %d));\n}\n\n", node->name, type_id);
+  end_dependency(f, node->dependency);
+}
+
+// the #if of a table entry: the owning type's and the method's own depends
+static const char *remote_dependency(const struct remote_method *method) {
+  const char *type_dependency = remote_types[method->type - 1].node->dependency;
+  if ((type_dependency != NULL) && (method->dependency != NULL)) {
+    return remote_format("(%s) && (%s)", type_dependency, method->dependency);
+  }
+  return (type_dependency != NULL) ? type_dependency : method->dependency;
+}
+
+static void remote_emit_entry(FILE *f, const char *dependency, const char *value, const char *otherwise) {
+  if (dependency == NULL) {
+    fprintf(f, "    %s,\n", value);
+  } else {
+    fprintf(f, "#if %s\n    %s,\n#else\n    %s,\n#endif\n", dependency, value, otherwise);
+  }
+}
+
+// the M7 dispatch: the in-process binding functions against AP_ScriptingM4_Remote.h
+static void remote_emit_dispatch(FILE *f) {
+  FILE *saved = source;
+  source = f;
+  fprintf(f, "// auto generated by gen-bindings -r, don't manually edit.  See README.md for details.\n");
+  fprintf(f, "#include <AP_Scripting/AP_Scripting_config.h>\n\n#if AP_SCRIPTING_M4_ENABLED\n\n");
+  fprintf(f, "#pragma GCC optimize(\"Os\")\n#include <new>\n#include <type_traits>\n");
+  fprintf(f, "#include <AP_Vehicle/AP_Vehicle_Type.h> // needed for APM_BUILD_TYPE #if\n");
+  fprintf(f, "#include <AP_Scheduler/AP_Scheduler.h>\n");
+  fprintf(f, "#include <AP_Scripting/AP_Scripting_BindingStats.h>\n");
+  fprintf(f, "#include <AP_Scripting/AP_ScriptingM4_Bindings.h>\n");
+  fprintf(f, "#include <AP_Scripting/AP_ScriptingM4_Quota.h>\n");
+  fprintf(f, "#include <AP_Scripting/AP_ScriptingM4_Remote.h>\n");
+  // twice, as in-process (lua_generated_bindings.h, then .cpp): a header's #if (OSD_ENABLED)
+  // can depend on a config header that only a later header of the list includes
+  emit_headers(f);
+  emit_headers(f);
+  fprintf(f, "\n");
+  fprintf(f, "extern const AP_HAL::HAL& hal;\n\n");
+  fprintf(f, "namespace ScriptingM4Remote {\n\n");
+  fprintf(f, "using ScriptingM4::ReplyStatus;\nusing ScriptingM4::RpcValue;\nusing ScriptingM4::RpcWriter;\n\n");
+  // the manual functions in remote_ready_manual[] are declared in AP_ScriptingM4_Remote.h
+
+  // declarations first: the M7 build warns about definitions without one (-Wmissing-declarations)
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct remote_type *rt = &remote_types[i];
+    const struct userdata *node = rt->node;
+    if ((rt->kind == REMOTE_SINGLETON) && !(node->flags & UD_FLAG_LITERAL) && (node->methods != NULL)) {
+      start_dependency(f, node->dependency);
+      fprintf(f, "%s * check_%s(lua_State *L);\n", node->name, node->sanitized_name);
+      end_dependency(f, node->dependency);
+    } else if ((rt->kind == REMOTE_BLOB) || (rt->kind == REMOTE_HANDLE)) {
+      const char *pointer = (rt->kind == REMOTE_BLOB) ? "*" : "**";
+      start_dependency(f, node->dependency);
+      fprintf(f, "%s %s check_%s(lua_State *L, int arg);\n", node->name, pointer, node->sanitized_name);
+      fprintf(f, "%s %s new_%s(lua_State *L);\n", node->name, pointer, node->sanitized_name);
+      end_dependency(f, node->dependency);
+    }
+  }
+  fprintf(f, "\n");
+
+  // userdata storage: check_<type>() and new_<type>()
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct remote_type *rt = &remote_types[i];
+    switch (rt->kind) {
+      case REMOTE_SINGLETON:
+        emit_singleton_checker(rt->node);
+        break;
+      case REMOTE_BLOB:
+        remote_emit_blob_support(f, rt, i + 1);
+        break;
+      case REMOTE_HANDLE:
+        remote_emit_handle_support(f, rt, i + 1);
+        break;
+      case REMOTE_LOCAL:
+      case REMOTE_GLOBAL:
+        break;
+    }
+  }
+
+  // wire codecs; nested types refer to each other
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct remote_type *rt = &remote_types[i];
+    if (rt->kind == REMOTE_BLOB) {
+      start_dependency(f, rt->node->dependency);
+      fprintf(f, "static bool read_%s(WireReader &r, %s *ud);\n", rt->node->sanitized_name, rt->node->name);
+      fprintf(f, "static void write_%s(WireWriter &w, const %s *ud);\n", rt->node->sanitized_name, rt->node->name);
+      end_dependency(f, rt->node->dependency);
+    }
+  }
+  fprintf(f, "\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    if (remote_types[i].kind == REMOTE_BLOB) {
+      remote_emit_codec(f, &remote_types[i]);
+    }
+  }
+
+  // the binding functions, as in-process
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct remote_type *rt = &remote_types[i];
+    struct userdata *node = rt->node;
+    if ((rt->kind != REMOTE_SINGLETON) && (rt->kind != REMOTE_BLOB) && (rt->kind != REMOTE_HANDLE)) {
+      continue;
+    }
+    for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+      if (!remote_type_supported(&field->type)) {
+        continue;
+      }
+      start_dependency(f, node->dependency);
+      if (rt->kind == REMOTE_SINGLETON) {
+        emit_singleton_field(node, field);
+      } else if (rt->kind == REMOTE_BLOB) {
+        emit_userdata_field(node, field);
+      } else {
+        emit_ap_object_field(node, field);
+      }
+      end_dependency(f, node->dependency);
+    }
+    for (struct method *method = node->methods; method != NULL; method = method->next) {
+      if (remote_method_supported(method)) {
+        emit_userdata_method(node, method);
+      }
+    }
+    if ((rt->kind == REMOTE_BLOB) && node->operations) {
+      emit_operators(node);
+    }
+  }
+
+  // tables by method id and type id; what the board left out is nullptr, false or 0
+  int max_quota = 0;
+  fprintf(f, "static const lua_CFunction remote_functions[ScriptingM4::BINDING_METHOD_COUNT] = {\n");
+  for (int i = 0; i < remote_method_count; i++) {
+    const struct remote_method *method = &remote_methods[i];
+    if (method->used) {
+      remote_emit_entry(f, remote_dependency(method), method->function, "nullptr");
+      if ((method->flags >> 4) > max_quota) {
+        max_quota = method->flags >> 4;
+      }
+    } else {
+      fprintf(f, "    nullptr,\n");
+    }
+  }
+  fprintf(f, "};\n\nstatic const uint8_t remote_method_flags[ScriptingM4::BINDING_METHOD_COUNT] = {\n");
+  for (int i = 0; i < remote_method_count; i++) {
+    fprintf(f, "    0x%02x,\n", remote_methods[i].used ? remote_methods[i].flags : 0);
+  }
+  fprintf(f, "};\n// the high nibble of a flag indexes the quota table\n");
+  fprintf(f, "static_assert(%d < ScriptingM4::QUOTA_CLASSES, \"a method's quota class is past the quota table\");\n", max_quota);
+  fprintf(f, "\nstatic const BlobCodec remote_codecs[ScriptingM4::BINDING_TYPE_COUNT] = {\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct remote_type *rt = &remote_types[i];
+    char *none = remote_format("{ \"%s\", 0, nullptr, nullptr }", rt->lua_name);
+    if (rt->kind == REMOTE_BLOB) {
+      remote_emit_entry(f, rt->node->dependency,
+                        remote_format("{ \"%s\", sizeof(%s), decode_%s, encode_%s }", rt->lua_name, rt->node->name,
+                                      rt->node->sanitized_name, rt->node->sanitized_name),
+                        none);
+    } else {
+      fprintf(f, "    %s,\n", none);
+    }
+  }
+  fprintf(f, "};\n\nstatic const bool remote_type_available[ScriptingM4::BINDING_TYPE_COUNT] = {\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    remote_emit_entry(f, remote_types[i].node->dependency, "true", "false");
+  }
+  fprintf(f, "};\n\nstatic const int32_t remote_enum_values[ScriptingM4::BINDING_ENUM_COUNT] = {\n");
+  for (int i = 0; i < remote_enum_count; i++) {
+    const struct userdata *node = remote_types[remote_enums[i].type - 1].node;
+    remote_emit_entry(f, node->dependency, remote_format("int32_t(%s::%s)", node->name, remote_enums[i].name), "0");
+  }
+  fprintf(f, "};\n\n");
+  fputs("bool method_available(uint16_t method)\n"
+        "{\n"
+        "    const uint16_t index = uint16_t(method - ScriptingM4::FIRST_BINDING_METHOD);\n"
+        "    return method >= ScriptingM4::FIRST_BINDING_METHOD && index < ScriptingM4::BINDING_METHOD_COUNT &&\n"
+        "           remote_functions[index] != nullptr;\n"
+        "}\n\n"
+        "uint8_t method_flags(uint16_t method)\n"
+        "{\n"
+        "    return method_available(method) ? remote_method_flags[method - ScriptingM4::FIRST_BINDING_METHOD] : 0;\n"
+        "}\n\n"
+        "// scripting host thread only: run() keeps the call in a static, and the handle\n"
+        "// table's reset(session) must never run while a call is in progress\n"
+        "ReplyStatus dispatch(uint16_t method, const RpcValue *args, uint8_t argc, RemoteCall &call,\n"
+        "                     RpcWriter &results, uint8_t &error_arg)\n"
+        "{\n"
+        "    if (!method_available(method)) {\n"
+        "        return ReplyStatus::UnknownMethod;\n"
+        "    }\n"
+        "    const uint16_t index = uint16_t(method - ScriptingM4::FIRST_BINDING_METHOD);\n"
+        "    call.codecs = remote_codecs;\n"
+        "    call.codec_count = ScriptingM4::BINDING_TYPE_COUNT;\n"
+        "    call.uint32_type = ScriptingM4::BINDING_TYPE_UINT32;\n"
+        "    call.uint64_type = ScriptingM4::BINDING_TYPE_UINT64;\n"
+        "    return run(call, args, argc, remote_functions[index], remote_method_flags[index], results, error_arg);\n"
+        "}\n\n"
+        "void binding_info(uint8_t *info)\n"
+        "{\n"
+        "    memset(info, 0, ScriptingM4::BINDING_INFO_SIZE);\n"
+        "    for (uint16_t i = 0; i < ScriptingM4::BINDING_METHOD_COUNT; i++) {\n"
+        "        if (remote_functions[i] != nullptr) {\n"
+        "            ScriptingM4::info_set_method(info, uint16_t(ScriptingM4::FIRST_BINDING_METHOD + i));\n"
+        "        }\n"
+        "    }\n"
+        "    for (uint8_t i = 0; i < ScriptingM4::BINDING_TYPE_COUNT; i++) {\n"
+        "        if (remote_type_available[i]) {\n"
+        "            ScriptingM4::info_set_type(info, uint8_t(i + 1));\n"
+        "        }\n"
+        "    }\n"
+        "    for (uint16_t i = 0; i < ScriptingM4::BINDING_ENUM_COUNT; i++) {\n"
+        "        ScriptingM4::info_set_enum(info, i, remote_enum_values[i]);\n"
+        "    }\n"
+        "}\n\n", f);
+  fprintf(f, "}  // namespace ScriptingM4Remote\n\n#endif  // AP_SCRIPTING_M4_ENABLED\n");
+  source = saved;
+}
+
 static void remote_write_files(const char *prefix) {
   FILE *f = remote_open(prefix, "contract.h");
   remote_emit_contract(f);
@@ -3579,6 +3983,9 @@ static void remote_write_files(const char *prefix) {
   fclose(f);
   f = remote_open(prefix, "local.cpp");
   remote_emit_local(f);
+  fclose(f);
+  f = remote_open(prefix, "dispatch.cpp");
+  remote_emit_dispatch(f);
   fclose(f);
 }
 
