@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from pathlib import Path
@@ -21,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import fat_image  # noqa: E402
 from pymavlink import DFReader, mavftp  # noqa: E402
 from test_m4_containment import (BUILD, M4_PEER_MAGIC, RCC_GCR, ROOT, STEP_TIMEOUT,  # noqa: E402,F401
                                  start_m4lua)
@@ -31,7 +33,15 @@ START_TIMEOUT = 120    # wall seconds: boot to the first M4 start text
 M4_SESSION = M4_PEER_MAGIC + 16   # PeerHeader::Half.session
 FLOOD_MS = 2000      # AP_ScriptingM4_Layout.h: how long a request flood lasts
 LOG_DOWNLOAD_TIMEOUT = 240   # wall seconds without a finished download
+UPLOAD_TIMEOUT = 600   # wall seconds for a script upload
 SCRIPT_TIMEOUT = 900   # wall seconds: math.lua at SCR_VM_I_COUNT 1000000 is slow under Renode
+
+
+def remote_file_sizes(ftp, directory):
+    '''{name: size} of the files in a board directory, as their FAT directory entries give them.'''
+    ftp.list_result = []
+    ftp.cmd_list([directory])
+    return {entry.name: entry.size_b for entry in ftp.list_result if not entry.is_dir}
 
 
 def upload_scripts(run, paths):
@@ -41,10 +51,26 @@ def upload_scripts(run, paths):
     ftp.process_ftp_reply('CreateDirectory', timeout=60)
     for path in paths:
         source = SCRIPTS / path
-        ret = ftp.cmd_put([str(source), 'APM/scripts/' + source.name])
+        finished = []   # the put's callback: the length once every block is acknowledged, None on failure
+        ret = ftp.cmd_put([str(source), 'APM/scripts/' + source.name], callback=finished.append)
         assert ret.error_code == 0, 'put %s: %s' % (path, ret)
-        ret = ftp.process_ftp_reply('CreateFile', timeout=600)
-        assert ret.error_code == 0, 'upload of %s failed: %s' % (path, ret)
+        deadline = time.monotonic() + UPLOAD_TIMEOUT
+        while not finished:
+            assert time.monotonic() < deadline, 'upload of %s did not finish' % path
+            ftp.process_ftp_reply('CreateFile', timeout=60)
+        assert finished == [source.stat().st_size], 'upload of %s failed: %s' % (path, finished)
+    # the board writes a file's size into its directory entry when the FTP session ends;
+    # process_ftp_reply() returns after 1.2 s without a reply, so a stalled Renode can
+    # leave that TerminateSession unprocessed, and a stop then leaves an empty script
+    # (it loads, runs once and makes no call): end the session until the sizes show
+    expected = {(SCRIPTS / path).name: (SCRIPTS / path).stat().st_size for path in paths}
+    deadline = time.monotonic() + UPLOAD_TIMEOUT
+    while True:
+        sizes = remote_file_sizes(ftp, 'APM/scripts')
+        if all(sizes.get(name) == size for name, size in expected.items()):
+            return
+        assert time.monotonic() < deadline, 'APM/scripts on the board holds %s, expected %s' % (sizes, expected)
+        ftp.cmd_cancel()
 
 
 def host_thread_stack(run, local_path):
@@ -127,6 +153,35 @@ def start_with_scripts(start_m4lua, paths, parameters):  # noqa: F811
         assert run.get(name) == value, 'board state did not persist across the relaunch: %s' % name
     run.wait_m4_started()
     return run
+
+
+def test_upload_survives_a_stall(start_m4lua, tmp_path, monkeypatch):  # noqa: F811
+    # Renode stalls for 5 s once every block is acknowledged, before the FTP session
+    # ends; a stop right after the upload still finds the whole script on the SD card
+    run = start_m4lua()
+    run.wait_text(r'^Scripting: started on M4 \(\d+ scripts, heap \d+KB\)$', timeout=START_TIMEOUT)
+    put = mavftp.MAVFTP.cmd_put
+    stalls = []
+
+    def stalling_put(ftp, args, fh=None, callback=None, progress_callback=None):
+        def progress(fraction):
+            if fraction == 1.0 and not stalls:
+                run.monitor.command('pause')
+                stalls.append(threading.Timer(5, run.monitor.command, ('start',)))
+                stalls[0].start()
+        return put(ftp, args, fh, callback, progress)
+
+    monkeypatch.setattr(mavftp.MAVFTP, 'cmd_put', stalling_put)
+    upload_scripts(run, ['tests/m4_bindings.lua'])
+    assert stalls, 'the upload never reached its end'
+    stalls[0].join()
+    run.stop()
+    source = SCRIPTS / 'tests' / 'm4_bindings.lua'
+    copies = fat_image.extract_files(tmp_path / 'state' / 'sdcard.img', '/APM/SCRIPTS', source.name,
+                                     tmp_path / 'scripts')
+    contents = [copy.read_bytes() for copy in copies]
+    assert contents == [source.read_bytes()], 'the board holds %s of %u bytes' % (
+        [len(content) for content in contents], source.stat().st_size)
 
 
 def test_m4_runs_scripts(start_m4lua, tmp_path):  # noqa: F811
