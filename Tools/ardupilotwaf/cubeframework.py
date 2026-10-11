@@ -27,7 +27,6 @@ M4_LUA_SOURCES = ['lapi.c', 'lauxlib.c', 'lbaselib.c', 'lcode.c', 'lctype.c', 'l
                   'ldump.c', 'lfunc.c', 'lgc.c', 'llex.c', 'lmathlib.c', 'lmem.c', 'lobject.c',
                   'lopcodes.c', 'lparser.c', 'lstate.c', 'lstring.c', 'lstrlib.c', 'ltable.c',
                   'ltablib.c', 'ltm.c', 'lundump.c', 'lvm.c', 'lzio.c']
-M4_RUNTIME_SOURCES = ['m4_service.cpp', 'm4_lua.cpp', 'm4_rpc_client.cpp']
 
 
 def _cf(paths):
@@ -86,6 +85,8 @@ def _add_image_target(bld):
 def _chibios_image(bld):
     src = bld.srcnode
     makefile = src.find_node(M4_DIR + '/chibios/Makefile')
+    generator_inputs = [src.find_node('libraries/AP_Scripting/generator/description/bindings.desc'),
+                        src.find_node('libraries/AP_Scripting/generator/src/main.c')]
     sources = (src.ant_glob(M4_DIR + '/**/*') +
                src.ant_glob('libraries/AP_Scripting/AP_ScriptingM4_*.h') +
                [src.find_node('libraries/AP_Scripting/AP_Scripting_BindingHistogram.h')] +
@@ -93,25 +94,32 @@ def _chibios_image(bld):
                [src.find_node('%s/%s' % (LUA_DIR, path)) for path in M4_LUA_SOURCES] +
                [src.find_node('libraries/AP_HAL_ChibiOS/ap_setjmp.c')] +
                src.ant_glob(CUBEFRAMEWORK + '/CubePilotFW/**/*.h') +
-               [src.find_node(path) for path in _cf(CF_CHIBIOS_SOURCES)])
+               [src.find_node(path) for path in _cf(CF_CHIBIOS_SOURCES)] +
+               generator_inputs)
     out = bld.bldnode.make_node('scripting_m4')
+    generated_root = bld.bldnode.make_node('libraries')
     bin_dir = bld.bldnode.make_node('bin')
     targets = [bin_dir.find_or_declare('scripting_m4.elf'), bin_dir.find_or_declare('scripting_m4.bin')]
-    rule = ("'%s' -s -j%u -f '%s' CHIBIOS='%s' AP_ROOT='%s' BUILDDIR='%s' M4_LUA_SOURCES='%s' && "
+    rule = ("'%s' -s -j%u -f '%s' CHIBIOS='%s' AP_ROOT='%s' BUILDDIR='%s' M4_LUA_SOURCES='%s' "
+            "M4_GENERATED_ROOT='%s' && "
             "mkdir -p '%s' && cp '%s/scripting_m4.elf' '%s/scripting_m4.bin' '%s'") % (
         bld.env.get_flat('MAKE'), bld.options.jobs, makefile.abspath(),
         src.find_dir('modules/ChibiOS').abspath(), src.abspath(), out.abspath(), ' '.join(M4_LUA_SOURCES),
+        generated_root.abspath(),
         bin_dir.abspath(), out.abspath(), out.abspath(), bin_dir.abspath())
     bld(rule=rule, source=sources, target=targets, name='scripting_m4_image')
 
 
 def _sitl_program(bld):
-    # the shim directory comes first: the Lua core finds its AP headers there
+    # m4/*.cpp is the portable runtime (generated tables come in through wrappers there);
+    # the shim directory comes first: the Lua core finds its AP headers there. 'libraries'
+    # also reaches the generated headers in the build directory (AP_Scripting/lua_remote_*)
+    runtime = [node.path_from(bld.srcnode) for node in bld.srcnode.ant_glob(M4_DIR + '/*.cpp')]
     bld.program(target='bin/scripting_m4', name='scripting_m4_image',
-                source=(['%s/%s' % (M4_DIR, path) for path in M4_RUNTIME_SOURCES] +
+                source=(runtime +
                         [M4_DIR + '/sitl/main.cpp', M4_DIR + '/sitl/lua_port.cpp'] +
                         ['%s/%s' % (LUA_DIR, path) for path in M4_LUA_SOURCES] +
                         _cf(CF_POSIX_SOURCES)),
-                includes=[M4_DIR + '/shim', 'libraries/AP_Scripting', CUBEFRAMEWORK],
-                defines=['__CORTEX_M=4'], cxxflags=CF_CXXFLAGS, cflags=['-Wno-error'],
-                linkflags=['-pthread'], use=[])
+                includes=[M4_DIR + '/shim', M4_DIR, 'libraries/AP_Scripting', 'libraries', CUBEFRAMEWORK],
+                defines=['__CORTEX_M=4', 'AP_LUA_MAX_NUMBER_TEXT=100'], cxxflags=CF_CXXFLAGS,
+                cflags=['-Wno-error'], linkflags=['-pthread'], use=[])
