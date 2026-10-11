@@ -9,21 +9,28 @@ Needs RENODE and a CubeOrangePlus-M4Lua build:
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pymavlink import DFReader, mavftp  # noqa: E402
-from test_m4_containment import BUILD, RCC_GCR, ROOT, start_m4lua  # noqa: E402,F401
+from test_m4_containment import (BUILD, M4_PEER_MAGIC, RCC_GCR, ROOT, STEP_TIMEOUT,  # noqa: E402,F401
+                                 start_m4lua)
 from test_mission import download_log  # noqa: E402
 
 SCRIPTS = ROOT / 'libraries' / 'AP_Scripting'
 START_TIMEOUT = 120    # wall seconds: boot to the first M4 start text
+M4_SESSION = M4_PEER_MAGIC + 16   # PeerHeader::Half.session
+FLOOD_MS = 2000      # AP_ScriptingM4_Layout.h: how long a request flood lasts
+LOG_DOWNLOAD_TIMEOUT = 60   # wall seconds without a finished download
 SCRIPT_TIMEOUT = 900   # wall seconds: math.lua at SCR_VM_I_COUNT 1000000 is slow under Renode
 
 
@@ -54,7 +61,16 @@ def host_thread_stack(run, local_path):
 
 def check_log_rows(run, local_path):
     '''The DataFlash log carries an SCR row per script and SRPC rows for the M4's calls.'''
-    download_log(run.mav, run.process, run.log_path, local_path, timeout=SCRIPT_TIMEOUT)
+    for attempt in range(5):   # a download can stall: start it again
+        try:
+            download_log(run.mav, run.process, run.log_path, local_path, timeout=LOG_DOWNLOAD_TIMEOUT)
+            break
+        except RuntimeError as error:
+            assert 'timed out downloading' in str(error), error
+            print('log download attempt %u stalled' % (attempt + 1), flush=True)
+            run.mav.mav.log_request_end_send(run.mav.target_system, run.mav.target_component)
+    else:
+        raise RuntimeError('DataFlash log download stalled 5 times')
     reader = DFReader.DFReader_binary(str(local_path), zero_time_base=True)
     scripts = set()
     calls = set()
@@ -125,54 +141,75 @@ def test_m4_runs_scripts(start_m4lua, tmp_path):  # noqa: F811
     run.wait_alive(10)
 
 
-def symbol_range(elf, name):
-    '''[start, end) of a function symbol in elf.'''
-    symbols = subprocess.check_output(['arm-none-eabi-nm', '-S', '-C', str(elf)], text=True)
-    match = re.search(r'(?m)^([0-9a-f]{8}) ([0-9a-f]{8}) [Tt] ' + re.escape(name) + r'\(', symbols)
-    assert match, '%s not in %s' % (name, elf)
+def m4_symbols(elf):
+    '''Demangled nm -S listing of the M4 image.'''
+    if shutil.which('arm-none-eabi-nm') is None:
+        pytest.skip('arm-none-eabi-nm not on PATH')
+    return subprocess.check_output(['arm-none-eabi-nm', '-S', '-C', str(elf)], text=True)
+
+
+def symbol_range(symbols, name):
+    '''[start, end) of a symbol (a function name is followed by its argument list).'''
+    match = re.search(r'(?m)^([0-9a-f]{8}) ([0-9a-f]{8}) [TtBbDd] ' + re.escape(name) + r'(\(|$)', symbols)
+    assert match, '%s not in the M4 image' % name
     start = int(match.group(1), 16)
     return start, start + int(match.group(2), 16)
 
 
 def test_m4_lua_thread_faults_are_contained(start_m4lua):  # noqa: F811
-    # the AIRCR and RCC writes are the stores in port_lua_fault: their fault PC must lie there
-    m4_elf = Path(os.environ.get('M4LUA_M4_ELF', BUILD / 'scripting_m4.elf'))
-    write_start, write_end = symbol_range(m4_elf, 'ScriptingM4::port_lua_fault')
+    symbols = m4_symbols(Path(os.environ.get('M4LUA_M4_ELF', BUILD / 'scripting_m4.elf')))
+    # the AIRCR and RCC writes are the stores in port_lua_fault, the overflow the frames of overflow_stack
+    fault_ranges = {
+        7: symbol_range(symbols, 'ScriptingM4::port_lua_fault'),
+        9: symbol_range(symbols, 'ScriptingM4::port_lua_fault'),
+        8: symbol_range(symbols, 'overflow_stack'),
+    }
+    flood_ring_full = symbol_range(symbols, 'ScriptingM4::flood_ring_full')[0]
     run = start_with_scripts(start_m4lua, ['tests/m4_loop.lua'], {'SCR_M4_RST_MAX': 4})
     gcr = run.read_word(RCC_GCR)
     # "M4 loop N" comes only from tests/m4_loop.lua, whatever else the SD card holds
     run.wait_text(r'^M4 loop 2$', timeout=SCRIPT_TIMEOUT)
+    session = run.read_word(M4_SESSION)
 
     # a request flood costs the M7 bounded time and is no fault
     flood_text = len(run.texts)
     flood_ms = run.boot_ms
     run.set('SCR_M4_INJECT', 6)
     run.wait_alive(10)
-    while run.boot_ms - flood_ms < 3000:   # the M4 floods for 2 s
+    deadline = time.monotonic() + STEP_TIMEOUT
+    while run.boot_ms - flood_ms < FLOOD_MS + 1000:
         run.check()
+        assert time.monotonic() < deadline, 'M7 time stopped during a request flood at %u ms' % run.boot_ms
         run.mav.recv_match(blocking=True, timeout=1)
     run.next_text = len(run.texts)
     run.wait_text(r'^M4 loop \d+$')       # the script still runs after the flood
     supervisor = [text for text in run.texts[flood_text:] if text.startswith('Scripting: M4')]
     assert not supervisor, 'a request flood gave %s' % supervisor
+    ring_full = run.read_word(flood_ring_full)
+    print('M4 flood passes that found the ring full: %u' % ring_full, flush=True)
+    assert ring_full > 0, 'the request flood never filled the ring'
+    assert run.read_word(M4_SESSION) == session, 'the M4 restarted during a request flood'
     assert run.read_word(RCC_GCR) == gcr, 'RCC_GCR changed during a request flood'
+    assert not run.m4_halted(), 'cpu2 halted after a request flood'
 
     steps = (
-        (7, 'BusFault', True),    # AIRCR SYSRESETREQ from the Lua thread
-        (9, 'MemManage', True),   # RCC_GCR write from the Lua thread
-        (8, 'MemManage', False),  # the Lua stack into privileged RAM (a stacking fault gives any PC)
+        (7, 'BusFault'),    # AIRCR SYSRESETREQ from the Lua thread
+        (9, 'MemManage'),   # RCC_GCR write from the Lua thread
+        (8, 'MemManage'),   # the Lua stack into privileged RAM
     )
-    for used, (kind, fault, in_port_lua_fault) in enumerate(steps, start=1):
+    for used, (kind, fault) in enumerate(steps, start=1):
         run.set('SCR_M4_INJECT', kind)
         text = run.wait_text(r'^Scripting: M4 %s PC=0x[0-9A-F]{8}$' % fault)
         pc = int(text.rsplit('=', 1)[1], 16)
-        if in_port_lua_fault:
-            assert write_start <= pc < write_end, \
-                'kind %u faulted at PC=0x%08X, outside port_lua_fault' % (kind, pc)
+        start, end = fault_ranges[kind]
+        assert start <= pc < end, 'kind %u faulted at PC=0x%08X, outside 0x%08X-0x%08X' % (kind, pc, start, end)
         run.wait_text(re.escape('Scripting: M4 restarting (%u/4)' % used))
         run.wait_text(re.escape('Scripting: M4 restarted (%u/4)' % used))
-        # the scripts load again and their calls reach the M7 after the restart
+        # the scripts load again (the counter starts over) and their calls reach the M7
+        run.wait_text(r'^M4 loop 1$', timeout=SCRIPT_TIMEOUT)
         run.wait_text(r'^M4 loop 2$', timeout=SCRIPT_TIMEOUT)
+        assert run.read_word(M4_SESSION) == session + used, 'kind %u: M4 session %u, expected %u' % (
+            kind, run.read_word(M4_SESSION), session + used)
         assert run.read_word(RCC_GCR) == gcr, 'kind %u changed RCC_GCR' % kind
         assert not run.m4_halted(), 'cpu2 halted after kind %u' % kind
     # check() inside every wait: the M7 never rebooted (SYSTEM_TIME never went back)
