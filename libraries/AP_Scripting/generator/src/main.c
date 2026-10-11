@@ -2997,6 +2997,12 @@ static const char *remote_handle_ap_objects[] = {
   "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",
   "AP_Vehicle::custom_mode_state", "RC_Channel", "AP_HAL::AnalogSource", "AP_EFI_Backend",
   NULL };
+// userdata carrying M7 pointers or state and the manual-only ap_objects: left out until
+// IO and Manual Bindings. A userdata or ap_object in none of these lists fails generation
+static const char *remote_deferred_userdata[] = {
+  "Parameter", "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter", "DroneCAN_Handle",
+  "SocketAPM", "ScriptingCANBuffer", "AP_HAL::I2CDevice", "AP_HAL::PWMSource",
+  NULL };
 // manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
 static const char *remote_ready_manual[] = { "lua_millis", "lua_micros", NULL };
 
@@ -3006,15 +3012,25 @@ struct remote_hidden {
   const char *type;
   const char *member;
   enum field_type kind;
+  const char *enum_type;     // a uint8_t enum class: the codec casts and checks 0..enum_max
+  const char *enum_max;
 };
 static const struct remote_hidden remote_hidden_members[] = {
-  { "Location", "loiter_ccw", TYPE_BOOLEAN },
-  { "AP_Servo_Telem::TelemetryData", "present_types", TYPE_UINT16_T },
-  { "mavlink_mission_item_int_t", "target_system", TYPE_UINT8_T },
-  { "mavlink_mission_item_int_t", "target_component", TYPE_UINT8_T },
-  { "mavlink_mission_item_int_t", "autocontinue", TYPE_UINT8_T },
-  { "mavlink_mission_item_int_t", "mission_type", TYPE_UINT8_T },
-  { NULL, NULL, TYPE_NONE } };
+  { "Location", "loiter_ccw", TYPE_BOOLEAN, NULL, NULL },
+  { "AP_Servo_Telem::TelemetryData", "present_types", TYPE_UINT16_T, NULL, NULL },
+  { "mavlink_mission_item_int_t", "target_system", TYPE_UINT8_T, NULL, NULL },
+  { "mavlink_mission_item_int_t", "target_component", TYPE_UINT8_T, NULL, NULL },
+  { "mavlink_mission_item_int_t", "autocontinue", TYPE_UINT8_T, NULL, NULL },
+  { "mavlink_mission_item_int_t", "mission_type", TYPE_UINT8_T, NULL, NULL },
+  { "EFI_State", "engine_state", TYPE_UINT8_T, "Engine_State", "Engine_State::FAULT" },
+  { "EFI_State", "crankshaft_sensor_status", TYPE_UINT8_T, "Crankshaft_Sensor_Status", "Crankshaft_Sensor_Status::ERROR" },
+  { "EFI_State", "temperature_status", TYPE_UINT8_T, "Temperature_Status", "Temperature_Status::EGT_ABOVE_NOMINAL" },
+  { "EFI_State", "oil_pressure_status", TYPE_UINT8_T, "Oil_Pressure_Status", "Oil_Pressure_Status::ABOVE_NOMINAL" },
+  { "EFI_State", "detonation_status", TYPE_UINT8_T, "Detonation_Status", "Detonation_Status::OBSERVED" },
+  { "EFI_State", "misfire_status", TYPE_UINT8_T, "Misfire_Status", "Misfire_Status::OBSERVED" },
+  { "EFI_State", "debris_status", TYPE_UINT8_T, "Debris_Status", "Debris_Status::DETECTED" },
+  { "EFI_State", "spark_plug_usage", TYPE_UINT8_T, "Spark_Plug_Usage", "Spark_Plug_Usage::BOTH_ACTIVE" },
+  { NULL, NULL, TYPE_NONE, NULL, NULL } };
 
 static int remote_hidden_member(const char *type, const char *member) {
   for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
@@ -3132,13 +3148,27 @@ static char *remote_format(const char *fmt, ...) {
 
 // a type a remote call can carry
 static int remote_type_supported(const struct type *t) {
-  if (t->type == TYPE_USERDATA) {
-    return remote_in_list(remote_blob_userdata, t->data.ud.name) || remote_in_list(remote_local_userdata, t->data.ud.name);
+  switch (t->type) {
+    case TYPE_BOOLEAN:
+    case TYPE_FLOAT:
+    case TYPE_INT8_T:
+    case TYPE_INT16_T:
+    case TYPE_INT32_T:
+    case TYPE_UINT8_T:
+    case TYPE_UINT16_T:
+    case TYPE_UINT32_T:
+    case TYPE_NONE:
+    case TYPE_STRING:
+    case TYPE_ENUM:
+    case TYPE_LITERAL:
+      return TRUE;
+    case TYPE_USERDATA:
+      return remote_in_list(remote_blob_userdata, t->data.ud.name) || remote_in_list(remote_local_userdata, t->data.ud.name);
+    case TYPE_AP_OBJECT:
+      return remote_in_list(remote_handle_ap_objects, t->data.ud.name);
   }
-  if (t->type == TYPE_AP_OBJECT) {
-    return remote_in_list(remote_handle_ap_objects, t->data.ud.name);
-  }
-  return TRUE;
+  error(ERROR_INTERNAL, "remote: unknown type kind %d", (int)t->type);
+  return FALSE;
 }
 
 static int remote_method_supported(const struct method *method) {
@@ -3172,14 +3202,41 @@ static int remote_kind_of(const struct userdata *node) {
       if (remote_in_list(remote_local_userdata, node->name)) {
         return REMOTE_LOCAL;
       }
-      // not listed: carries M7 pointers or state (IO and Manual Bindings)
-      return remote_in_list(remote_blob_userdata, node->name) ? REMOTE_BLOB : -1;
+      if (remote_in_list(remote_blob_userdata, node->name)) {
+        return REMOTE_BLOB;
+      }
+      break;
     case UD_AP_OBJECT:
-      return remote_in_list(remote_handle_ap_objects, node->name) ? REMOTE_HANDLE : -1;
+      if (remote_in_list(remote_handle_ap_objects, node->name)) {
+        return REMOTE_HANDLE;
+      }
+      break;
     case UD_GLOBAL:
       return REMOTE_GLOBAL;
+    default:
+      error(ERROR_INTERNAL, "remote: %s has an unknown userdata kind %d", node->name, (int)node->ud_type);
   }
+  if (remote_in_list(remote_deferred_userdata, node->name)) {
+    return -1;
+  }
+  error(ERROR_GENERAL, "remote: %s is in no remote list (blob, local, handle or deferred)", node->name);
   return -1;
+}
+
+// a name in a remote list that the description does not declare is a typo
+static void remote_check_declared(const char *const *list) {
+  for (; *list != NULL; list++) {
+    int found = FALSE;
+    for (const struct userdata *node = parsed_userdata; node != NULL; node = node->next) {
+      found |= strcmp(node->name, *list) == 0;
+    }
+    for (const struct userdata *node = parsed_ap_objects; node != NULL; node = node->next) {
+      found |= strcmp(node->name, *list) == 0;
+    }
+    if (!found) {
+      error(ERROR_GENERAL, "remote: %s is in a remote list but not in the description", *list);
+    }
+  }
 }
 
 static int remote_add_row(const char *lua_name, int method, int flags, int type) {
@@ -3296,6 +3353,10 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
     }
     for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
       if (!remote_type_supported(&field->type)) {
+        if (kind == REMOTE_BLOB) {
+          // the member would be reset on every round trip
+          error(ERROR_GENERAL, "remote: blob %s.%s has a type the wire cannot carry", node->name, field->name);
+        }
         continue;
       }
       // the setter sets the mask bit: the mask has to cross with the blob
@@ -3333,6 +3394,10 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         if (strcmp(hidden->type, node->name) == 0) {
           remote_hash_string(hidden->member);
           remote_hash_int(hidden->kind);
+          if (hidden->enum_type != NULL) {
+            remote_hash_string(hidden->enum_type);
+            remote_hash_string(hidden->enum_max);
+          }
         }
       }
     }
@@ -3383,6 +3448,10 @@ static void remote_collect(void) {
   if (parsed_globals != NULL) {
     remote_collect_type(parsed_globals, REMOTE_GLOBAL);
   }
+  remote_check_declared(remote_blob_userdata);
+  remote_check_declared(remote_local_userdata);
+  remote_check_declared(remote_handle_ap_objects);
+  remote_check_declared(remote_deferred_userdata);
   for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
     if (remote_types[remote_type_id(hidden->type) - 1].kind != REMOTE_BLOB) {
       error(ERROR_GENERAL, "remote: hidden member %s.%s of a type that is no blob", hidden->type, hidden->member);
