@@ -1,6 +1,7 @@
 #include <AP_gtest.h>
 #include <string>
 #include <AP_Scripting/AP_ScriptingM4_Rpc.h>
+#include <AP_Scripting/AP_ScriptingM4_Protocol.h>
 
 using namespace ScriptingM4;
 
@@ -210,6 +211,19 @@ TEST(ScriptingM4Rpc, BindingsMethod)
     EXPECT_STREQ(method_name(uint16_t(SystemMethod::Bindings)), "m4:bindings");
     EXPECT_EQ(method_kind(uint16_t(SystemMethod::Bindings)), MethodKind::Call);
     EXPECT_LT(uint16_t(SystemMethod::Bindings), FIRST_BINDING_METHOD);
+}
+
+TEST(ScriptingM4Rpc, StatsRows)
+{
+    EXPECT_STREQ(method_name(uint16_t(SystemMethod::Other)), "m4:other");
+    EXPECT_EQ(method_kind(uint16_t(SystemMethod::Other)), MethodKind::Notify);
+    StatsMsg stats {};
+    EXPECT_EQ(sizeof(stats.name), 64U);
+    uint8_t buf[MAX_FRAME];
+    fill_header(stats.header, MsgType::Stats, sizeof(stats), 1);
+    memcpy(buf, &stats, sizeof(stats));
+    MsgHeader header;
+    EXPECT_TRUE(parse_header(buf, sizeof(stats), header));
 }
 
 TEST(ScriptingM4Rpc, BlobAndHandleRoundTrip)

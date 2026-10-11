@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <CubePilotFW/PeerHeader.h>
+#include <AP_ScriptingM4_Bindings.h>
 #include <AP_ScriptingM4_Layout.h>
 #include <AP_ScriptingM4_Rpc.h>
 
@@ -23,6 +24,8 @@ void M4Service::init(Channel &channel, uint8_t *window, LuaLink &link, const M4P
     }
     memset(_stats, 0, sizeof(_stats));
     _seq = 0;
+    _untimed = 0;
+    _untimed_lost = 0;
     _ready = false;
     _rx_stalled = false;
     _flooding = false;
@@ -45,6 +48,8 @@ void M4Service::step()
             MethodStats *stats = stats_for(_call_method);
             if (stats != nullptr) {
                 stats->lost++;
+            } else {
+                _untimed_lost++;
             }
         }
         complete(-ETIMEDOUT);
@@ -124,6 +129,8 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
         if (m7_us > stats->m7_max_us) {
             stats->m7_max_us = m7_us;
         }
+    } else {
+        _untimed++;
     }
     memcpy(_link->reply, buf, len);
     complete(len);
@@ -208,9 +215,52 @@ M4Service::MethodStats *M4Service::stats_for(uint16_t method)
     return free_slot;   // nullptr: every slot is busy this window, the call is not timed
 }
 
+M4Service::Row M4Service::row_of(const MethodStats &slot)
+{
+    Row row;
+    row.method = slot.method;
+    row.count = slot.round_trips.count();
+    row.p50_us = slot.round_trips.percentile(50);
+    row.p99_us = slot.round_trips.percentile(99);
+    row.max_us = slot.round_trips.max_us();
+    row.total_us = slot.total_us;
+    row.m7_max_us = slot.m7_max_us;
+    row.lost = slot.lost;
+    return row;
+}
+
+void M4Service::clear(MethodStats &slot)
+{
+    slot.round_trips.reset();
+    slot.total_us = 0;
+    slot.m7_max_us = 0;
+    slot.lost = 0;
+}
+
+bool M4Service::send_row(const Row &row)
+{
+    StatsMsg stats;
+    memset(&stats, 0, sizeof(stats));
+    fill_header(stats.header, MsgType::Stats, sizeof(stats), ++_seq);
+    stats.method = row.method;
+    stats.count = row.count;
+    stats.p50_us = row.p50_us;
+    stats.p99_us = row.p99_us;
+    stats.max_us = row.max_us;
+    stats.total_us = row.total_us;
+    stats.m7_max_us = row.m7_max_us;
+    stats.lost = row.lost;
+    binding_method_label(row.method, stats.name, sizeof(stats.name));
+    return _channel->send(&stats, sizeof(stats)) == 0;
+}
+
 void M4Service::send_stats(uint32_t now_ms)
 {
-    for (MethodStats &slot : _stats) {
+    // the slots with calls this window, most round-trip time first (insertion order, 32 at most)
+    uint8_t order[STATS_SLOTS];
+    uint8_t active = 0;
+    for (uint8_t i = 0; i < STATS_SLOTS; i++) {
+        MethodStats &slot = _stats[i];
         if (slot.method == 0) {
             continue;
         }
@@ -218,24 +268,45 @@ void M4Service::send_stats(uint32_t now_ms)
             slot.method = 0;   // idle for a whole window: free the slot
             continue;
         }
-        StatsMsg stats;
-        fill_header(stats.header, MsgType::Stats, sizeof(stats), ++_seq);
-        stats.method = slot.method;
-        stats.reserved = 0;
-        stats.count = slot.round_trips.count();
-        stats.p50_us = slot.round_trips.percentile(50);
-        stats.p99_us = slot.round_trips.percentile(99);
-        stats.max_us = slot.round_trips.max_us();
-        stats.total_us = slot.total_us;
-        stats.m7_max_us = slot.m7_max_us;
-        stats.lost = slot.lost;
-        if (_channel->send(&stats, sizeof(stats)) != 0) {
-            return;   // ring full: keep this and the remaining windows, retry on the next step
+        uint8_t j = active++;
+        while (j > 0 && _stats[order[j - 1]].total_us < slot.total_us) {
+            order[j] = order[j - 1];
+            j--;
         }
-        slot.round_trips.reset();
-        slot.total_us = 0;
-        slot.m7_max_us = 0;
-        slot.lost = 0;
+        order[j] = i;
+    }
+    uint8_t sent = 0;
+    for (; sent < active && sent < STATS_REPORTED; sent++) {
+        MethodStats &slot = _stats[order[sent]];
+        if (!send_row(row_of(slot))) {
+            return;   // ring full: this and the remaining rows wait for the next step
+        }
+        clear(slot);
+    }
+    if (sent < active || _untimed != 0 || _untimed_lost != 0) {
+        // counts and totals add up; p50, p99 and max are the largest, so upper bounds
+        Row other {};
+        other.method = uint16_t(SystemMethod::Other);
+        other.count = _untimed;
+        other.lost = _untimed_lost;
+        for (uint8_t i = sent; i < active; i++) {
+            const Row row = row_of(_stats[order[i]]);
+            other.count += row.count;
+            other.total_us += row.total_us;
+            other.lost += row.lost;
+            other.p50_us = row.p50_us > other.p50_us ? row.p50_us : other.p50_us;
+            other.p99_us = row.p99_us > other.p99_us ? row.p99_us : other.p99_us;
+            other.max_us = row.max_us > other.max_us ? row.max_us : other.max_us;
+            other.m7_max_us = row.m7_max_us > other.m7_max_us ? row.m7_max_us : other.m7_max_us;
+        }
+        if (!send_row(other)) {
+            return;
+        }
+        for (uint8_t i = sent; i < active; i++) {
+            clear(_stats[order[i]]);
+        }
+        _untimed = 0;
+        _untimed_lost = 0;
     }
     _last_stats_ms = now_ms;
 }

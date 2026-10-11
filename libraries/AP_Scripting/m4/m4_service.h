@@ -55,7 +55,25 @@ private:
         uint32_t m7_max_us;
         uint32_t lost;
     };
-    static const uint8_t STATS_SLOTS = 16;
+    struct Row {
+        uint16_t method;
+        uint32_t count;
+        uint32_t p50_us;
+        uint32_t p99_us;
+        uint32_t max_us;
+        uint32_t total_us;
+        uint32_t m7_max_us;
+        uint32_t lost;
+    };
+    // round trips are timed per method in up to STATS_SLOTS slots per window; the
+    // STATS_REPORTED with the most round-trip time get a Stats row each, the rest one
+    // m4:other row (spec §11: SRPC, top methods by total time)
+    static const uint8_t STATS_SLOTS = 32;
+    static const uint8_t STATS_REPORTED = 8;
+
+    static Row row_of(const MethodStats &slot);
+    static void clear(MethodStats &slot);
+    bool send_row(const Row &row);
 
     void drain();
     void handle(const uint8_t *buf, uint16_t len);
@@ -79,6 +97,8 @@ private:
     uint32_t _call_sent_cycles;
     uint32_t _call_posted_ms;   // when step() first saw the call Posted
     uint32_t _last_stats_ms;
+    uint32_t _untimed;        // calls of this window that found no free slot
+    uint32_t _untimed_lost;
     uint32_t _flood_until_ms;
     bool _flooding;
     bool _ready;

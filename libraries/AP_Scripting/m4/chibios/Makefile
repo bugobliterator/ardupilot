@@ -56,6 +56,7 @@ CPPSRC = $(ALLCPPSRC) \
          $(M4DIR)/m4_service.cpp \
          $(M4DIR)/m4_lua.cpp \
          $(M4DIR)/m4_rpc_client.cpp \
+         $(M4DIR)/m4_binding_tables.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/PeerHeader.cpp \

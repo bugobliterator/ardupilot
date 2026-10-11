@@ -90,6 +90,7 @@ struct __attribute__((packed)) StatsMsg {
     uint32_t total_us;
     uint32_t m7_max_us;    // largest m7_wake_us + m7_exec_us seen
     uint32_t lost;         // calls without a reply within CALL_TIMEOUT_MS
+    char name[64];         // "type:method" (binding_method_label()), terminated; logged, never trusted
 };
 
 struct __attribute__((packed)) FaultInjectMsg {

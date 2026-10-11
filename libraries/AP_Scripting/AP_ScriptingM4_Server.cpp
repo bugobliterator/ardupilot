@@ -101,6 +101,8 @@ ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *value
         return print(args, results, error_arg);
     case SystemMethod::Bindings:
         return bindings(args, results, error_arg);
+    case SystemMethod::Other:
+        return ReplyStatus::Malformed;   // a stats row name, never a call
     }
     return ReplyStatus::UnknownMethod;
 }

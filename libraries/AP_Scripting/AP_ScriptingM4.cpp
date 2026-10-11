@@ -256,10 +256,19 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
         _rpc_summary.busiest_count = stats.count;
         _rpc_summary.p50_us = stats.p50_us;
     }
+    // the M4 names its rows; the text is untrusted: terminated and printable before logging
+    char name[sizeof(stats.name)];
+    memcpy(name, stats.name, sizeof(name));
+    name[sizeof(name) - 1] = 0;
+    for (char *c = name; *c != 0; c++) {
+        if (*c < 0x20 || *c > 0x7e) {
+            *c = '?';
+        }
+    }
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
     AP::logger().WriteStreaming("SRPC", "TimeUS,Id,Name,N,P50,P99,Max,SemMax,Tot",
                                 "s#--sssss", "F---FFFFF", "QHZIIIIIQ",
-                                AP_HAL::micros64(), stats.method, ScriptingM4::method_name(stats.method),
+                                AP_HAL::micros64(), stats.method, name,
                                 stats.count, stats.p50_us, stats.p99_us, stats.max_us, stats.m7_max_us,
                                 uint64_t(stats.total_us));
 #endif
