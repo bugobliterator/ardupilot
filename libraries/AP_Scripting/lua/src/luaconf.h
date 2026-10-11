@@ -642,9 +642,9 @@
 ** In C99, 'sprintf' (with format specifiers '%a'/'%A') does that.
 ** Otherwise, you can leave 'lua_number2strx' undefined and Lua will
 ** provide its own implementation.
-** The M4 image links newlib-nano, whose printf has no '%a'.
+** AP_LUA_NO_PRINTF_A: the libc printf has no '%a' (newlib-nano on the M4).
 */
-#if !defined(LUA_USE_C89) && !defined(CORE_CM4)
+#if !defined(LUA_USE_C89) && !defined(AP_LUA_NO_PRINTF_A)
 #define lua_number2strx(L,b,sz,f,n)  \
 	((void)L, l_sprintf(b,sz,f,(LUAI_UACNUMBER)(n)))
 #endif

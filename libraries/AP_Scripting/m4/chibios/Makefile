@@ -67,7 +67,7 @@ CPPWARN = -Wall -Wextra -Wundef
 # makes CubeFramework's Config.h include it (HSEM.cpp built without USE_CHIBIOS,
 # as Tools/renode/tests/dual_core_images.py does). PORT_USE_SYSCALL: the
 # unprivileged Lua thread. ARDUPILOT_BUILD and LUA_32BITS as the M7's Lua build.
-UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DLUA_32BITS=1
+UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DLUA_32BITS=1 -DAP_LUA_NO_PRINTF_A=1
 UADEFS = -DCORE_CM4 -DSTM32H757xx
 UINCDIR =
 # scripting_m4.ld includes the Lua RAM lists written below
