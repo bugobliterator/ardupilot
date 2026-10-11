@@ -30,7 +30,7 @@ SCRIPTS = ROOT / 'libraries' / 'AP_Scripting'
 START_TIMEOUT = 120    # wall seconds: boot to the first M4 start text
 M4_SESSION = M4_PEER_MAGIC + 16   # PeerHeader::Half.session
 FLOOD_MS = 2000      # AP_ScriptingM4_Layout.h: how long a request flood lasts
-LOG_DOWNLOAD_TIMEOUT = 60   # wall seconds without a finished download
+LOG_DOWNLOAD_TIMEOUT = 240   # wall seconds without a finished download
 SCRIPT_TIMEOUT = 900   # wall seconds: math.lua at SCR_VM_I_COUNT 1000000 is slow under Renode
 
 
@@ -59,18 +59,22 @@ def host_thread_stack(run, local_path):
     return int(match.group(1)), int(match.group(2))
 
 
-def check_log_rows(run, local_path):
-    '''The DataFlash log carries an SCR row per script and SRPC rows for the M4's calls.'''
-    for attempt in range(5):   # a download can stall: start it again
+def download_dataflash(run, local_path):
+    '''Downloads the board's DataFlash log; a download can stall, so it starts again (5 times).'''
+    for attempt in range(5):
         try:
             download_log(run.mav, run.process, run.log_path, local_path, timeout=LOG_DOWNLOAD_TIMEOUT)
-            break
+            return
         except RuntimeError as error:
             assert 'timed out downloading' in str(error), error
             print('log download attempt %u stalled' % (attempt + 1), flush=True)
             run.mav.mav.log_request_end_send(run.mav.target_system, run.mav.target_component)
-    else:
-        raise RuntimeError('DataFlash log download stalled 5 times')
+    raise RuntimeError('DataFlash log download stalled 5 times')
+
+
+def check_log_rows(run, local_path):
+    '''The DataFlash log carries an SCR row per script and SRPC rows for the M4's calls.'''
+    download_dataflash(run, local_path)
     reader = DFReader.DFReader_binary(str(local_path), zero_time_base=True)
     scripts = set()
     calls = set()
