@@ -95,7 +95,9 @@ static uint8_t userdata_type(lua_State *L, int index)
     return 0;
 }
 
-static void encode_value(lua_State *L, int index, RpcWriter &args)
+// type_id: userdata_type() of the value, found before the frame was begun. Calls no Lua
+// function that allocates, so no GC step (and no finalizer's call) runs while the frame is built
+static void encode_value(lua_State *L, int index, uint8_t type_id, RpcWriter &args)
 {
     switch (lua_type(L, index)) {
     case LUA_TNIL:
@@ -118,7 +120,6 @@ static void encode_value(lua_State *L, int index, RpcWriter &args)
         return;
     }
     case LUA_TUSERDATA: {
-        const uint8_t type_id = userdata_type(L, index);
         const void *data = lua_touserdata(L, index);
         if (type_id == 0) {
             break;
@@ -295,14 +296,23 @@ static int remote_stub(lua_State *L)
     const uint16_t method = uint16_t(lua_tointeger(L, lua_upvalueindex(1)));
     const uint8_t flags = uint8_t(lua_tointeger(L, lua_upvalueindex(2)));
     const uint8_t owner = uint8_t(lua_tointeger(L, lua_upvalueindex(3)));
-    RpcWriter &args = rpc.begin(method);
     const int top = lua_gettop(L);
+    if (top > MAX_VALUES) {
+        // no binding takes that many: binding_argcheck()'s in-process text
+        return luaL_argerror(L, top, "too many arguments");
+    }
+    // userdata_type() reads metatables, which may allocate: before rpc.begin()
+    uint8_t type_ids[MAX_VALUES];
+    for (int i = 1; i <= top; i++) {
+        type_ids[i - 1] = userdata_type(L, i);
+    }
+    RpcWriter &args = rpc.begin(method);
     for (int i = 1; i <= top; i++) {
         if (i == 1 && (flags & ROW_HAS_SELF) != 0) {
             args.nil();   // a singleton: the M7 finds it itself
             continue;
         }
-        encode_value(L, i, args);
+        encode_value(L, i, type_ids[i - 1], args);
     }
     if (!args.ok()) {
         return luaL_error(L, "M4: call arguments too large");

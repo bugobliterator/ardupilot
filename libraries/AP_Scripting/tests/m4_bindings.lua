@@ -1,7 +1,10 @@
 -- Generated bindings over the M4's RPC, one kind of binding per step. Steps run
--- two seconds apart, so one statistics window holds few methods and the SRPC
--- sums are exact. Every remote call is counted here; the tests compare these
--- counts with the SRPC rows. Runs unchanged in-process (no M4 needed for the checks).
+-- two seconds apart, so one statistics window holds few methods. Every remote
+-- call is counted here, the refused ones and the report's texts included; the
+-- tests check that no SRPC row logs more than these counts and that all binding
+-- rows, m4:other included, add up to the total. The first step waits until the
+-- load-time calls have their own window. Runs unchanged in-process (no M4 needed
+-- for the checks).
 
 local counts = {}
 local order = {}
@@ -107,11 +110,26 @@ local steps = {
     count("global:millis", 1)
     check(tostring(uint32_t(7) + 3) == "10", "uint32_t")
     check(u0:tofloat() >= 0, "micros")
+    -- uint64_t, whose text the M4 formats by hand
+    local epoch = gps:time_epoch_usec(0)
+    count("gps:time_epoch_usec", 1)
+    check(epoch + 1 > epoch, "time_epoch_usec")
+    check(tostring(uint64_t(1, 0)) == "4294967296", "uint64_t text")
+    check(tostring(uint64_t(0)) == "0", "uint64_t zero")
+    local max32 = uint32_t(0) - 1
+    check(tostring(uint64_t(max32, max32)) == "18446744073709551615", "uint64_t max")
+    local hi, lo = uint64_t(1, 2):split()
+    check(hi:toint() == 1 and lo:toint() == 2, "uint64_t split")
+    check(uint64_t(1, 0):toint() == nil, "uint64_t toint")
   end,
   function()   -- argument errors keep their in-process texts; other vehicles' bindings are nil
     expect_error(function() gcs:send_text("x", "y") end, "bad argument #1 to 'send_text' (number expected, got string)")
     expect_error(function() gcs:send_text(9, "y") end, "bad argument #1 to 'send_text' (out of range)")
     expect_error(function() gcs:send_text(6) end, "bad argument #1 to 'send_text' (too few arguments)")
+    count("gcs:send_text", 3)
+    -- more values than a call frame holds: refused on the M4, with the in-process text
+    expect_error(function() gcs:send_text(6, "a", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15) end,
+                 "bad argument #17 to 'send_text' (too many arguments)")
     expect_error(function() ahrs:set_home(Vector3f()) end, "bad argument #1 to 'set_home' (Location expected, got Vector3f)")
     count("ahrs:set_home", 1)
     count("Vector3f:new", 1)
@@ -122,9 +140,16 @@ local steps = {
 local step = 1
 
 local function report()
+  count("gcs:send_text", 0)
+  count("gcs:send_text", #order + 2)   -- the count lines, the total and the pass
+  local total = 0
+  for _, name in ipairs(order) do
+    total = total + counts[name]
+  end
   for _, name in ipairs(order) do
     gcs:send_text(6, string.format("M4 count %s %d", name, counts[name]))
   end
+  gcs:send_text(6, string.format("M4 total %d", total))
   gcs:send_text(6, "M4 bindings passed")
 end
 
@@ -137,4 +162,4 @@ local function update()
   report()
 end
 
-return update, 1000
+return update, 3000

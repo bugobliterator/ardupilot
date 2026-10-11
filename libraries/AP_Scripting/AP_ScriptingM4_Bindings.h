@@ -29,7 +29,7 @@ enum class BindingKind : uint8_t {
 static const uint8_t ROW_HAS_SELF = 0x01;      // argument 1 is a singleton: sent as nil
 static const uint8_t ROW_WRITES_SELF = 0x02;   // the reply's last value is the updated self blob
 static const uint8_t ROW_OPERATOR = 0x04;      // a metamethod of a blob type (__add, ...)
-static const uint8_t ROW_CREATION = 0x08;      // the global constructor of a blob type (the type's name)
+static const uint8_t ROW_CREATION = 0x08;      // the constructor of a blob type: row "new", called as the global of the type's name
 
 struct BindingType {
     const char *name;        // global name and metatable name (__name)
