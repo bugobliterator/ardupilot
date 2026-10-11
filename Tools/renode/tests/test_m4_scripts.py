@@ -54,7 +54,7 @@ def host_thread_stack(run, local_path):
 
 def check_log_rows(run, local_path):
     '''The DataFlash log carries an SCR row per script and SRPC rows for the M4's calls.'''
-    download_log(run.mav, run.process, run.log_path, local_path)
+    download_log(run.mav, run.process, run.log_path, local_path, timeout=SCRIPT_TIMEOUT)
     reader = DFReader.DFReader_binary(str(local_path), zero_time_base=True)
     scripts = set()
     calls = set()
