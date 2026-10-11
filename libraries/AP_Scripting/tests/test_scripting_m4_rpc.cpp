@@ -2,6 +2,7 @@
 #include <string>
 #include <AP_Scripting/AP_ScriptingM4_Rpc.h>
 #include <AP_Scripting/AP_ScriptingM4_Protocol.h>
+#include <AP_Scripting/AP_ScriptingM4_StatsRows.h>
 
 using namespace ScriptingM4;
 
@@ -224,6 +225,55 @@ TEST(ScriptingM4Rpc, StatsRows)
     memcpy(buf, &stats, sizeof(stats));
     MsgHeader header;
     EXPECT_TRUE(parse_header(buf, sizeof(stats), header));
+}
+
+TEST(ScriptingM4Rpc, StatsTopRowsConserveCalls)
+{
+    // 40 methods: the 8 with the most round-trip time are reported, the rest fold into one row
+    static const uint8_t METHODS = 40;
+    static const uint8_t REPORTED = 8;
+    StatsRow rows[METHODS] {};
+    uint32_t totals[METHODS];
+    uint32_t calls = 0;
+    uint32_t total_us = 0;
+    for (uint8_t i = 0; i < METHODS; i++) {
+        rows[i].method = FIRST_BINDING_METHOD + i;
+        rows[i].count = 1 + i % 5;
+        rows[i].total_us = 100 + ((i * 37) % 41) * 10;   // ties included
+        rows[i].max_us = rows[i].total_us / 2;
+        rows[i].lost = i % 3;
+        totals[i] = rows[i].total_us;
+        calls += rows[i].count + rows[i].lost;
+        total_us += rows[i].total_us;
+    }
+    uint8_t order[METHODS];
+    stats_rank(totals, METHODS, order);
+    uint32_t reported_calls = 0;
+    uint32_t reported_us = 0;
+    for (uint8_t i = 0; i < REPORTED; i++) {
+        if (i > 0) {
+            EXPECT_GE(totals[order[i - 1]], totals[order[i]]);
+        }
+        reported_calls += rows[order[i]].count + rows[order[i]].lost;
+        reported_us += rows[order[i]].total_us;
+    }
+    StatsRow other {};
+    other.method = uint16_t(SystemMethod::Other);
+    other.count = 3;       // untimed calls of the window
+    other.total_us = 70;
+    calls += other.count;
+    total_us += other.total_us;
+    for (uint8_t i = REPORTED; i < METHODS; i++) {
+        EXPECT_GE(totals[order[REPORTED - 1]], totals[order[i]]);
+        stats_add(other, rows[order[i]]);
+    }
+    EXPECT_EQ(reported_calls + other.count + other.lost, calls);
+    EXPECT_EQ(reported_us + other.total_us, total_us);
+    uint32_t largest_max = 0;
+    for (uint8_t i = REPORTED; i < METHODS; i++) {
+        largest_max = rows[order[i]].max_us > largest_max ? rows[order[i]].max_us : largest_max;
+    }
+    EXPECT_EQ(other.max_us, largest_max);
 }
 
 TEST(ScriptingM4Rpc, BlobAndHandleRoundTrip)

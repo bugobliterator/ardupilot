@@ -102,6 +102,14 @@ TEST(ScriptingM4Bindings, KnownBindings)
     EXPECT_STREQ(label, "ahrs:get_location");
     binding_method_label(uint16_t(SystemMethod::Config), label, sizeof(label));
     EXPECT_STREQ(label, "m4:config");
+    // a short buffer is cut and terminated
+    char cut[8];
+    memset(cut, 'x', sizeof(cut));
+    binding_method_label(get_location->method, cut, sizeof(cut));
+    EXPECT_STREQ(cut, "ahrs:ge");
+    memset(cut, 'x', sizeof(cut));
+    binding_method_label(get_location->method, cut, 1);
+    EXPECT_STREQ(cut, "");
     // the longest label in the description
     const BindingRow *differential = row_named(type_named("AP_Airspeed_Backend"), "handle_script_differential_pressure");
     ASSERT_NE(differential, nullptr);
