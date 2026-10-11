@@ -71,6 +71,8 @@ static void push_value(lua_State *L, const RpcValue &value)
         lua_pushlstring(L, value.string, value.length);
         return;
     case ValueTag::Nil:
+    case ValueTag::Blob:
+    case ValueTag::Handle:
     case ValueTag::Opaque:
         break;
     }

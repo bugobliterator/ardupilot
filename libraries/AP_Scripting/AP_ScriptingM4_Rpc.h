@@ -26,24 +26,31 @@ enum class ValueTag : uint8_t {
     Integer = 3,   // int32 (LUA_32BITS)
     Number = 4,    // float (LUA_32BITS)
     String = 5,    // uint16 length, then the bytes, no terminator
-    // 6 Blob (pure-data userdata) and 7 Handle (M7 object) are reserved
+    Blob = 6,      // uint8 type id, uint16 length, the bytes: a pure-data userdata in its wire form
+    Handle = 7,    // uint8 type id, uint16 index, uint32 generation: an M7 object of this M4 session
     Opaque = 8,    // a value that cannot cross (table, function, ...): uint8 Lua type, for error texts
 };
 
 static const uint8_t MAX_VALUES = 16;
 // a string value fills a reply frame at most: header, tag and length
 static const uint16_t MAX_STRING = MAX_FRAME - sizeof(ReplyHeader) - 3;
+// the largest blob (wire form of mavlink_camera_information_t: about 240 bytes)
+static const uint16_t MAX_BLOB = 512;
 // scripts per M4 session and their path length, terminator included
 static const uint8_t MAX_SCRIPTS = 32;
 static const uint8_t MAX_SCRIPT_PATH = 64;
 
 struct RpcValue {
     ValueTag tag;
-    uint8_t lua_type;      // Opaque
-    uint16_t length;       // String
-    int32_t integer;       // Integer
-    float number;          // Number
-    const char *string;    // String: points into the frame, not terminated
+    uint8_t lua_type;             // Opaque
+    uint8_t type_id;              // Blob, Handle: generated type id (lua_remote_contract.h)
+    uint16_t length;              // String, Blob
+    uint16_t handle_index;        // Handle
+    int32_t integer;              // Integer
+    float number;                 // Number
+    uint32_t handle_generation;   // Handle
+    const char *string;           // String: points into the frame, not terminated
+    const uint8_t *blob;          // Blob: points into the frame
 };
 
 // appends encoded values to a frame; once a value does not fit, ok() stays false
@@ -53,9 +60,15 @@ public:
     {
         _buf = buf;
         _capacity = capacity;
-        _length = start;
+        _start = start;
+        restart();
+    }
+    // empty again, from the start position
+    void restart()
+    {
+        _length = _start;
         _count = 0;
-        _ok = buf != nullptr && start <= capacity;
+        _ok = _buf != nullptr && _start <= _capacity;
     }
     void nil() { tag(ValueTag::Nil); }
     void boolean(bool value) { tag(value ? ValueTag::True : ValueTag::False); }
@@ -86,6 +99,26 @@ public:
     {
         if (tag(ValueTag::Opaque)) {
             put(&lua_type, sizeof(lua_type));
+        }
+    }
+    void blob(uint8_t type_id, const void *data, uint16_t length)
+    {
+        if (type_id == 0 || length > MAX_BLOB) {
+            _ok = false;
+            return;
+        }
+        if (tag(ValueTag::Blob) && put(&type_id, sizeof(type_id)) && put(&length, sizeof(length)) && length > 0) {
+            put(data, length);
+        }
+    }
+    void handle(uint8_t type_id, uint16_t index, uint32_t generation)
+    {
+        if (type_id == 0) {
+            _ok = false;
+            return;
+        }
+        if (tag(ValueTag::Handle) && put(&type_id, sizeof(type_id)) && put(&index, sizeof(index))) {
+            put(&generation, sizeof(generation));
         }
     }
     bool ok() const { return _ok; }
@@ -119,6 +152,7 @@ private:
 
     uint8_t *_buf = nullptr;
     uint16_t _capacity = 0;
+    uint16_t _start = 0;
     uint16_t _length = 0;
     uint8_t _count = 0;
     bool _ok = false;
@@ -172,6 +206,34 @@ inline bool decode_values(const uint8_t *data, uint16_t length, uint8_t count, R
             pos += string_length;
             break;
         }
+        case ValueTag::Blob: {
+            if (length - pos < 3) {
+                return false;
+            }
+            uint16_t blob_length;
+            value.type_id = data[pos];
+            memcpy(&blob_length, &data[pos + 1], 2);
+            pos += 3;
+            if (value.type_id == 0 || blob_length > MAX_BLOB || length - pos < blob_length) {
+                return false;
+            }
+            value.length = blob_length;
+            value.blob = &data[pos];
+            pos += blob_length;
+            break;
+        }
+        case ValueTag::Handle:
+            if (length - pos < 7) {
+                return false;
+            }
+            value.type_id = data[pos];
+            memcpy(&value.handle_index, &data[pos + 1], 2);
+            memcpy(&value.handle_generation, &data[pos + 3], 4);
+            pos += 7;
+            if (value.type_id == 0) {
+                return false;
+            }
+            break;
         case ValueTag::Opaque:
             if (length - pos < 1) {
                 return false;
@@ -202,6 +264,9 @@ inline const char *value_type_name(const RpcValue *value)
         return "number";
     case ValueTag::String:
         return "string";
+    case ValueTag::Blob:
+    case ValueTag::Handle:
+        return "userdata";   // RpcArgs names them through its TypeNamer
     case ValueTag::Opaque: {
         static const char *const names[] = { "nil", "boolean", "light userdata", "number", "string",
                                               "table", "function", "userdata", "thread" };
@@ -218,12 +283,16 @@ inline const char *value_type_name(const RpcValue *value)
   M4 raises with luaL_argerror(). The text of a converted argument lives
   until the next check.
  */
+// the __name of a blob or handle type (luaL_typeerror() names a userdata by its metatable)
+typedef const char *(*TypeNamer)(uint8_t type_id);
+
 class RpcArgs {
 public:
-    RpcArgs(const RpcValue *values, uint8_t count) :
+    RpcArgs(const RpcValue *values, uint8_t count, TypeNamer namer = nullptr) :
         _values(values),
         _count(count),
-        _error_arg(0)
+        _error_arg(0),
+        _namer(namer)
     {
         _message[0] = 0;
         _text[0] = 0;
@@ -239,6 +308,29 @@ public:
             return fail(_count, "too few arguments");
         }
         return true;
+    }
+
+    // luaL_checknumber(): numbers and numeric strings
+    bool number(uint8_t index, float &out)
+    {
+        bool is_integer = false;
+        int32_t as_integer = 0;
+        float as_number = 0;
+        if (!to_number(value(index), is_integer, as_integer, as_number)) {
+            return type_error(index, "number");
+        }
+        out = is_integer ? float(as_integer) : as_number;
+        return true;
+    }
+
+    // lua_typename(), or the __name of a blob or handle type
+    const char *type_name(uint8_t index) const
+    {
+        const RpcValue *v = value(index);
+        if (v != nullptr && (v->tag == ValueTag::Blob || v->tag == ValueTag::Handle) && _namer != nullptr) {
+            return _namer(v->type_id);
+        }
+        return value_type_name(v);
     }
 
     // luaL_checkinteger()
@@ -363,7 +455,7 @@ private:
 
     bool type_error(uint8_t index, const char *expected)
     {
-        snprintf(_message, sizeof(_message), "%s expected, got %s", expected, value_type_name(value(index)));
+        snprintf(_message, sizeof(_message), "%s expected, got %s", expected, type_name(index));
         _error_arg = index;
         return false;
     }
@@ -378,6 +470,7 @@ private:
     const RpcValue *_values;
     uint8_t _count;
     uint8_t _error_arg;
+    TypeNamer _namer;
     char _message[64];
     char _text[32];
 };

@@ -205,4 +205,83 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     EXPECT_LT(uint16_t(SystemMethod::Print), FIRST_BINDING_METHOD);
 }
 
+TEST(ScriptingM4Rpc, BlobAndHandleRoundTrip)
+{
+    uint8_t buf[MAX_FRAME];
+    RpcWriter writer;
+    writer.begin(buf, sizeof(buf), 0);
+    const uint8_t bytes[] = { 1, 2, 3, 4, 5 };
+    writer.blob(7, bytes, sizeof(bytes));
+    writer.handle(9, 3, 0x01020304);
+    ASSERT_TRUE(writer.ok());
+    RpcValue values[MAX_VALUES];
+    ASSERT_TRUE(decode_values(buf, writer.length(), writer.count(), values));
+    EXPECT_EQ(values[0].tag, ValueTag::Blob);
+    EXPECT_EQ(values[0].type_id, 7);
+    EXPECT_EQ(values[0].length, sizeof(bytes));
+    EXPECT_EQ(memcmp(values[0].blob, bytes, sizeof(bytes)), 0);
+    EXPECT_EQ(values[1].tag, ValueTag::Handle);
+    EXPECT_EQ(values[1].type_id, 9);
+    EXPECT_EQ(values[1].handle_index, 3);
+    EXPECT_EQ(values[1].handle_generation, 0x01020304U);
+}
+
+TEST(ScriptingM4Rpc, BlobAndHandleRejected)
+{
+    uint8_t buf[MAX_FRAME];
+    RpcWriter writer;
+    writer.begin(buf, sizeof(buf), 0);
+    uint8_t big[MAX_BLOB + 1] = {};
+    writer.blob(1, big, sizeof(big));
+    EXPECT_FALSE(writer.ok());                 // larger than a blob may be
+    writer.restart();
+    EXPECT_TRUE(writer.ok());
+    EXPECT_EQ(writer.length(), 0);
+    EXPECT_EQ(writer.count(), 0);
+    writer.blob(0, big, 4);
+    EXPECT_FALSE(writer.ok());                 // type 0 is no type
+    RpcValue values[1];
+    const uint8_t zero_type[] = { uint8_t(ValueTag::Blob), 0, 1, 0, 0xAA };
+    EXPECT_FALSE(decode_values(zero_type, sizeof(zero_type), 1, values));
+    const uint8_t past_end[] = { uint8_t(ValueTag::Blob), 3, 9, 0, 0xAA };
+    EXPECT_FALSE(decode_values(past_end, sizeof(past_end), 1, values));
+    const uint8_t too_long[] = { uint8_t(ValueTag::Blob), 3, 0x01, 0x02 };   // 513 bytes declared
+    EXPECT_FALSE(decode_values(too_long, sizeof(too_long), 1, values));
+    const uint8_t short_handle[] = { uint8_t(ValueTag::Handle), 3, 0, 0, 1, 0 };
+    EXPECT_FALSE(decode_values(short_handle, sizeof(short_handle), 1, values));
+    const uint8_t zero_handle[] = { uint8_t(ValueTag::Handle), 0, 0, 0, 1, 0, 0, 0 };
+    EXPECT_FALSE(decode_values(zero_handle, sizeof(zero_handle), 1, values));
+}
+
+static const char *test_namer(uint8_t type_id)
+{
+    return type_id == 4 ? "Location" : "userdata";
+}
+
+TEST(ScriptingM4Rpc, NumberAndUserdataNames)
+{
+    uint8_t buf[MAX_FRAME];
+    RpcWriter writer;
+    writer.begin(buf, sizeof(buf), 0);
+    writer.integer(5);
+    writer.string("2.5", 3);
+    const uint8_t bytes[] = { 0 };
+    writer.blob(4, bytes, sizeof(bytes));
+    RpcValue values[MAX_VALUES];
+    ASSERT_TRUE(decode_values(buf, writer.length(), writer.count(), values));
+    RpcArgs args(values, writer.count(), test_namer);
+    float number = 0;
+    EXPECT_TRUE(args.number(1, number));
+    EXPECT_FLOAT_EQ(number, 5.0f);
+    EXPECT_TRUE(args.number(2, number));
+    EXPECT_FLOAT_EQ(number, 2.5f);
+    EXPECT_FALSE(args.number(3, number));
+    EXPECT_EQ(args.error_arg(), 3);
+    // luaL_typeerror() names a userdata by its metatable's __name
+    EXPECT_STREQ(args.message(), "number expected, got Location");
+    EXPECT_STREQ(args.type_name(4), "no value");
+    RpcArgs unnamed(values, writer.count());
+    EXPECT_STREQ(unnamed.type_name(3), "userdata");
+}
+
 AP_GTEST_MAIN()
