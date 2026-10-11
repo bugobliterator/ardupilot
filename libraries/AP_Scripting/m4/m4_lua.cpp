@@ -7,6 +7,7 @@
 #include "m4_lua.h"
 
 #include <errno.h>
+#include <float.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -499,6 +500,31 @@ static int run_engine(lua_State *L)
     return 0;
 }
 
+// newlib takes the Bigints of float formatting and parsing (_dtoa_r, strtod) from the
+// heap on first use and keeps them for reuse; its _Balloc asserts if the heap is out.
+// Take them now, with the heap empty, at the largest sizes Lua's floats need
+// (string.format precision is at most 99), so a full Lua heap cannot fail them later
+static void prime_newlib()
+{
+    static const float values[] = { FLT_MAX, FLT_MIN, FLT_TRUE_MIN, 0.1f };
+    static const char *const numbers[] = {
+        "3.40282346638528859811704183484516925e+38",
+        "1.17549435082228750796873653722224568e-38",
+        "1.40129846432481707092372958328991613e-45",
+        "0x1.fffffep+127",
+    };
+    char text[420];   // "%.99f" of any double
+    for (const float value : values) {
+        snprintf(text, sizeof(text), "%.99f", double(value));
+        snprintf(text, sizeof(text), "%.99e", double(value));
+        snprintf(text, sizeof(text), "%.99g", double(value));
+        snprintf(text, sizeof(text), LUA_NUMBER_FMT, double(value));   // tostring()
+    }
+    for (const char *number : numbers) {
+        (void)strtof(number, nullptr);
+    }
+}
+
 // SCR_HEAP_SIZE, SCR_VM_I_COUNT, SCR_DEBUG_OPTS from the M7
 static bool configure()
 {
@@ -524,6 +550,7 @@ static bool configure()
 void lua_main()
 {
     memset(&rt, 0, sizeof(rt));
+    prime_newlib();
     while (!configure()) {
         sleep_ms(1000);   // the call timed out: the M7 is busy or restarting us
     }
