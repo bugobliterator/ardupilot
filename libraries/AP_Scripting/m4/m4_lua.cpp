@@ -17,6 +17,7 @@ extern "C" {
 #include <lua/src/lualib.h>
 #include <lua/src/lauxlib.h>
 }
+#include <AP_ScriptingM4_Placement.h>
 #include <AP_ScriptingM4_Rpc.h>
 #include "m4_port.h"
 #include "m4_rpc_client.h"
@@ -513,8 +514,10 @@ static bool configure()
     const int32_t heap_size = rpc.value(0).integer;
     rt.vm_steps = rpc.value(1).integer;
     rt.options = uint32_t(rpc.value(2).integer);
+    // newlib's reserve stays out of Lua's reach, whatever SCR_HEAP_SIZE asks for
     const uint32_t capacity = port_heap_capacity();
-    rt.heap_limit = heap_size <= 0 ? 0 : (uint32_t(heap_size) < capacity ? uint32_t(heap_size) : capacity);
+    const uint32_t lua_capacity = capacity > AP_SCRIPTING_M4_NEWLIB_RESERVE ? capacity - AP_SCRIPTING_M4_NEWLIB_RESERVE : 0;
+    rt.heap_limit = heap_size <= 0 ? 0 : (uint32_t(heap_size) < lua_capacity ? uint32_t(heap_size) : lua_capacity);
     return true;
 }
 

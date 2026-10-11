@@ -32,6 +32,9 @@
 #define AP_SCRIPTING_M4_LUA_STACK_SIZE   (16U * 1024U)
 // the Lua heap the M4 image guarantees (linker assert); the SITL M4 caps its heap here too
 #define AP_SCRIPTING_M4_LUA_HEAP_MIN     (192U * 1024U)
+// of that heap, what Lua's count (SCR_HEAP_SIZE) never reaches: newlib's own allocations
+// (strtod and _dtoa_r Bigints) and fragmentation; both platforms cap Lua below it
+#define AP_SCRIPTING_M4_NEWLIB_RESERVE   (8U * 1024U)
 
 // M4 core clock: CubeOrangePlus sys_ck 400 MHz, D1HPRE /2 (stm32h7_mcuconf.h, 24 MHz HSE)
 #define AP_SCRIPTING_M4_CORE_CLOCK_HZ    200000000U
