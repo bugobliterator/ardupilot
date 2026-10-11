@@ -1,16 +1,12 @@
 #pragma once
 
 /*
-  Lua calls from the M4 runtime: one call at a time, on the Lua thread.
-  remote_stub() is the client stub of every remote function: it encodes the
-  Lua arguments, calls the M7 and pushes the results, or raises the M7's
-  error with the in-process text.
+  Calls from the M4 runtime to the M7: one call at a time, on the Lua thread.
+  The Lua side of a remote binding (its stub) is in m4_bindings.cpp.
  */
 
 #include <stdint.h>
 #include <AP_ScriptingM4_Rpc.h>
-
-struct lua_State;
 
 namespace ScriptingM4 {
 
@@ -26,6 +22,9 @@ public:
     uint8_t count() const { return _count; }
     // valid until the next begin()
     const RpcValue &value(uint8_t index) const { return _values[index]; }
+    // the reply's values decoded from a copy in buf: a call made while they are pushed
+    // (from a finalizer) reuses the client's buffers
+    bool copy_reply(uint8_t *buf, uint16_t size, RpcValue *values, uint8_t &count) const;
 
 private:
     uint8_t _request[MAX_FRAME];
@@ -34,13 +33,11 @@ private:
     ReplyHeader _reply_header;
     RpcValue _values[MAX_VALUES];
     uint16_t _method;
+    uint16_t _reply_length;   // of the last reply, header included
     uint8_t _count;
     bool _notify;
 };
 
 extern RpcClient rpc;
-
-// adds the remote functions to the sandbox table on top of the stack
-void open_remote_functions(lua_State *L);
 
 }  // namespace ScriptingM4

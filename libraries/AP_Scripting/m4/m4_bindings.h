@@ -1,0 +1,52 @@
+#pragma once
+
+/*
+  The generated bindings on the M4: the sandbox lookup and the remote stub
+  (m4_bindings.cpp), and the local userdata code, uint32_t and uint64_t
+  (lua_remote_local.cpp, generated; m4_boxed_numerics.cpp).
+ */
+
+#include <stdint.h>
+extern "C" {
+#include <lua/src/lua.h>
+#include <lua/src/lualib.h>
+#include <lua/src/lauxlib.h>
+}
+
+namespace ScriptingM4 {
+
+// fetches the M7's m4:bindings image; false if the call fails or the size is not this contract's
+bool fetch_binding_info();
+// the sandbox table on top of the stack: print, and the generated bindings resolved on first use
+void open_remote_functions(lua_State *L);
+
+}  // namespace ScriptingM4
+
+// lua_remote_local.cpp (generated)
+uint32_t *new_uint32_t(lua_State *L);
+uint32_t *check_uint32_t(lua_State *L, int arg);
+uint64_t *new_uint64_t(lua_State *L);
+uint64_t *check_uint64_t(lua_State *L, int arg);
+int binding_argcheck(lua_State *L, int expected_arg_count);
+bool remote_local_type(const char *name, lua_CFunction &index, const luaL_Reg *&operators);
+
+// m4_bindings.cpp: the generated allocators' metatables
+void set_userdata_metatable(lua_State *L, const char *name);
+
+// m4_boxed_numerics.cpp
+uint32_t coerce_to_uint32_t(lua_State *L, int arg);
+uint64_t coerce_to_uint64_t(lua_State *L, int arg);
+int lua_new_uint32_t(lua_State *L);
+int lua_new_uint64_t(lua_State *L);
+int uint32_t___tostring(lua_State *L);
+int uint32_t_toint(lua_State *L);
+int uint32_t_tofloat(lua_State *L);
+int uint64_t___tostring(lua_State *L);
+int uint64_t_toint(lua_State *L);
+int uint64_t_tofloat(lua_State *L);
+int uint64_t_split(lua_State *L);
+
+// m4_lua.cpp: a warning the M7 prints and keeps as the prearm failure, as in-process
+namespace lua_scripts {
+void set_and_print_new_error_message(uint8_t severity, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+}

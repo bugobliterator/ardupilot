@@ -484,8 +484,8 @@ enum class MethodKind : uint8_t {
 /*
   System methods: id, symbol, name (SRPC rows, the contract hash), kind.
   Ids below FIRST_BINDING_METHOD are theirs; generated bindings start there.
-  gcs:send_text and print stand in for the generated and manual bindings
-  until the generated bindings exist.
+  m4:send_text carries the runtime's own texts; print stands in for the
+  manual binding until IO and Manual Bindings.
  */
 #define SCRIPTING_M4_SYSTEM_METHODS(X) \
     X(1, Config, "m4:config", Call) \
@@ -497,7 +497,7 @@ enum class MethodKind : uint8_t {
     X(7, RunStats, "m4:run_stats", Notify) \
     X(8, Started, "m4:started", Notify) \
     X(9, Noop, "m4:noop", Notify) \
-    X(10, GcsSendText, "gcs:send_text", Call) \
+    X(10, RuntimeText, "m4:send_text", Call) \
     X(11, Print, "global:print", Call) \
     X(12, Bindings, "m4:bindings", Call) \
     X(13, Other, "m4:other", Notify)

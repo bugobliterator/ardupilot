@@ -57,6 +57,9 @@ CPPSRC = $(ALLCPPSRC) \
          $(M4DIR)/m4_lua.cpp \
          $(M4DIR)/m4_rpc_client.cpp \
          $(M4DIR)/m4_binding_tables.cpp \
+         $(M4DIR)/m4_bindings.cpp \
+         $(M4DIR)/m4_boxed_numerics.cpp \
+         $(M4DIR)/m4_binding_local.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/PeerHeader.cpp \
@@ -65,8 +68,9 @@ ASMSRC = $(ALLASMSRC)
 ASMXSRC = $(ALLXASMSRC)
 # the Lua core finds its AP headers in the shim directory. rules.mk sorts INCDIR, so
 # $(AP_ROOT)/libraries would come before the shim and shadow it; the generated root
-# (<AP_Scripting/lua_remote_*>) holds only build outputs
-INCDIR = $(CONFDIR) $(ALLINC) $(M4DIR)/shim $(AP_ROOT)/libraries/AP_Scripting $(M4_GENERATED_ROOT) \
+# (<AP_Scripting/lua_remote_*>) holds only build outputs; the generated local userdata
+# code finds m4_binding_deps.h in $(M4DIR)
+INCDIR = $(CONFDIR) $(ALLINC) $(M4DIR)/shim $(M4DIR) $(AP_ROOT)/libraries/AP_Scripting $(M4_GENERATED_ROOT) \
          $(CUBEFRAMEWORK)
 
 CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes
@@ -87,9 +91,11 @@ ULIBS = --specs=nano.specs --specs=nosys.specs -u _printf_float -lm
 
 # RAM privilege per object file (scripting_m4.ld): statics are privileged unless
 # their object is listed here. These run on the unprivileged Lua thread and go to
-# Lua RAM: the Lua core, the M4 Lua runtime (lua_alloc, its heap, the RPC client) and
-# newlib (the malloc behind lua_alloc, errno and the reent state of printf and strtod).
-LUA_RAM_OBJECTS = $(M4_LUA_SOURCES:.c=.o) ap_setjmp.o m4_lua.o lua_heap.o m4_rpc_client.o
+# Lua RAM: the Lua core, the M4 Lua runtime (lua_alloc, its heap, the RPC client, the
+# binding loader and the local userdata) and newlib (the malloc behind lua_alloc, errno
+# and the reent state of printf and strtod).
+LUA_RAM_OBJECTS = $(M4_LUA_SOURCES:.c=.o) ap_setjmp.o m4_lua.o lua_heap.o m4_rpc_client.o \
+                  m4_bindings.o m4_boxed_numerics.o m4_binding_local.o
 LUA_RAM_ARCHIVES = libc_nano.a libg_nano.a libm.a libnosys.a
 lua_ram_input = $(foreach object,$(LUA_RAM_OBJECTS),'*/obj/$(object)($(1))') \
                 $(foreach archive,$(LUA_RAM_ARCHIVES),'*/$(archive):*($(1))')

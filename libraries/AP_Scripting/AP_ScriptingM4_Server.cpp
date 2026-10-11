@@ -95,7 +95,7 @@ ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *value
         return started(args);
     case SystemMethod::Noop:
         return ReplyStatus::Ok;
-    case SystemMethod::GcsSendText:
+    case SystemMethod::RuntimeText:
         return gcs_send_text(args, results, error_arg);
     case SystemMethod::Print:
         return print(args, results, error_arg);
@@ -367,7 +367,7 @@ ReplyStatus AP_ScriptingM4_Server::started(RpcArgs &args)
     return ReplyStatus::Ok;
 }
 
-// gcs:send_text(severity, text): the generated GCS_send_text() checks
+// m4:send_text(self, severity, text): the runtime's own texts, with the generated GCS_send_text() checks
 ReplyStatus AP_ScriptingM4_Server::gcs_send_text(RpcArgs &args, RpcWriter &results, uint8_t &error_arg)
 {
     int32_t severity = 0;
@@ -377,8 +377,8 @@ ReplyStatus AP_ScriptingM4_Server::gcs_send_text(RpcArgs &args, RpcWriter &resul
         !args.string(3, text, length)) {
         return arg_error(args, results, error_arg);
     }
-    // an M4 flooding statustexts must not push out the vehicle's own; this method keeps
-    // a quota under any later name (the runtime's texts)
+    // an M4 flooding statustexts must not push out the vehicle's own: the runtime's
+    // texts keep the Text quota of gcs:send_text
     if (!_quota.allow(QuotaClass::Text, AP_HAL::millis())) {
         return ReplyStatus::Ok;   // dropped, as from a full statustext queue
     }

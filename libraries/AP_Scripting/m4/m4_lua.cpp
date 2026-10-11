@@ -20,6 +20,7 @@ extern "C" {
 }
 #include <AP_ScriptingM4_Placement.h>
 #include <AP_ScriptingM4_Rpc.h>
+#include "m4_bindings.h"
 #include "m4_port.h"
 #include "m4_rpc_client.h"
 
@@ -35,7 +36,8 @@ static const int32_t SEVERITY_DEBUG = 7;
 // longest idle sleep: Lua-thread fault requests are taken this promptly
 static const uint32_t MAX_SLEEP_MS = 100;
 // m4:list_script tries per index before the list counts as failed, spaced out and
-// within LIST_WINDOW_MS, so a slow first build_list (CRCs over the SD card) is waited for
+// within LIST_WINDOW_MS, so a slow first build_list (CRCs over the SD card) is waited for;
+// m4:bindings is retried the same way
 static const uint8_t LIST_ATTEMPTS = 3;
 static const uint32_t LIST_RETRY_MS = 3000;
 static const uint32_t LIST_WINDOW_MS = 10000;
@@ -105,7 +107,7 @@ static const char *error_object_message(lua_State *L)
 
 static void send_text(int32_t severity, const char *text)
 {
-    RpcWriter &args = rpc.begin(SystemMethod::GcsSendText);
+    RpcWriter &args = rpc.begin(SystemMethod::RuntimeText);
     args.nil();   // self
     args.integer(severity);
     args.string(text, strlen(text));
@@ -547,6 +549,24 @@ static bool configure()
     return true;
 }
 
+// m4:bindings, retried as m4:list_script is
+static bool fetch_bindings()
+{
+    const uint32_t start_ms = port_millis();
+    for (uint8_t attempt = 0; attempt < LIST_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+            if (port_millis() - start_ms + LIST_RETRY_MS > LIST_WINDOW_MS) {
+                break;
+            }
+            sleep_ms(LIST_RETRY_MS);
+        }
+        if (fetch_binding_info()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void lua_main()
 {
     memset(&rt, 0, sizeof(rt));
@@ -554,13 +574,18 @@ void lua_main()
     while (!configure()) {
         sleep_ms(1000);   // the call timed out: the M7 is busy or restarting us
     }
-    lua_State *L = lua_newstate(lua_alloc, nullptr);
-    if (L == nullptr) {
-        send_text(SEVERITY_CRITICAL, "Lua: Couldn't allocate a lua state");
+    if (!fetch_bindings()) {
+        // no script runs: m4:started is never sent and the error fails prearm
+        report_error(SEVERITY_CRITICAL, "M4 bindings image failed");
     } else {
-        lua_pushcfunction(L, run_engine);
-        if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-            report_error(SEVERITY_CRITICAL, "Engine Error: %s", error_object_message(L));
+        lua_State *L = lua_newstate(lua_alloc, nullptr);
+        if (L == nullptr) {
+            send_text(SEVERITY_CRITICAL, "Lua: Couldn't allocate a lua state");
+        } else {
+            lua_pushcfunction(L, run_engine);
+            if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+                report_error(SEVERITY_CRITICAL, "Engine Error: %s", error_object_message(L));
+            }
         }
     }
     // the engine stopped: scripts stay off until the next M4 start; faults are still taken
@@ -570,6 +595,19 @@ void lua_main()
 }
 
 }  // namespace ScriptingM4
+
+namespace lua_scripts {
+// generated code's warnings (userdata creation with arguments): the M7 prints and keeps them, as in-process
+void set_and_print_new_error_message(uint8_t severity, const char *fmt, ...)
+{
+    char text[200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof(text), fmt, ap);
+    va_end(ap);
+    ScriptingM4::report_error(severity, "%s", text);
+}
+}
 
 extern "C" int lua_get_current_env_ref(void)
 {

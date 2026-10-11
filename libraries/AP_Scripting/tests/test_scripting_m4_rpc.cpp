@@ -201,7 +201,7 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     }
     EXPECT_EQ(hash, SYSTEM_CONTRACT_HASH);
     EXPECT_NE(SYSTEM_CONTRACT_HASH, 0x4D344231U);   // the contract of the ping/pong protocol
-    EXPECT_STREQ(method_name(uint16_t(SystemMethod::GcsSendText)), "gcs:send_text");
+    EXPECT_STREQ(method_name(uint16_t(SystemMethod::RuntimeText)), "m4:send_text");
     EXPECT_STREQ(method_name(999), "m4:unknown");
     EXPECT_EQ(method_kind(uint16_t(SystemMethod::ScriptError)), MethodKind::Notify);
     EXPECT_LT(uint16_t(SystemMethod::Print), FIRST_BINDING_METHOD);
