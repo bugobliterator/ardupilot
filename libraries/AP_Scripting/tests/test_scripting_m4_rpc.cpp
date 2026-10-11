@@ -218,6 +218,9 @@ TEST(ScriptingM4Rpc, StatsRows)
 {
     EXPECT_STREQ(method_name(uint16_t(SystemMethod::Other)), "m4:other");
     EXPECT_EQ(method_kind(uint16_t(SystemMethod::Other)), MethodKind::Notify);
+    EXPECT_STREQ(method_name(uint16_t(SystemMethod::SystemOther)), "m4:sysother");
+    EXPECT_EQ(method_kind(uint16_t(SystemMethod::SystemOther)), MethodKind::Notify);
+    EXPECT_LT(uint16_t(SystemMethod::SystemOther), FIRST_BINDING_METHOD);
     StatsMsg stats {};
     EXPECT_EQ(sizeof(stats.name), 64U);
     uint8_t buf[MAX_FRAME];
@@ -229,7 +232,8 @@ TEST(ScriptingM4Rpc, StatsRows)
 
 TEST(ScriptingM4Rpc, StatsTopRowsConserveCalls)
 {
-    // 40 methods: the 8 with the most round-trip time are reported, the rest fold into one row
+    // 40 methods, every fourth one a system method: the 8 with the most round-trip time are
+    // reported, the rest fold into m4:other (bindings) and m4:sysother (system methods)
     static const uint8_t METHODS = 40;
     static const uint8_t REPORTED = 8;
     StatsRow rows[METHODS] {};
@@ -237,7 +241,7 @@ TEST(ScriptingM4Rpc, StatsTopRowsConserveCalls)
     uint32_t calls = 0;
     uint32_t total_us = 0;
     for (uint8_t i = 0; i < METHODS; i++) {
-        rows[i].method = FIRST_BINDING_METHOD + i;
+        rows[i].method = i % 4 == 0 ? 1 + i / 4 : FIRST_BINDING_METHOD + i;
         rows[i].count = 1 + i % 5;
         rows[i].total_us = 100 + ((i * 37) % 41) * 10;   // ties included
         rows[i].max_us = rows[i].total_us / 2;
@@ -263,17 +267,22 @@ TEST(ScriptingM4Rpc, StatsTopRowsConserveCalls)
     other.total_us = 70;
     calls += other.count;
     total_us += other.total_us;
+    StatsRow system_other {};
+    system_other.method = uint16_t(SystemMethod::SystemOther);
+    uint32_t binding_folded_calls = 0;
+    uint32_t system_folded_calls = 0;
     for (uint8_t i = REPORTED; i < METHODS; i++) {
         EXPECT_GE(totals[order[REPORTED - 1]], totals[order[i]]);
-        stats_add(other, rows[order[i]]);
+        const StatsRow &row = rows[order[i]];
+        stats_add(row.method < FIRST_BINDING_METHOD ? system_other : other, row);
+        (row.method < FIRST_BINDING_METHOD ? system_folded_calls : binding_folded_calls) += row.count + row.lost;
     }
-    EXPECT_EQ(reported_calls + other.count + other.lost, calls);
-    EXPECT_EQ(reported_us + other.total_us, total_us);
-    uint32_t largest_max = 0;
-    for (uint8_t i = REPORTED; i < METHODS; i++) {
-        largest_max = rows[order[i]].max_us > largest_max ? rows[order[i]].max_us : largest_max;
-    }
-    EXPECT_EQ(other.max_us, largest_max);
+    EXPECT_GT(binding_folded_calls, 0U);
+    EXPECT_GT(system_folded_calls, 0U);
+    EXPECT_EQ(other.count + other.lost, binding_folded_calls + 3);
+    EXPECT_EQ(system_other.count + system_other.lost, system_folded_calls);
+    EXPECT_EQ(reported_calls + other.count + other.lost + system_other.count + system_other.lost, calls);
+    EXPECT_EQ(reported_us + other.total_us + system_other.total_us, total_us);
 }
 
 TEST(ScriptingM4Rpc, BlobAndHandleRoundTrip)
