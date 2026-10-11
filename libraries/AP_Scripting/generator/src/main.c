@@ -2940,14 +2940,588 @@ void emit_docs(struct userdata *node, int is_userdata, int emit_creation) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Remote mode (-r): Lua on the Cortex-M4 of CubeOrangePlus-M4Lua. The M4 gets
+// the binding tables (<prefix>_tables.cpp) and the local boxed numerics
+// (<prefix>_local.cpp); <prefix>_contract.h holds what both images share.
+// Method ids: FIRST_BINDING_METHOD + the stats id for methods, aliases and
+// manual functions, then fields, operators and constructors. Ids cover the
+// whole description; what a board compiled in is runtime data (m4:bindings).
+// ---------------------------------------------------------------------------
+
+#define REMOTE_FIRST_METHOD 64        // ScriptingM4::FIRST_BINDING_METHOD
+#define REMOTE_MAX_VALUES 16          // ScriptingM4::MAX_VALUES
+#define REMOTE_MAX_LABEL 63           // ScriptingM4::StatsMsg::name holds 64 bytes
+#define REMOTE_MAX_TYPES 255
+#define REMOTE_MAX_ROWS 4096
+#define REMOTE_MAX_METHODS 4096
+#define REMOTE_MAX_ENUMS 512
+
+enum remote_kind {                    // ScriptingM4::BindingKind
+  REMOTE_SINGLETON = 0,
+  REMOTE_BLOB      = 1,
+  REMOTE_HANDLE    = 2,
+  REMOTE_LOCAL     = 3,
+  REMOTE_GLOBAL    = 4,
+};
+
+// ScriptingM4::ROW_*
+#define ROW_HAS_SELF    0x01
+#define ROW_WRITES_SELF 0x02
+#define ROW_OPERATOR    0x04
+#define ROW_CREATION    0x08
+// ScriptingM4Remote::METHOD_*; the quota class (ScriptingM4::QuotaClass) is the high nibble
+#define METHOD_WRITES_SELF 0x01
+#define METHOD_QUOTA_FALSE 0x02
+
+enum remote_quota {                   // ScriptingM4::QuotaClass
+  QUOTA_NONE    = 0,
+  QUOTA_TEXT    = 1,
+  QUOTA_STORAGE = 2,
+  QUOTA_LED     = 3,
+};
+
+// userdata the M4 holds as wire bytes: plain data, no pointers, every member that
+// matters described (or listed in remote_hidden_members)
+static const char *remote_blob_userdata[] = {
+  "Vector2f", "Vector3f", "Quaternion", "Location",
+  "AP_Camera::camera_state_t", "AP_ESC_Telem_Backend::TelemetryData", "AP_Filesystem::stat_t",
+  "AP_HAL::CANFrame", "AP_MotorsMatrix_Scripting_Dynamic::factor_table", "AP_Servo_Telem::TelemetryData",
+  "BattMonitorScript_State", "Cylinder_Status", "EFI_State", "RangeFinder::RangeFinder_State",
+  "mavlink_camera_information_t", "mavlink_mission_item_int_t", "mavlink_video_stream_information_t",
+  NULL };
+// userdata the M4 implements itself (<prefix>_local.cpp, m4/m4_boxed_numerics.cpp)
+static const char *remote_local_userdata[] = { "uint32_t", "uint64_t", NULL };
+// ap_objects the M7 keeps for its whole run: their handles need no release
+static const char *remote_handle_ap_objects[] = {
+  "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",
+  "AP_Vehicle::custom_mode_state", "RC_Channel", "AP_HAL::AnalogSource", "AP_EFI_Backend",
+  NULL };
+// manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
+static const char *remote_ready_manual[] = { "lua_millis", "lua_micros", NULL };
+
+// members a blob carries besides its described fields: undescribed state a value the
+// M7 made must keep when it comes back (mission items), and the valid_mask members
+struct remote_hidden {
+  const char *type;
+  const char *member;
+  enum field_type kind;
+};
+static const struct remote_hidden remote_hidden_members[] = {
+  { "Location", "loiter_ccw", TYPE_BOOLEAN },
+  { "AP_Servo_Telem::TelemetryData", "present_types", TYPE_UINT16_T },
+  { "mavlink_mission_item_int_t", "target_system", TYPE_UINT8_T },
+  { "mavlink_mission_item_int_t", "target_component", TYPE_UINT8_T },
+  { "mavlink_mission_item_int_t", "autocontinue", TYPE_UINT8_T },
+  { "mavlink_mission_item_int_t", "mission_type", TYPE_UINT8_T },
+  { NULL, NULL, TYPE_NONE } };
+
+static int remote_hidden_member(const char *type, const char *member) {
+  for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
+    if ((strcmp(hidden->type, type) == 0) && (strcmp(hidden->member, member) == 0)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+// spec §7: per-method rate limits on expensive M7 work
+struct remote_quota_entry {
+  const char *type;
+  const char *method;
+  enum remote_quota quota;
+};
+static const struct remote_quota_entry remote_quotas[] = {
+  { "GCS", "send_text", QUOTA_TEXT },
+  { "GCS", "send_named_float", QUOTA_TEXT },
+  { "GCS", "send_named_int", QUOTA_TEXT },
+  { "GCS", "send_named_string", QUOTA_TEXT },
+  { "AP_Param", "set_and_save_by_name", QUOTA_STORAGE },
+  { "AP_Mission", "set_item", QUOTA_STORAGE },
+  { "AP_Mission", "clear", QUOTA_STORAGE },
+  { "AP_SerialLED", "send", QUOTA_LED },
+  { NULL, NULL, QUOTA_NONE } };
+static int remote_quota_matched[sizeof(remote_quotas) / sizeof(remote_quotas[0])];
+
+struct remote_type {
+  struct userdata *node;
+  enum remote_kind kind;
+  const char *lua_name;
+  int first_row;
+  int row_count;
+  int first_enum;
+  int enum_count;
+};
+struct remote_row {
+  const char *lua_name;
+  int method;
+  int flags;
+  int type;
+};
+struct remote_method {
+  int used;
+  int type;                  // owning type id
+  char *function;            // the C function the M7 dispatch calls
+  const char *dependency;    // besides the type's
+  int flags;                 // METHOD_* | quota << 4
+  int row;                   // the row naming it in SRPC
+};
+struct remote_enum {
+  int type;
+  const char *name;
+};
+
+static struct remote_type remote_types[REMOTE_MAX_TYPES];
+static int remote_type_count;
+static struct remote_row remote_rows[REMOTE_MAX_ROWS];
+static int remote_row_count;
+static struct remote_method remote_methods[REMOTE_MAX_METHODS];
+static int remote_method_count;
+static struct remote_enum remote_enums[REMOTE_MAX_ENUMS];
+static int remote_enum_count;
+static int remote_next_id;
+static uint32_t remote_hash = 2166136261U;   // FNV-1a
+
+static void remote_hash_byte(uint8_t byte) {
+  remote_hash = (remote_hash ^ byte) * 16777619U;
+}
+
+static void remote_hash_int(int value) {
+  for (int i = 0; i < 4; i++) {
+    remote_hash_byte((uint8_t)((uint32_t)value >> (8 * i)));
+  }
+}
+
+static void remote_hash_string(const char *text) {
+  while (*text) {
+    remote_hash_byte((uint8_t)*text++);
+  }
+  remote_hash_byte(0);
+}
+
+static void remote_hash_type(const struct type *t) {
+  remote_hash_int(t->type);
+  remote_hash_int((int)t->flags);
+  if ((t->type == TYPE_USERDATA) || (t->type == TYPE_AP_OBJECT)) {
+    remote_hash_string(t->data.ud.name);
+  }
+}
+
+static int remote_in_list(const char *const *list, const char *name) {
+  for (; *list != NULL; list++) {
+    if (strcmp(*list, name) == 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static char *remote_format(const char *fmt, ...) {
+  char buffer[512];
+  va_list args;
+  va_start(args, fmt);
+  const int length = vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  if ((length < 0) || ((size_t)length >= sizeof(buffer))) {
+    error(ERROR_INTERNAL, "remote: name too long: %s", fmt);
+  }
+  char *text = NULL;
+  string_copy(&text, buffer);
+  return text;
+}
+
+// a type a remote call can carry
+static int remote_type_supported(const struct type *t) {
+  if (t->type == TYPE_USERDATA) {
+    return remote_in_list(remote_blob_userdata, t->data.ud.name) || remote_in_list(remote_local_userdata, t->data.ud.name);
+  }
+  if (t->type == TYPE_AP_OBJECT) {
+    return remote_in_list(remote_handle_ap_objects, t->data.ud.name);
+  }
+  return TRUE;
+}
+
+static int remote_method_supported(const struct method *method) {
+  if (!remote_type_supported(&method->return_type)) {
+    return FALSE;
+  }
+  int args = 1;      // the self
+  int results = 1;   // the return value
+  for (const struct argument *arg = method->arguments; arg != NULL; arg = arg->next) {
+    if (!remote_type_supported(&arg->type)) {
+      return FALSE;
+    }
+    if (arg->type.flags & (TYPE_FLAGS_NULLABLE | TYPE_FLAGS_REFERENCE)) {
+      results++;
+    } else if (arg->type.type != TYPE_LITERAL) {
+      args++;
+    }
+  }
+  // one value stays free for the write-back of a blob self
+  if ((args > REMOTE_MAX_VALUES) || (results > REMOTE_MAX_VALUES - 1)) {
+    error(ERROR_GENERAL, "remote: %s carries more values than a frame holds", method->name);
+  }
+  return TRUE;
+}
+
+static int remote_kind_of(const struct userdata *node) {
+  switch (node->ud_type) {
+    case UD_SINGLETON:
+      return REMOTE_SINGLETON;
+    case UD_USERDATA:
+      if (remote_in_list(remote_local_userdata, node->name)) {
+        return REMOTE_LOCAL;
+      }
+      // not listed: carries M7 pointers or state (IO and Manual Bindings)
+      return remote_in_list(remote_blob_userdata, node->name) ? REMOTE_BLOB : -1;
+    case UD_AP_OBJECT:
+      return remote_in_list(remote_handle_ap_objects, node->name) ? REMOTE_HANDLE : -1;
+    case UD_GLOBAL:
+      return REMOTE_GLOBAL;
+  }
+  return -1;
+}
+
+static int remote_add_row(const char *lua_name, int method, int flags, int type) {
+  if (remote_row_count >= REMOTE_MAX_ROWS) {
+    error(ERROR_INTERNAL, "remote: too many rows");
+  }
+  const char *type_name = remote_types[type - 1].lua_name;
+  if (strlen(type_name) + 1 + strlen(lua_name) > REMOTE_MAX_LABEL) {
+    error(ERROR_GENERAL, "remote: %s:%s is longer than an SRPC name", type_name, lua_name);
+  }
+  struct remote_row *row = &remote_rows[remote_row_count];
+  row->lua_name = lua_name;
+  row->method = method;
+  row->flags = flags;
+  row->type = type;
+  remote_hash_string(lua_name);
+  remote_hash_int(method);
+  remote_hash_int(flags);
+  return remote_row_count++;
+}
+
+static void remote_add_method(int id, int type, char *function, const char *dependency, int flags, int row) {
+  const int index = id - REMOTE_FIRST_METHOD;
+  if ((index < 0) || (index >= REMOTE_MAX_METHODS)) {
+    error(ERROR_INTERNAL, "remote: method id %d out of range", id);
+  }
+  struct remote_method *method = &remote_methods[index];
+  if (method->used) {
+    if (strcmp(method->function, function) != 0) {
+      error(ERROR_INTERNAL, "remote: id %d is both %s and %s", id, method->function, function);
+    }
+    return;
+  }
+  method->used = TRUE;
+  method->type = type;
+  method->function = function;
+  method->dependency = dependency;
+  method->flags = flags;
+  method->row = row;
+  if (index + 1 > remote_method_count) {
+    remote_method_count = index + 1;
+  }
+}
+
+static int remote_quota_flags(const struct userdata *node, const struct method *method) {
+  for (int i = 0; remote_quotas[i].type != NULL; i++) {
+    const struct remote_quota_entry *quota = &remote_quotas[i];
+    if ((strcmp(quota->type, node->name) != 0) || (strcmp(quota->method, method->name) != 0)) {
+      continue;
+    }
+    remote_quota_matched[i] = TRUE;
+    if (method->return_type.type == TYPE_NONE) {
+      return quota->quota << 4;                        // over its quota: dropped
+    }
+    if ((method->return_type.type == TYPE_BOOLEAN) && !(method->flags & TYPE_FLAGS_NULLABLE)) {
+      return (quota->quota << 4) | METHOD_QUOTA_FALSE; // over its quota: false
+    }
+    error(ERROR_GENERAL, "remote: a quota on %s:%s needs a void or boolean method", node->name, method->name);
+  }
+  return 0;
+}
+
+static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
+  if (remote_type_count >= REMOTE_MAX_TYPES) {
+    error(ERROR_INTERNAL, "remote: too many types");
+  }
+  const int type_id = ++remote_type_count;
+  struct remote_type *rt = &remote_types[type_id - 1];
+  rt->node = node;
+  rt->kind = kind;
+  if (kind == REMOTE_GLOBAL) {
+    rt->lua_name = "global";
+  } else if (kind == REMOTE_HANDLE) {
+    rt->lua_name = node->name;   // new_ap_object() names the metatable so
+  } else {
+    rt->lua_name = node->rename ? node->rename : node->name;
+  }
+  for (int i = 0; i < type_id - 1; i++) {
+    if (strcmp(remote_types[i].lua_name, rt->lua_name) == 0) {
+      error(ERROR_GENERAL, "remote: two types named %s", rt->lua_name);
+    }
+  }
+  rt->first_row = remote_row_count;
+  rt->first_enum = remote_enum_count;
+  remote_hash_int(kind);
+  remote_hash_string(rt->lua_name);
+
+  if (kind != REMOTE_LOCAL) {
+    const int self_flags = (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : ((kind == REMOTE_BLOB) ? ROW_WRITES_SELF : 0);
+    const int method_flags = (kind == REMOTE_BLOB) ? METHOD_WRITES_SELF : 0;
+    for (struct method *method = node->methods; method != NULL; method = method->next) {
+      if (!remote_method_supported(method)) {
+        continue;
+      }
+      const int id = REMOTE_FIRST_METHOD + method->stats_id;
+      const int row = remote_add_row(method->rename ? method->rename : method->name, id, self_flags, type_id);
+      remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, method->sanitized_name),
+                        method->dependency, method_flags | remote_quota_flags(node, method), row);
+      remote_hash_type(&method->return_type);
+      for (const struct argument *arg = method->arguments; arg != NULL; arg = arg->next) {
+        remote_hash_type(&arg->type);
+      }
+    }
+    for (struct method_alias *alias = node->method_aliases; alias != NULL; alias = alias->next) {
+      const int id = REMOTE_FIRST_METHOD + alias->stats_id;
+      if (alias->type == ALIAS_TYPE_NONE) {
+        if (remote_methods[id - REMOTE_FIRST_METHOD].used) {
+          remote_add_row(alias->alias, id, self_flags, type_id);   // its target's id and function
+        }
+      } else if ((alias->type == ALIAS_TYPE_MANUAL) && remote_in_list(remote_ready_manual, alias->name)) {
+        const int row = remote_add_row(alias->alias, id, (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : 0, type_id);
+        remote_add_method(id, type_id, alias->name, alias->dependency, 0, row);
+      }
+    }
+    for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+      if (!remote_type_supported(&field->type)) {
+        continue;
+      }
+      // the setter sets the mask bit: the mask has to cross with the blob
+      const char *valid_mask = field->type.valid_mask.name;
+      if ((kind == REMOTE_BLOB) && (valid_mask != NULL) && !remote_hidden_member(node->name, valid_mask)) {
+        error(ERROR_GENERAL, "remote: %s.%s has a valid_mask: give the mask a wire member first", node->name, field->name);
+      }
+      const int id = REMOTE_FIRST_METHOD + remote_next_id++;
+      const int row = remote_add_row(field->rename ? field->rename : field->name, id, self_flags, type_id);
+      remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, field->name),
+                        field->dependency, method_flags, row);
+      remote_hash_string(field->name);
+      remote_hash_type(&field->type);
+      remote_hash_int((int)field->access_flags);
+      remote_hash_string(field->array_len ? field->array_len : "");
+      remote_hash_string(valid_mask ? valid_mask : "");
+    }
+    if (kind == REMOTE_BLOB) {
+      for (uint32_t op = 1; op < OP_LAST; op <<= 1) {
+        const char *op_name = get_name_for_operation((enum operator_type)(node->operations & op));
+        if (op_name == NULL) {
+          continue;
+        }
+        const int id = REMOTE_FIRST_METHOD + remote_next_id++;
+        const int row = remote_add_row(op_name, id, ROW_OPERATOR, type_id);
+        remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, op_name), NULL, 0, row);
+      }
+      if ((node->creation == NULL) && should_emit_creation(node)) {
+        // the global is the type's name; "type:new" keeps the SRPC name short
+        const int id = REMOTE_FIRST_METHOD + remote_next_id++;
+        const int row = remote_add_row("new", id, ROW_CREATION, type_id);
+        remote_add_method(id, type_id, remote_format("lua_new_%s", node->sanitized_name), NULL, 0, row);
+      }
+      for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
+        if (strcmp(hidden->type, node->name) == 0) {
+          remote_hash_string(hidden->member);
+          remote_hash_int(hidden->kind);
+        }
+      }
+    }
+  }
+  for (struct userdata_enum *ud_enum = node->enums; ud_enum != NULL; ud_enum = ud_enum->next) {
+    if (remote_enum_count >= REMOTE_MAX_ENUMS) {
+      error(ERROR_INTERNAL, "remote: too many enums");
+    }
+    remote_enums[remote_enum_count].type = type_id;
+    remote_enums[remote_enum_count].name = ud_enum->name;
+    remote_enum_count++;
+    remote_hash_string(ud_enum->name);
+  }
+  rt->row_count = remote_row_count - rt->first_row;
+  rt->enum_count = remote_enum_count - rt->first_enum;
+}
+
+static int remote_type_id(const char *node_name) {
+  for (int i = 0; i < remote_type_count; i++) {
+    if ((remote_types[i].node != NULL) && (remote_types[i].node->name != NULL) &&
+        (strcmp(remote_types[i].node->name, node_name) == 0)) {
+      return i + 1;
+    }
+  }
+  error(ERROR_GENERAL, "remote: no type %s", node_name);
+  return 0;
+}
+
+// after the in-process emission: every stats id is assigned
+static void remote_collect(void) {
+  stats_ids_frozen = TRUE;
+  remote_next_id = next_stats_id;
+  for (struct userdata *node = parsed_singletons; node != NULL; node = node->next) {
+    remote_collect_type(node, REMOTE_SINGLETON);
+  }
+  for (struct userdata *node = parsed_userdata; node != NULL; node = node->next) {
+    const int kind = remote_kind_of(node);
+    if (kind >= 0) {
+      remote_collect_type(node, (enum remote_kind)kind);
+    }
+  }
+  for (struct userdata *node = parsed_ap_objects; node != NULL; node = node->next) {
+    const int kind = remote_kind_of(node);
+    if (kind >= 0) {
+      remote_collect_type(node, (enum remote_kind)kind);
+    }
+  }
+  if (parsed_globals != NULL) {
+    remote_collect_type(parsed_globals, REMOTE_GLOBAL);
+  }
+  for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
+    if (remote_types[remote_type_id(hidden->type) - 1].kind != REMOTE_BLOB) {
+      error(ERROR_GENERAL, "remote: hidden member %s.%s of a type that is no blob", hidden->type, hidden->member);
+    }
+  }
+  for (int i = 0; remote_quotas[i].type != NULL; i++) {
+    if (!remote_quota_matched[i]) {
+      error(ERROR_GENERAL, "remote: quota on %s:%s matches no method", remote_quotas[i].type, remote_quotas[i].method);
+    }
+  }
+  if ((remote_enum_count == 0) || (remote_method_count == 0)) {
+    error(ERROR_GENERAL, "remote: empty binding table");
+  }
+}
+
+static FILE *remote_open(const char *prefix, const char *suffix) {
+  char *name = remote_format("%s_%s", prefix, suffix);
+  FILE *f = fopen(name, "w");
+  if (f == NULL) {
+    error(ERROR_GENERAL, "Unable to open the output file: %s", name);
+  }
+  return f;
+}
+
+static void remote_emit_contract(FILE *f) {
+  fprintf(f, "#pragma once\n// auto generated by gen-bindings -r, don't manually edit.  See README.md for details.\n\n");
+  fprintf(f, "#include <stdint.h>\n\nnamespace ScriptingM4 {\n\n");
+  fprintf(f, "// FNV-1a of the generated binding table: types, rows, ids, argument, return and field types\n");
+  fprintf(f, "static const uint32_t BINDING_HASH = 0x%08xU;\n", (unsigned)remote_hash);
+  fprintf(f, "// method ids FIRST_BINDING_METHOD .. FIRST_BINDING_METHOD + BINDING_METHOD_COUNT - 1\n");
+  fprintf(f, "static const uint16_t BINDING_METHOD_COUNT = %d;\n", remote_method_count);
+  fprintf(f, "// type ids 1 .. BINDING_TYPE_COUNT\n");
+  fprintf(f, "static const uint8_t BINDING_TYPE_COUNT = %d;\n", remote_type_count);
+  fprintf(f, "static const uint16_t BINDING_ROW_COUNT = %d;\n", remote_row_count);
+  fprintf(f, "static const uint16_t BINDING_ENUM_COUNT = %d;\n", remote_enum_count);
+  fprintf(f, "static const uint8_t BINDING_TYPE_UINT32 = %d;\n", remote_type_id("uint32_t"));
+  fprintf(f, "static const uint8_t BINDING_TYPE_UINT64 = %d;\n", remote_type_id("uint64_t"));
+  fprintf(f, "\n}  // namespace ScriptingM4\n");
+}
+
+static void remote_emit_tables(FILE *f) {
+  fprintf(f, "// auto generated by gen-bindings -r, don't manually edit.  See README.md for details.\n\n");
+  fprintf(f, "#include <AP_Scripting/AP_ScriptingM4_Bindings.h>\n\nnamespace ScriptingM4 {\n\n");
+  fprintf(f, "const BindingType binding_types[BINDING_TYPE_COUNT] = {\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct remote_type *rt = &remote_types[i];
+    fprintf(f, "    { \"%s\", %d, %d, %d, %d, %d },\n", rt->lua_name, rt->kind, rt->enum_count,
+            rt->first_row, rt->row_count, rt->first_enum);
+  }
+  fprintf(f, "};\n\nconst BindingRow binding_rows[BINDING_ROW_COUNT] = {\n");
+  for (int i = 0; i < remote_row_count; i++) {
+    const struct remote_row *row = &remote_rows[i];
+    fprintf(f, "    { \"%s\", %d, 0x%02x, %d },\n", row->lua_name, row->method, row->flags, row->type);
+  }
+  fprintf(f, "};\n\nconst char *const binding_enum_names[BINDING_ENUM_COUNT] = {\n");
+  for (int i = 0; i < remote_enum_count; i++) {
+    fprintf(f, "    \"%s\",\n", remote_enums[i].name);
+  }
+  fprintf(f, "};\n\nconst uint16_t binding_method_rows[BINDING_METHOD_COUNT] = {\n");
+  for (int i = 0; i < remote_method_count; i++) {
+    fprintf(f, "    %d,\n", remote_methods[i].used ? remote_methods[i].row : 0xFFFF);
+  }
+  fprintf(f, "};\n\n}  // namespace ScriptingM4\n");
+}
+
+// uint32_t and uint64_t on the M4: the in-process code, with m4/m4_binding_deps.h for AP's headers
+static void remote_emit_local(FILE *f) {
+  FILE *saved = source;
+  source = f;
+  fprintf(f, "// auto generated by gen-bindings -r, don't manually edit.  See README.md for details.\n\n");
+  fprintf(f, "#pragma GCC optimize(\"Os\")\n");
+  fprintf(f, "#include \"m4_binding_deps.h\"\n");
+  fprintf(f, "#include <generator/gen/generated_cpp_deps.h>\n\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    if (remote_types[i].kind == REMOTE_LOCAL) {
+      emit_userdata_allocator(remote_types[i].node);
+      emit_userdata_checker(remote_types[i].node);
+    }
+  }
+  for (int i = 0; i < remote_type_count; i++) {
+    struct userdata *node = remote_types[i].node;
+    if (remote_types[i].kind != REMOTE_LOCAL) {
+      continue;
+    }
+    for (struct method *method = node->methods; method != NULL; method = method->next) {
+      emit_userdata_method(node, method);
+    }
+    if (node->operations) {
+      emit_operators(node);
+    }
+    emit_index_node(node);
+  }
+  fprintf(f, "static const struct userdata_meta remote_local_types[] = {\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct userdata *node = remote_types[i].node;
+    if (remote_types[i].kind != REMOTE_LOCAL) {
+      continue;
+    }
+    if (node->operations) {
+      fprintf(f, "    { \"%s\", %s_index, %s_operators },\n", remote_types[i].lua_name, node->sanitized_name, node->sanitized_name);
+    } else {
+      fprintf(f, "    { \"%s\", %s_index, nullptr },\n", remote_types[i].lua_name, node->sanitized_name);
+    }
+  }
+  fprintf(f, "};\n\n");
+  fprintf(f, "bool remote_local_type(const char *name, lua_CFunction &index, const luaL_Reg *&operators)\n{\n");
+  fprintf(f, "    for (const struct userdata_meta &type : remote_local_types) {\n");
+  fprintf(f, "        if (strcmp(type.name, name) == 0) {\n");
+  fprintf(f, "            index = type.func;\n");
+  fprintf(f, "            operators = type.operators;\n");
+  fprintf(f, "            return true;\n");
+  fprintf(f, "        }\n");
+  fprintf(f, "    }\n");
+  fprintf(f, "    return false;\n");
+  fprintf(f, "}\n");
+  source = saved;
+}
+
+static void remote_write_files(const char *prefix) {
+  FILE *f = remote_open(prefix, "contract.h");
+  remote_emit_contract(f);
+  fclose(f);
+  f = remote_open(prefix, "tables.cpp");
+  remote_emit_tables(f);
+  fclose(f);
+  f = remote_open(prefix, "local.cpp");
+  remote_emit_local(f);
+  fclose(f);
+}
+
 char * output_path = NULL;
 char * docs_path = NULL;
+char * remote_path = NULL;
 
 int main(int argc, char **argv) {
   state.line_num = -1;
 
   int c;
-  while ((c = getopt(argc, argv, "i:o:d:")) != -1) {
+  while ((c = getopt(argc, argv, "i:o:d:r:")) != -1) {
     switch (c) {
       case 'i':
         if (description != NULL) {
@@ -2972,6 +3546,12 @@ int main(int argc, char **argv) {
         }
         docs_path = optarg;
         trace(TRACE_GENERAL, "Loading an docs path of %s", docs_path);
+        break;
+      case 'r':
+        if (remote_path != NULL) {
+          error(ERROR_GENERAL, "A remote output path was already selected.");
+        }
+        remote_path = optarg;
         break;
     }
   }
@@ -3126,6 +3706,11 @@ int main(int argc, char **argv) {
 
   fclose(header);
   header = NULL;
+
+  if (remote_path != NULL) {
+    remote_collect();
+    remote_write_files(remote_path);
+  }
 
   if (docs_path == NULL) {
     // no docs to generate, all done

@@ -48,10 +48,14 @@ def build(bld):
         docs_rel = relpath(bld,docs)
         docs_command = "-d %s" % docs_rel
 
+    remote = [bld.bldnode.find_or_declare('libraries/AP_Scripting/lua_remote_%s' % name)
+              for name in ('contract.h', 'tables.cpp', 'local.cpp')]
+
     bld(
-        # build the bindings
+        # build the bindings, and the M4 remote tables (gen-bindings -r)
         source=[bindings, gen_bindings],
-        rule="./gen-bindings -o libraries/AP_Scripting/lua_generated_bindings -i %s %s" % (bindings_rel, docs_command),
-        target=[generated_cpp, generated_h],
+        rule="./gen-bindings -o libraries/AP_Scripting/lua_generated_bindings "
+             "-r libraries/AP_Scripting/lua_remote -i %s %s" % (bindings_rel, docs_command),
+        target=[generated_cpp, generated_h] + remote,
         group='dynamic_sources',
     )

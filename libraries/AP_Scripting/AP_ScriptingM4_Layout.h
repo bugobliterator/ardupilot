@@ -12,12 +12,14 @@
 #include <stdint.h>
 #include "AP_ScriptingM4_Placement.h"
 #include "AP_ScriptingM4_Rpc.h"
+#include <AP_Scripting/lua_remote_contract.h>
 
 namespace ScriptingM4 {
 
-// peer header contract: a mismatched M4 image is refused (spec §5)
+// peer header contract: a mismatched M4 image is refused (spec §5); the generated
+// binding table is part of it
 static const uint32_t PROTOCOL_VERSION = RPC_PROTOCOL_VERSION;
-static const uint32_t CONTRACT_HASH = SYSTEM_CONTRACT_HASH;
+static const uint32_t CONTRACT_HASH = fnv1a_word(BINDING_HASH, SYSTEM_CONTRACT_HASH);
 
 static const uint32_t WINDOW_SIZE = AP_SCRIPTING_M4_WINDOW_SIZE;
 static const uint32_t SUPERVISOR_BLOCK_SIZE = 32;

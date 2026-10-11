@@ -1,11 +1,15 @@
 # Lua scripting Cortex-M4 image for the STM32H757: ChibiOS RT only (no HAL), the
 # Lua core and the M4 Lua runtime. Built by waf (Tools/ardupilotwaf/cubeframework.py),
-# which passes M4_LUA_SOURCES; by hand:
+# which passes M4_LUA_SOURCES and M4_GENERATED_ROOT; by hand:
 #   make -f libraries/AP_Scripting/m4/chibios/Makefile CHIBIOS=$PWD/modules/ChibiOS \
-#        AP_ROOT=$PWD BUILDDIR=/tmp/scripting_m4 M4_LUA_SOURCES="lapi.c lauxlib.c ..."
+#        AP_ROOT=$PWD BUILDDIR=/tmp/scripting_m4 M4_LUA_SOURCES="lapi.c lauxlib.c ..." \
+#        M4_GENERATED_ROOT=$PWD/build/CubeOrangePlus-M4Lua/libraries
 
 ifeq ($(M4_LUA_SOURCES),)
 $(error M4_LUA_SOURCES is not set: waf passes the Lua core file list (Tools/ardupilotwaf/cubeframework.py))
+endif
+ifeq ($(M4_GENERATED_ROOT),)
+$(error M4_GENERATED_ROOT is not set: waf passes the build's libraries directory (gen-bindings output))
 endif
 
 USE_OPT = -Os -ggdb -fomit-frame-pointer -falign-functions=16
@@ -58,8 +62,11 @@ CPPSRC = $(ALLCPPSRC) \
          $(CUBEFRAMEWORK)/CubePilotFW/pal/HSEM.cpp
 ASMSRC = $(ALLASMSRC)
 ASMXSRC = $(ALLXASMSRC)
-# the shim directory first: the Lua core finds its AP headers there
-INCDIR = $(CONFDIR) $(ALLINC) $(M4DIR)/shim $(AP_ROOT)/libraries/AP_Scripting $(CUBEFRAMEWORK)
+# the Lua core finds its AP headers in the shim directory. rules.mk sorts INCDIR, so
+# $(AP_ROOT)/libraries would come before the shim and shadow it; the generated root
+# (<AP_Scripting/lua_remote_*>) holds only build outputs
+INCDIR = $(CONFDIR) $(ALLINC) $(M4DIR)/shim $(AP_ROOT)/libraries/AP_Scripting $(M4_GENERATED_ROOT) \
+         $(CUBEFRAMEWORK)
 
 CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes
 CPPWARN = -Wall -Wextra -Wundef
