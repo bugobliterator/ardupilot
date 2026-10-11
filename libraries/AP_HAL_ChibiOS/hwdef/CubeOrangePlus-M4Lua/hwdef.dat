@@ -17,6 +17,9 @@ define AP_CUBEFRAMEWORK_ENABLED 1
 # start the M4 at boot
 define SCRIPTING_ENABLE_DEFAULT 1
 
+# SCR_HEAP_SIZE default: the M4 Lua heap (the M4 caps it at its linker heap)
+define SCRIPTING_HEAP_SIZE (200*1024)
+
 # the variant bootloader (hwdef-bl.dat) is not built into Tools/bootloaders
 # or flashed from the app yet
 define AP_BOOTLOADER_FLASHING_ENABLED 0
