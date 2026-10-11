@@ -291,19 +291,40 @@ void M4Service::send_stats(uint32_t now_ms)
         clear(slot);
     }
     if (sent < active || _untimed.count != 0 || _untimed.lost != 0) {
-        // the untimed calls carry their own totals, so the row adds up to the window's calls
+        // the folded methods keep their totals, so the rows add up to the window's calls; the
+        // runtime's own system methods fold into their own row: m4:other holds binding calls only
         StatsRow other = _untimed;
         other.method = uint16_t(SystemMethod::Other);
+        StatsRow system_other {};
+        system_other.method = uint16_t(SystemMethod::SystemOther);
         for (uint8_t i = sent; i < active; i++) {
-            stats_add(other, row_of(_stats[slot_of[order[i]]]));
+            const StatsRow row = row_of(_stats[slot_of[order[i]]]);
+            stats_add(row.method < FIRST_BINDING_METHOD ? system_other : other, row);
         }
-        if (!send_row(other)) {
-            return;
+        // each row is cleared once sent, so a full ring repeats neither
+        if (other.count != 0 || other.lost != 0) {
+            if (!send_row(other)) {
+                return;
+            }
+            for (uint8_t i = sent; i < active; i++) {
+                MethodStats &slot = _stats[slot_of[order[i]]];
+                if (slot.method >= FIRST_BINDING_METHOD) {
+                    clear(slot);
+                }
+            }
+            memset(&_untimed, 0, sizeof(_untimed));
         }
-        for (uint8_t i = sent; i < active; i++) {
-            clear(_stats[slot_of[order[i]]]);
+        if (system_other.count != 0 || system_other.lost != 0) {
+            if (!send_row(system_other)) {
+                return;
+            }
+            for (uint8_t i = sent; i < active; i++) {
+                MethodStats &slot = _stats[slot_of[order[i]]];
+                if (slot.method < FIRST_BINDING_METHOD) {
+                    clear(slot);
+                }
+            }
         }
-        memset(&_untimed, 0, sizeof(_untimed));
     }
     _last_stats_ms = now_ms;
 }

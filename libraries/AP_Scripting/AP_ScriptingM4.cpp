@@ -261,8 +261,9 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
     _rpc_summary.count += stats.count;
     _rpc_summary.p99_us = MAX(_rpc_summary.p99_us, stats.p99_us);
     _rpc_summary.max_us = MAX(_rpc_summary.max_us, stats.max_us);
-    // the m4:other row is a sum of methods: its p50 is no median
-    if (stats.method != uint16_t(ScriptingM4::SystemMethod::Other) && stats.count > _rpc_summary.busiest_count) {
+    // the m4:other and m4:sysother rows are sums of methods: their p50 is no median
+    if (stats.method != uint16_t(ScriptingM4::SystemMethod::Other) &&
+        stats.method != uint16_t(ScriptingM4::SystemMethod::SystemOther) && stats.count > _rpc_summary.busiest_count) {
         _rpc_summary.busiest_count = stats.count;
         _rpc_summary.p50_us = stats.p50_us;
     }

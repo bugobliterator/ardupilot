@@ -500,7 +500,8 @@ enum class MethodKind : uint8_t {
     X(10, RuntimeText, "m4:send_text", Call) \
     X(11, Print, "global:print", Call) \
     X(12, Bindings, "m4:bindings", Call) \
-    X(13, Other, "m4:other", Notify)
+    X(13, Other, "m4:other", Notify) \
+    X(14, SystemOther, "m4:sysother", Notify)
 
 enum class SystemMethod : uint16_t {
 #define SCRIPTING_M4_METHOD_ENUM(id, symbol, name, kind) symbol = id,
