@@ -251,7 +251,10 @@ void M4Service::flood()
     noop.method = uint16_t(SystemMethod::Noop);
     noop.argc = 0;
     noop.reserved = 0;
-    for (uint16_t i = 0; i < 256; i++) {
+    // the service may sleep 5 ms between steps, so each step fills the ring to the top; bounded
+    // by twice the frames one ring (half the data) holds, as the M7 drains it meanwhile
+    const uint32_t max_frames = (CHANNEL_WINDOW_SIZE - Channel::kOverhead) / sizeof(noop);
+    for (uint32_t i = 0; i < max_frames; i++) {
         noop.header.seq = ++_seq;
         if (_channel->send(&noop, sizeof(noop)) != 0) {
             flood_ring_full = flood_ring_full + 1;
