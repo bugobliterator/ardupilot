@@ -442,6 +442,8 @@ static struct userdata *parsed_globals;
 #define MAX_STATS_IDS 2048
 static const char *stats_names[MAX_STATS_IDS];
 static int next_stats_id = 0;
+// set once the bindings were emitted: a second emission (remote mode) reuses their ids
+static int stats_ids_frozen = 0;
 static int assign_stats_id(const char *ud_name, const char *method_name) {
   if (next_stats_id >= MAX_STATS_IDS) {
     error(ERROR_GENERAL, "Too many bindings for stats ids");
@@ -1365,38 +1367,42 @@ void emit_headers(FILE *f) {
   }
 }
 
+void emit_userdata_allocator(struct userdata *node) {
+  start_dependency(source, node->dependency);
+  // New method used internally
+  fprintf(source, "%s * new_%s(lua_State *L) {\n", node->name, node->sanitized_name);
+  fprintf(source, "    void *ud = lua_newuserdata(L, sizeof(%s));\n", node->name);
+  // convince compiler to remove null check on the new, lua_newuserdata can't return null
+  fprintf(source, "    if (!ud) { __builtin_unreachable(); } // elide constructor null check\n");
+  fprintf(source, "    new (ud) %s();\n", node->name);
+  fprintf(source, "    set_userdata_metatable(L, \"%s\");\n", node->rename ? node->rename :  node->name);
+  fprintf(source, "    return (%s *)ud;\n", node->name);
+  fprintf(source, "}\n");
+
+  // New method used externally, includes argcheck, overridden by custom creation function if provided
+  if (node->creation == NULL && should_emit_creation(node)) {
+    fprintf(source, "\n");
+    fprintf(source, "int lua_new_%s(lua_State *L) {\n", node->sanitized_name);
+
+    // emit one time warning if augments are parsed
+    fprintf(source, "    static bool warned = false;\n");
+    fprintf(source, "    if (!warned && userdata_zero_arg_check(L)) {\n");
+    fprintf(source, "        warned = true;\n");
+    fprintf(source, "    }\n");
+
+    fprintf(source, "    new_%s(L);\n", node->sanitized_name);
+    fprintf(source, "    return 1;\n");
+    fprintf(source, "}\n");
+  }
+
+  end_dependency(source, node->dependency);
+  fprintf(source, "\n");
+}
+
 void emit_userdata_allocators(void) {
   struct userdata * node = parsed_userdata;
   while (node) {
-    start_dependency(source, node->dependency);
-    // New method used internally
-    fprintf(source, "%s * new_%s(lua_State *L) {\n", node->name, node->sanitized_name);
-    fprintf(source, "    void *ud = lua_newuserdata(L, sizeof(%s));\n", node->name);
-    // convince compiler to remove null check on the new, lua_newuserdata can't return null
-    fprintf(source, "    if (!ud) { __builtin_unreachable(); } // elide constructor null check\n");
-    fprintf(source, "    new (ud) %s();\n", node->name);
-    fprintf(source, "    set_userdata_metatable(L, \"%s\");\n", node->rename ? node->rename :  node->name);
-    fprintf(source, "    return (%s *)ud;\n", node->name);
-    fprintf(source, "}\n");
-
-    // New method used externally, includes argcheck, overridden by custom creation function if provided
-    if (node->creation == NULL && should_emit_creation(node)) {
-      fprintf(source, "\n");
-      fprintf(source, "int lua_new_%s(lua_State *L) {\n", node->sanitized_name);
-
-      // emit one time warning if augments are parsed
-      fprintf(source, "    static bool warned = false;\n");
-      fprintf(source, "    if (!warned && userdata_zero_arg_check(L)) {\n");
-      fprintf(source, "        warned = true;\n");
-      fprintf(source, "    }\n");
-
-      fprintf(source, "    new_%s(L);\n", node->sanitized_name);
-      fprintf(source, "    return 1;\n");
-      fprintf(source, "}\n");
-    }
-
-    end_dependency(source, node->dependency);
-    fprintf(source, "\n");
+    emit_userdata_allocator(node);
     node = node->next;
   }
 }
@@ -1414,15 +1420,19 @@ void emit_ap_object_allocators(void) {
   }
 }
 
+void emit_userdata_checker(struct userdata *node) {
+  start_dependency(source, node->dependency);
+  fprintf(source, "%s * check_%s(lua_State *L, int arg) {\n", node->name, node->sanitized_name);
+  fprintf(source, "    return (%s *)luaL_checkudata(L, arg, \"%s\");\n", node->name, node->rename ? node->rename :  node->name);
+  fprintf(source, "}\n");
+  end_dependency(source, node->dependency);
+  fprintf(source, "\n");
+}
+
 void emit_userdata_checkers(void) {
   struct userdata * node = parsed_userdata;
   while (node) {
-    start_dependency(source, node->dependency);
-    fprintf(source, "%s * check_%s(lua_State *L, int arg) {\n", node->name, node->sanitized_name);
-    fprintf(source, "    return (%s *)luaL_checkudata(L, arg, \"%s\");\n", node->name, node->rename ? node->rename :  node->name);
-    fprintf(source, "}\n");
-    end_dependency(source, node->dependency);
-    fprintf(source, "\n");
+    emit_userdata_checker(node);
     node = node->next;
   }
 }
@@ -1440,26 +1450,30 @@ void emit_ap_object_checkers(void) {
   }
 }
 
+void emit_singleton_checker(struct userdata *node) {
+  if (!(node->flags & UD_FLAG_LITERAL) && (node->methods != NULL)) {
+    start_dependency(source, node->dependency);
+    fprintf(source, "%s * check_%s(lua_State *L) {\n", node->name, node->sanitized_name);
+    if (node->get_string == NULL) {
+      fprintf(source, "    %s * ud = %s::get_singleton();\n", node->name, node->name);
+    } else {
+      fprintf(source, "    %s * ud = %s;\n", node->name, node->get_string);
+    }
+    fprintf(source, "    if (ud == nullptr) {\n");
+    fprintf(source, "        // This error will never return, so there is no danger of returning a nullptr\n");
+    fprintf(source, "        not_supported_error(L, 1, \"%s\");\n", node->rename ? node->rename : node->name);
+    fprintf(source, "    }\n");
+    fprintf(source, "    return ud;\n");
+    fprintf(source, "}\n");
+    end_dependency(source, node->dependency);
+    fprintf(source, "\n");
+  }
+}
+
 void emit_singleton_checkers(void) {
   struct userdata * node = parsed_singletons;
   while (node) {
-    if (!(node->flags & UD_FLAG_LITERAL) && (node->methods != NULL)) {
-      start_dependency(source, node->dependency);
-      fprintf(source, "%s * check_%s(lua_State *L) {\n", node->name, node->sanitized_name);
-      if (node->get_string == NULL) {
-        fprintf(source, "    %s * ud = %s::get_singleton();\n", node->name, node->name);
-      } else {
-        fprintf(source, "    %s * ud = %s;\n", node->name, node->get_string);
-      }
-      fprintf(source, "    if (ud == nullptr) {\n");
-      fprintf(source, "        // This error will never return, so there is no danger of returning a nullptr\n");
-      fprintf(source, "        not_supported_error(L, 1, \"%s\");\n", node->rename ? node->rename : node->name);
-      fprintf(source, "    }\n");
-      fprintf(source, "    return ud;\n");
-      fprintf(source, "}\n");
-      end_dependency(source, node->dependency);
-      fprintf(source, "\n");
-    }
+    emit_singleton_checker(node);
     node = node->next;
   }
 }
@@ -2010,7 +2024,9 @@ int emit_references(const struct argument *arg, const char * tab) {
 void emit_userdata_method(const struct userdata *data, struct method *method) {
   int arg_count = 1;
 
-  method->stats_id = assign_stats_id(data->rename ? data->rename : data->name, method->rename ? method->rename : method->name);
+  if (!stats_ids_frozen) {
+    method->stats_id = assign_stats_id(data->rename ? data->rename : data->name, method->rename ? method->rename : method->name);
+  }
 
   start_dependency(source, data->dependency);
   start_dependency(source, method->dependency);
@@ -2508,89 +2524,94 @@ void emit_enum(struct userdata * data) {
     fprintf(source, "};\n\n");
 }
 
-void emit_index(struct userdata *head) {
+void emit_index_node(struct userdata *node) {
+  start_dependency(source, node->dependency);
 
-  struct userdata * node = head;
-  while(node) {
-    start_dependency(source, node->dependency);
+  fprintf(source, "const luaL_Reg %s_meta[] = {\n", node->sanitized_name);
 
-    fprintf(source, "const luaL_Reg %s_meta[] = {\n", node->sanitized_name);
+  struct method *method = node->methods;
+  while (method) {
+    start_dependency(source, method->dependency);
+    fprintf(source, "    {\"%s\", BINDING_FN(%d, %s_%s)},\n", method->rename ? method->rename :  method->name, method->stats_id, node->sanitized_name, method->name);
+    end_dependency(source, method->dependency);
+    method = method->next;
+  }
 
-    struct method *method = node->methods;
-    while (method) {
-      start_dependency(source, method->dependency);
-      fprintf(source, "    {\"%s\", BINDING_FN(%d, %s_%s)},\n", method->rename ? method->rename :  method->name, method->stats_id, node->sanitized_name, method->name);
-      end_dependency(source, method->dependency);
-      method = method->next;
+  struct userdata_field *field = node->fields;
+  while(field) {
+    start_dependency(source, field->dependency);
+    fprintf(source, "    {\"%s\", %s_%s},\n", field->rename ? field->rename : field->name, node->sanitized_name, field->name);
+    end_dependency(source, field->dependency);
+    field = field->next;
+  }
+
+  struct method_alias *alias = node->method_aliases;
+  while(alias) {
+    start_dependency(source, alias->dependency);
+    if (alias->type == ALIAS_TYPE_MANUAL) {
+      if (!stats_ids_frozen) {
+        alias->stats_id = assign_stats_id(node->rename ? node->rename : node->name, alias->alias);
+      }
+      fprintf(source, "    {\"%s\", BINDING_FN(%d, %s)},\n", alias->alias, alias->stats_id, alias->name);
+    } else if (alias->type == ALIAS_TYPE_NONE) {
+      // share the target method's id so calls and semaphore waits land in one entry
+      alias->stats_id = -1;
+      for (struct method *target = node->methods; target != NULL; target = target->next) {
+        if (strcmp(target->name, alias->name) == 0) {
+          alias->stats_id = target->stats_id;
+          break;
+        }
+      }
+      if (alias->stats_id < 0) {
+        error(ERROR_GENERAL, "Alias %s has no target method %s", alias->alias, alias->name);
+      }
+      fprintf(source, "    {\"%s\", BINDING_FN(%d, %s_%s)},\n", alias->alias, alias->stats_id, node->sanitized_name, alias->name);
     }
+    end_dependency(source, alias->dependency);
+    alias = alias->next;
+  }
 
-    struct userdata_field *field = node->fields;
-    while(field) {
-      start_dependency(source, field->dependency);
-      fprintf(source, "    {\"%s\", %s_%s},\n", field->rename ? field->rename : field->name, node->sanitized_name, field->name);
-      end_dependency(source, field->dependency);
-      field = field->next;
+  fprintf(source, "};\n\n");
+
+  if (node->operations) {
+    fprintf(source, "const luaL_Reg %s_operators[] = {\n", node->sanitized_name);
+    for (uint32_t i = 1; i < OP_LAST; i = (i << 1)) {
+      const char * op_name = get_name_for_operation((node->operations) & i);
+      if (op_name == NULL) {
+        continue;
+      }
+      fprintf(source, "    {\"%s\", %s_%s},\n", op_name, node->sanitized_name, op_name);
     }
-
     struct method_alias *alias = node->method_aliases;
     while(alias) {
-      start_dependency(source, alias->dependency);
-      if (alias->type == ALIAS_TYPE_MANUAL) {
-        alias->stats_id = assign_stats_id(node->rename ? node->rename : node->name, alias->alias);
-        fprintf(source, "    {\"%s\", BINDING_FN(%d, %s)},\n", alias->alias, alias->stats_id, alias->name);
-      } else if (alias->type == ALIAS_TYPE_NONE) {
-        // share the target method's id so calls and semaphore waits land in one entry
-        alias->stats_id = -1;
-        for (struct method *target = node->methods; target != NULL; target = target->next) {
-          if (strcmp(target->name, alias->name) == 0) {
-            alias->stats_id = target->stats_id;
-            break;
-          }
-        }
-        if (alias->stats_id < 0) {
-          error(ERROR_GENERAL, "Alias %s has no target method %s", alias->alias, alias->name);
-        }
-        fprintf(source, "    {\"%s\", BINDING_FN(%d, %s_%s)},\n", alias->alias, alias->stats_id, node->sanitized_name, alias->name);
+      if (alias->type == ALIAS_TYPE_MANUAL_OPERATOR) {
+        fprintf(source, "    {\"%s\", %s},\n", alias->alias, alias->name);
       }
-      end_dependency(source, alias->dependency);
       alias = alias->next;
     }
-
+    fprintf(source, "    {NULL, NULL},\n");
     fprintf(source, "};\n\n");
+  }
 
-    if (node->operations) {
-      fprintf(source, "const luaL_Reg %s_operators[] = {\n", node->sanitized_name);
-      for (uint32_t i = 1; i < OP_LAST; i = (i << 1)) {
-        const char * op_name = get_name_for_operation((node->operations) & i);
-        if (op_name == NULL) {
-          continue;
-        }
-        fprintf(source, "    {\"%s\", %s_%s},\n", op_name, node->sanitized_name, op_name);
-      }
-      struct method_alias *alias = node->method_aliases;
-      while(alias) {
-        if (alias->type == ALIAS_TYPE_MANUAL_OPERATOR) {
-          fprintf(source, "    {\"%s\", %s},\n", alias->alias, alias->name);
-        }
-        alias = alias->next;
-      }
-      fprintf(source, "    {NULL, NULL},\n");
-      fprintf(source, "};\n\n");
-    }
+  if (node->enums != NULL) {
+    emit_enum(node);
+  }
 
-    if (node->enums != NULL) {
-      emit_enum(node);
-    }
+  fprintf(source, "static int %s_index(lua_State *L) {\n", node->sanitized_name);
+  fprintf(source, "    return load_function(L,%s_meta,ARRAY_SIZE(%s_meta))",node->sanitized_name,node->sanitized_name);
+  if (node->enums != NULL) {
+    fprintf(source, " || load_enum(L,%s_enums,ARRAY_SIZE(%s_enums))",node->sanitized_name,node->sanitized_name);
+  }
+  fprintf(source, ";\n");
+  fprintf(source, "}\n");
+  end_dependency(source, node->dependency);
+  fprintf(source, "\n");
+}
 
-    fprintf(source, "static int %s_index(lua_State *L) {\n", node->sanitized_name);
-    fprintf(source, "    return load_function(L,%s_meta,ARRAY_SIZE(%s_meta))",node->sanitized_name,node->sanitized_name);
-    if (node->enums != NULL) {
-      fprintf(source, " || load_enum(L,%s_enums,ARRAY_SIZE(%s_enums))",node->sanitized_name,node->sanitized_name);
-    }
-    fprintf(source, ";\n");
-    fprintf(source, "}\n");
-    end_dependency(source, node->dependency);
-    fprintf(source, "\n");
+void emit_index(struct userdata *head) {
+  struct userdata * node = head;
+  while(node) {
+    emit_index_node(node);
     node = node->next;
   }
 }
