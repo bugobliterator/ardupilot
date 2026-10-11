@@ -12,6 +12,7 @@ Needs RENODE and a CubeOrangePlus-M4Lua build:
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -37,6 +38,7 @@ M7_PEER_MAGIC = 0x30040000
 M4_PEER_MAGIC = 0x30040040
 PEER_MAGIC = 0x48504643
 STEP_TIMEOUT = 300     # wall seconds: Renode runs both cores well below real time
+TEST_DEADLINE = 2700   # wall seconds for a whole test: a wait without its own bound fails the test instead of hanging
 START_TIMEOUT = 120    # wall seconds from MAVLink connect to "Scripting: M4 started" (11-17 s seen)
 M4_PC = r'PC=0x081[C-F][0-9A-F]{4}'
 
@@ -210,6 +212,12 @@ def start_m4lua(tmp_path):
     state_dir.mkdir()
     runs = []
 
+    def deadline_passed(signum, frame):
+        pytest.fail('test passed its %u s wall-clock deadline' % TEST_DEADLINE)
+
+    previous_handler = signal.signal(signal.SIGALRM, deadline_passed)
+    signal.alarm(TEST_DEADLINE)
+
     def start():
         uart_port = unused_tcp_port()
         monitor_port = unused_tcp_port()
@@ -234,6 +242,8 @@ def start_m4lua(tmp_path):
     try:
         yield start
     finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
         # stop every Renode even if one stop fails, then report the first failure
         errors = []
         for run in runs:
