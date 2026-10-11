@@ -17,7 +17,7 @@
 
 namespace ScriptingM4 {
 
-static const uint32_t RPC_PROTOCOL_VERSION = 2;
+static const uint32_t RPC_PROTOCOL_VERSION = 3;
 
 enum class ValueTag : uint8_t {
     Nil = 0,
@@ -34,7 +34,7 @@ enum class ValueTag : uint8_t {
 static const uint8_t MAX_VALUES = 16;
 // a string value fills a reply frame at most: header, tag and length
 static const uint16_t MAX_STRING = MAX_FRAME - sizeof(ReplyHeader) - 3;
-// the largest blob (wire form of mavlink_camera_information_t: about 240 bytes)
+// the largest blob: AP_MotorsMatrix_Scripting_Dynamic::factor_table, 512 bytes
 static const uint16_t MAX_BLOB = 512;
 // scripts per M4 session and their path length, terminator included
 static const uint8_t MAX_SCRIPTS = 32;
@@ -103,7 +103,7 @@ public:
     }
     void blob(uint8_t type_id, const void *data, uint16_t length)
     {
-        if (type_id == 0 || length > MAX_BLOB) {
+        if (type_id == 0 || length > MAX_BLOB || (data == nullptr && length > 0)) {
             _ok = false;
             return;
         }
@@ -328,7 +328,8 @@ public:
     {
         const RpcValue *v = value(index);
         if (v != nullptr && (v->tag == ValueTag::Blob || v->tag == ValueTag::Handle) && _namer != nullptr) {
-            return _namer(v->type_id);
+            const char *name = _namer(v->type_id);
+            return name != nullptr ? name : "userdata";
         }
         return value_type_name(v);
     }
@@ -549,8 +550,8 @@ constexpr uint32_t fnv1a_string(const char *text, uint32_t hash)
 #define SCRIPTING_M4_HASH_CLOSE(id, symbol, name, kind) ))
 static constexpr uint32_t SYSTEM_CONTRACT_HASH =
     SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_HASH_OPEN)
-    fnv1a_word(RPC_PROTOCOL_VERSION, fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader),
-               fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET))))
+    fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION, fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader),
+               fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET)))))
     SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_HASH_CLOSE);
 #undef SCRIPTING_M4_HASH_OPEN
 #undef SCRIPTING_M4_HASH_CLOSE

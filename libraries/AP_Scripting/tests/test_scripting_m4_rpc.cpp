@@ -45,7 +45,7 @@ TEST(ScriptingM4Rpc, DecodeRejectsBadInput)
     EXPECT_FALSE(decode_values(buf, len, 3, values));                 // more values than encoded
     EXPECT_FALSE(decode_values(buf, len, 1, values));                 // trailing bytes
     EXPECT_FALSE(decode_values(buf, len, MAX_VALUES + 1, values));    // over the value limit
-    buf[0] = 6;                                                       // Blob: not in protocol 2
+    buf[0] = 9;                                                       // past Opaque: an unknown tag
     EXPECT_FALSE(decode_values(buf, len, 2, values));
     const uint8_t long_string[] = { uint8_t(ValueTag::String), 0xFF, 0xFF };
     EXPECT_FALSE(decode_values(long_string, sizeof(long_string), 1, values));   // length past the frame
@@ -192,8 +192,8 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
 #undef TEST_METHOD_INFO
     };
     // the constexpr chain folds from the last method to the first
-    uint32_t hash = fnv1a_word(RPC_PROTOCOL_VERSION, fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader),
-                    fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET))));
+    uint32_t hash = fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION, fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader),
+                    fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET)))));
     for (int i = int(sizeof(table) / sizeof(table[0])) - 1; i >= 0; i--) {
         hash = fnv1a_string(table[i].name, fnv1a_word((uint32_t(table[i].id) << 1) | uint32_t(table[i].kind), hash));
     }
@@ -251,6 +251,17 @@ TEST(ScriptingM4Rpc, BlobAndHandleRejected)
     EXPECT_FALSE(decode_values(short_handle, sizeof(short_handle), 1, values));
     const uint8_t zero_handle[] = { uint8_t(ValueTag::Handle), 0, 0, 0, 1, 0, 0, 0 };
     EXPECT_FALSE(decode_values(zero_handle, sizeof(zero_handle), 1, values));
+    static uint8_t over[4 + MAX_BLOB + 1] = { uint8_t(ValueTag::Blob), 3, uint8_t((MAX_BLOB + 1) & 0xFF), uint8_t((MAX_BLOB + 1) >> 8) };
+    EXPECT_FALSE(decode_values(over, sizeof(over), 1, values));          // 513 bytes present
+    static uint8_t at_limit[4 + MAX_BLOB] = { uint8_t(ValueTag::Blob), 3, uint8_t(MAX_BLOB & 0xFF), uint8_t(MAX_BLOB >> 8) };
+    EXPECT_TRUE(decode_values(at_limit, sizeof(at_limit), 1, values));   // factor_table is exactly 512
+    const uint8_t short_blob[] = { uint8_t(ValueTag::Blob), 3, 1 };
+    EXPECT_FALSE(decode_values(short_blob, sizeof(short_blob), 1, values));
+    const uint8_t handle_6[] = { uint8_t(ValueTag::Handle), 3, 0, 0, 1, 0, 0 };   // one byte short
+    EXPECT_FALSE(decode_values(handle_6, sizeof(handle_6), 1, values));
+    writer.restart();
+    writer.handle(0, 1, 1);
+    EXPECT_FALSE(writer.ok());                                           // type 0 is no type
 }
 
 static const char *test_namer(uint8_t type_id)
