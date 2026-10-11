@@ -22074,18 +22074,35 @@ RTL_ALT_M 111
             "SCR_M4_RST_MAX": restart_max,
             "LOG_DISARMED": 1,
         })
+        # its calls show the M4 runs Lua, and runs it again after every restart
+        self.install_test_script_context("m4_loop.lua")
         self.reboot_sitl()
         pid_text = self.wait_statustext(r"Scripting: M4 process pid \d+", regex=True, check_context=True, timeout=30)
         m4_pid = int(re.search(r"pid (\d+)", pid_text.text).group(1))
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.wait_statustext("M4 loop 2", check_context=True, timeout=30)
         self.wait_ready_to_arm()
         self.takeoff(10, mode="LOITER")
         self.set_rc(3, 1500)
+
+        # a request flood costs the M7 bounded time and is no fault
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_M4_INJECT", 6)
+        self.delay_sim_time(5, reason="M4 request flood")
+        self.assert_mode("LOITER")
+        if not self.armed():
+            raise NotAchievedException("disarmed during an M4 request flood")
+        self.wait_altitude(8, 12, relative=True, timeout=10)
+        for m in self.context_collection("STATUSTEXT"):
+            if "Scripting: M4" in m.text:
+                raise NotAchievedException("M4 request flood gave '%s'" % m.text)
+        self.wait_statustext("M4 loop", check_context=True, timeout=10)
+
         steps = (
-            (1, r"Scripting: M4 signal \d+ addr=0x"),
-            (5, r"Scripting: M4 protocol errors"),
-            (3, r"Scripting: M4 heartbeat lost"),
-            (1, r"Scripting: M4 signal \d+ addr=0x"),
+            (1, r"Scripting: M4 signal \d+ addr=0x"),   # fault in the service
+            (5, r"Scripting: M4 protocol errors"),      # ring corruption
+            (3, r"Scripting: M4 heartbeat lost"),       # service stall
+            (9, r"Scripting: M4 signal \d+ addr=0x"),   # stray write from the Lua thread
         )
         if len(steps) != restart_max:
             raise NotAchievedException("fault steps do not match the restart limit")
@@ -22096,6 +22113,8 @@ RTL_ALT_M 111
             self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
             self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
             self.wait_statustext("Scripting: M4 restarted (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
+            # the scripts load again and their calls reach the M7
+            self.wait_statustext("M4 loop 2", check_context=True, timeout=15)
             self.assert_mode("LOITER")
             if not self.armed():
                 raise NotAchievedException("disarmed after an M4 fault")
@@ -22116,17 +22135,25 @@ RTL_ALT_M 111
         dfreader = self.dfreader_for_current_onboard_log()
         states = set()
         restarts_used = 0
+        calls = 0
         while True:
-            m = dfreader.recv_match(type=["M4ST"])
+            m = dfreader.recv_match(type=["M4ST", "SRPC"])
             if m is None:
                 break
-            states.add(m.St)
-            restarts_used = max(restarts_used, m.Rst)
+            if m.get_type() == "M4ST":
+                states.add(m.St)
+                restarts_used = max(restarts_used, m.Rst)
+            elif m.Name == "gcs:send_text":
+                calls += m.N
+                if m.P99 < m.P50:
+                    raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
         # the restarting state lasts far less than the 1 Hz row interval, so only running and off are required
         if not {2, 4}.issubset(states):
             raise NotAchievedException("M4ST states seen: %s" % states)
         if restarts_used != restart_max:
             raise NotAchievedException("M4ST restarts used: %u" % restarts_used)
+        if calls == 0:
+            raise NotAchievedException("no SRPC gcs:send_text round trips logged")
 
         # a lockup ignores the restart request: scripting turns off at once
         self.reboot_sitl()
