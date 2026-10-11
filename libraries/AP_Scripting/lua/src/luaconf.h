@@ -475,7 +475,12 @@
 
 #define l_mathop(op)		op##f
 
+#if defined(AP_LUA_MAX_NUMBER_TEXT)
+/* the M4: newlib-nano's strtof takes memory in proportion to a numeral's length */
+#define lua_str2number(s,p)	lua_bounded_str2number((s), (p))
+#else
 #define lua_str2number(s,p)	strtof((s), (p))
+#endif
 
 
 #elif LUA_FLOAT_TYPE == LUA_FLOAT_LONGDOUBLE	/* }{ long double */

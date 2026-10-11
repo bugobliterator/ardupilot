@@ -625,3 +625,12 @@ extern "C" void lua_abort(void)
 {
     ScriptingM4::port_lua_fault(ScriptingM4::FaultKind::HardFault);
 }
+
+extern "C" float lua_bounded_str2number(const char *s, char **p)
+{
+    if (strnlen(s, AP_LUA_MAX_NUMBER_TEXT + 1) > AP_LUA_MAX_NUMBER_TEXT) {
+        *p = const_cast<char *>(s);   // nothing read: Lua takes it as not a number
+        return 0;
+    }
+    return strtof(s, p);
+}
