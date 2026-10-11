@@ -176,6 +176,10 @@ private:
     // Check if DEBUG_OPTS bit has been set to save current checksum values to params
     void save_checksum();
 
+    // checksums of the scripts loaded and running: the in-process engine's, or the M4's
+    uint32_t loaded_checksum() const;
+    uint32_t running_checksum() const;
+
     // Mask down to 23 bits for comparison with parameters, this the length of the a float mantissa, to deal with the float transport of parameters over MAVLink
     // The full range of uint32 integers cannot be represented by a float.
     const uint32_t checksum_param_mask = 0x007FFFFF;

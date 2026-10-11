@@ -432,6 +432,24 @@ void AP_Scripting::handle_mission_command(const AP_Mission::Mission_Command& cmd
 #endif
 }
 
+uint32_t AP_Scripting::loaded_checksum() const
+{
+#if AP_SCRIPTING_M4_ENABLED
+    return _m4.loaded_checksum();
+#else
+    return lua_scripts::get_loaded_checksum();
+#endif
+}
+
+uint32_t AP_Scripting::running_checksum() const
+{
+#if AP_SCRIPTING_M4_ENABLED
+    return _m4.running_checksum();
+#else
+    return lua_scripts::get_running_checksum();
+#endif
+}
+
 bool AP_Scripting::arming_checks(size_t buflen, char *buffer) const
 {
     if (!enabled() || option_is_set(DebugOption::DISABLE_PRE_ARM)) {
@@ -439,14 +457,11 @@ bool AP_Scripting::arming_checks(size_t buflen, char *buffer) const
     }
 
 #if AP_SCRIPTING_M4_ENABLED
-    // the M4 reports no script checksums: a required checksum can never be met
-    if (_required_loaded_checksum != -1 || _required_running_checksum != -1) {
-        hal.util->snprintf(buffer, buflen, "Scripting: checksums unsupported with M4");
+    // the M4 core's state, then its last script error
+    if (!_m4.arming_checks(buflen, buffer)) {
         return false;
     }
-    return _m4.arming_checks(buflen, buffer);
-#endif
-
+#else
     if (_thread_failed) {
         hal.util->snprintf(buffer, buflen, "Scripting: %s", "failed to start");
         return false;
@@ -465,11 +480,12 @@ bool AP_Scripting::arming_checks(size_t buflen, char *buffer) const
         return false;
     }
     lua_scripts::get_last_error_semaphore()->give();
+#endif
 
     // Use -1 for disabled, this means we don't have to avoid 0 in the CRC, the sign bit is masked off anyway
     if (_required_loaded_checksum != -1) {
         const uint32_t expected_loaded = (uint32_t)_required_loaded_checksum.get() & checksum_param_mask;
-        const uint32_t loaded = lua_scripts::get_loaded_checksum() & checksum_param_mask;
+        const uint32_t loaded = loaded_checksum() & checksum_param_mask;
         if (expected_loaded != loaded) {
             hal.util->snprintf(buffer, buflen, "Scripting: loaded CRC incorrect want: 0x%x", (unsigned int)loaded);
             return false;
@@ -478,7 +494,7 @@ bool AP_Scripting::arming_checks(size_t buflen, char *buffer) const
 
     if (_required_running_checksum != -1) {
         const uint32_t expected_running = (uint32_t)_required_running_checksum.get() & checksum_param_mask;
-        const uint32_t running = lua_scripts::get_running_checksum() & checksum_param_mask;
+        const uint32_t running = running_checksum() & checksum_param_mask;
         if (expected_running != running) {
             hal.util->snprintf(buffer, buflen, "Scripting: running CRC incorrect want: 0x%x", (unsigned int)running);
             return false;
@@ -550,8 +566,8 @@ void AP_Scripting::save_checksum() {
     }
 
     // Save two checksum parameters to there current values
-    _required_loaded_checksum.set_and_save(lua_scripts::get_loaded_checksum() & checksum_param_mask);
-    _required_running_checksum.set_and_save(lua_scripts::get_running_checksum() & checksum_param_mask);
+    _required_loaded_checksum.set_and_save(loaded_checksum() & checksum_param_mask);
+    _required_running_checksum.set_and_save(running_checksum() & checksum_param_mask);
 
     // Un-set debug option bit
     option_clear(DebugOption::SAVE_CHECKSUM);
