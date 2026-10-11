@@ -19603,6 +19603,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4Containment,
             self.ScriptingM4Scripts,
             self.ScriptingM4Checksums,
+            self.ScriptingM4Bindings,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22324,6 +22325,50 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+    def m4_srpc_totals(self):
+        '''sum of SRPC.N per method name in the current onboard log'''
+        dfreader = self.dfreader_for_current_onboard_log()
+        totals = {}
+        while True:
+            m = dfreader.recv_match(type="SRPC")
+            if m is None:
+                return totals
+            if m.P99 < m.P50:
+                raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
+            totals[m.Name] = totals.get(m.Name, 0) + m.N
+
+    def ScriptingM4Bindings(self):
+        '''generated bindings run unmodified on the SITL M4 scripting process'''
+        # m4_bindings.lua: every kind of generated binding; its own call counts against SRPC
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_DEBUG_OPTS": 8,   # LOG_RUNTIME: SRPC rows
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+            "SCR_USER2": 0,
+        })
+        self.install_test_script_context("m4_bindings.lua")
+        self.reboot_sitl()
+        self.wait_statustext("M4 bindings passed", check_context=True, timeout=90)
+        self.delay_sim_time(3, reason="the M4 reports call counts once a second")
+        expected = {}
+        for m in self.context_collection("STATUSTEXT"):
+            match = re.match(r"M4 count (\S+) (\d+)$", m.text)
+            if match is not None:
+                expected[match.group(1)] = int(match.group(2))
+        if len(expected) < 15:
+            raise NotAchievedException("too few M4 count texts: %s" % expected)
+        totals = self.m4_srpc_totals()
+        for name, n in expected.items():
+            if totals.get(name, 0) != n:
+                raise NotAchievedException("SRPC %s: %u calls logged, script made %u" % (name, totals.get(name, 0), n))
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24445,6 +24490,7 @@ return update, 1000
             "ScriptingM4Containment": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Scripts": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Checksums": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4Bindings": "Requires --enable-scripting-m4 SITL build",
         }
 
 
