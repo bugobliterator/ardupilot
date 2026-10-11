@@ -22166,7 +22166,8 @@ RTL_ALT_M 111
             raise NotAchievedException("M4ST running sessions: %s" % sessions)
         if calls == 0:
             raise NotAchievedException("no SRPC gcs:send_text round trips logged")
-        # the flood's proxy in SITL: the M7 served more in one second than one flood() pass sends (256)
+        # the flood's proxy in SITL: the M7 served more requests in one second than a
+        # normal session's scripts send (a flood pass sends until the ring is full)
         self.progress("M4ST most requests in one second: %u" % requests_max)
         if requests_max <= 256:
             raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
@@ -22233,7 +22234,7 @@ RTL_ALT_M 111
         self.set_parameters({
             "SCR_ENABLE": 1,
             "SCR_VM_I_COUNT": 1000000,
-            "SCR_HEAP_SIZE": 196608,   # AP_SCRIPTING_M4_LUA_HEAP_MIN
+            "SCR_HEAP_SIZE": 188416,   # the CubeOrangePlus-M4Lua default: the M4 heap less newlib's reserve
         })
         self.install_test_scripts_context(["math.lua", "strings.lua", "m4_loop.lua"])
         self.install_example_script_context("fault_handling.lua")
@@ -22248,7 +22249,7 @@ RTL_ALT_M 111
         self.context_collect("STATUSTEXT")
         self.set_parameters({
             "SCR_ENABLE": 1,
-            "SCR_HEAP_SIZE": 196608,
+            "SCR_HEAP_SIZE": 188416,
         })
         self.install_test_scripts_context(["m4_errors.lua", "m4_heap_exhaust.lua", "m4_loop.lua"])
         self.reboot_sitl()
