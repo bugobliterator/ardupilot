@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <type_traits>
 // ap_setjmp.h includes the board header inside extern "C"; C++ needs it included first
 #include <AP_HAL/AP_HAL_Boards.h>
 #include <AP_HAL/ap_setjmp.h>
@@ -35,6 +36,7 @@ class WireWriter {
 public:
     template <typename T> void write(T value)
     {
+        static_assert(std::is_arithmetic<T>::value && !std::is_same<T, bool>::value, "write the wire kind");
         if (!_ok || uint32_t(_length) + sizeof(value) > sizeof(_buf)) {
             _ok = false;
             return;
@@ -57,6 +59,8 @@ public:
     WireReader(const uint8_t *data, uint16_t length) : _data(data), _length(length) {}
     template <typename T> bool read(T &value)
     {
+        // a bool or enum read from arbitrary bytes is undefined: read the wire kind, then check and convert
+        static_assert(std::is_arithmetic<T>::value && !std::is_same<T, bool>::value, "read the wire kind, then convert");
         if (uint32_t(_pos) + sizeof(value) > _length) {
             return false;
         }

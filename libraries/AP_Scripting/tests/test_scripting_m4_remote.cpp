@@ -151,6 +151,43 @@ static int thing_many(lua_State *L) {
     return 20;
 }
 
+static int thing_echo_many(lua_State *L) {
+    binding_argcheck(L, 2);
+    for (int i = 0; i < 4; i++) {
+        luaL_checkstring(L, 2);
+    }
+    return 0;
+}
+static int thing_fail(lua_State *L) {
+    binding_argcheck(L, 1);
+    return luaL_error(L, "internal error: %s is null", "Object");
+}
+static int thing_absent(lua_State *L) {
+    return not_supported_error(L, 1, "thing");
+}
+static int thing_usec(lua_State *L) {
+    binding_argcheck(L, 1);
+    *new_uint64_t(L) = 5000000000ULL;
+    return 1;
+}
+static int thing_last(lua_State *L) {
+    binding_argcheck(L, 1);
+    lua_pushinteger(L, 1);
+    lua_pushinteger(L, 2);
+    lua_pushinteger(L, 3);
+    return 1;
+}
+static int thing_malformed(lua_State *L) {
+    binding_argcheck(L, 1);
+    lua_pushinteger(L, 1);
+    return 2;
+}
+static int thing_no_object(lua_State *L) {
+    binding_argcheck(L, 1);
+    *new_Object(L) = nullptr;
+    return 1;
+}
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -251,6 +288,7 @@ TEST(ScriptingM4Remote, ArgumentTexts)
     c.args.integer(3);
     c.args.string("ok", 2);
     EXPECT_EQ(c.run(thing_set), ReplyStatus::Ok);
+    EXPECT_EQ(c.error_arg, 0);   // not the previous call's
     ASSERT_EQ(c.count, 1);
     EXPECT_EQ(c.values[0].tag, ValueTag::True);
 }
@@ -416,6 +454,89 @@ TEST(ScriptingM4Remote, WarningsAndLimits)
     c.args.nil();
     EXPECT_EQ(c.run(thing_many), ReplyStatus::Error);
     EXPECT_EQ(c.text(0), "M4: results too large");
+}
+
+TEST(ScriptingM4Remote, WrongHandleType)
+{
+    Call c;
+    c.args.nil();
+    c.args.handle(PAIR, 0, 7);
+    EXPECT_EQ(c.run(thing_read), ReplyStatus::ArgError);
+    EXPECT_EQ(c.error_arg, 2);
+    EXPECT_EQ(c.text(0), "Object expected, got Pair");
+}
+
+TEST(ScriptingM4Remote, BlobWithTrailingBytes)
+{
+    Call c;
+    const uint8_t long_wire[12] = {};
+    c.args.blob(PAIR, long_wire, sizeof(long_wire));
+    EXPECT_EQ(c.run(Pair_a, METHOD_WRITES_SELF), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: invalid Pair");
+}
+
+TEST(ScriptingM4Remote, ArenaExhausted)
+{
+    Call c;
+    const std::string text(600, 'x');
+    c.args.nil();
+    c.args.string(text.c_str(), text.size());
+    EXPECT_EQ(c.run(thing_echo_many), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: call too large");
+}
+
+TEST(ScriptingM4Remote, ErrorFunctions)
+{
+    Call c;
+    c.args.nil();
+    EXPECT_EQ(c.run(thing_fail), ReplyStatus::Error);
+    EXPECT_EQ(c.error_arg, 0);
+    EXPECT_EQ(c.text(0), "internal error: Object is null");
+    c.args.nil();
+    EXPECT_EQ(c.run(thing_absent), ReplyStatus::ArgError);
+    EXPECT_EQ(c.error_arg, 1);
+    EXPECT_EQ(c.text(0), "thing not supported on this firmware");
+}
+
+TEST(ScriptingM4Remote, Uint64)
+{
+    Call c;
+    c.call.uint64_type = 4;
+    c.args.nil();
+    EXPECT_EQ(c.run(thing_usec), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 1);
+    ASSERT_EQ(c.values[0].tag, ValueTag::Blob);
+    EXPECT_EQ(c.values[0].type_id, 4);
+    ASSERT_EQ(c.values[0].length, 8);
+    uint64_t usec;
+    memcpy(&usec, c.values[0].blob, sizeof(usec));
+    EXPECT_EQ(usec, 5000000000ULL);
+}
+
+TEST(ScriptingM4Remote, ReturnShapes)
+{
+    Call c;
+    // the last values pushed, as a lua_CFunction returns
+    c.args.nil();
+    EXPECT_EQ(c.run(thing_last), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 1);
+    EXPECT_EQ(c.values[0].integer, 3);
+    c.args.nil();
+    EXPECT_EQ(c.run(thing_malformed), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: malformed binding");
+    // a null object is nil and takes no handle
+    c.args.nil();
+    EXPECT_EQ(c.run(thing_no_object), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 1);
+    EXPECT_EQ(c.values[0].tag, ValueTag::Nil);
+    EXPECT_EQ(c.handles.count(), 0);
+}
+
+TEST(ScriptingM4Remote, RaiseOutsideRunTraps)
+{
+    Call c;
+    // no run() is active: the jump buffer is not a live frame
+    EXPECT_DEATH(thing_set(&c.call), "");
 }
 
 AP_GTEST_MAIN()

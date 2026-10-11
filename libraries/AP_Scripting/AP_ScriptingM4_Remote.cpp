@@ -17,6 +17,10 @@ static RemoteCall *current;
 
 [[noreturn]] static void raise_error(lua_State *L, ReplyStatus status, int arg, const char *message)
 {
+    if (current != L) {
+        // no run() of this call is active: its jump buffer is a dead frame
+        __builtin_trap();
+    }
     L->status = status;
     L->error_arg = uint8_t(arg);
     snprintf(L->message, sizeof(L->message), "%s", message);
@@ -404,6 +408,7 @@ static bool encode_object(const RemoteCall &call, uint8_t type_id, const void *o
 ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunction function, uint8_t flags,
                 RpcWriter &results, uint8_t &error_arg)
 {
+    error_arg = 0;
     call.args = args;
     call.argc = argc;
     call.result_count = 0;
