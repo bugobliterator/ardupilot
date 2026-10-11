@@ -22400,6 +22400,21 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+        # long numerals with the Lua heap full: they read as not a number, and the M4 keeps running
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameter("SCR_ENABLE", 1)
+        self.install_test_script_context("m4_number_text.lua")
+        self.reboot_sitl()
+        self.wait_statustext("M4 number text ok", check_context=True, timeout=60)
+        for m in self.context_collection("STATUSTEXT"):
+            if (m.text.startswith("Scripting: M4") and m.text != "Scripting: M4 started" and
+                    not m.text.startswith("Scripting: M4 process pid")):
+                raise NotAchievedException("M4 trouble with long numerals: %s" % m.text)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
