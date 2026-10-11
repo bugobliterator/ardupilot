@@ -48,6 +48,7 @@ CPPSRC = $(ALLCPPSRC) \
          $(CONFDIR)/main.cpp \
          $(CONFDIR)/fault.cpp \
          $(CONFDIR)/lua_port.cpp \
+         $(CONFDIR)/lua_heap.cpp \
          $(M4DIR)/m4_service.cpp \
          $(M4DIR)/m4_lua.cpp \
          $(M4DIR)/m4_rpc_client.cpp \
@@ -78,9 +79,9 @@ ULIBS = --specs=nano.specs --specs=nosys.specs -u _printf_float -lm
 
 # RAM privilege per object file (scripting_m4.ld): statics are privileged unless
 # their object is listed here. These run on the unprivileged Lua thread and go to
-# Lua RAM: the Lua core, the M4 Lua runtime (lua_alloc, the RPC client) and newlib
-# (the malloc behind lua_alloc, errno and the reent state of printf and strtod).
-LUA_RAM_OBJECTS = $(M4_LUA_SOURCES:.c=.o) ap_setjmp.o m4_lua.o m4_rpc_client.o
+# Lua RAM: the Lua core, the M4 Lua runtime (lua_alloc, its heap, the RPC client) and
+# newlib (the malloc behind lua_alloc, errno and the reent state of printf and strtod).
+LUA_RAM_OBJECTS = $(M4_LUA_SOURCES:.c=.o) ap_setjmp.o m4_lua.o lua_heap.o m4_rpc_client.o
 LUA_RAM_ARCHIVES = libc_nano.a libg_nano.a libm.a libnosys.a
 lua_ram_input = $(foreach object,$(LUA_RAM_OBJECTS),'*/obj/$(object)($(1))') \
                 $(foreach archive,$(LUA_RAM_ARCHIVES),'*/$(archive):*($(1))')

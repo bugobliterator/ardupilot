@@ -54,7 +54,7 @@ static struct {
     int32_t vm_steps;
     uint32_t options;
     uint32_t heap_limit;
-    uint32_t heap_used;        // charged as block_cost() per live block
+    uint32_t heap_used;        // port_heap_block_cost() of every live block
     int current_env_ref;
     bool overtime;
 } rt;
@@ -68,34 +68,26 @@ static struct {
     char buffer[MAX_STRING];
 } reader;
 
-// what a block costs newlib's malloc, approximately: 8-byte rounding and a chunk
-// header; both platforms charge it, so a script that fits in SITL fits on the M4
-static uint32_t block_cost(size_t size)
+// Lua's osize is not used: after a shrink that realloc kept in place, the block costs
+// more than osize says, so the platform reports what each block really takes
+static void *lua_alloc(void *, void *ptr, size_t, size_t nsize)
 {
-    return size == 0 ? 0 : uint32_t(((size + 7) & ~size_t(7)) + 8);
-}
-
-static void *lua_alloc(void *, void *ptr, size_t osize, size_t nsize)
-{
-    if (ptr == nullptr) {
-        osize = 0;   // osize then names the type of the new object
-    }
-    const uint32_t old_cost = block_cost(osize);
+    const uint32_t old_cost = ptr != nullptr ? port_heap_block_cost(ptr) : 0;
     if (nsize == 0) {
-        free(ptr);
+        port_heap_free(ptr);
         rt.heap_used -= old_cost;
         return nullptr;
     }
-    const uint32_t new_cost = block_cost(nsize);
-    if (new_cost > old_cost && rt.heap_used + (new_cost - old_cost) > rt.heap_limit) {
+    const uint32_t new_cost = heap_block_cost(nsize);
+    if (new_cost > old_cost && rt.heap_used - old_cost + new_cost > rt.heap_limit) {
         return nullptr;
     }
-    void *grown = realloc(ptr, nsize);
-    if (grown == nullptr) {
+    void *block = port_heap_realloc(ptr, nsize);
+    if (block == nullptr) {
         return nullptr;
     }
-    rt.heap_used = rt.heap_used - old_cost + new_cost;
-    return grown;
+    rt.heap_used = rt.heap_used - old_cost + port_heap_block_cost(block);
+    return block;
 }
 
 static int32_t memory_in_use(lua_State *L)

@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <AP_ScriptingM4_Placement.h>
@@ -114,9 +115,50 @@ void ScriptingM4::port_lua_fault(FaultKind kind)
 
 uint32_t ScriptingM4::port_heap_capacity()
 {
-    // the heap the M4 image guarantees, charged alike (m4_lua.cpp block_cost):
-    // a script that fits here fits there, approximately
+    // the heap the M4 image guarantees, charged with the model below: a script that
+    // fits here fits there
     return AP_SCRIPTING_M4_LUA_HEAP_MIN;
+}
+
+/*
+  A model of newlib-nano's malloc on the host allocator. Each block costs
+  heap_block_cost() of the size it was allocated at (at least newlib-nano's
+  chunk) and, as newlib-nano's realloc does, keeps that cost while realloc
+  finds it big enough. The header in front of the block holds the cost.
+ */
+static const size_t BLOCK_HEADER = 16;   // keeps the block 16-aligned
+
+static uint32_t &charged_cost(void *block)
+{
+    return *reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(block) - BLOCK_HEADER);
+}
+
+void *ScriptingM4::port_heap_realloc(void *block, size_t size)
+{
+    // the model's usable size is its cost less the 8 bytes of chunk overhead
+    if (block != nullptr && size <= charged_cost(block) - 8) {
+        return block;
+    }
+    const uint32_t cost = heap_block_cost(size);
+    void *base = block != nullptr ? static_cast<uint8_t *>(block) - BLOCK_HEADER : nullptr;
+    uint8_t *grown = static_cast<uint8_t *>(realloc(base, BLOCK_HEADER + cost - 8));
+    if (grown == nullptr) {
+        return nullptr;
+    }
+    charged_cost(grown + BLOCK_HEADER) = cost;
+    return grown + BLOCK_HEADER;
+}
+
+void ScriptingM4::port_heap_free(void *block)
+{
+    if (block != nullptr) {
+        free(static_cast<uint8_t *>(block) - BLOCK_HEADER);
+    }
+}
+
+uint32_t ScriptingM4::port_heap_block_cost(void *block)
+{
+    return charged_cost(block);
 }
 
 void lua_port_wake()
