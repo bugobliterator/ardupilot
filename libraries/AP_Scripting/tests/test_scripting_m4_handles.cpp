@@ -1,5 +1,6 @@
 #include <AP_gtest.h>
 #include <AP_Scripting/AP_ScriptingM4_Handles.h>
+#include <AP_Scripting/AP_ScriptingM4_Quota.h>
 
 using namespace ScriptingM4;
 
@@ -52,6 +53,47 @@ TEST(ScriptingM4Handles, FullTableRefuses)
     }
     EXPECT_EQ(table.insert(1, &objects[HandleTable::CAPACITY]), -1);
     EXPECT_EQ(table.insert(1, &objects[0]), 0);   // known objects still resolve
+}
+
+TEST(ScriptingM4Quota, BurstThenRate)
+{
+    Quota quota;
+    quota.reset(1000);
+    const QuotaLimit &text = QUOTA_LIMITS[uint8_t(QuotaClass::Text)];
+    for (uint16_t i = 0; i < text.burst; i++) {
+        EXPECT_TRUE(quota.allow(QuotaClass::Text, 1000)) << i;
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::Text, 1000));            // burst spent
+    EXPECT_FALSE(quota.allow(QuotaClass::Text, 1000 + 1000 / text.per_second - 1));
+    EXPECT_TRUE(quota.allow(QuotaClass::Text, 1000 + 1000 / text.per_second));   // one call's worth refilled
+    EXPECT_EQ(quota.take_hits(), 2U);
+    EXPECT_EQ(quota.take_hits(), 0U);
+}
+
+TEST(ScriptingM4Quota, ClassesAreIndependent)
+{
+    Quota quota;
+    quota.reset(0);
+    while (quota.allow(QuotaClass::Text, 0)) {
+    }
+    EXPECT_TRUE(quota.allow(QuotaClass::Storage, 0));
+    EXPECT_TRUE(quota.allow(QuotaClass::None, 0));               // no quota
+    for (uint32_t i = 0; i < 100000; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::None, 0));
+    }
+    EXPECT_TRUE(quota.allow(QuotaClass(9), 0));                  // unknown class: no quota
+}
+
+TEST(ScriptingM4Quota, RefillStopsAtTheBurst)
+{
+    Quota quota;
+    quota.reset(0);
+    const QuotaLimit &storage = QUOTA_LIMITS[uint8_t(QuotaClass::Storage)];
+    uint32_t allowed = 0;
+    while (quota.allow(QuotaClass::Storage, 3600000)) {          // an hour idle
+        allowed++;
+    }
+    EXPECT_EQ(allowed, storage.burst);
 }
 
 AP_GTEST_MAIN()
