@@ -22356,16 +22356,47 @@ RTL_ALT_M 111
         self.wait_statustext("M4 bindings passed", check_context=True, timeout=90)
         self.delay_sim_time(3, reason="the M4 reports call counts once a second")
         expected = {}
+        script_total = None
         for m in self.context_collection("STATUSTEXT"):
             match = re.match(r"M4 count (\S+) (\d+)$", m.text)
             if match is not None:
                 expected[match.group(1)] = int(match.group(2))
-        if len(expected) < 15:
-            raise NotAchievedException("too few M4 count texts: %s" % expected)
+            match = re.match(r"M4 total (\d+)$", m.text)
+            if match is not None:
+                script_total = int(match.group(1))
+        if len(expected) < 15 or script_total is None:
+            raise NotAchievedException("too few M4 count texts: %s total %s" % (expected, script_total))
         totals = self.m4_srpc_totals()
+        # a method can fold into m4:other in a busy window: never more than the script made
         for name, n in expected.items():
-            if totals.get(name, 0) != n:
+            if totals.get(name, 0) > n:
                 raise NotAchievedException("SRPC %s: %u calls logged, script made %u" % (name, totals.get(name, 0), n))
+        # and every binding call is logged once: the binding rows and m4:other add up to the
+        # script's total (the M4 runtime's own m4:* calls and print are not the script's)
+        logged = sum(n for name, n in totals.items()
+                     if name == "m4:other" or not (name.startswith("m4:") or name == "global:print"))
+        self.progress("SRPC binding calls logged %u, script made %u" % (logged, script_total))
+        if logged != script_total:
+            raise NotAchievedException("SRPC binding calls: %u logged, script made %u (%s)" % (logged, script_total, totals))
+        self.context_pop()
+
+        # a refused m4:bindings image: no script runs and prearm stays failed
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_M4_INJECT": 10,   # m4:bindings answers an error
+        })
+        self.install_test_script_context("m4_loop.lua")
+        self.reboot_sitl()
+        self.wait_statustext("M4 bindings image failed", check_context=True, timeout=30)
+        self.assert_prearm_failure("Scripting: M4 bindings image failed", other_prearm_failures_fatal=False)
+        self.delay_sim_time(5, reason="no script may run")
+        self.assert_prearm_failure("Scripting: M4 bindings image failed", other_prearm_failures_fatal=False)
+        for m in self.context_collection("STATUSTEXT"):
+            if m.text.startswith("M4 loop") or "started on M4" in m.text:
+                raise NotAchievedException("scripts ran without the bindings image: '%s'" % m.text)
         self.context_pop()
         self.reboot_sitl()
 
