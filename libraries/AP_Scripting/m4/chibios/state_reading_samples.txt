@@ -1,0 +1,26 @@
+state|Location::get_alt_cm(Location::AltFrame, long&) const
+state|Location::get_alt_m(Location::AltFrame, float&) const
+state|Location::change_alt_frame(Location::AltFrame)
+state|Location::get_height_above(Location const&, double&) const
+state|Location::get_distance_NED_alt_frame(Location const&) const
+state|bool Location::get_vector_from_origin_NEU<Vector3<float> >(Vector3<float>&) const
+state|bool Location::get_vector_from_origin_NED_m<Vector3<double> >(Vector3<double>&) const
+state|bool Location::get_vector_from_origin_NEU_m<Vector3<float> >(Vector3<float>&) const
+state|bool Location::get_vector_from_origin_NEU_cm<Vector3<double> >(Vector3<double>&) const
+state|bool Location::get_vector_xy_from_origin_NE_m<Vector2<float> >(Vector2<float>&) const
+state|bool Location::get_vector_xy_from_origin_NE_cm<Vector2<double> >(Vector2<double>&) const
+state|Vector3<float>::rotate(Rotation)
+state|Vector3<float>::rotate_inverse(Rotation)
+state|QuaternionT<float>::from_rotation(Rotation)
+state|QuaternionT<float>::rotate(Rotation)
+state|AP_CustomRotations::rotate(Rotation, Vector3<float>&)
+state|AP_CustomRotations::from_rotation(Rotation, QuaternionT<float>&)
+state|void AP_CustomRotations::rotate<float>(Rotation, Vector3<float>&)
+local|Location::get_alt_frame() const
+local|Location::get_distance_NED(Location const&) const
+local|Location::get_bearing(Location const&) const
+local|Location::offset(double, double)
+local|Location::set_alt_m(float, Location::AltFrame)
+local|Vector3<float>::rotate_xy(float)
+local|Vector2<float>::rotate(float)
+local|QuaternionT<float>::rotate(Vector3<float> const&)

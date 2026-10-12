@@ -157,13 +157,21 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 # AP_Terrain.h, AP_CustomRotations.h): a Location method that reads home, the EKF origin
 # or terrain returns false there, and a custom rotation is left unapplied. Those methods
 # must stay remote rows; fails (and removes the image) if any is in the image
-STATE_READING_SYMBOLS = Location::(get_alt_cm|get_alt_m|change_alt_frame|get_height_above|get_distance_NED_alt_frame|get_vector_from_origin_NEU|get_vector_xy_from_origin_NE)\\( \
-                        Vector3<[a-z]+>::rotate\\(Rotation QuaternionT<[a-z]+>::(from_rotation|rotate)\\(Rotation AP_CustomRotations::
+# nm -C prints a return type before template members and template arguments before the
+# parameters (bool Location::get_vector_from_origin_NEU_m<Vector3<float> >(...) const)
+STATE_READING_SYMBOLS = Location::(get_alt_cm|get_alt_m|change_alt_frame|get_height_above|get_distance_NED_alt_frame|get_vector_from_origin_|get_vector_xy_from_origin_)[A-Za-z_]*(<.*>)?\\( \
+                        Vector3<[a-z]+>::rotate(_inverse)?\\(Rotation QuaternionT<[a-z]+>::(from_rotation|rotate)\\(Rotation AP_CustomRotations::
+# demangled names copied from nm -C of the M7 image: "state" lines must match, "local" must not
+STATE_READING_SAMPLES = $(M4DIR)/chibios/state_reading_samples.txt
 empty :=
 space := $(empty) $(empty)
 all: $(BUILDDIR)/local_pure_data.ok
-$(BUILDDIR)/local_pure_data.ok: $(BUILDDIR)/$(PROJECT).elf
-	@$(TRGT)nm -C --defined-only '$<' | awk -v pattern='^($(subst $(space),|,$(STATE_READING_SYMBOLS)))' ' \
+$(BUILDDIR)/local_pure_data.ok: $(BUILDDIR)/$(PROJECT).elf $(STATE_READING_SAMPLES)
+	@awk -F'|' -v pattern='(^| )($(subst $(space),|,$(STATE_READING_SYMBOLS)))' ' \
+	    ($$1 == "state" && $$2 !~ pattern) { print "scripting_m4: sample not matched by STATE_READING_SYMBOLS: " $$2; status = 1 } \
+	    ($$1 == "local" && $$2 ~ pattern) { print "scripting_m4: sample matched by STATE_READING_SYMBOLS: " $$2; status = 1 } \
+	    END { exit status }' '$(STATE_READING_SAMPLES)' || { rm -f '$<'; exit 1; }
+	@$(TRGT)nm -C --defined-only '$<' | awk -v pattern='(^| )($(subst $(space),|,$(STATE_READING_SYMBOLS)))' ' \
 	    { name = $$0; sub(/^[0-9a-f]+ [A-Za-z] /, "", name) } \
 	    name ~ pattern { print "scripting_m4: " name " is state-reading and must not be local"; status = 1 } \
 	    END { exit status }' || { rm -f '$<'; exit 1; }
