@@ -23001,6 +23001,11 @@ RTL_ALT_M 111
         "CAN_D2_PROTOCOL": 10,   # scripting
         "NET_ENABLE": 1,
     }
+    M4_DEVICE_STAGES = [   # m4_devices.lua
+        "i2c_devices", "pwm_sources", "can_buffers", "dronecan", "dronecan_churn", "dronecan_quota",
+        "udp_send", "udp_receive", "tcp_connect", "tcp_blocking_send", "tcp_sendfile",
+        "tcp_sendfile_cap", "stream_send", "stream_receive", "crsf_menus",
+    ]
     M4_DEVICE_LISTEN_PORT = 15905   # m4_devices_hold.lua
 
     def m4_devices_connect(self, port):
@@ -23031,7 +23036,10 @@ RTL_ALT_M 111
             self.reboot_sitl()
             self.wait_statustext(r"Scripting: started on M4 \(1 scripts, heap \d+KB\)", regex=True,
                                  check_context=True, timeout=30)
-            done = self.wait_m4_script_text(r"M4 devices (passed|failed \d+)", timeout=240)
+            # a stage that stalls names itself: its text is the one missing
+            for name in self.M4_DEVICE_STAGES:
+                self.wait_m4_script_text("M4 devices stage %s" % name, timeout=60)
+            done = self.wait_m4_script_text(r"M4 devices (passed|failed \d+)", timeout=60)
             failed = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 devices FAIL")]
             if failed or "passed" not in done.text:
                 raise NotAchievedException("m4_devices.lua: %s" % (failed or done.text))
