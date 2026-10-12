@@ -3111,6 +3111,7 @@ struct remote_wrapper {
 static const struct remote_wrapper remote_m4_wrappers[] = {
   { "AP_HAL__I2CDevice_read_registers", "wrap_I2CDevice_read_registers" },   // a table of bytes
   { "SocketAPM_sendfile", "wrap_SocketAPM_sendfile" },                       // a Lua file
+  { "lua_get_SocketAPM", "wrap_SocketAPM_new" },         // the M4 keeps whether it is a datagram socket
   { "SocketAPM_connect", "wrap_SocketAPM_connect" },     // a blocking socket: the M4 waits
   { "SocketAPM_send_checked", "wrap_SocketAPM_send" },
   { "SocketAPM_sendto_checked", "wrap_SocketAPM_sendto" },

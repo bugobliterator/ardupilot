@@ -18,6 +18,13 @@
 
 #include <AP_HAL/utility/Socket.h>
 #include <AP_Networking/AP_Networking.h>
+#if AP_NETWORKING_BACKEND_CHIBIOS || AP_NETWORKING_BACKEND_PPP
+#include <lwip/sockets.h>
+#define SOCKET_CALL(x) ::lwip_##x
+#else
+#include <sys/socket.h>
+#define SOCKET_CALL(x) ::x
+#endif
 #include "AP_Scripting.h"
 #include "AP_ScriptingM4_Remote.h"
 
@@ -93,7 +100,7 @@ int SocketAPM_sendfile(lua_State *L)
     const int32_t id = luaL_checkinteger(L, 2);
     const int fd = L->files != nullptr ? L->files->lookup(id) : -1;
 
-    const bool ret = socket_sendfile(sendfiles, fd, [ud](int descriptor) {
+    const bool ret = socket_sendfile(sendfiles, fd, AP::network().get_semaphore(), [ud](int descriptor) {
         return AP::network().sendfile(ud, descriptor);
     });
     if (ret) {
@@ -233,12 +240,16 @@ int lua_m4_SocketAPM_set_blocking(lua_State *L)
 void sockets_end_session()
 {
     auto *scripting = AP::scripting();
-    // clear allocated sockets
+    // clear allocated sockets, with a reset in place of a FIN the stack may wait for
     for (uint8_t i = 0; i < SCRIPTING_MAX_NUM_NET_SOCKET; i++) {
-        if (scripting->_net_sockets[i] != nullptr) {
-            delete scripting->_net_sockets[i];
-            scripting->_net_sockets[i] = nullptr;
-        }
+        socket_end(scripting->_net_sockets[i], [](int fd) {
+            if (fd != -1) {
+                struct linger reset {};
+                reset.l_onoff = 1;
+                reset.l_linger = 0;
+                (void)SOCKET_CALL(setsockopt)(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset));
+            }
+        });
     }
     // a file handed over stays with AP_Networking until it is sent, past the session's end
     // (Bench Validation: FatFs descriptors held across sessions)

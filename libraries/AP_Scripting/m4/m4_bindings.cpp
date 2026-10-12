@@ -211,9 +211,12 @@ uint32_t releases_dropped()
 
 uint8_t *handle_state(lua_State *L, int arg, uint8_t type_id)
 {
-    if (type_id == 0 || userdata_type(L, arg) != type_id) {
+    arg = lua_absindex(L, arg);
+    const uint8_t found = userdata_type(L, arg);
+    if (found == 0 || (type_id != 0 && found != type_id)) {
         return nullptr;
     }
+    type_id = found;
     const BindingKind kind = BindingKind(type_of(type_id).kind);
     if (kind != BindingKind::Handle && kind != BindingKind::Owned) {
         return nullptr;

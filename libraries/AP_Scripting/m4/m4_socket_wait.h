@@ -20,6 +20,12 @@ namespace ScriptingM4 {
 
 static const uint32_t SOCKET_RETRY_MS = 10;
 static const uint32_t SOCKET_IDLE_LIMIT_MS = 5000;
+// a blocking send gives up after this long in all, however slowly the peer takes the data
+static const uint32_t SOCKET_SEND_LIMIT_MS = 30000;
+// the most of a stream send one M7 call carries (m4_wrappers.cpp checks it fits a call frame): a
+// send of more is cut into pieces of this size, so it is not refused for its length. A datagram
+// is never cut: it is one call, and one too long for a frame fails, as one datagram it must stay
+static const size_t SOCKET_SEND_CHUNK = 768;
 
 enum class SocketStep : uint8_t {
     Done,       // completed or failed: stop trying
@@ -76,5 +82,50 @@ private:
     size_t _wanted;
     size_t _sent = 0;
 };
+
+// sock:send()/sendto() of length bytes over its M7 calls: call(offset, piece, first, would_block)
+// sends piece bytes from offset and returns the call's count (first: the call carries the script's
+// own length argument, so the M7 checks the arguments before anything is sent; it sends at most
+// the piece). wanted() is the length the script asked for, read once the first call succeeded.
+// - a stream send goes in pieces of SOCKET_SEND_CHUNK, the next at once after a whole piece;
+// - a datagram goes in one piece;
+// - non-blocking: it ends at the first piece that is short, would block or fails;
+// - blocking: such a piece is tried again every SOCKET_RETRY_MS, until all is sent, a call fails,
+//   SOCKET_IDLE_LIMIT_MS pass without progress or SOCKET_SEND_LIMIT_MS in all.
+// The result is the bytes sent if any, else the last call's count, as one in-process send returns
+template <typename Call, typename Wanted, typename Sleep, typename Millis>
+int32_t socket_send_all(size_t length, bool datagram, bool blocking, Call call, Wanted wanted, Sleep sleep_ms,
+                        Millis millis)
+{
+    const uint32_t start_ms = millis();
+    uint32_t progress_ms = start_ms;
+    size_t piece = (datagram || length < SOCKET_SEND_CHUNK) ? length : SOCKET_SEND_CHUNK;
+    bool would_block = false;
+    int32_t count = call(0, piece, true, would_block);
+    SocketSend progress(wanted());
+    for (;;) {
+        const bool whole = count >= 0 && (size_t(count) >= piece || size_t(count) >= progress.remaining());
+        const SocketStep step = progress.add(count, would_block);
+        if (step == SocketStep::Done) {
+            break;
+        }
+        const uint32_t now_ms = millis();
+        if (step == SocketStep::Progress) {
+            progress_ms = now_ms;
+        }
+        if (!whole) {
+            // a short piece, or one that would block or failed
+            if (!blocking || now_ms - progress_ms >= SOCKET_IDLE_LIMIT_MS || now_ms - start_ms >= SOCKET_SEND_LIMIT_MS) {
+                break;
+            }
+            sleep_ms(SOCKET_RETRY_MS);
+        }
+        const size_t rest = progress.remaining();
+        piece = (datagram || rest < SOCKET_SEND_CHUNK) ? rest : SOCKET_SEND_CHUNK;
+        would_block = false;
+        count = call(progress.sent(), piece, false, would_block);
+    }
+    return progress.result(count);
+}
 
 }  // namespace ScriptingM4

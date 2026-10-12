@@ -37,8 +37,9 @@ int wrap_SocketAPM_connect(lua_State *L);
 int wrap_SocketAPM_send(lua_State *L);
 int wrap_SocketAPM_sendto(lua_State *L);
 int wrap_SocketAPM_set_blocking(lua_State *L);
-// m4_bindings.cpp: the byte a handle userdata of type_id at arg keeps for its wrappers (a socket's
-// blocking mode), 0 when the M4 makes it; nullptr if arg is no such handle
+int wrap_SocketAPM_new(lua_State *L);
+// m4_bindings.cpp: the byte a handle userdata of type_id (0: any type) at arg keeps for its
+// wrappers (a socket's mode), 0 when the M4 makes it; nullptr if arg is no such handle
 uint8_t *handle_state(lua_State *L, int arg, uint8_t type_id);
 
 // a pure-data type the M4 implements itself (gen-bindings -r, lua_remote_local.cpp)

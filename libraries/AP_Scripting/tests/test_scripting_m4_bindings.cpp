@@ -164,7 +164,9 @@ TEST(ScriptingM4Bindings, KnownBindings)
     ASSERT_NE(can_device, nullptr);
     EXPECT_EQ(can_device->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
 
-    EXPECT_NE(row_named(global, "Socket"), nullptr);
+    const BindingRow *socket_new = row_named(global, "Socket");
+    ASSERT_NE(socket_new, nullptr);
+    EXPECT_EQ(socket_new->flags, ROW_M4_WRAPPER);       // the M4 keeps whether it is a datagram socket
     const uint8_t socket = type_named("SocketAPM");
     const BindingRow *sendfile = row_named(socket, "sendfile");
     ASSERT_NE(sendfile, nullptr);

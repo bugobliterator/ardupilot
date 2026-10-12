@@ -424,7 +424,9 @@ template <typename Socket> int socket_poll(lua_State *L, Socket &sock, bool out)
 }
 
 // a send's results: the count, as in-process, and whether the call would have blocked, which the
-// M4 drops after it tried again (m4_wrappers.cpp)
+// M4 drops after it tried again (m4_wrappers.cpp). errno is one for all threads on ChibiOS: another
+// thread's socket call in between can change it, so a blocking send may end early or try again
+// for up to the idle limit; Socket.cpp's own errno checks share this
 inline int socket_send_results(lua_State *L, int32_t count)
 {
     lua_pushinteger(L, count);
@@ -468,15 +470,41 @@ private:
     uint8_t _handed_over = 0;
 };
 
+// AP_Networking::sendfile() waits for the networking semaphore, which its sendfile thread holds
+// over a pass of file reads (up to 32 KB each, on the SD card the logger shares): the port takes
+// it first for at most this long (recorded deviation: false if it is busy, in-process waits)
+static const uint32_t SOCKET_SENDFILE_WAIT_MS = 30;
+
 // sock:sendfile()'s hand-over of descriptor fd: hand_over(fd) only while the session has
-// hand-overs left; one refused spends none. True if handed over
-template <typename HandOver> bool socket_sendfile(SocketSendfiles &sendfiles, int fd, HandOver hand_over)
+// hand-overs left and the semaphore was taken within SOCKET_SENDFILE_WAIT_MS; hand_over takes the
+// held, recursive semaphore again at once. One refused spends none. True if handed over
+template <typename Semaphore, typename HandOver>
+bool socket_sendfile(SocketSendfiles &sendfiles, int fd, Semaphore &sem, HandOver hand_over)
 {
-    if (fd == -1 || !sendfiles.available() || !hand_over(fd)) {
+    if (fd == -1 || !sendfiles.available() || !sem.take(SOCKET_SENDFILE_WAIT_MS)) {
+        return false;
+    }
+    const bool handed_over = hand_over(fd);
+    sem.give();
+    if (!handed_over) {
         return false;
     }
     sendfiles.take();
     return true;
+}
+
+// a session's socket at the session end: set to close abortively (abort(fd): SO_LINGER {1, 0}, a
+// reset), then deleted. A graceful close can hold the host thread while the network stack has no
+// segment for the FIN (lwIP: up to 20 s and more); the dying session's unsent data is dropped
+// (recorded deviation). A script's own sock:close() stays graceful, as in-process
+template <typename Socket, typename Abort> void socket_end(Socket *&slot, Abort abort)
+{
+    if (slot == nullptr) {
+        return;
+    }
+    abort(slot->get_read_fd());
+    delete slot;
+    slot = nullptr;
 }
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)

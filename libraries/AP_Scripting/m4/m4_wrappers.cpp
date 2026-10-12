@@ -5,6 +5,7 @@
   row's closure, with its upvalues, and calls remote_call() for the M7 part.
  */
 #include "m4_bindings.h"
+#include <AP_ScriptingM4_Rpc.h>
 #include "m4_file_proxy.h"
 #include "m4_lua.h"
 #include "m4_port.h"
@@ -44,8 +45,10 @@ int wrap_SocketAPM_sendfile(lua_State *L)
     return remote_call(L);
 }
 
-// a socket handle's state bit: set_blocking(false) succeeded, so its calls return at once
+// a socket handle's state bits: set_blocking(false) succeeded, so its calls return at once; it
+// was made with Socket(1), so its sends are datagrams
 static const uint8_t SOCKET_NONBLOCKING = 0x01;
+static const uint8_t SOCKET_DATAGRAM = 0x02;
 
 // the socket at argument 1 waits as an in-process blocking socket would: one the script never
 // set non-blocking (in-process sockets start blocking)
@@ -99,66 +102,89 @@ int wrap_SocketAPM_connect(lua_State *L)
     return 1;
 }
 
-// sock:send(data, len) and sock:sendto(data, len, addr, port): the M7's call returns the count
-// and whether it would have blocked. A non-blocking socket gets the count. A blocking socket
-// sends all of it, as in-process: the rest of the data again after a call that sent part of it
-// or would have blocked, until all is sent, a call fails, or SOCKET_IDLE_LIMIT_MS pass without
-// progress; the result is the bytes sent, else the failed call's count
-static int socket_send(lua_State *L)
+// a piece of a send is one call: self, the string, its length, and sendto's address and port
+static_assert(sizeof(CallHeader) + 8 + 3 + SOCKET_SEND_CHUNK + 5 + 8 + 5 <= MAX_FRAME,
+              "a stream send's piece fits one call frame");
+
+// sock:send(data, len) and sock:sendto(data, len, addr, port) (socket_send_all()). The M7's call
+// returns the count and whether it would have blocked; the script gets the count. A stream
+// socket's string goes in SOCKET_SEND_CHUNK pieces; a datagram (sendto, or send on a Socket(1))
+// goes whole, and one too long for a call frame fails with "M4: call arguments too large".
+// A blocking socket tries again where in-process the call blocks
+static int socket_send(lua_State *L, bool to_address)
 {
     const int argc = lua_gettop(L);
     luaL_checkstack(L, argc + 4, "M4 socket send");
-    // the row's call, kept at argc + 1 for the tries
+    // the row's call, kept at argc + 1 for every piece
     lua_pushvalue(L, lua_upvalueindex(1));
     lua_pushvalue(L, lua_upvalueindex(2));
     lua_pushvalue(L, lua_upvalueindex(3));
     lua_pushcclosure(L, remote_call, 3);
     const int call = argc + 1;
-    lua_pushvalue(L, call);
-    for (int i = 1; i <= argc; i++) {
-        lua_pushvalue(L, i);
-    }
-    lua_call(L, argc, 2);
-    int32_t count = int32_t(lua_tointeger(L, -2));
-    const bool would_block = lua_toboolean(L, -1) != 0;
-    lua_pop(L, 1);   // the count is the result
+    const uint8_t *state = handle_state(L, 1, uint8_t(lua_tointeger(L, lua_upvalueindex(3))));
     size_t length = 0;
-    // the M7 took arguments 2 and 3 as a string and a length; argument 2 stays on the stack
-    const char *data = lua_tolstring(L, 2, &length);
-    if (!socket_blocks(L) || data == nullptr) {
+    const char *data = lua_type(L, 2) == LUA_TSTRING ? lua_tolstring(L, 2, &length) : nullptr;
+    if (state == nullptr || data == nullptr || argc < 3) {
+        // the M7 refuses what is no socket or no string, with the in-process error
+        lua_pushvalue(L, call);
+        for (int i = 1; i <= argc; i++) {
+            lua_pushvalue(L, i);
+        }
+        lua_call(L, argc, 2);
+        lua_pop(L, 1);
         return 1;
     }
-    const uint32_t requested = coerce_to_uint32_t(L, 3);
-    SocketSend progress(requested < length ? size_t(requested) : length);
-    if (progress.add(count, would_block) == SocketStep::Done) {
-        return 1;
-    }
-    (void)socket_wait([&]() {
+    const bool datagram = to_address || (*state & SOCKET_DATAGRAM) != 0;
+    const bool blocking = (*state & SOCKET_NONBLOCKING) == 0;
+    const int32_t sent = socket_send_all(length, datagram, blocking,
+    [&](size_t offset, size_t piece, bool first, bool &would_block) {
         lua_settop(L, call);
         lua_pushvalue(L, call);
         lua_pushvalue(L, 1);
-        lua_pushlstring(L, data + progress.sent(), progress.remaining());
-        lua_pushinteger(L, lua_Integer(progress.remaining()));
+        lua_pushlstring(L, data + offset, piece);
+        if (first) {
+            lua_pushvalue(L, 3);   // the script's length: the M7 checks it, and sends at most the piece
+        } else {
+            lua_pushinteger(L, lua_Integer(piece));
+        }
         for (int i = 4; i <= argc; i++) {
             lua_pushvalue(L, i);
         }
         lua_call(L, argc, 2);
-        count = int32_t(lua_tointeger(L, -2));
-        return progress.add(count, lua_toboolean(L, -1) != 0);
+        would_block = lua_toboolean(L, -1) != 0;
+        return int32_t(lua_tointeger(L, -2));
+    }, [L, length]() {
+        // the M7 took argument 3 as a uint32_t: the M4's conversion of it agrees
+        const uint32_t requested = coerce_to_uint32_t(L, 3);
+        return requested < length ? size_t(requested) : length;
     }, lua_sleep_ms, port_millis);
     lua_settop(L, call);
-    lua_pushinteger(L, progress.result(count));
+    lua_pushinteger(L, sent);
     return 1;
 }
 
 int wrap_SocketAPM_send(lua_State *L)
 {
-    return socket_send(L);
+    return socket_send(L, false);
 }
 
 int wrap_SocketAPM_sendto(lua_State *L)
 {
-    return socket_send(L);
+    return socket_send(L, true);
+}
+
+// Socket(datagram): the M4 keeps whether the new socket is a datagram one, which a send never
+// cuts into pieces (an accepted socket is always a stream one)
+int wrap_SocketAPM_new(lua_State *L)
+{
+    const int results = remote_call(L);
+    if (results == 1 && lua_tointeger(L, 1) != 0) {   // the M7 took it as a uint8_t
+        uint8_t *state = handle_state(L, -1, 0);
+        if (state != nullptr) {
+            *state |= SOCKET_DATAGRAM;
+        }
+    }
+    return results;
 }
 
 }  // namespace ScriptingM4

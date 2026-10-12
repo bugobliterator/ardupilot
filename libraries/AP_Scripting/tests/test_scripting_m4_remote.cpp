@@ -1475,27 +1475,85 @@ TEST(ScriptingM4Remote, SocketsStayNonBlocking)
     EXPECT_EQ(socket_nonblocking(static_cast<TestSocket *>(nullptr)), nullptr);
 }
 
+// AP_Networking's semaphore as socket_sendfile() takes it
+struct TestSemaphore {
+    bool free = true;
+    uint32_t timeout_ms = 0;
+    int held = 0;
+    bool take(uint32_t timeout) { timeout_ms = timeout; if (free) { held++; } return free; }
+    bool give() { held--; return true; }
+};
+
 // sock:sendfile() through socket_sendfile(): each hand-over leaves a descriptor and a socket
 // with AP_Networking until the file is sent. Without the cap the third is handed over
 TEST(ScriptingM4Remote, SendfileHandOversAreCapped)
 {
     SocketSendfiles sendfiles;
+    TestSemaphore sem;
     int handed = 0;
     bool accept = true;
-    auto hand_over = [&](int fd) { handed++; EXPECT_EQ(fd, 5); return accept; };
-    EXPECT_FALSE(socket_sendfile(sendfiles, -1, hand_over));   // no open file: never handed over
+    auto hand_over = [&](int fd) { handed++; EXPECT_EQ(fd, 5); EXPECT_EQ(sem.held, 1); return accept; };
+    EXPECT_FALSE(socket_sendfile(sendfiles, -1, sem, hand_over));   // no open file: never handed over
     EXPECT_EQ(handed, 0);
     accept = false;
-    EXPECT_FALSE(socket_sendfile(sendfiles, 5, hand_over));    // refused: spends nothing
+    EXPECT_FALSE(socket_sendfile(sendfiles, 5, sem, hand_over));    // refused: spends nothing
     accept = true;
     for (uint8_t i = 0; i < SOCKET_SENDFILES_PER_SESSION; i++) {
-        EXPECT_TRUE(socket_sendfile(sendfiles, 5, hand_over)) << int(i);
+        EXPECT_TRUE(socket_sendfile(sendfiles, 5, sem, hand_over)) << int(i);
     }
     handed = 0;
-    EXPECT_FALSE(socket_sendfile(sendfiles, 5, hand_over));
+    EXPECT_FALSE(socket_sendfile(sendfiles, 5, sem, hand_over));
     EXPECT_EQ(handed, 0);
     sendfiles.new_session();
-    EXPECT_TRUE(socket_sendfile(sendfiles, 5, hand_over));
+    EXPECT_TRUE(socket_sendfile(sendfiles, 5, sem, hand_over));
+    EXPECT_EQ(sem.held, 0);   // given back after every hand-over
+}
+
+// the networking semaphore is taken for at most 30 ms before AP_Networking::sendfile(), whose own
+// take then re-enters it. Without the bounded take the host thread waits as long as the sendfile
+// thread's pass of file reads holds it
+TEST(ScriptingM4Remote, SendfileWaitsForTheSemaphoreAtMost30ms)
+{
+    SocketSendfiles sendfiles;
+    TestSemaphore sem;
+    sem.free = false;
+    int handed = 0;
+    auto hand_over = [&](int) { handed++; return true; };
+    EXPECT_FALSE(socket_sendfile(sendfiles, 5, sem, hand_over));
+    EXPECT_EQ(handed, 0);
+    EXPECT_EQ(sem.timeout_ms, SOCKET_SENDFILE_WAIT_MS);
+    EXPECT_EQ(SOCKET_SENDFILE_WAIT_MS, 30U);
+    sem.free = true;                                              // a busy semaphore spent no hand-over
+    for (uint8_t i = 0; i < SOCKET_SENDFILES_PER_SESSION; i++) {
+        EXPECT_TRUE(socket_sendfile(sendfiles, 5, sem, hand_over)) << int(i);
+    }
+}
+
+// a session's socket as socket_end() closes it
+struct EndingSocket {
+    int fd;
+    int *aborted_fd;
+    bool *deleted;
+    ~EndingSocket() { *deleted = true; }
+    int get_read_fd() const { return fd; }
+};
+
+// at the session end every socket is set to close with a reset before it is deleted. Without
+// abort() the delete closes gracefully, which can hold the host thread waiting for a FIN segment
+TEST(ScriptingM4Remote, SocketsEndWithAReset)
+{
+    int aborted_fd = -2;
+    bool deleted = false;
+    EndingSocket *slot = new EndingSocket{7, &aborted_fd, &deleted};
+    bool deleted_at_abort = true;
+    socket_end(slot, [&](int fd) { aborted_fd = fd; deleted_at_abort = deleted; });
+    EXPECT_EQ(aborted_fd, 7);
+    EXPECT_FALSE(deleted_at_abort);   // the reset is set before the close
+    EXPECT_TRUE(deleted);
+    EXPECT_EQ(slot, nullptr);
+    int calls = 0;
+    socket_end(slot, [&](int) { calls++; });   // an empty slot
+    EXPECT_EQ(calls, 0);
 }
 
 AP_GTEST_MAIN()

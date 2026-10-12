@@ -432,6 +432,10 @@ class GenBindingsRemote(unittest.TestCase):
             self.assertEqual(flags, 0x20, name)
             self.assertIn('    case %d:\n        return %s;\n' % (method, wrapper), local)
         self.assertIn('static int SocketAPM_connect(', dispatch)
+        # Socket(): the M4 keeps whether the socket is a datagram one, which a send never cuts
+        method, flags = self.row_flags(tables, types['global'][0], 'Socket')
+        self.assertEqual(flags, 0x20)
+        self.assertIn('    case %d:\n        return wrap_SocketAPM_new;\n' % method, local)
         self.assertEqual(self.row_flags(tables, socket, 'pollin')[1], 0)
         self.assertEqual(self.row_flags(tables, socket, 'recv')[1], 0)
 
