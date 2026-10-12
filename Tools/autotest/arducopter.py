@@ -22451,7 +22451,7 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
-        # quotas (spec §7): texts past the burst are dropped, storage writes past it return false
+        # quotas (spec §7): texts and file logs past the burst are dropped, storage writes past it return false
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)
         self.context_collect("STATUSTEXT")
@@ -22480,8 +22480,12 @@ RTL_ALT_M 111
             if m is None:
                 break
             hits += m.QHit
-        if hits < 100:
-            raise NotAchievedException("M4ST.QHit sums to %u" % hits)
+        # the rest of QHit are the logger:log_file_content calls past the FileLog burst of 5
+        file_log_hits = hits - (200 - received) - (150 - saved)
+        self.progress("M4ST.QHit %u: %u texts, %u storage, %u file logs" %
+                      (hits, 200 - received, 150 - saved, file_log_hits))
+        if not 150 <= file_log_hits <= 195:
+            raise NotAchievedException("logger:log_file_content flood: %d of 200 refused" % file_log_hits)
         self.assert_mode("STABILIZE")
         self.set_parameter("SCR_USER3", 0)   # set_and_save left it in storage
         self.context_pop()
