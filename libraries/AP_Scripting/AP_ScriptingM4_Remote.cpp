@@ -474,7 +474,7 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
             if (index < 0) {
                 return fail(results, "M4: too many objects");
             }
-            results.handle(result.type_id, uint16_t(index), call.handles->generation());
+            results.handle(result.type_id, uint16_t(index), call.handles->generation(uint16_t(index)));
             break;
         }
         }

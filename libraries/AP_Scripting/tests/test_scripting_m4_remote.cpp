@@ -377,12 +377,15 @@ TEST(ScriptingM4Remote, Handles)
     ASSERT_EQ(c.values[0].tag, ValueTag::Handle);
     EXPECT_EQ(c.values[0].type_id, OBJECT);
     EXPECT_EQ(c.values[0].handle_index, 0);
-    EXPECT_EQ(c.values[0].handle_generation, 7U);
+    const uint32_t generation = c.values[0].handle_generation;
+    EXPECT_EQ(generation, c.handles.generation(0));
+    EXPECT_EQ(generation >> 8, 7U);
     c.args.nil();
     EXPECT_EQ(c.run(thing_object), ReplyStatus::Ok);
     EXPECT_EQ(c.values[0].handle_index, 0);   // deduplicated
+    EXPECT_EQ(c.values[0].handle_generation, generation);
     c.args.nil();
-    c.args.handle(OBJECT, 0, 7);
+    c.args.handle(OBJECT, 0, generation);
     EXPECT_EQ(c.run(thing_read), ReplyStatus::Ok);
     EXPECT_EQ(c.values[0].integer, 42);
 }
@@ -392,13 +395,14 @@ TEST(ScriptingM4Remote, StaleHandle)
     Call c;
     c.args.nil();
     ASSERT_EQ(c.run(thing_object), ReplyStatus::Ok);
+    const uint32_t generation = c.values[0].handle_generation;
     c.handles.reset(8);   // the M4 restarted
     c.args.nil();
-    c.args.handle(OBJECT, 0, 7);
+    c.args.handle(OBJECT, 0, generation);
     EXPECT_EQ(c.run(thing_read), ReplyStatus::Error);
     EXPECT_EQ(c.text(0), "M4: stale Object");
     c.args.nil();
-    c.args.handle(OBJECT, 5, 8);   // never handed out
+    c.args.handle(OBJECT, 5, c.handles.generation(5));   // never handed out
     EXPECT_EQ(c.run(thing_read), ReplyStatus::Error);
 }
 

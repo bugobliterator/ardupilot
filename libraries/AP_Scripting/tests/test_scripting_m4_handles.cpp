@@ -24,28 +24,37 @@ TEST(ScriptingM4Handles, LookupChecksEverything)
     table.reset(5);
     int a = 0;
     ASSERT_EQ(table.insert(3, &a), 0);
-    EXPECT_EQ(table.lookup(3, 0, 5), &a);
-    EXPECT_EQ(table.lookup(4, 0, 5), nullptr);   // wrong type
-    EXPECT_EQ(table.lookup(3, 1, 5), nullptr);   // past the entries
-    EXPECT_EQ(table.lookup(3, 0, 6), nullptr);   // another session
-    EXPECT_EQ(table.lookup(3, HandleTable::CAPACITY, 5), nullptr);
-    EXPECT_EQ(table.lookup(3, 0xFFFF, 5), nullptr);
-    EXPECT_EQ(table.lookup(0, 0, 5), nullptr);
+    const uint32_t g = table.generation(0);
+    EXPECT_EQ(g >> 8, 5U);                       // the session in the high bits
+    EXPECT_NE(g & 0xFFU, 0U);                    // a serial, never 0
+    EXPECT_EQ(table.lookup(3, 0, g), &a);
+    EXPECT_EQ(table.lookup(4, 0, g), nullptr);   // wrong type
+    EXPECT_EQ(table.lookup(3, 1, g), nullptr);   // a free entry
+    EXPECT_EQ(table.lookup(3, 0, g + 1), nullptr);
+    EXPECT_EQ(table.lookup(3, 0, (6U << 8) | (g & 0xFFU)), nullptr);   // another session
+    EXPECT_EQ(table.lookup(3, HandleTable::CAPACITY, g), nullptr);
+    EXPECT_EQ(table.lookup(3, 0xFFFF, g), nullptr);
+    EXPECT_EQ(table.lookup(0, 0, g), nullptr);
     HandleTable fresh;
-    EXPECT_EQ(fresh.lookup(3, 0, 0), nullptr);   // generation 0 before any reset
+    EXPECT_EQ(fresh.lookup(3, 0, fresh.generation(0)), nullptr);   // nothing before any insert
 }
 
 TEST(ScriptingM4Handles, ResetWithTheSameSessionEmpties)
 {
-    // the M4 picks its session number: a restart may repeat it, and the reset at
-    // every session start must still drop the previous session's handles
+    // the M4 picks its session number: a restart may repeat it, and the previous
+    // session's handles must stay stale even when their entry is used again
     HandleTable table;
     table.reset(5);
-    int a = 0;
+    int a = 0, b = 0;
     ASSERT_EQ(table.insert(3, &a), 0);
+    const uint32_t old_generation = table.generation(0);
     table.reset(5);
     EXPECT_EQ(table.count(), 0);
-    EXPECT_EQ(table.lookup(3, 0, 5), nullptr);
+    EXPECT_EQ(table.lookup(3, 0, old_generation), nullptr);
+    ASSERT_EQ(table.insert(3, &b), 0);
+    // without the serial bump at reset, the old handle would name b
+    EXPECT_EQ(table.lookup(3, 0, old_generation), nullptr);
+    EXPECT_EQ(table.lookup(3, 0, table.generation(0)), &b);
 }
 
 TEST(ScriptingM4Handles, HandlesAreSessionScoped)
@@ -54,11 +63,12 @@ TEST(ScriptingM4Handles, HandlesAreSessionScoped)
     table.reset(5);
     int a = 0;
     ASSERT_EQ(table.insert(3, &a), 0);
+    const uint32_t old_generation = table.generation(0);
     table.reset(6);                               // the M4 restarted
     EXPECT_EQ(table.count(), 0);
-    EXPECT_EQ(table.lookup(3, 0, 5), nullptr);
-    EXPECT_EQ(table.lookup(3, 0, 6), nullptr);
-    EXPECT_EQ(table.generation(), 6U);
+    EXPECT_EQ(table.lookup(3, 0, old_generation), nullptr);
+    EXPECT_EQ(table.session(), 6U);
+    EXPECT_EQ(table.generation(0) >> 8, 6U);
 }
 
 TEST(ScriptingM4Handles, FullTableRefuses)
@@ -70,7 +80,88 @@ TEST(ScriptingM4Handles, FullTableRefuses)
         EXPECT_EQ(table.insert(1, &objects[i]), i);
     }
     EXPECT_EQ(table.insert(1, &objects[HandleTable::CAPACITY]), -1);
+    EXPECT_EQ(table.insert_owned(2, &objects[HandleTable::CAPACITY]), -1);
     EXPECT_EQ(table.insert(1, &objects[0]), 0);   // known objects still resolve
+}
+
+TEST(ScriptingM4Handles, OwnedEntriesAreNeverShared)
+{
+    HandleTable table;
+    table.reset(2);
+    int a = 0;
+    const int16_t owned = table.insert_owned(7, &a);
+    ASSERT_GE(owned, 0);
+    // a second owned entry for the same object, and a kept entry: none shares the owned one,
+    // so releasing one userdata never invalidates another
+    const int16_t again = table.insert_owned(7, &a);
+    const int16_t kept = table.insert(7, &a);
+    EXPECT_NE(again, owned);
+    EXPECT_NE(kept, owned);
+    EXPECT_NE(kept, again);
+    EXPECT_EQ(table.insert(7, &a), kept);         // the kept one is deduplicated
+    EXPECT_EQ(table.insert_owned(7, nullptr), -1);
+    EXPECT_EQ(table.insert_owned(0, &a), -1);
+}
+
+TEST(ScriptingM4Handles, ReleasedEntriesNeverComeBack)
+{
+    HandleTable table;
+    table.reset(3);
+    int a = 0, b = 0, kept_object = 0;
+    const int16_t owned = table.insert_owned(7, &a);
+    const int16_t kept = table.insert(8, &kept_object);
+    ASSERT_GE(owned, 0);
+    ASSERT_GE(kept, 0);
+    const uint32_t g = table.generation(owned);
+    // the wrong type, the wrong generation and a kept entry are refused; without the owned
+    // flag the kept release would hand back the vehicle's object for destruction
+    EXPECT_EQ(table.release_owned(8, owned, g), nullptr);
+    EXPECT_EQ(table.release_owned(7, owned, g + 1), nullptr);
+    EXPECT_EQ(table.release_owned(8, kept, table.generation(kept)), nullptr);
+    EXPECT_EQ(table.lookup(8, kept, table.generation(kept)), &kept_object);
+    EXPECT_EQ(table.release_owned(7, owned, g), &a);
+    EXPECT_EQ(table.release_owned(7, owned, g), nullptr);   // twice
+    EXPECT_EQ(table.lookup(7, owned, g), nullptr);
+    // the entry is used again under a new serial: the released handle names nothing
+    const int16_t next = table.insert_owned(7, &b);
+    EXPECT_EQ(next, owned);
+    EXPECT_NE(table.generation(next), g);
+    EXPECT_EQ(table.lookup(7, owned, g), nullptr);
+    EXPECT_EQ(table.lookup(7, next, table.generation(next)), &b);
+}
+
+TEST(ScriptingM4Handles, ForgetRetiresAnObjectTheM7Deleted)
+{
+    HandleTable table;
+    table.reset(4);
+    int socket = 0;
+    const int16_t index = table.insert(9, &socket);
+    ASSERT_GE(index, 0);
+    const uint32_t g = table.generation(index);
+    EXPECT_TRUE(table.forget(&socket));
+    EXPECT_FALSE(table.forget(&socket));
+    EXPECT_FALSE(table.forget(nullptr));
+    EXPECT_EQ(table.lookup(9, index, g), nullptr);
+    // a new object at the same address (accept() after close()) gets a new generation
+    EXPECT_EQ(table.insert(9, &socket), index);
+    EXPECT_NE(table.generation(index), g);
+}
+
+TEST(ScriptingM4Handles, SerialsWrapWithoutZero)
+{
+    HandleTable table;
+    table.reset(1);
+    int a = 0;
+    uint32_t previous = 0;
+    for (uint16_t i = 0; i < 600; i++) {
+        const int16_t index = table.insert_owned(5, &a);
+        ASSERT_EQ(index, 0) << i;
+        const uint32_t g = table.generation(0);
+        ASSERT_NE(g & 0xFFU, 0U) << i;
+        ASSERT_NE(g, previous) << i;
+        ASSERT_EQ(table.release_owned(5, 0, g), &a) << i;
+        previous = g;
+    }
 }
 
 TEST(ScriptingM4Quota, BurstThenRate)
