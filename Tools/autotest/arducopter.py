@@ -19605,6 +19605,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4Checksums,
             self.ScriptingM4Bindings,
             self.ScriptingM4TargetLocation,
+            self.ScriptingPureDataReference,
+            self.ScriptingM4PureData,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22338,6 +22340,90 @@ RTL_ALT_M 111
                 raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
             totals[m.Name] = totals.get(m.Name, 0) + m.N
 
+    # SRPC names of the pure-data types the M4 runs itself, and the Location rows that stay
+    # remote because they read home, origin or terrain on the M7
+    M4_LOCAL_TYPE_PREFIXES = ("Vector2f:", "Vector3f:", "Quaternion:", "Location:")
+    M4_LOCATION_STATE_ROWS = ("Location:change_alt_frame", "Location:get_alt_m",
+                              "Location:get_vector_from_origin_NEU", "Location:get_vector_from_origin_NEU_m",
+                              "Location:get_vector_from_origin_NEU_cm")
+
+    def m4_assert_no_local_rows(self, totals):
+        '''the M4 ran its pure-data methods itself: no SRPC row names one'''
+        local = {name: n for name, n in totals.items()
+                 if name.startswith(self.M4_LOCAL_TYPE_PREFIXES) and name not in self.M4_LOCATION_STATE_ROWS}
+        if local:
+            raise NotAchievedException("SRPC rows for local pure-data methods: %s" % local)
+
+    def m4_binding_calls_logged(self, totals):
+        '''the script's binding calls in SRPC: binding rows and m4:other, not the M4 runtime's own'''
+        return sum(n for name, n in totals.items()
+                   if name == "m4:other" or not (name.startswith("m4:") or name == "global:print"))
+
+    def pure_data_lines(self, timeout):
+        '''the PD lines of m4_pure_data.lua in order, and its text count, once it is done'''
+        done = self.wait_statustext(r"PD done texts=\d+", regex=True, check_context=True, timeout=timeout)
+        lines = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("PD ")]
+        return lines, int(re.search(r"texts=(\d+)", done.text).group(1))
+
+    def pure_data_reference_path(self):
+        return self.buildlogs_path("pure_data_reference.txt")
+
+    def ScriptingPureDataReference(self):
+        '''m4_pure_data.lua in-process: the lines ScriptingM4PureData compares with (plain SITL build)'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the same pacing as the M4 run
+        self.context_collect("STATUSTEXT")
+        self.set_parameter("SCR_ENABLE", 1)
+        self.install_test_script_context("m4_pure_data.lua")
+        self.reboot_sitl()
+        lines, _ = self.pure_data_lines(timeout=120)
+        if len(lines) < 40:
+            raise NotAchievedException("only %u PD lines in-process" % len(lines))
+        with open(self.pure_data_reference_path(), "w") as f:
+            f.write("\n".join(lines) + "\n")
+        self.progress("wrote %u reference lines to %s" % (len(lines), self.pure_data_reference_path()))
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ScriptingM4PureData(self):
+        '''Vector2f, Vector3f, Quaternion and Location run on the SITL M4: in-process results, no RPC'''
+        path = self.pure_data_reference_path()
+        if not os.path.exists(path):
+            raise NotAchievedException(
+                "no %s: run test.Copter.ScriptingPureDataReference on a plain SITL build first" % path)
+        with open(path) as f:
+            reference = f.read().splitlines()
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_DEBUG_OPTS": 8,   # LOG_RUNTIME: SRPC rows
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_script_context("m4_pure_data.lua")
+        self.reboot_sitl()
+        lines, texts = self.pure_data_lines(timeout=120)
+        for index, (got, want) in enumerate(zip(lines, reference)):
+            if got != want:
+                raise NotAchievedException("PD line %u: M4 '%s', in-process '%s'" % (index, got, want))
+        if len(lines) != len(reference):
+            raise NotAchievedException("%u PD lines on the M4, %u in-process" % (len(lines), len(reference)))
+        self.progress("%u PD lines equal to in-process" % len(lines))
+        self.delay_sim_time(3, reason="the M4 reports call counts once a second")
+        totals = self.m4_srpc_totals()
+        self.m4_assert_no_local_rows(totals)
+        # the script's only remote calls are its texts: no local call leaked into m4:other
+        logged = self.m4_binding_calls_logged(totals)
+        self.progress("SRPC binding calls logged %u, script texts %u" % (logged, texts))
+        if logged != texts:
+            raise NotAchievedException(
+                "SRPC binding calls: %u logged, the script sent %u texts (%s)" % (logged, texts, totals))
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingM4Bindings(self):
         '''generated bindings run unmodified on the SITL M4 scripting process'''
         # m4_bindings.lua: every kind of generated binding; its own call counts against SRPC
@@ -22374,8 +22460,7 @@ RTL_ALT_M 111
                 raise NotAchievedException("SRPC %s: %u calls logged, script made %u" % (name, totals.get(name, 0), n))
         # and every binding call is logged once: the binding rows and m4:other add up to the
         # script's total (the M4 runtime's own m4:* calls and print are not the script's)
-        logged = sum(n for name, n in totals.items()
-                     if name == "m4:other" or not (name.startswith("m4:") or name == "global:print"))
+        logged = self.m4_binding_calls_logged(totals)
         self.progress("SRPC binding calls logged %u, script made %u" % (logged, script_total))
         if logged != script_total:
             raise NotAchievedException("SRPC binding calls: %u logged, script made %u (%s)" % (logged, script_total, totals))
@@ -22448,6 +22533,8 @@ RTL_ALT_M 111
                      "gps:status", "battery:voltage", "SRV_Channels:get_output_pwm", "mount:get_mode"):
             if totals.get(name, 0) == 0:
                 raise NotAchievedException("no SRPC rows for %s (got %s)" % (name, sorted(totals)))
+        # copy_userdata.lua's Location and vector math, binding_bench's Locations: all on the M4
+        self.m4_assert_no_local_rows(totals)
         self.context_pop()
         self.reboot_sitl()
 
@@ -24683,6 +24770,8 @@ return update, 1000
             "ScriptingM4Checksums": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Bindings": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4TargetLocation": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingPureDataReference": "Reference for ScriptingM4PureData; run it on a plain SITL build first",
+            "ScriptingM4PureData": "Requires --enable-scripting-m4 SITL build and ScriptingPureDataReference",
         }
 
 
