@@ -9,7 +9,10 @@
 #include "AP_Scripting.h"
 #include "AP_ScriptingM4_Bindings.h"
 #include "AP_ScriptingM4_Placement.h"
+// the Lua core calls lua_get_modules_path() with C linkage
+extern "C" {
 #include "lua_common_defs.h"
+}
 
 extern const AP_HAL::HAL& hal;
 
@@ -119,7 +122,7 @@ ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *value
     return ReplyStatus::UnknownMethod;
 }
 
-// m4:config() -> SCR_HEAP_SIZE, SCR_VM_I_COUNT, SCR_DEBUG_OPTS
+// m4:config() -> SCR_HEAP_SIZE, SCR_VM_I_COUNT, SCR_DEBUG_OPTS, require's search path
 ReplyStatus AP_ScriptingM4_Server::config(RpcArgs &args, RpcWriter &results, uint8_t &error_arg)
 {
     if (!args.count_is(0)) {
@@ -129,6 +132,9 @@ ReplyStatus AP_ScriptingM4_Server::config(RpcArgs &args, RpcWriter &results, uin
     results.integer(scripting->heap_size());
     results.integer(scripting->vm_steps());
     results.integer(scripting->debug_options());
+    // lua_get_modules_path(): this firmware's scripts directory and ROMFS, as SCR_DIR_DISABLE allows
+    const char *modules = lua_get_modules_path();
+    results.string(modules, strlen(modules));
     return ReplyStatus::Ok;
 }
 

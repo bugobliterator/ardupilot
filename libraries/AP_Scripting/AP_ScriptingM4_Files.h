@@ -36,7 +36,8 @@ enum class PathUse : uint8_t {
 inline int check_script_path(const char *path, size_t length, PathUse use)
 {
     if (length == 0) {
-        return ENOENT;
+        // opendir("") lists the filesystem root in-process (AP_Filesystem::opendir)
+        return use == PathUse::List ? 0 : ENOENT;
     }
     if (length >= MAX_FS_PATH) {
         return ENAMETOOLONG;

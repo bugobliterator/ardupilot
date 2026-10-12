@@ -21,6 +21,7 @@ extern "C" {
 #include <AP_ScriptingM4_Placement.h>
 #include <AP_ScriptingM4_Rpc.h>
 #include "m4_bindings.h"
+#include "m4_file_proxy.h"
 #include "m4_port.h"
 #include "m4_rpc_client.h"
 
@@ -61,6 +62,7 @@ static struct {
     uint32_t heap_used;        // port_heap_block_cost() of every live block
     int current_env_ref;
     bool overtime;
+    char modules_path[192];    // package.path, from m4:config
 } rt;
 
 // one script load at a time
@@ -247,7 +249,14 @@ static void create_sandbox(lua_State *L)
     lua_pushstring(L, "string");
     luaopen_string(L);
     lua_settable(L, -3);
-    // io and package (require) need the M7 file proxy: IO and Manual Bindings sub-phase
+    // files go through the M7 (m4_file_proxy.cpp), with the reach of in-process scripting
+    lua_pushstring(L, "io");
+    luaopen_io(L);
+    lua_settable(L, -3);
+    lua_pushstring(L, "package");
+    luaopen_package(L);
+    lua_settable(L, -3);
+    open_file_functions(L);
     open_remote_functions(L);
 }
 
@@ -527,17 +536,29 @@ static void prime_newlib()
     }
 }
 
-// SCR_HEAP_SIZE, SCR_VM_I_COUNT, SCR_DEBUG_OPTS from the M7
+// SCR_HEAP_SIZE, SCR_VM_I_COUNT, SCR_DEBUG_OPTS and require's search path from the M7
 static bool configure()
 {
     (void)rpc.begin(SystemMethod::Config);
-    if (rpc.invoke() != 0 || rpc.status() != ReplyStatus::Ok || rpc.count() != 3) {
+    if (rpc.invoke() != 0 || rpc.status() != ReplyStatus::Ok || rpc.count() != 4) {
         return false;
     }
     for (uint8_t i = 0; i < 3; i++) {
         if (rpc.value(i).tag != ValueTag::Integer) {
             return false;
         }
+    }
+    const RpcValue &modules = rpc.value(3);
+    if (modules.tag != ValueTag::String) {
+        return false;
+    }
+    // a path list that does not fit is none: require then finds no module, as when
+    // SCR_DIR_DISABLE disables both directories
+    if (modules.length < sizeof(rt.modules_path)) {
+        memcpy(rt.modules_path, modules.string, modules.length);
+        rt.modules_path[modules.length] = 0;
+    } else {
+        rt.modules_path[0] = 0;
     }
     const int32_t heap_size = rpc.value(0).integer;
     rt.vm_steps = rpc.value(1).integer;
@@ -614,10 +635,10 @@ extern "C" int lua_get_current_env_ref(void)
     return ScriptingM4::rt.current_env_ref;
 }
 
-// require: IO and Manual Bindings sub-phase
+// require's search path (package.path): the M7's scripts directory and ROMFS (m4:config)
 extern "C" const char *lua_get_modules_path(void)
 {
-    return "";
+    return ScriptingM4::rt.modules_path;
 }
 
 // Lua raised an error outside protected mode: fault, so the M7 records it and restarts the M4

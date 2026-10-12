@@ -48,6 +48,8 @@ TEST(ScriptingM4Files, PathsReachWhatInProcessReaches)
     // bytes the M7 does not take
     EXPECT_EQ(check_script_path("./scripts/a\0../x", 16, PathUse::Read), EINVAL);
     EXPECT_EQ(check("", PathUse::Read), ENOENT);
+    EXPECT_EQ(check("", PathUse::Write), ENOENT);
+    EXPECT_EQ(check("", PathUse::List), 0);       // dirlist(""): the filesystem root, as in-process
     char long_path[MAX_FS_PATH + 1];
     memset(long_path, 'a', sizeof(long_path) - 1);
     long_path[MAX_FS_PATH] = 0;

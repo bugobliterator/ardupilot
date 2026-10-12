@@ -11,6 +11,11 @@
 #include <string.h>
 #include <AP_Filesystem/posix_compat.h>
 #include <AP_ScriptingM4_Rpc.h>
+extern "C" {
+#include <lua/src/lauxlib.h>
+}
+#include "m4_bindings.h"
+#include "m4_file_proxy.h"
 #include "m4_file_stream.h"
 #include "m4_rpc_client.h"
 
@@ -118,7 +123,82 @@ int32_t remove_file(const char *path)
     return integer_reply();
 }
 
+// m4:fs_dir replies per dirlist(): about 15 names each, so thousands of entries
+const uint16_t DIR_REPLIES_MAX = 256;
+
+// dirlist(path): lua_dirlist() of lua_bindings.cpp, a page of names per m4:fs_dir
+int lua_dirlist(lua_State *L)
+{
+    binding_argcheck(L, 1);
+    const char *path = luaL_checkstring(L, 1);
+    int32_t start = 0;
+    lua_Number key = 1;
+    bool listed = false;
+    for (uint16_t replies = 0; replies < DIR_REPLIES_MAX; replies++) {
+        RpcWriter &args = rpc.begin(SystemMethod::FsDir);
+        args.string(path, strlen(path));
+        args.integer(start);
+        // pushing names allocates, which may run a finalizer that calls the M7 and
+        // reuses the client: work from a copy of the reply
+        uint8_t reply[MAX_FRAME];
+        RpcValue values[MAX_VALUES];
+        uint8_t count = 0;
+        const int ret = rpc.invoke();
+        int32_t next = ret < 0 ? ret : -EIO;
+        if (ret == 0 && rpc.status() == ReplyStatus::Ok && rpc.copy_reply(reply, sizeof(reply), values, count) &&
+            count >= 1 && values[count - 1].tag == ValueTag::Integer) {
+            next = values[count - 1].integer;
+        }
+        if (next < 0) {
+            if (listed) {
+                return 1;   // the directory went away part way: what was listed
+            }
+            const int error = int(-next);
+            lua_pushnil(L);
+            lua_pushstring(L, strerror(error));
+            return 2;
+        }
+        if (!listed) {
+            lua_newtable(L);
+            listed = true;
+        }
+        for (uint8_t i = 0; i + 1 < count; i++) {
+            if (values[i].tag != ValueTag::String) {
+                continue;
+            }
+            lua_pushnumber(L, key++);
+            lua_pushlstring(L, values[i].string, values[i].length);
+            lua_settable(L, -3);
+        }
+        if (next == 0 || next <= start) {
+            return 1;       // complete; or no progress, which a well-formed reply never makes
+        }
+        start = next;
+    }
+    return 1;
+}
+
+// remove(path): lua_removefile() of lua_bindings.cpp
+int lua_removefile(lua_State *L)
+{
+    binding_argcheck(L, 1);
+    const char *filename = luaL_checkstring(L, 1);
+    const int32_t ret = remove_file(filename);
+    if (ret < 0) {
+        errno = int(-ret);
+    }
+    return luaL_fileresult(L, ret == 0, filename);
+}
+
 }  // namespace
+
+void ScriptingM4::open_file_functions(lua_State *L)
+{
+    lua_pushcfunction(L, lua_dirlist);
+    lua_setfield(L, -2, "dirlist");
+    lua_pushcfunction(L, lua_removefile);
+    lua_setfield(L, -2, "remove");
+}
 
 extern "C" {
 

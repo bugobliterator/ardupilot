@@ -329,6 +329,30 @@ TEST_F(FileServerTest, DirectoryPagesCoverEveryEntryOnce)
     EXPECT_EQ(call_integer(SystemMethod::FsDir, { string("m4_no_such_directory", 20), integer(0) }), -ENOENT);
 }
 
+TEST_F(FileServerTest, EmptyDirectoryPathIsLeftToTheFilesystem)
+{
+    // dirlist("") is AP_Filesystem's call in-process (FatFs lists the root with the "@" ones, the
+    // SITL POSIX backend has no such directory): the server refuses nothing itself
+    errno = 0;
+    auto *d = AP::FS().opendir("");
+    const int expected_error = d == nullptr ? errno : 0;
+    if (d != nullptr) {
+        AP::FS().closedir(d);
+    }
+    ASSERT_EQ(call(SystemMethod::FsDir, { string("", 0), integer(0) }), ReplyStatus::Ok);
+    ASSERT_GE(reply_count, 1);
+    ASSERT_EQ(reply[reply_count - 1].tag, ValueTag::Integer);
+    if (expected_error != 0) {
+        EXPECT_EQ(reply_count, 1);
+        EXPECT_EQ(reply[0].integer, -expected_error);
+    } else {
+        EXPECT_GE(reply[reply_count - 1].integer, 0);
+    }
+    // only a listing may name the root this way
+    EXPECT_EQ(call_integer(SystemMethod::FsOpen, { string("", 0), string("r", 1) }), -ENOENT);
+    EXPECT_EQ(call_integer(SystemMethod::FsRemove, { string("", 0) }), -ENOENT);
+}
+
 #endif  // AP_SCRIPTING_M4_ENABLED
 
 AP_GTEST_MAIN()
