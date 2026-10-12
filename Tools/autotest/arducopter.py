@@ -7,6 +7,7 @@ AP_FLAKE8_CLEAN
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import math
 import os
@@ -22340,17 +22341,16 @@ RTL_ALT_M 111
                 raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
             totals[m.Name] = totals.get(m.Name, 0) + m.N
 
-    # SRPC names of the pure-data types the M4 runs itself, and the Location rows that stay
-    # remote because they read home, origin or terrain on the M7
+    # SRPC names of the pure-data types the M4 runs itself
     M4_LOCAL_TYPE_PREFIXES = ("Vector2f:", "Vector3f:", "Quaternion:", "Location:")
-    M4_LOCATION_STATE_ROWS = ("Location:change_alt_frame", "Location:get_alt_m",
-                              "Location:get_vector_from_origin_NEU", "Location:get_vector_from_origin_NEU_m",
-                              "Location:get_vector_from_origin_NEU_cm")
+    # the Location methods m4_pure_data.lua calls that read home or origin on the M7, with their call counts
+    M4_PURE_DATA_STATE_CALLS = {"Location:change_alt_frame": 2, "Location:get_alt_m": 1,
+                                "Location:get_vector_from_origin_NEU_m": 1}
 
-    def m4_assert_no_local_rows(self, totals):
-        '''the M4 ran its pure-data methods itself: no SRPC row names one'''
+    def m4_assert_no_local_rows(self, totals, remote_names=()):
+        '''the M4 ran its pure-data methods itself: no SRPC row names one, except remote_names'''
         local = {name: n for name, n in totals.items()
-                 if name.startswith(self.M4_LOCAL_TYPE_PREFIXES) and name not in self.M4_LOCATION_STATE_ROWS}
+                 if name.startswith(self.M4_LOCAL_TYPE_PREFIXES) and name not in remote_names}
         if local:
             raise NotAchievedException("SRPC rows for local pure-data methods: %s" % local)
 
@@ -22368,6 +22368,10 @@ RTL_ALT_M 111
     def pure_data_reference_path(self):
         return self.buildlogs_path("pure_data_reference.txt")
 
+    def pure_data_script_hash(self):
+        with open(self.script_test_source_path("m4_pure_data.lua"), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
     def ScriptingPureDataReference(self):
         '''m4_pure_data.lua in-process: the lines ScriptingM4PureData compares with (plain SITL build)'''
         self.context_push()
@@ -22379,7 +22383,11 @@ RTL_ALT_M 111
         lines, _ = self.pure_data_lines(timeout=120)
         if len(lines) < 40:
             raise NotAchievedException("only %u PD lines in-process" % len(lines))
+        for m in self.context_collection("STATUSTEXT"):
+            if "started on M4" in m.text:
+                raise NotAchievedException("the script ran on the M4: use a plain SITL build for the reference")
         with open(self.pure_data_reference_path(), "w") as f:
+            f.write("PD-REF sha256=%s\n" % self.pure_data_script_hash())
             f.write("\n".join(lines) + "\n")
         self.progress("wrote %u reference lines to %s" % (len(lines), self.pure_data_reference_path()))
         self.context_pop()
@@ -22393,6 +22401,10 @@ RTL_ALT_M 111
                 "no %s: run test.Copter.ScriptingPureDataReference on a plain SITL build first" % path)
         with open(path) as f:
             reference = f.read().splitlines()
+        header = "PD-REF sha256=%s" % self.pure_data_script_hash()
+        if not reference or reference[0] != header:
+            raise NotAchievedException("%s is not from this m4_pure_data.lua: rerun ScriptingPureDataReference" % path)
+        reference = reference[1:]
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
         self.context_collect("STATUSTEXT")
@@ -22414,17 +22426,16 @@ RTL_ALT_M 111
         self.progress("%u PD lines equal to in-process" % len(lines))
         self.delay_sim_time(3, reason="the M4 reports call counts once a second")
         totals = self.m4_srpc_totals()
-        self.m4_assert_no_local_rows(totals)
-        # the script's remote calls are its texts and the Location rows that read M7 state: no local call
-        # leaked into m4:other
-        state_calls = sum(totals.get(name, 0) for name in self.M4_LOCATION_STATE_ROWS)
+        self.m4_assert_no_local_rows(totals, remote_names=self.M4_PURE_DATA_STATE_CALLS)
+        for name, want in self.M4_PURE_DATA_STATE_CALLS.items():
+            if totals.get(name, 0) != want:
+                raise NotAchievedException("SRPC %s: %u calls logged, expected %u" % (name, totals.get(name, 0), want))
+        # the script's remote calls are its texts and those Location calls: no local call leaked into m4:other
         logged = self.m4_binding_calls_logged(totals)
-        self.progress("SRPC binding calls logged %u, script texts %u, Location state calls %u" %
-                      (logged, texts, state_calls))
-        if state_calls == 0 or logged != texts + state_calls:
-            raise NotAchievedException(
-                "SRPC binding calls: %u logged, the script sent %u texts and %u Location state calls (%s)" %
-                (logged, texts, state_calls, totals))
+        expected = texts + sum(self.M4_PURE_DATA_STATE_CALLS.values())
+        self.progress("SRPC binding calls logged %u, expected %u" % (logged, expected))
+        if logged != expected:
+            raise NotAchievedException("SRPC binding calls: %u logged, expected %u (%s)" % (logged, expected, totals))
         self.context_pop()
         self.reboot_sitl()
 
@@ -22539,6 +22550,32 @@ RTL_ALT_M 111
                 raise NotAchievedException("no SRPC rows for %s (got %s)" % (name, sorted(totals)))
         # copy_userdata.lua's Location and vector math, binding_bench's Locations: all on the M4
         self.m4_assert_no_local_rows(totals)
+        self.context_pop()
+        self.reboot_sitl()
+
+        # copy_userdata.lua alone: few rows, so nothing folds into m4:other to hide a local call
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_DEBUG_OPTS": 8,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_example_script_context("copy_userdata.lua")
+        self.reboot_sitl()
+        self.wait_statustext("vdiff=(100.00,300.00)", check_context=True, timeout=30)
+        self.wait_statustext(r"locdiff=\(\d+\.\d\d,\d+\.\d\d\)", regex=True, check_context=True, timeout=30)
+        self.delay_sim_time(3, reason="the M4 reports call counts once a second")
+        totals = self.m4_srpc_totals()
+        self.m4_assert_no_local_rows(totals)
+        logged = self.m4_binding_calls_logged(totals)
+        texts = len([m for m in self.context_collection("STATUSTEXT") if m.text.startswith(("vdiff=", "locdiff="))])
+        if logged != texts or totals.get("m4:other", 0) != 0:
+            raise NotAchievedException(
+                "copy_userdata.lua: %u binding calls logged for %u texts (%s)" % (logged, texts, totals))
         self.context_pop()
         self.reboot_sitl()
 
