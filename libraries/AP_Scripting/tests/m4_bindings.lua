@@ -135,6 +135,39 @@ local steps = {
     count("Vector3f:new", 1)
     check(quadplane == nil and sub == nil, "bindings of other vehicles")
   end,
+  function()   -- the deepest mode code on the M7's host thread: a GUIDED target (set-target-location.lua)
+    if not ahrs:get_origin() then
+      -- no GPS (Renode): an origin of its own, so the target converts to a position
+      local origin = Location()
+      count("Location:new", 1)
+      origin:lat(-353632621)
+      origin:lng(1491652374)
+      origin:alt(58409)
+      count("Location:lat", 1)
+      count("Location:lng", 1)
+      count("Location:alt", 1)
+      check(ahrs:set_origin(origin), "ahrs:set_origin")
+      count("ahrs:set_origin", 1)
+    end
+    count("ahrs:get_origin", 1)
+    local target = Location()
+    count("Location:new", 1)
+    target:lat(-353632621)
+    target:lng(1491652374)
+    target:alt(59409)
+    count("Location:lat", 1)
+    count("Location:lng", 1)
+    count("Location:alt", 1)
+    target:offset(20, 10)
+    count("Location:offset", 1)
+    local mode = vehicle:get_mode()
+    count("vehicle:get_mode", 1)
+    check(vehicle:set_mode(4), "set_mode GUIDED")
+    check(vehicle:set_target_location(target), "vehicle:set_target_location")
+    count("vehicle:set_target_location", 1)
+    check(vehicle:set_mode(mode), "set_mode back")
+    count("vehicle:set_mode", 2)
+  end,
 }
 
 local step = 1
