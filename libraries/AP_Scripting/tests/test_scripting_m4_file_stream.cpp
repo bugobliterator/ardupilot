@@ -137,6 +137,19 @@ TEST(ScriptingM4FileStream, TellAndSeekAccountForReadAhead)
     EXPECT_EQ(file.tell(backend), 100);
 }
 
+TEST(ScriptingM4FileStream, TellRefusesAPositionBehindTheReadAhead)
+{
+    MemoryBackend backend;
+    backend.content = pattern(100);
+    FileStream file;
+    ASSERT_TRUE(file.open(backend, "s/f.txt", "r"));
+    file.getc(backend);
+    backend.position = 10;   // the M7's file is behind what was read ahead: it was changed under the stream
+    errno = 0;
+    EXPECT_EQ(file.tell(backend), -1);
+    EXPECT_EQ(errno, EIO);
+}
+
 TEST(ScriptingM4FileStream, UngetcComesBackFirst)
 {
     MemoryBackend backend;
@@ -224,7 +237,9 @@ TEST(ScriptingM4FileStream, OversizedWriteReplyIsAnError)
     FileStream file;
     ASSERT_TRUE(file.open(backend, "s/f.txt", "w"));
     backend.write_reply_extra = 7;
-    EXPECT_LE(file.write(backend, "abcd", 1, 4), 4U);
+    errno = 0;
+    EXPECT_EQ(file.write(backend, "abcd", 1, 4), 0U);
+    EXPECT_EQ(errno, EIO);
     EXPECT_TRUE(file.error());
 }
 
