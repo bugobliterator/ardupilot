@@ -5,6 +5,16 @@
   what the M7 computes in-process (double ftype and position types). The SITL
   M4 process uses the same values and follows the hardware image: SITL-only
   checks in Location.cpp are compiled out.
+
+  Deliberate differences from the M7's AP_Math and Location:
+  - INTERNAL_ERROR is a no-op (AP_InternalError.h): the M7 latches the
+    internal-error flag and continues with the same result (AP_Math.cpp:317,421,
+    quaternion.cpp:395,673,803, vector3.cpp:273)
+  - ROTATION_CUSTOM_1/2 have no custom rotation: Vector3::rotate and
+    Quaternion::from_rotation leave the value unchanged and set a flag the local
+    binding layer must check (AP_CustomRotations.h)
+  - Location methods that read home, the EKF origin or terrain are not built
+    (AP_AHRS.h, AP_Terrain.h); they stay remote
  */
 #define HAL_BOARD_SITL     3
 #define HAL_BOARD_LINUX    7
@@ -21,9 +31,6 @@
 #define HAL_HAVE_HARDWARE_DOUBLE 1
 #define HAL_WITH_EKF_DOUBLE 1
 #define HAL_WITH_POSTYPE_DOUBLE 1
-// SITL force-includes ap_config.h, which defines it
-#undef HAL_NUM_CAN_IFACES
-#define HAL_NUM_CAN_IFACES 0
 #ifndef AP_SIM_ENABLED
 #define AP_SIM_ENABLED 0
 #endif
