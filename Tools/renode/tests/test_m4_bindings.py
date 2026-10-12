@@ -54,7 +54,8 @@ def test_m4_generated_bindings(start_m4lua, tmp_path):  # noqa: F811
         if match:
             script_total = int(match.group(1))
     assert len(expected) >= 15 and script_total is not None, (expected, script_total)
-    # the host thread ran a mode change for the script: it keeps 2 KB of its 8 KB stack
+    # the host thread ran mode changes and a GUIDED set_target_location for the script (its
+    # deepest binding path): it keeps 2 KB of its 8 KB stack
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
     print('ScriptingM4 host thread stack: %u of %u bytes free' % (free, size), flush=True)
     assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
