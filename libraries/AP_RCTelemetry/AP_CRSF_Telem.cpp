@@ -1186,6 +1186,10 @@ void AP_CRSF_Telem::calc_device_info() {
 #if OSD_PARAM_ENABLED
     _telem.ext.info.payload[n] = AP_OSD_ParamScreen::NUM_PARAMS * AP_OSD_NUM_PARAM_SCREENS; // param count
 #if AP_CRSF_SCRIPTING_ENABLED
+#if defined(AP_SCRIPTING_M4_ENABLED) && AP_SCRIPTING_M4_ENABLED
+    // the end of an M4 scripting session frees the menus on the scripting host thread
+    WITH_SEMAPHORE(scr_sem);
+#endif
     for (ScriptedMenu* m = &scripted_menus; m != nullptr; m = m->next_menu) {
         _telem.ext.info.payload[n] += m->num_params;
     }
