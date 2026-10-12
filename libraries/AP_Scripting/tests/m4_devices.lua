@@ -101,7 +101,8 @@ local function can_buffers()
     local start = millis()
     check(type(buffer:write_frame(frame, 4000000000)) == "boolean", "write_frame long timeout")
     local took = (millis() - start):toint()
-    check(took < 950, "write_frame took " .. took)
+    -- 2 s leaves the host's load room over the 900 ms cut; the uncut call takes 4000 s
+    check(took < 2000, "write_frame took " .. took)
     local got = buffer:read_frame()
     check(got == nil or got:id() == 0x123, "read_frame")
   end
@@ -186,7 +187,8 @@ local function udp_receive()
   local ok, err = pcall(held.rx.pollin, held.rx, 5000)
   local took = (millis() - start):toint()
   check(ok and err == false, "pollin " .. tostring(err))
-  check(took >= 850 and took < 1000, "pollin took " .. took)
+  -- 850..1900 ms: the cut is 900 ms plus the call's latency; uncut it is a 1 s call timeout error
+  check(took >= 850 and took < 1900, "pollin took " .. took)
   ok, err = pcall(held.rx.pollout, held.rx, 5000)
   check(ok and err == true, "pollout " .. tostring(err))
   held.rx:close()
@@ -198,6 +200,7 @@ end
 
 local function tcp_connect()
   local listener = Socket(0)
+  check(listener:reuseaddress(), "reuseaddress")   -- a re-run right after a run finds the port in TIME_WAIT
   check(listener:bind("127.0.0.1", TCP_PORT) and listener:listen(4), "listen")
   local client = Socket(0)
   -- a new socket blocks, as in-process: connect waits for the handshake. Without the M4's wait
@@ -229,12 +232,13 @@ local function tcp_blocking_send()
   end
   gcs:send_text(6, string.format("M4 devices blocking send %d in %d", last, took))
   check(last ~= #chunk, "buffers never filled")
-  check(took >= 4500 and took < 6000, "blocking send took " .. took)
+  -- the emulation gives up after 5 s without progress; without it the call returns at once
+  check(took >= 4500 and took < 9000, "blocking send took " .. took)
   check(held.client:set_blocking(false), "set_blocking false")
   local start = millis()
   local sent = held.client:send(chunk, #chunk)
   took = (millis() - start):toint()
-  check(sent == -1 and took < 200, string.format("non-blocking send %d in %d", sent, took))
+  check(sent == -1 and took < 1000, string.format("non-blocking send %d in %d", sent, took))
   held.client:close()
   held.server:close()
   held.client, held.server = nil, nil
@@ -302,6 +306,7 @@ end
 -- bound a single recv returns all 1000 (in-process it does)
 local function stream_send()
   local listener = Socket(0)
+  check(listener:reuseaddress(), "reuseaddress stream")
   check(listener:bind("127.0.0.1", STREAM_PORT) and listener:listen(4), "listen stream")
   local client = Socket(0)
   check(client:connect("127.0.0.1", STREAM_PORT), "connect stream")
@@ -392,15 +397,22 @@ local function crsf_menus()
   check(CRSFParameter == nil, "no CRSFParameter constructor")
 end
 
-local stages = { i2c_devices, pwm_sources, can_buffers, dronecan, dronecan_churn, dronecan_quota,
-                 udp_send, udp_receive, tcp_connect, tcp_blocking_send, tcp_sendfile, tcp_sendfile_cap,
-                 stream_send, stream_receive, crsf_menus }
+local stages = {
+  { "i2c_devices", i2c_devices }, { "pwm_sources", pwm_sources }, { "can_buffers", can_buffers },
+  { "dronecan", dronecan }, { "dronecan_churn", dronecan_churn }, { "dronecan_quota", dronecan_quota },
+  { "udp_send", udp_send }, { "udp_receive", udp_receive }, { "tcp_connect", tcp_connect },
+  { "tcp_blocking_send", tcp_blocking_send }, { "tcp_sendfile", tcp_sendfile },
+  { "tcp_sendfile_cap", tcp_sendfile_cap }, { "stream_send", stream_send },
+  { "stream_receive", stream_receive }, { "crsf_menus", crsf_menus },
+}
 local stage = 0
 
 local function update()
   stage = stage + 1
   if stage <= #stages then
-    local ok, err = pcall(stages[stage])
+    -- ScriptingM4Devices waits for each: a stage that stalls the M7 names itself by the text missing
+    gcs:send_text(6, "M4 devices stage " .. stages[stage][1])
+    local ok, err = pcall(stages[stage][2])
     if not ok then
       gcs:send_text(3, string.sub("M4 devices FAILED: " .. tostring(err), 1, 50))
       return

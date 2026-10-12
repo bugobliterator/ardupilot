@@ -81,7 +81,7 @@ gcs:send_text(6, string.format("M4 devices can %d filt %d sub %d ninth refused %
                                subscriptions, tostring(ninth_refused)))
 
 local listener = Socket(0)
-local listening = listener ~= nil and listener:bind("127.0.0.1", LISTEN_PORT) and listener:listen(1)
+local listening = listener ~= nil and listener:reuseaddress() and listener:bind("127.0.0.1", LISTEN_PORT) and listener:listen(1)
 hold(listener)
 gcs:send_text(6, "M4 devices listening " .. tostring(listening))
 
