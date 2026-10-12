@@ -88,6 +88,20 @@ TEST(ScriptingM4Quota, BurstThenRate)
     EXPECT_EQ(quota.take_hits(), 0U);
 }
 
+TEST(ScriptingM4Quota, FileLogFloodIsLimited)
+{
+    Quota quota;
+    quota.reset(0);
+    uint16_t allowed = 0;
+    for (uint16_t i = 0; i < 200; i++) {
+        allowed += quota.allow(QuotaClass::FileLog, 0) ? 1 : 0;
+    }
+    EXPECT_EQ(allowed, QUOTA_LIMITS[uint8_t(QuotaClass::FileLog)].burst);
+    EXPECT_EQ(quota.take_hits(), 200U - allowed);
+    EXPECT_FALSE(quota.allow(QuotaClass::FileLog, 999));
+    EXPECT_TRUE(quota.allow(QuotaClass::FileLog, 1000));    // one file a second
+}
+
 TEST(ScriptingM4Quota, HitsSurviveReset)
 {
     Quota quota;

@@ -18,8 +18,9 @@ enum class QuotaClass : uint8_t {
     Text = 1,      // gcs:send_text, send_named_*, print
     Storage = 2,   // param:set_and_save, mission:set_item, mission:clear
     Led = 3,       // serialLED:send
+    FileLog = 4,   // logger:log_file_content: each call queues an M7 heap allocation
 };
-static const uint8_t QUOTA_CLASSES = 4;
+static const uint8_t QUOTA_CLASSES = 5;
 
 struct QuotaLimit {
     uint16_t per_second;
@@ -30,6 +31,7 @@ static const QuotaLimit QUOTA_LIMITS[QUOTA_CLASSES] = {
     { 20, 40 },      // Text
     { 10, 100 },     // Storage: a script's mission upload fits the burst
     { 100, 100 },    // Led
+    { 1, 5 },        // FileLog: the logger drains its file queue at most about 10 files/s
 };
 
 class Quota {

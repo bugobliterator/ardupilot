@@ -2981,6 +2981,7 @@ enum remote_quota {                   // ScriptingM4::QuotaClass
   QUOTA_TEXT    = 1,
   QUOTA_STORAGE = 2,
   QUOTA_LED     = 3,
+  QUOTA_FILE_LOG = 4,
 };
 
 // userdata the M4 holds as wire bytes: plain data, no pointers, every member that
@@ -3058,6 +3059,7 @@ static const struct remote_quota_entry remote_quotas[] = {
   { "AP_Mission", "set_item", QUOTA_STORAGE },
   { "AP_Mission", "clear", QUOTA_STORAGE },
   { "AP_SerialLED", "send", QUOTA_LED },
+  { "AP_Logger", "log_file_content", QUOTA_FILE_LOG },
   { NULL, NULL, QUOTA_NONE } };
 static int remote_quota_matched[sizeof(remote_quotas) / sizeof(remote_quotas[0])];
 

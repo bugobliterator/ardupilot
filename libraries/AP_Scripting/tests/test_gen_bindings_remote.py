@@ -119,6 +119,46 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertEqual(dispatch.count('<= ScriptingM4::MAX_BLOB'), 17)
         self.assertIn('+ wire_size_Cylinder_Status(nullptr)', dispatch)
 
+    def test_quota_classes(self):
+        code, output, _ = self.generate('quotas', [])
+        self.assertEqual(code, 0, output)
+        with open(os.path.join(self.tmp, 'quotas', 'remote_dispatch.cpp')) as f:
+            dispatch = f.read()
+
+        def table(name):
+            # one entry per method; of a guarded entry, the #if branch
+            start = dispatch.index(name + '[ScriptingM4::BINDING_METHOD_COUNT] = {')
+            block = dispatch[dispatch.index('\n', start) + 1:dispatch.index('\n};', start)]
+            entries = []
+            in_else = False
+            for line in block.split('\n'):
+                line = line.strip()
+                if line.startswith('#else'):
+                    in_else = True
+                elif line.startswith('#endif'):
+                    in_else = False
+                elif not line.startswith('#') and not in_else:
+                    entries.append(line.rstrip(','))
+            return entries
+
+        functions = table('remote_functions')
+        flags = table('remote_method_flags')
+        self.assertEqual(len(functions), len(flags))
+        # the high nibble is the quota class (AP_ScriptingM4_Quota.h): 1 Text, 2 Storage, 3 Led, 4 FileLog
+        quota_classes = {function: int(flag, 16) >> 4 for function, flag in zip(functions, flags) if int(flag, 16) >> 4}
+        self.assertEqual(quota_classes, {
+            'GCS_send_text': 1,
+            'GCS_send_named_float': 1,
+            'GCS_send_named_int': 1,
+            'GCS_send_named_string': 1,
+            'AP_Param_set_and_save_by_name': 2,
+            'AP_Mission_set_item': 2,
+            'AP_Mission_clear': 2,
+            'AP_SerialLED_send': 3,
+            'AP_Logger_log_file_content': 4,
+        })
+        self.assertIn('static_assert(4 < ScriptingM4::QUOTA_CLASSES', dispatch)
+
     def test_changed_row_changes_the_hash(self):
         _, _, before = self.generate('hash_before', [])
         code, output, after = self.generate('hash_after', ["userdata Vector2f field extra float'skip_check read write"])
