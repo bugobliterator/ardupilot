@@ -42,6 +42,8 @@ LOCATION_STATE_CALLS = {'Location:change_alt_frame': 2, 'Location:get_alt_m': 1,
                         'Location:get_vector_from_origin_NEU_m': 1}
 # R2: two float ulp on every float token, on Renode only
 FLOAT_ULP_TOLERANCE = 2
+# the 59 PD lines of m4_pure_data.lua and its "PD done" text
+PD_LINE_COUNT = 60
 # PD line numbers (1-based) of the tolerated M4 and M7 differences
 # F1: M7 vfma.f64 against the M4's soft double: one integer on these lines
 INTEGER_LINES = set(range(26, 35)) | {37, 39, 40, 41}
@@ -58,7 +60,9 @@ def local_rows(totals):
 def pure_data_lines(run):
     '''The PD lines of m4_pure_data.lua, in order, and its text count, once it is done.'''
     done = run.wait_text(PD_DONE, timeout=SCRIPT_TIMEOUT)
-    return [text for text in run.texts if text.startswith('PD ')], int(re.match(PD_DONE, done).group(1))
+    lines = [text for text in run.texts if text.startswith('PD ')]
+    assert len(lines) == PD_LINE_COUNT, '%u PD lines, expected %u: %s' % (len(lines), PD_LINE_COUNT, lines)
+    return lines, int(re.match(PD_DONE, done).group(1))
 
 
 def float_ordinal(token):
@@ -69,7 +73,8 @@ def float_ordinal(token):
 
 def tolerated_difference(line_number, got, want):
     '''Why two differing tokens of a PD line are tolerated, or None.'''
-    if (re.fullmatch(r'[0-9a-f]{8}', got) and re.fullmatch(r'[0-9a-f]{8}', want)
+    # a hex letter in either token: an 8-digit decimal integer is not a float bit pattern
+    if (re.fullmatch(r'[0-9a-f]{8}', got) and re.fullmatch(r'[0-9a-f]{8}', want) and re.search('[a-f]', got + want)
             and abs(float_ordinal(got) - float_ordinal(want)) <= FLOAT_ULP_TOLERANCE):
         return 'R2 float ulp +-%u' % FLOAT_ULP_TOLERANCE
     if (line_number in INTEGER_LINES and re.fullmatch(r'-?\d+', got) and re.fullmatch(r'-?\d+', want)
@@ -80,7 +85,7 @@ def tolerated_difference(line_number, got, want):
             step = 10 ** max(Decimal(got).as_tuple().exponent, Decimal(want).as_tuple().exponent)
             if len(got) == len(want) and abs(Decimal(got) - Decimal(want)) <= step:
                 return 'F4 last printed digit'
-        except InvalidOperation:
+        except (InvalidOperation, TypeError):   # TypeError: nan or inf against a number
             pass
     return None
 
@@ -154,7 +159,6 @@ def in_process_reference(tmp_path_factory):
         first.stop()
         run = start()
         lines, _ = pure_data_lines(run)
-        assert len(lines) >= 40, 'only %u PD lines in-process: %s' % (len(lines), lines)
         run.stop()
         print('in-process reference: %u PD lines' % len(lines), flush=True)
     finally:
