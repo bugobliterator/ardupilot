@@ -7,6 +7,7 @@ AP_FLAKE8_CLEAN
 from __future__ import annotations
 
 import copy
+import glob
 import hashlib
 import logging
 import math
@@ -22342,6 +22343,11 @@ RTL_ALT_M 111
                 raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
             totals[m.Name] = totals.get(m.Name, 0) + m.N
 
+    def remove_m4_files_leftovers(self, pattern):
+        '''deletes the files an M4 file test leaves in the scripts directory'''
+        for leftover in glob.glob(os.path.join("scripts", pattern)):
+            os.unlink(leftover)
+
     def m4_quota_hits(self):
         '''M4ST.QHit summed over the current onboard log'''
         dfreader = self.dfreader_for_current_onboard_log()
@@ -22737,66 +22743,70 @@ RTL_ALT_M 111
         self.reboot_sitl()
 
         # io results, the path check, the open-file limit and collection, the FileIo quota
-        self.context_push()
-        self.set_parameter("SIM_SPEEDUP", 1)
-        self.context_collect("STATUSTEXT")
-        self.set_parameters({
-            "SCR_ENABLE": 1,
-            "SCR_VM_I_COUNT": 1000000,
-            "SCR_HEAP_SIZE": 188416,
-            "LOG_DISARMED": 1,
-            "LOG_DARM_RATEMAX": 0,
-            "LOG_FILE_RATEMAX": 0,
-        })
-        self.install_test_script_context("m4_files.lua")
-        self.reboot_sitl()
-        done = self.wait_statustext(r"M4 files (passed|failed \d+)", regex=True, check_context=True, timeout=120)
-        failed = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 files FAIL")]
-        if failed or "passed" not in done.text:
-            raise NotAchievedException("m4_files.lua: %s" % (failed or done.text))
-        self.delay_sim_time(2, reason="M4ST is written once a second")
-        hits = self.m4_quota_hits()
-        self.progress("M4ST QHit total: %u" % hits)
-        if hits == 0:
-            raise NotAchievedException("no FileIo quota hit counted in M4ST")
-        # the refused writes created nothing: not in the working directory, above it or at the root
-        cwd = self.sitl_lsof("-a", "-d", "cwd")[0]
-        for leftover in (os.path.join(cwd, "m4_escape.txt"), os.path.join(cwd, "..", "m4_escape.txt"),
-                         "/m4_escape.txt", os.path.join(cwd, "m4_files_cwd.txt"), os.path.join(cwd, "miss.txt")):
-            if os.path.exists(leftover):
-                raise NotAchievedException("m4_files.lua left %s" % leftover)
-        self.context_pop()
-        self.reboot_sitl()
+        try:
+            self.context_push()
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_collect("STATUSTEXT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_VM_I_COUNT": 1000000,
+                "SCR_HEAP_SIZE": 188416,
+                "LOG_DISARMED": 1,
+                "LOG_DARM_RATEMAX": 0,
+                "LOG_FILE_RATEMAX": 0,
+            })
+            self.install_test_script_context("m4_files.lua")
+            self.reboot_sitl()
+            done = self.wait_statustext(r"M4 files (passed|failed \d+|FAILED)", regex=True, check_context=True, timeout=120)
+            failed = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 files FAIL")]
+            if failed or "passed" not in done.text:
+                raise NotAchievedException("m4_files.lua: %s" % (failed or done.text))
+            self.delay_sim_time(2, reason="M4ST is written once a second")
+            # QHit counts every quota class: m4_files.lua's EAGAIN check is the FileIo assertion
+            hits = self.m4_quota_hits()
+            self.progress("M4ST QHit total: %u" % hits)
+            if hits == 0:
+                raise NotAchievedException("no FileIo quota hit counted in M4ST")
+            # the refused writes created nothing: not in the working directory, above it or at the root
+            cwd = self.sitl_lsof("-a", "-d", "cwd")[0]
+            for leftover in (os.path.join(cwd, "m4_escape.txt"), os.path.join(cwd, "..", "m4_escape.txt"),
+                             "/m4_escape.txt", os.path.join(cwd, "m4_files_cwd.txt"), os.path.join(cwd, "miss.txt")):
+                if os.path.exists(leftover):
+                    raise NotAchievedException("m4_files.lua left %s" % leftover)
+            self.context_pop()
+            self.reboot_sitl()
+        finally:
+            self.remove_m4_files_leftovers("m4_files*.txt")
 
         # files an M4 session leaves open are closed when the M4 restarts
-        self.context_push()
-        self.set_parameter("SIM_SPEEDUP", 1)
-        self.context_collect("STATUSTEXT")
-        self.set_parameters({
-            "SCR_ENABLE": 1,
-            "SCR_HEAP_SIZE": 188416,
-        })
-        self.install_test_script_context("m4_files_hold.lua")
-        self.reboot_sitl()
-        self.wait_statustext("M4 holding 8 files", check_context=True, timeout=60)
-        held = self.m4_files_held_open()
-        self.progress("m4_hold files open before the restart: %u" % held)
-        if held != 8:
-            raise NotAchievedException("%u m4_hold files open, expected 8" % held)
-        self.context_clear_collection("STATUSTEXT")
-        self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: the M7 restarts it
-        self.wait_statustext(r"Scripting: M4 restarted \(1/\d+\)", regex=True, check_context=True, timeout=30)
-        self.wait_statustext("M4 holding 8 files", check_context=True, timeout=60)
-        held = self.m4_files_held_open()
-        self.progress("m4_hold files open after the restart: %u" % held)
-        if held != 8:
-            raise NotAchievedException("%u m4_hold files open after the restart: the M7 kept the previous session's" % held)
-        self.context_pop()
-        for i in range(1, 9):
-            stale = os.path.join("scripts", "m4_hold_%u.txt" % i)
-            if os.path.exists(stale):
-                os.unlink(stale)
-        self.reboot_sitl()
+        try:
+            self.context_push()
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_collect("STATUSTEXT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_HEAP_SIZE": 188416,
+            })
+            self.install_test_script_context("m4_files_hold.lua")
+            self.reboot_sitl()
+            self.wait_statustext("M4 holding 8 files", check_context=True, timeout=60)
+            held = self.m4_files_held_open()
+            self.progress("m4_hold files open before the restart: %u" % held)
+            if held != 8:
+                raise NotAchievedException("%u m4_hold files open, expected 8" % held)
+            self.context_clear_collection("STATUSTEXT")
+            self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: the M7 restarts it
+            self.wait_statustext(r"Scripting: M4 restarted \(1/\d+\)", regex=True, check_context=True, timeout=30)
+            self.wait_statustext("M4 holding 8 files", check_context=True, timeout=60)
+            held = self.m4_files_held_open()
+            self.progress("m4_hold files open after the restart: %u" % held)
+            if held != 8:
+                raise NotAchievedException(
+                    "%u m4_hold files open after the restart: the M7 kept the previous session's" % held)
+            self.context_pop()
+            self.reboot_sitl()
+        finally:
+            self.remove_m4_files_leftovers("m4_hold_*.txt")
 
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
