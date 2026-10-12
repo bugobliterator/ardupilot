@@ -1,5 +1,5 @@
 -- Pure-data userdata (Vector2f, Vector3f, Quaternion, Location) with fixed inputs.
--- Every result becomes text: a float as its bit pattern (NaN as "nan": its sign and
+-- Assumes ArduPilot's 32-bit lua_Integer and float. Every result becomes text: a float as its bit pattern (NaN as "nan": its sign and
 -- payload are not compared), an integer in decimal, a boolean or string as is, an
 -- error message as its length and FNV-1a. The same script runs in-process and on the
 -- M4; the tests compare the lines one for one. Only gcs:send_text leaves the script,
@@ -50,7 +50,9 @@ local function add_error(fn)
   end
 end
 
-local function build()
+local home   -- shared by the stages
+
+local function build_values()
   -- Vector2f
   local v = Vector2f()
   v:x(3)
@@ -141,7 +143,7 @@ local function build()
   add(unnorm:q1(), unnorm:q2(), unnorm:q3(), unnorm:q4())
 
   -- Location: double precision on the M7 (ftype)
-  local home = Location()
+  home = Location()
   home:lat(-353632621)
   home:lng(1491652374)
   home:alt(58409)
@@ -175,28 +177,79 @@ local function build()
   alias:loiter_xtrack(true)
   add(framed:loiter_xtrack())
 
-  -- numbers as Lua prints them
-  add(tostring(a:length()), tostring(home:get_distance(there)))
-  add(tostring(q:get_euler_yaw()), tostring(ned:x()))
-  add(string.format("%.3f", b2:lat() * 1e-7), string.format("%.2f", ne:y()))
+  -- numbers as Lua prints them, one value per line (Location values apart from the rest)
+  add(tostring(a:length()))
+  add(tostring(home:get_distance(there)))
+  add(tostring(q:get_euler_yaw()))
+  add(tostring(ned:x()))
+  add(string.format("%.3f", b2:lat() * 1e-7))
+  add(string.format("%.2f", ne:y()))
 
+end
+
+-- the VM stops a script after a fixed instruction count: errors are hashed in two stages
+local function build_errors_location()
   -- errors keep the in-process texts
   add_error(function() Location():lat(900000001) end)
+  add_error(function() Location():lng(1800000001) end)
+  add_error(function() Location():alt(2 ^ 31) end)
+  add_error(function() Location():lat(1.5) end)
+end
+
+local function build_errors_other()
   add_error(function() Location():get_distance(Vector3f()) end)
   add_error(function() Vector3f():x("a") end)
+  add_error(function() Vector2f():x({}) end)
   add_error(function() Vector3f():dot() end)
   add_error(function() Quaternion():from_euler(1, 2) end)
+  add_error(function() Quaternion():q1("a") end)
   add_error(function() Location():set_alt_m(1, 7) end)
   add_error(function() return Vector2f() + Vector3f() end)
 
-  -- names: a local method, a remote row of a local type (looked up, not called), none
-  add(type(Location().get_distance), type(Location().change_alt_frame), Location().no_such == nil)
 end
 
+local function build_remote_and_names()
+  -- boolean fields written directly
+  local flags = Location()
+  flags:relative_alt(true)
+  flags:terrain_alt(true)
+  flags:origin_alt(true)
+  flags:loiter_xtrack(true)
+  local before = flags:relative_alt()
+  flags:relative_alt(false)
+  add(before, flags:relative_alt(), flags:terrain_alt(), flags:origin_alt())
+
+  -- a local value to a remote method and the remote result decoded locally; only values
+  -- that do not depend on vehicle state (home, origin, EKF) are printed
+  local absolute = home:copy()
+  absolute:set_alt_m(5, 0)
+  add(absolute:get_alt_m(0))                 -- remote: boolean and float, ABSOLUTE
+  add(absolute:change_alt_frame(0), absolute:get_alt_frame(), absolute:alt())
+  local moved = home:copy()
+  local changed = moved:change_alt_frame(1)  -- needs home: only the types are printed
+  add(type(changed), math.type(moved:alt()))
+  local from_origin = home:get_vector_from_origin_NEU_m()   -- remote: a Vector3f or nil, by origin
+  if from_origin ~= nil then
+    from_origin:x()                          -- the decoded local vector works
+  end
+  add(from_origin == nil or type(from_origin) == "userdata")
+
+  -- names: a local method, a remote row of a local type (looked up, not called), none
+  add(type(Location().get_distance), type(Location().change_alt_frame), Location().no_such == nil)
+  assert(#lines == 59, "PD line count " .. #lines)
+end
+
+local stages = {build_values, build_errors_location, build_errors_other, build_remote_and_names}
+local next_stage = 1
 local next_line = 1
 local texts = 0
 
 local function update()
+  if next_stage <= #stages then
+    stages[next_stage]()
+    next_stage = next_stage + 1
+    return update, 100
+  end
   for _ = 1, 4 do
     if next_line > #lines then
       texts = texts + 1   -- this one
@@ -210,5 +263,4 @@ local function update()
   return update, 1000
 end
 
-build()
 return update, 2000
