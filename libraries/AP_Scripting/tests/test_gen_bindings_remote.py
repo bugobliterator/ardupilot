@@ -219,6 +219,10 @@ class GenBindingsRemote(unittest.TestCase):
         self.assert_refused('local_depends', ['userdata Vector3f method length depends AP_AHRS_ENABLED'],
                             'remote: local method Vector3f:length has a depends')
 
+    def test_local_type_with_enum(self):
+        self.assert_refused('local_enum', ['userdata Vector3f enum ZERO ONE'],
+                            'remote: local type Vector3f has enums')
+
 
 if __name__ == '__main__':
     unittest.main()

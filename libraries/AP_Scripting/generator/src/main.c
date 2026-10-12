@@ -3522,6 +3522,9 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
       }
     }
   }
+  if ((kind == REMOTE_LOCAL_BLOB) && (node->enums != NULL)) {
+    error(ERROR_GENERAL, "remote: local type %s has enums: the M4 local index does not serve them", node->name);
+  }
   for (struct userdata_enum *ud_enum = node->enums; ud_enum != NULL; ud_enum = ud_enum->next) {
     if (remote_enum_count >= REMOTE_MAX_ENUMS) {
       error(ERROR_INTERNAL, "remote: too many enums");
