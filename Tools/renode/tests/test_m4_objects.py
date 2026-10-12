@@ -26,6 +26,70 @@ from test_m4_scripts import (SCRIPT_TIMEOUT, host_thread_stack, m4_symbols, star
 SERIAL_DEVICE = {'SCR_VM_I_COUNT': 1000000, 'SCR_SDEV_EN': 1, 'SCR_SDEV1_PROTO': 28}
 
 
+# I2C devices, PWM sources and CRSF menus on the board's own drivers. Renode models no I2C
+# device at 0x50: the read finds nothing and returns nil, as in-process on such a bus. The
+# script keeps its objects in the update closure, so a restart must free them for the next
+# session to get the same again (4 devices, 4 sources, 10 menus)
+DEVICES_SCRIPT = '''
+local failures = 0
+local function check(ok, name)
+  if not ok then
+    failures = failures + 1
+    gcs:send_text(3, "M4 devices FAIL " .. name)
+  end
+end
+local held = {devices = {}, sources = {}, menus = {}}
+for i = 1, 4 do
+  held.devices[i] = i2c:get_device(0, 0x50)
+  check(held.devices[i] ~= nil, "i2c device " .. i)
+end
+local ok, err = pcall(i2c.get_device, i2c, 0, 0x50)
+check(not ok and string.find(tostring(err), "no i2c devices available", 1, true) ~= nil, "fifth i2c device")
+local regs = held.devices[1] and held.devices[1]:read_registers(0, 2)
+check(regs == nil or (type(regs) == "table" and #regs == 2), "read_registers")
+for i = 1, 4 do
+  held.sources[i] = PWMSource()
+  check(held.sources[i] ~= nil, "PWMSource " .. i)
+end
+check(not pcall(PWMSource), "fifth PWMSource")
+-- menus are built by the M7: names are cut to 15 characters, 20 parameters per menu, 10 menus
+local menu = crsf:add_menu("M4 menu")
+check(menu ~= nil and menu:name() == "M4 menu", "crsf menu")
+held.menus[1] = menu
+if menu then
+  for _ = 1, 30 do
+    menu:add_parameter("z")
+  end
+  check(menu:num_params() == 20, "parameters in a menu " .. menu:num_params())
+end
+local cut = crsf:add_menu("0123456789ABCDEFGHIJ")
+check(cut ~= nil and cut:name() == "0123456789ABCDE", "menu name cut")
+held.menus[2] = cut
+local menus = 2
+for _ = 1, 20 do
+  local more = crsf:add_menu("M4 more")
+  if more == nil then
+    break
+  end
+  held.menus[#held.menus + 1] = more
+  menus = menus + 1
+end
+check(menus == 10, "menus in the session " .. menus)
+if failures == 0 then
+  gcs:send_text(6, "M4 devices passed")
+else
+  gcs:send_text(3, "M4 devices failed " .. failures)
+end
+local function update()
+  if held == nil then
+    return
+  end
+  return update, 1000
+end
+return update, 1000
+'''
+
+
 def assert_host_stack(run, tmp_path):
     '''The M7 host thread ran the M4's object calls and keeps 2 KB of its stack.'''
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
@@ -123,5 +187,25 @@ def test_m4_dropped_objects_do_not_cross_a_restart(start_m4lua, tmp_path):  # no
     print('ScriptingM4: %u releases queued at the restart' % queued, flush=True)
     second = run.wait_text(held, timeout=SCRIPT_TIMEOUT)
     assert second == 'M4 holding 64 objects', second
+    assert_host_stack(run, tmp_path)
+    assert_no_protocol_errors(run, tmp_path)
+
+
+def test_m4_devices(start_m4lua, tmp_path):  # noqa: F811
+    '''I2C, PWM sources and CRSF menus on the real drivers, again after a restart: the M7 freed
+    the first session's devices, sources and menus, or the second would find the tables full.'''
+    script = tmp_path / 'm4_devices_renode.lua'
+    script.write_text(DEVICES_SCRIPT)
+    run = start_with_scripts(start_m4lua, [], dict({'SCR_VM_I_COUNT': 1000000}, **LOG_ROWS),
+                             files=[(script, 'APM/scripts')])
+    run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
+    outcome = r'^M4 devices (passed|failed \d+)$'
+    wait_all(run, [outcome], SCRIPT_TIMEOUT, failure=r'^(Lua: |M4 devices FAIL)')
+    assert 'M4 devices passed' in run.texts, run.texts[-15:]
+    run.set('SCR_M4_INJECT', 1)   # a fault in the M4 service: the M7 restarts it
+    run.wait_text(r'^Scripting: M4 restarted \(1/\d+\)$', timeout=SCRIPT_TIMEOUT)
+    wait_all(run, [outcome], SCRIPT_TIMEOUT, failure=r'^(Lua: |M4 devices FAIL)')
+    assert run.texts.count('M4 devices passed') == 2, run.texts[-15:]
+    assert not any(text.startswith('Lua: ') for text in run.texts), run.texts[-15:]
     assert_host_stack(run, tmp_path)
     assert_no_protocol_errors(run, tmp_path)
