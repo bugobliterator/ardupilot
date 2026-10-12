@@ -361,6 +361,9 @@ ReplyStatus AP_ScriptingM4_Server::started(RpcArgs &args)
     }
     {
         WITH_SEMAPHORE(_error_sem);
+        if (_started) {
+            return ReplyStatus::Ok;   // once per session: a repeat is no new start
+        }
         _started = true;
     }
     GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: started on M4 (%u scripts, heap %uKB)",
@@ -449,7 +452,11 @@ void AP_ScriptingM4_Server::set_error(uint8_t severity, const char *text)
         _error_prints = 0;
         _last_error_print_ms = AP_HAL::millis();
     }
-    GCS_SEND_TEXT(MAV_SEVERITY(severity), "Lua: %s", text);
+    // kept for prearm whatever the rate; the texts share the Text quota, so an M4
+    // flooding errors cannot push out the vehicle's own statustexts
+    if (_quota.allow(QuotaClass::Text, AP_HAL::millis())) {
+        GCS_SEND_TEXT(MAV_SEVERITY(severity), "Lua: %s", text);
+    }
 }
 
 // a generated binding's warning (deprecated method, userdata creation with arguments)
