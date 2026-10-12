@@ -87,6 +87,9 @@ def test_m4_example_bindings(start_m4lua, tmp_path):  # noqa: F811
     totals = srpc_totals(run, tmp_path / 'logs')   # stops Renode
     for name in ('ahrs:get_location', 'vehicle:get_mode', 'param:get', 'global:millis', 'gps:status'):
         assert totals.get(name, 0) > 0, 'no SRPC rows for %s (got %s)' % (name, sorted(totals))
+    # copy_userdata.lua's Location and vector math, binding_bench's Locations: all on the M4
+    from test_m4_pure_data import local_rows   # here, not at the top: test_m4_pure_data imports this module
+    assert not local_rows(totals), 'SRPC rows for local pure-data methods: %s' % local_rows(totals)
 
 
 def test_m4_number_text_under_full_heap(start_m4lua):  # noqa: F811
