@@ -1,0 +1,3 @@
+#pragma once
+// M4 Lua build: the real header (the Makefile cannot add libraries/ to INCDIR)
+#include "../../../../AP_Math/AP_Math.h"
