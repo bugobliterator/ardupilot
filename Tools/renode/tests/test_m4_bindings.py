@@ -17,18 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pymavlink import DFReader  # noqa: E402
 from test_m4_containment import start_m4lua  # noqa: E402,F401
-from test_m4_scripts import (M4_SESSION, SCRIPT_TIMEOUT, download_dataflash,  # noqa: E402
-                             host_thread_stack, start_with_scripts, wait_all)
+from test_m4_scripts import (M4_SESSION, SCRIPT_TIMEOUT, host_thread_stack,  # noqa: E402
+                             start_with_scripts, stop_and_read_log, wait_all)
 
 LOG_PARAMETERS = {'SCR_DEBUG_OPTS': 8,   # 8: LOG_RUNTIME, SRPC rows
-                  'LOG_DISARMED': 1, 'LOG_DARM_RATEMAX': 0, 'LOG_FILE_RATEMAX': 0,
-                  'LOG_BITMASK': 2}   # 2: ATTITUDE_MED only; the default sensor rows make a log too large to download
+                  'LOG_DISARMED': 1, 'LOG_DARM_RATEMAX': 0, 'LOG_FILE_RATEMAX': 0}
 
 
-def srpc_totals(run, local_path):
-    '''Sum of SRPC.N per method name in the board's DataFlash log.'''
-    download_dataflash(run, local_path)
-    reader = DFReader.DFReader_binary(str(local_path), zero_time_base=True)
+def srpc_totals(run, directory):
+    '''Sum of SRPC.N per method name in the board's DataFlash log; stops Renode.'''
+    log = stop_and_read_log(run, directory)
+    reader = DFReader.DFReader_binary(str(log), zero_time_base=True)
     totals = {}
     while True:
         message = reader.recv_match(type=['SRPC'])
@@ -59,7 +58,8 @@ def test_m4_generated_bindings(start_m4lua, tmp_path):  # noqa: F811
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
     print('ScriptingM4 host thread stack: %u of %u bytes free' % (free, size), flush=True)
     assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
-    totals = srpc_totals(run, tmp_path / 'bindings.BIN')
+    run.wait_alive(10)
+    totals = srpc_totals(run, tmp_path / 'logs')   # stops Renode
     print('SRPC logged %s' % sorted(totals.items()), flush=True)
     # a method can fold into m4:other in a busy window: never more than the script made
     for name, count in sorted(expected.items()):
@@ -72,7 +72,6 @@ def test_m4_generated_bindings(start_m4lua, tmp_path):  # noqa: F811
     print('SRPC binding calls logged %u, script made %u' % (logged, script_total), flush=True)
     assert logged == script_total, 'SRPC binding calls: %u logged, the script made %u (%s)' % (
         logged, script_total, totals)
-    run.wait_alive(10)
 
 
 def test_m4_example_bindings(start_m4lua, tmp_path):  # noqa: F811
@@ -83,10 +82,10 @@ def test_m4_example_bindings(start_m4lua, tmp_path):  # noqa: F811
     wait_all(run, [r'^vdiff=\(100\.00,300\.00\)$', r'^locdiff=\(\d+\.\d\d,\d+\.\d\d\)$', r'^hello, world$',
                    r'^BENCH ahrs:get_location n=\d+'],
              SCRIPT_TIMEOUT)
-    totals = srpc_totals(run, tmp_path / 'examples.BIN')
+    run.wait_alive(10)
+    totals = srpc_totals(run, tmp_path / 'logs')   # stops Renode
     for name in ('ahrs:get_location', 'vehicle:get_mode', 'param:get', 'global:millis', 'gps:status'):
         assert totals.get(name, 0) > 0, 'no SRPC rows for %s (got %s)' % (name, sorted(totals))
-    run.wait_alive(10)
 
 
 def test_m4_number_text_under_full_heap(start_m4lua):  # noqa: F811

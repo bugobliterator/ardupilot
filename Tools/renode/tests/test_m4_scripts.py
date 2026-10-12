@@ -26,13 +26,11 @@ import fat_image  # noqa: E402
 from pymavlink import DFReader, mavftp  # noqa: E402
 from test_m4_containment import (BUILD, M4_PEER_MAGIC, RCC_GCR, ROOT, STEP_TIMEOUT,  # noqa: E402,F401
                                  start_m4lua)
-from test_mission import download_log  # noqa: E402
 
 SCRIPTS = ROOT / 'libraries' / 'AP_Scripting'
 START_TIMEOUT = 120    # wall seconds: boot to the first M4 start text
 M4_SESSION = M4_PEER_MAGIC + 16   # PeerHeader::Half.session
 FLOOD_MS = 2000      # AP_ScriptingM4_Layout.h: how long a request flood lasts
-LOG_DOWNLOAD_TIMEOUT = 240   # wall seconds without a finished download
 UPLOAD_TIMEOUT = 600   # wall seconds for a script upload
 SCRIPT_TIMEOUT = 900   # wall seconds: math.lua at SCR_VM_I_COUNT 1000000 is slow under Renode
 
@@ -86,25 +84,18 @@ def host_thread_stack(run, local_path):
     return int(match.group(1)), int(match.group(2))
 
 
-def download_dataflash(run, local_path):
-    '''Downloads the board's DataFlash log; a download can stall, so it starts again (5 times).'''
-    for attempt in range(5):
-        try:
-            download_log(run.mav, run.process, run.log_path, local_path, timeout=LOG_DOWNLOAD_TIMEOUT)
-            return
-        except RuntimeError as error:
-            if not any(text in str(error) for text in
-                       ('timed out downloading', 'timed out waiting for LOG_ENTRY', 'timed out listing')):
-                raise
-            print('log download attempt %u stalled' % (attempt + 1), flush=True)
-            run.mav.mav.log_request_end_send(run.mav.target_system, run.mav.target_component)
-    raise RuntimeError('DataFlash log download stalled 5 times')
+def stop_and_read_log(run, directory):
+    '''Stops Renode, which closes the board's logs, and returns the newest DataFlash log of its SD card image.'''
+    run.stop()
+    logs = fat_image.extract_files(run.sdcard_image, '/APM/LOGS', '*.BIN', directory)
+    assert logs, 'no DataFlash log on the SD card'
+    return max(logs, key=lambda log: log.name)
 
 
-def check_log_rows(run, local_path):
+def check_log_rows(run, directory):
     '''The DataFlash log carries an SCR row per script and SRPC rows for the M4's calls.'''
-    download_dataflash(run, local_path)
-    reader = DFReader.DFReader_binary(str(local_path), zero_time_base=True)
+    log = stop_and_read_log(run, directory)
+    reader = DFReader.DFReader_binary(str(log), zero_time_base=True)
     scripts = set()
     calls = set()
     while True:
@@ -200,8 +191,8 @@ def test_m4_runs_scripts(start_m4lua, tmp_path):  # noqa: F811
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
     print('ScriptingM4 host thread stack: %u of %u bytes free' % (free, size), flush=True)
     assert free >= 1024, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
-    check_log_rows(run, tmp_path / 'flight.BIN')
     run.wait_alive(10)
+    check_log_rows(run, tmp_path / 'logs')   # stops Renode: last
 
 
 def test_m4_heap_hog_stops_alone(start_m4lua):  # noqa: F811

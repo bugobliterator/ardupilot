@@ -235,6 +235,7 @@ def start_m4lua(tmp_path):
             process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
                                        start_new_session=True)
         run = M4Run(process, log_path, uart_port, monitor_port)
+        run.sdcard_image = state_dir / 'sdcard.img'
         runs.append(run)
         run.connect()
         return run
