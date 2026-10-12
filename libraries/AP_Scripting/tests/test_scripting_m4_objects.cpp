@@ -204,6 +204,29 @@ TEST(ScriptingM4Objects, FullReleaseQueueCountsDrops)
     EXPECT_EQ(queue.dropped(), 1U);
 }
 
+TEST(ScriptingM4Objects, ReleaseOfAnEarlierSessionsHandleDestroysNothing)
+{
+    HandleTable handles;
+    ObjectPool pool;
+    handles.reset(1);
+    destroyed = 0;
+    void *old_object = pool.allocate(count_destroy);
+    const int16_t old_index = handles.insert_owned(3, old_object);
+    ASSERT_GE(old_index, 0);
+    const RpcValue old_handle = handle_value(3, old_index, handles.generation(uint16_t(old_index)));
+    // the session ends: pool and table are emptied, the next session starts
+    pool.clear();
+    handles.reset(2);
+    EXPECT_EQ(destroyed, 1);
+    void *new_object = pool.allocate(count_destroy);
+    ASSERT_EQ(new_object, old_object);   // the same slot, now another session's object
+    ASSERT_GE(handles.insert_owned(3, new_object), 0);
+    // the old handle names the old entry index but not its generation: nothing is destroyed
+    EXPECT_EQ(release_objects(&old_handle, 1, handles, pool), ReplyStatus::Malformed);
+    EXPECT_EQ(destroyed, 1);
+    EXPECT_EQ(pool.used(), 1);
+}
+
 TEST(ScriptingM4Objects, RecyclerHandsOutEarlierSessionsSources)
 {
     static int sources[6];

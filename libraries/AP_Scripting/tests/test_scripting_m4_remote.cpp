@@ -269,6 +269,20 @@ static int counter_two(lua_State *L) {
     new_Counter(L)->value = 2;
     return 1;
 }
+// two objects, both returned
+static int counter_pair(lua_State *L) {
+    binding_argcheck(L, 0);
+    new_Counter(L)->value = 1;
+    new_Counter(L)->value = 2;
+    return 2;
+}
+static int thing_string_of(lua_State *L) {
+    binding_argcheck(L, 1);
+    static char text[MAX_STRING + 1];
+    memset(text, 's', sizeof(text));
+    lua_pushlstring(L, text, size_t(luaL_checkinteger(L, 1)));
+    return 1;
+}
 
 }  // namespace ScriptingM4Remote
 
@@ -704,6 +718,23 @@ TEST(ScriptingM4Remote, OwnedObjectsOfAFailedCallAreDestroyed)
     EXPECT_EQ(c.values[0].integer, 2);
 }
 
+TEST(ScriptingM4Remote, FailedSecondOwnedResultRetiresTheFirstEntry)
+{
+    Call c;
+    counters_destroyed = 0;
+    static int others[HandleTable::CAPACITY - 1];
+    for (int &other : others) {
+        ASSERT_GE(c.handles.insert(OBJECT, &other), 0);
+    }
+    // the first object gets the last entry, the second finds the table full: without the forget()
+    // in abandon_owned the first entry names a freed slot
+    EXPECT_EQ(c.run(counter_pair), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), TOO_MANY_OBJECTS);
+    EXPECT_EQ(c.objects.used(), 0);
+    EXPECT_EQ(counters_destroyed, 2);
+    EXPECT_EQ(c.handles.count(), HandleTable::CAPACITY - 1);
+}
+
 TEST(ScriptingM4Remote, OwnedObjectLimits)
 {
     Call c;
@@ -807,6 +838,19 @@ TEST(ScriptingM4Remote, StringResultLimit)
     c.args.nil();
     // without the bound in lua_pushlstring() the arena's "M4: call too large" is the text
     EXPECT_EQ(c.run(thing_too_long), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: results too large");
+}
+
+TEST(ScriptingM4Remote, StringResultBoundary)
+{
+    Call c;
+    c.args.integer(MAX_STRING);
+    ASSERT_EQ(c.run(thing_string_of), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 1);
+    EXPECT_EQ(c.values[0].length, MAX_STRING);
+    // one more byte: refused, not truncated
+    c.args.integer(MAX_STRING + 1);
+    EXPECT_EQ(c.run(thing_string_of), ReplyStatus::Error);
     EXPECT_EQ(c.text(0), "M4: results too large");
 }
 
