@@ -39,6 +39,8 @@ static const uint16_t MAX_BLOB = 512;
 // scripts per M4 session and their path length, terminator included
 static const uint8_t MAX_SCRIPTS = 32;
 static const uint8_t MAX_SCRIPT_PATH = 64;
+// the M4's buffer for require's search path (m4:config), terminator included
+static const uint16_t MAX_MODULES_PATH = 192;
 
 struct RpcValue {
     ValueTag tag;

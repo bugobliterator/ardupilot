@@ -62,7 +62,7 @@ static struct {
     uint32_t heap_used;        // port_heap_block_cost() of every live block
     int current_env_ref;
     bool overtime;
-    char modules_path[192];    // package.path, from m4:config
+    char modules_path[MAX_MODULES_PATH];    // package.path, from m4:config
 } rt;
 
 // one script load at a time

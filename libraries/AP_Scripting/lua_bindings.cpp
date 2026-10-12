@@ -21,6 +21,9 @@
 #include <AP_Scheduler/AP_Scheduler.h>
 #include <AP_Scripting/AP_Scripting.h>
 #include <AP_Scripting/lua_scripts.h>
+#if AP_SCRIPTING_M4_ENABLED
+#include <AP_Scripting/AP_ScriptingM4_Rpc.h>
+#endif
 #include <string.h>
 
 #include "lua/src/lauxlib.h"
@@ -1052,6 +1055,12 @@ const char* lua_get_modules_path()
 {
 #define LUA_PATH_ROMFS "@ROMFS/scripts/modules/?.lua;" "@ROMFS/scripts/modules/?/init.lua"
 #define LUA_PATH_SCRIPTS LUA_LDIR"?.lua;"  LUA_LDIR"?/init.lua"
+
+#if AP_SCRIPTING_M4_ENABLED
+    // m4:config sends the search path to the M4's fixed buffer
+    static_assert(sizeof(LUA_PATH_ROMFS ";" LUA_PATH_SCRIPTS) <= ScriptingM4::MAX_MODULES_PATH,
+                  "the modules path does not fit the M4's buffer");
+#endif
 
     uint16_t dir_disable = AP_Scripting::get_singleton()->get_disabled_dir();
     dir_disable &= uint16_t(AP_Scripting::SCR_DIR::SCRIPTS) | uint16_t(AP_Scripting::SCR_DIR::ROMFS);
