@@ -237,24 +237,33 @@ int lua_m4_SocketAPM_set_blocking(lua_State *L)
     return socket_set_blocking(L, *ud);
 }
 
+// what a socket is, as its descriptor reports it. SO_ACCEPTCONN is not available on every stack
+// (macOS SITL answers ENOPROTOOPT): then a socket with a peer is a connected stream, and one
+// without (listening, or not connected) is left alone
+static SocketKind socket_kind(int fd)
+{
+    int value = 0;
+    socklen_t length = sizeof(value);
+    if (SOCKET_CALL(getsockopt)(fd, SOL_SOCKET, SO_TYPE, &value, &length) != 0 || value != SOCK_STREAM) {
+        return SocketKind::Other;
+    }
+    value = 0;
+    length = sizeof(value);
+    if (SOCKET_CALL(getsockopt)(fd, SOL_SOCKET, SO_ACCEPTCONN, &value, &length) == 0) {
+        return value != 0 ? SocketKind::Listening : SocketKind::Stream;
+    }
+    struct sockaddr_storage peer {};
+    socklen_t peer_length = sizeof(peer);
+    return SOCKET_CALL(getpeername)(fd, reinterpret_cast<struct sockaddr *>(&peer), &peer_length) == 0
+        ? SocketKind::Stream : SocketKind::Other;
+}
+
 void sockets_end_session()
 {
     auto *scripting = AP::scripting();
     // clear allocated sockets, with a reset in place of a FIN the stack may wait for
     for (uint8_t i = 0; i < SCRIPTING_MAX_NUM_NET_SOCKET; i++) {
-        socket_end(scripting->_net_sockets[i], [](int fd) {
-            int value = 0;
-            socklen_t length = sizeof(value);
-            if (SOCKET_CALL(getsockopt)(fd, SOL_SOCKET, SO_TYPE, &value, &length) != 0 || value != SOCK_STREAM) {
-                return SocketKind::Other;
-            }
-            value = 0;
-            length = sizeof(value);
-            if (SOCKET_CALL(getsockopt)(fd, SOL_SOCKET, SO_ACCEPTCONN, &value, &length) != 0) {
-                return SocketKind::Other;
-            }
-            return value != 0 ? SocketKind::Listening : SocketKind::Stream;
-        }, [](int fd) {
+        socket_end(scripting->_net_sockets[i], socket_kind, [](int fd) {
             struct linger reset {};
             reset.l_onoff = 1;
             reset.l_linger = 0;
