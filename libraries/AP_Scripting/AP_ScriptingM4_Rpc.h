@@ -484,8 +484,8 @@ enum class MethodKind : uint8_t {
 /*
   System methods: id, symbol, name (SRPC rows, the contract hash), kind.
   Ids below FIRST_BINDING_METHOD are theirs; generated bindings start there.
-  m4:send_text carries the runtime's own texts; print stands in for the
-  manual binding until IO and Manual Bindings.
+  m4:send_text carries the runtime's own texts; global:print is the manual
+  binding for print.
   m4:fs_* are the M4's file calls (Lua io, require, dirlist, remove), served
   by AP_ScriptingM4_FileServer with the reach of in-process scripting.
  */
