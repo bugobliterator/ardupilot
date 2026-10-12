@@ -3,8 +3,10 @@
   name on first use, as the in-process load_generated_sandbox() does:
   singletons, blob types (pure-data userdata held as the M7's wire bytes) and
   handle types (M7 objects) get a metatable whose __index finds the name in
-  the generated rows and caches a remote_stub closure for it. uint32_t and
-  uint64_t stay local (lua_remote_local.cpp, m4_boxed_numerics.cpp). What
+  the generated rows and caches a remote_stub closure for it. uint32_t,
+  uint64_t and the local blob types (Vector2f, Vector3f, Quaternion, Location)
+  run on the M4 (lua_remote_local.cpp, m4/local), crossing to remote calls as
+  blobs. What
   this firmware compiled in, and the enum values, come from the M7's
   m4:bindings image at every start. Runs on the Lua thread.
  */
@@ -88,9 +90,12 @@ static uint8_t userdata_type(lua_State *L, int index)
         return size == sizeof(HandleUserdata) ? uint8_t(id) : 0;
     case BindingKind::Local:
         return size == (id == BINDING_TYPE_UINT32 ? sizeof(uint32_t) : sizeof(uint64_t)) ? uint8_t(id) : 0;
+    case BindingKind::LocalBlob: {
+        const LocalCodec *codec = local_codec(uint8_t(id));
+        return (codec != nullptr && size == codec->size) ? uint8_t(id) : 0;
+    }
     case BindingKind::Singleton:
     case BindingKind::Global:
-    case BindingKind::LocalBlob:
         break;
     }
     return 0;
@@ -139,9 +144,20 @@ static void encode_value(lua_State *L, int index, uint8_t type_id, RpcWriter &ar
         case BindingKind::Local:
             args.blob(type_id, data, type_id == BINDING_TYPE_UINT32 ? sizeof(uint32_t) : sizeof(uint64_t));
             return;
+        case BindingKind::LocalBlob: {
+            // userdata_type() found the codec; the wire form fits (generated static_assert)
+            const LocalCodec *codec = local_codec(type_id);
+            uint8_t wire[LOCAL_WIRE_MAX];
+            WireWriter writer(wire, sizeof(wire));
+            codec->encode(writer, data);
+            if (writer.ok()) {
+                args.blob(type_id, wire, writer.length());
+                return;
+            }
+            break;
+        }
         case BindingKind::Singleton:
         case BindingKind::Global:
-        case BindingKind::LocalBlob:
             break;
         }
         break;
@@ -223,6 +239,16 @@ static bool push_value(lua_State *L, const RpcValue &value)
             }
             return false;
         }
+        if (kind == BindingKind::LocalBlob) {
+            // an M7 value of a local type: decoded into a userdata of its own, as in-process
+            const LocalCodec *codec = local_codec(value.type_id);
+            if (codec == nullptr || value.length != codec->wire_size) {
+                return false;
+            }
+            void *object = codec->create(L);
+            WireReader reader(value.blob, value.length);
+            return codec->decode(reader, object);
+        }
         if (kind != BindingKind::Blob) {
             return false;
         }
@@ -258,6 +284,17 @@ static bool write_back(lua_State *L, uint8_t owner, const RpcValue &value)
 {
     if (value.tag != ValueTag::Blob || value.type_id != owner || userdata_type(L, 1) != owner) {
         return false;
+    }
+    if (BindingKind(type_of(owner).kind) == BindingKind::LocalBlob) {
+        // decoded aside, then copied: a malformed reply leaves the object as it was
+        const LocalCodec *codec = local_codec(owner);
+        alignas(8) uint8_t decoded[LOCAL_OBJECT_MAX];
+        WireReader reader(value.blob, value.length);
+        if (codec == nullptr || codec->size > sizeof(decoded) || !codec->decode(reader, decoded)) {
+            return false;
+        }
+        memcpy(lua_touserdata(L, 1), decoded, codec->size);
+        return true;
     }
     BlobHeader *blob = static_cast<BlobHeader *>(lua_touserdata(L, 1));
     if (blob->length != value.length) {
@@ -381,6 +418,31 @@ static int remote_index(lua_State *L)
     return 0;
 }
 
+// __index of a local type after its local methods and fields (generated <type>_index): a remote
+// row of the type, as a stub kept in the registry per row, so a lookup every loop allocates once
+int remote_row_index(lua_State *L, uint8_t type_id)
+{
+    const char *name = luaL_checkstring(L, 2);
+    const BindingType &type = type_of(type_id);
+    for (uint16_t i = type.first_row; i < type.first_row + type.row_count; i++) {
+        const BindingRow &row = binding_rows[i];
+        if ((row.flags & (ROW_OPERATOR | ROW_CREATION)) != 0 || strcmp(row.name, name) != 0 ||
+            !info_method_available(binding_info, row.method)) {
+            continue;
+        }
+        luaL_getsubtable(L, LUA_REGISTRYINDEX, "m4:rows");
+        if (lua_rawgeti(L, -1, lua_Integer(i) + 1) == LUA_TNIL) {
+            lua_pop(L, 1);
+            push_stub(L, row.method, row.flags, type_id);
+            lua_pushvalue(L, -1);
+            lua_rawseti(L, -3, lua_Integer(i) + 1);
+        }
+        lua_remove(L, -2);
+        return 1;
+    }
+    return 0;
+}
+
 // keeps the value on top in the sandbox (argument 1) under the name, so the lookup runs once
 static int cache_global(lua_State *L)
 {
@@ -428,11 +490,17 @@ static int global_index(lua_State *L)
             }
             return 0;
         case BindingKind::Local:
-            lua_pushcfunction(L, id == BINDING_TYPE_UINT32 ? lua_new_uint32_t : lua_new_uint64_t);
+        case BindingKind::LocalBlob: {
+            // the M4's own constructor; the type bit above says whether this board has the type
+            const lua_CFunction constructor = remote_local_constructor(id);
+            if (constructor == nullptr) {
+                return 0;
+            }
+            lua_pushcfunction(L, constructor);
             return cache_global(L);
+        }
         case BindingKind::Handle:
         case BindingKind::Global:
-        case BindingKind::LocalBlob:
             return 0;
         }
     }
