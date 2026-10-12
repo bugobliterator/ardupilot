@@ -22550,6 +22550,28 @@ RTL_ALT_M 111
             raise NotAchievedException("M4ST PErr %u: a malformed m4:release reached the M7" % protocol_errors)
         self.context_pop()
 
+        # serial ports (m4_serial_ports.lua): dot calls of serial.find_serial keep their first
+        # argument, binary data through a port, readstring in chunks of at most 768 bytes
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_SDEV_EN": 1,
+            "SCR_SDEV1_PROTO": 28,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_script_context("m4_serial_ports.lua")
+        self.reboot_sitl()
+        self.wait_m4_script_text("M4 serial ports passed", timeout=120)
+        self.delay_sim_time(2, reason="M4ST is written once a second")
+        protocol_errors = self.m4_protocol_errors()
+        if protocol_errors != 0:
+            raise NotAchievedException("M4ST PErr %u after the serial port calls" % protocol_errors)
+        self.context_pop()
+
         # a refused m4:bindings image: no script runs and prearm stays failed
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)
