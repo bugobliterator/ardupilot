@@ -174,6 +174,12 @@ uint32_t i2c_bus_clock_argument(lua_State *L, int arg)
     return i2c_clamp_bus_clock(coerce_to_uint32_t(L, arg));
 }
 
+uint32_t can_write_timeout_argument(lua_State *L, int arg)
+{
+    const uint32_t timeout_us = coerce_to_uint32_t(L, arg);
+    return timeout_us < CAN_WRITE_TIMEOUT_MAX_US ? timeout_us : CAN_WRITE_TIMEOUT_MAX_US;
+}
+
 int lua_toboolean(lua_State *L, int arg)
 {
     const RpcValue *value = arg_value(L, arg);
@@ -329,6 +335,13 @@ int lua_type(lua_State *L, int arg)
     return -1;
 }
 
+[[noreturn]] static void type_error(lua_State *L, int arg, const char *expected)
+{
+    char text[sizeof(L->message)];
+    snprintf(text, sizeof(text), "%s expected, got %s", expected, checks(L).type_name(uint8_t(arg)));
+    raise_error(L, ReplyStatus::ArgError, arg, text);
+}
+
 uint32_t *new_uint32_t(lua_State *L)
 {
     return static_cast<uint32_t *>(remote_new_blob(L, L->uint32_type, sizeof(uint32_t)));
@@ -337,6 +350,19 @@ uint32_t *new_uint32_t(lua_State *L)
 uint64_t *new_uint64_t(lua_State *L)
 {
     return static_cast<uint64_t *>(remote_new_blob(L, L->uint64_type, sizeof(uint64_t)));
+}
+
+// lua_boxed_numerics.cpp check_uint64_t(): a boxed uint64_t argument, copied into the arena
+uint64_t *check_uint64_t(lua_State *L, int arg)
+{
+    const RpcValue *value = arg_value(L, arg);
+    if (value == nullptr || value->tag != ValueTag::Blob || value->type_id != L->uint64_type ||
+        value->length != sizeof(uint64_t)) {
+        type_error(L, arg, "uint64_t");
+    }
+    uint64_t *copy = static_cast<uint64_t *>(arena_alloc(L, sizeof(uint64_t)));
+    memcpy(copy, value->blob, sizeof(uint64_t));
+    return copy;
 }
 
 int not_supported_error(lua_State *L, int arg, const char *name)
@@ -359,13 +385,6 @@ void set_and_print_new_error_message(uint8_t severity, const char *fmt, ...)
     va_end(ap);
     current->warn(current->warn_context, severity, text);
 }
-}
-
-[[noreturn]] static void type_error(lua_State *L, int arg, const char *expected)
-{
-    char text[sizeof(L->message)];
-    snprintf(text, sizeof(text), "%s expected, got %s", expected, checks(L).type_name(uint8_t(arg)));
-    raise_error(L, ReplyStatus::ArgError, arg, text);
 }
 
 void *remote_check_blob(lua_State *L, int arg, uint8_t type_id)

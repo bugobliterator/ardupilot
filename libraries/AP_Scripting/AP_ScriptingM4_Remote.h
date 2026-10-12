@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <type_traits>
 // ap_setjmp.h includes the board header inside extern "C"; C++ needs it included first
@@ -81,6 +82,51 @@ inline bool i2c_transfer_fits(size_t send_bytes, size_t receive_bytes)
 {
     return send_bytes <= I2C_TRANSFER_BYTES_MAX && receive_bytes <= I2C_TRANSFER_BYTES_MAX &&
            send_bytes + receive_bytes <= I2C_TRANSFER_BYTES_MAX;
+}
+
+// CAN limits on the M7 host thread (AP_ScriptingM4_ManualCAN.cpp). write_frame() waits in
+// CANSensor::write_frame()'s select() for as long as the script asks; the port clamps the wait
+// (recorded deviation: in-process passes any timeout through)
+static const uint32_t CAN_WRITE_TIMEOUT_MAX_US = 900000;
+// the timeout argument of ScriptingCANBuffer:write_frame, clamped
+uint32_t can_write_timeout_argument(lua_State *L, int arg);
+// scripting CAN buffers an M4 session may hold per sensor: the sensor never frees one, and its
+// CAN thread walks the buffer list recursively. Buffers of earlier sessions are handed out again
+static const uint8_t CAN_BUFFERS_PER_SESSION = 8;
+static const uint32_t CAN_BUFFER_WAIT_MS = 30;
+
+// the members of ScriptingCANBuffer a buffer handed out again resets (a friend of the class)
+struct CANBufferAccess {
+    // empty, unfiltered and of the depth the new script asked for; false if the CAN thread held
+    // the buffer past the wait or the new depth could not be allocated (it then holds no frame)
+    template <typename Buffer> static bool reuse(Buffer &buffer, uint32_t depth)
+    {
+        if (!buffer.sem.take(CAN_BUFFER_WAIT_MS)) {
+            return false;
+        }
+        buffer.num_filters = 0;
+        const bool resized = buffer.buffer.set_size(depth);
+        buffer.sem.give();
+        return resized;
+    }
+};
+
+// DroneCAN_Handle:check_message()'s results are the payload, the node id (integer, 5 bytes), the
+// uint64_t timestamp (blob, 12 bytes) and canfd (1 byte): a longer payload cannot cross in one reply
+static const uint16_t DRONECAN_PAYLOAD_MAX = ScriptingM4::MAX_STRING - (5 + 12 + 1);
+// the next payload of a subscriber's queue, peeked: the caller pops it once copied. One that
+// cannot cross is popped and freed, and false returned, so it never blocks the queue
+template <typename Payloads, typename Payload> bool dronecan_peek_payload(Payloads &payloads, Payload &payload)
+{
+    if (!payloads.peek(payload)) {
+        return false;
+    }
+    if (payload.length > DRONECAN_PAYLOAD_MAX) {
+        payloads.pop();
+        free(payload.data);
+        return false;
+    }
+    return true;
 }
 
 // method flags (gen-bindings -r); the high nibble is the ScriptingM4::QuotaClass
@@ -160,6 +206,7 @@ int lua_type(lua_State *L, int arg);   // lua.h's LUA_TNONE (-1), LUA_TNIL (0), 
 const char *lua_tolstring(lua_State *L, int arg, size_t *length);   // nullptr for a non-string
 uint32_t *new_uint32_t(lua_State *L);
 uint64_t *new_uint64_t(lua_State *L);   // gps:time_epoch_usec()
+uint64_t *check_uint64_t(lua_State *L, int arg);   // DroneCAN_Handle(): a boxed uint64_t argument
 __attribute__((noreturn)) int not_supported_error(lua_State *L, int arg, const char *name);
 namespace lua_scripts {
 void set_and_print_new_error_message(uint8_t severity, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -194,11 +241,23 @@ int AP_HAL__I2CDevice_read_registers(lua_State *L);
 int AP_HAL__I2CDevice_transfer(lua_State *L);
 int lua_get_PWMSource(lua_State *L);
 int lua_m4_I2CDevice_set_retries(lua_State *L);
+// AP_ScriptingM4_ManualCAN.cpp
+int lua_get_CAN_device(lua_State *L);
+int lua_get_CAN_device2(lua_State *L);
+int lua_m4_ScriptingCANBuffer_write_frame(lua_State *L);
+int DroneCAN_Handle__new_handle(lua_State *L);
+int DroneCAN_Handle__broadcast(lua_State *L);
+int DroneCAN_Handle__request(lua_State *L);
+int DroneCAN_Handle__check_message(lua_State *L);
+// an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
+void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
 int lua_m4_Parameter_init_by_info(lua_State *L);
 int lua_m4_analog_channel(lua_State *L);
 // the analog sources earlier sessions were handed may be handed out again (AP_ScriptingM4_Server::reset())
 void analog_new_session();
+// the CAN buffers earlier sessions were handed may be handed out again (AP_ScriptingM4_Server::reset())
+void can_new_session();
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)
 bool method_available(uint16_t method);

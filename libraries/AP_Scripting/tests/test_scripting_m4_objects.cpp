@@ -270,4 +270,41 @@ TEST(ScriptingM4Objects, RecyclerHandsOutEarlierSessionsSources)
     EXPECT_EQ(recycler.take(make), nullptr);   // the HAL ran out: nil, as in-process
 }
 
+// the scripting CAN buffers (CAN:get_device): the sensor's buffer list is never shortened and the
+// CAN thread walks it recursively, so an M4 session gets at most 8 and earlier sessions' buffers
+// are handed out again
+TEST(ScriptingM4Objects, CappedRecyclerRefusesPastItsCapacity)
+{
+    static int buffers[16];
+    int made = 0;
+    auto make = [&made]() { return &buffers[made++]; };
+    SessionRecycler<int, 8> recycler;
+    for (int i = 0; i < 8; i++) {
+        EXPECT_EQ(recycler.take_at_most(make), &buffers[i]) << i;
+    }
+    // without the cap a 9th buffer is made, and a script's loop makes them until the heap is gone
+    EXPECT_EQ(recycler.take_at_most(make), nullptr);
+    EXPECT_EQ(made, 8);                          // refused before make(): the M4's retry repeats nothing
+    recycler.new_session();
+    // without the recycling every M4 restart adds 8 more buffers to the sensor's list
+    for (int i = 0; i < 8; i++) {
+        EXPECT_EQ(recycler.take_at_most(make), &buffers[i]) << i;
+    }
+    EXPECT_EQ(recycler.take_at_most(make), nullptr);
+    EXPECT_EQ(made, 8);
+    EXPECT_EQ(recycler.count(), 8);
+}
+
+TEST(ScriptingM4Objects, CappedRecyclerKeepsNothingMakeRefused)
+{
+    int made = 0;
+    auto refuse = [&made]() { made++; return static_cast<int *>(nullptr); };
+    SessionRecycler<int, 2> recycler;
+    EXPECT_EQ(recycler.take_at_most(refuse), nullptr);   // out of memory: nil, as in-process
+    EXPECT_EQ(recycler.count(), 0);
+    static int buffer;
+    EXPECT_EQ(recycler.take_at_most([]() { return &buffer; }), &buffer);
+    EXPECT_EQ(made, 1);
+}
+
 AP_GTEST_MAIN()

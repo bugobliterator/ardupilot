@@ -3006,6 +3006,7 @@ enum remote_quota {                   // ScriptingM4::QuotaClass
   QUOTA_STORAGE = 2,
   QUOTA_LED     = 3,
   QUOTA_FILE_LOG = 4,
+  QUOTA_CAN     = 6,
 };
 
 // userdata the M4 holds as wire bytes: plain data, no pointers, every member that
@@ -3042,28 +3043,32 @@ static const char *remote_local_methods[] = {
 static const char *remote_handle_ap_objects[] = {
   "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",
   "AP_Vehicle::custom_mode_state", "RC_Channel", "AP_HAL::AnalogSource", "AP_EFI_Backend",
-  "AP_HAL::I2CDevice", "AP_HAL::PWMSource",
+  "AP_HAL::I2CDevice", "AP_HAL::PWMSource", "ScriptingCANBuffer",
   NULL };
 // userdata carrying M7 pointers or state: the object lives in the M7's object pool
 // (AP_ScriptingM4_Objects.h), the M4 userdata holds an owned handle that its __gc releases
-static const char *remote_owned_userdata[] = { "Parameter", "AP_Scripting_SerialAccess", NULL };
+static const char *remote_owned_userdata[] = { "Parameter", "AP_Scripting_SerialAccess", "DroneCAN_Handle", NULL };
 // an owned type's release when it has one of its own (its in-process __gc), else its destructor
 struct remote_release {
   const char *type;
   const char *function;   // void function(void *object), declared in AP_ScriptingM4_Remote.h
 };
-static const struct remote_release remote_owned_release[] = { { NULL, NULL } };
+static const struct remote_release remote_owned_release[] = {
+  { "DroneCAN_Handle", "DroneCAN_Handle__release" },
+  { NULL, NULL } };
 // userdata carrying M7 pointers or state and the manual-only ap_objects: left out until
 // IO and Manual Bindings. A userdata or ap_object in none of these lists fails generation
 static const char *remote_deferred_userdata[] = {
-  "CRSFMenu", "CRSFParameter", "DroneCAN_Handle",
-  "SocketAPM", "ScriptingCANBuffer",
+  "CRSFMenu", "CRSFParameter", "SocketAPM",
   NULL };
 // manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
 static const char *remote_ready_manual[] = {
   "lua_millis", "lua_micros", "lua_new_Parameter", "lua_serial_begin", "lua_serial_writestring",
   "lua_serial_readstring", "lua_serial_find_serial", "lua_serial_find_simulated_device",
   "lua_get_i2c_device", "AP_HAL__I2CDevice_read_registers", "AP_HAL__I2CDevice_transfer", "lua_get_PWMSource",
+  "lua_get_CAN_device", "lua_get_CAN_device2",
+  "DroneCAN_Handle::new_handle", "DroneCAN_Handle::broadcast", "DroneCAN_Handle::request",
+  "DroneCAN_Handle::check_message",
   NULL };
 // manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
 // a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)
@@ -3083,6 +3088,7 @@ static const struct remote_replacement remote_replaced_methods[] = {
   { "Parameter", "init_by_info", "lua_m4_Parameter_init_by_info" },   // an M7 allocation per call, never freed
   { "hal.analogin", "channel", "lua_m4_analog_channel" },   // a new HAL slot per M4 session
   { "AP_HAL::I2CDevice", "set_retries", "lua_m4_I2CDevice_set_retries" },   // retries bound the host thread's wait
+  { "ScriptingCANBuffer", "write_frame", "lua_m4_ScriptingCANBuffer_write_frame" },   // the timeout bounds it too
   { NULL, NULL, NULL } };
 static int remote_replacement_matched[sizeof(remote_replaced_methods) / sizeof(remote_replaced_methods[0])];
 
@@ -3159,6 +3165,11 @@ static const struct remote_quota_entry remote_quotas[] = {
   { "AP_Mission", "clear", QUOTA_STORAGE },
   { "AP_SerialLED", "send", QUOTA_LED },
   { "AP_Logger", "log_file_content", QUOTA_FILE_LOG },
+  // the CAN bus is shared with flight traffic; manual functions (broadcast, request) match by
+  // their Lua name, and over the quota return false: they return one boolean
+  { "ScriptingCANBuffer", "write_frame", QUOTA_CAN },
+  { "DroneCAN_Handle", "broadcast", QUOTA_CAN },
+  { "DroneCAN_Handle", "request", QUOTA_CAN },
   { NULL, NULL, QUOTA_NONE } };
 static int remote_quota_matched[sizeof(remote_quotas) / sizeof(remote_quotas[0])];
 
@@ -3526,6 +3537,25 @@ static int remote_quota_flags(const struct userdata *node, const struct method *
   return 0;
 }
 
+// the quota of a ported manual function: over it the call returns false, its failure value
+static int remote_manual_quota_flags(const struct userdata *node, const struct method_alias *alias) {
+  if (node->name == NULL) {
+    return 0;   // the global functions: no quota names them
+  }
+  for (int i = 0; remote_quotas[i].type != NULL; i++) {
+    const struct remote_quota_entry *quota = &remote_quotas[i];
+    if ((strcmp(quota->type, node->name) != 0) || (strcmp(quota->method, alias->alias) != 0)) {
+      continue;
+    }
+    remote_quota_matched[i] = TRUE;
+    if (alias->num_ret != 1) {
+      error(ERROR_GENERAL, "remote: a quota on %s:%s needs one boolean result", node->name, alias->alias);
+    }
+    return (quota->quota << 4) | METHOD_QUOTA_FALSE;
+  }
+  return 0;
+}
+
 static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
   if (remote_type_count >= REMOTE_MAX_TYPES) {
     error(ERROR_INTERNAL, "remote: too many types");
@@ -3595,7 +3625,8 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         }
       } else if ((alias->type == ALIAS_TYPE_MANUAL) && remote_in_list(remote_ready_manual, alias->name)) {
         const int row = remote_add_row(alias->alias, id, remote_manual_flags(kind, alias), type_id);
-        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency, 0, row);
+        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency,
+                          remote_manual_quota_flags(node, alias), row);
       }
     }
     for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {

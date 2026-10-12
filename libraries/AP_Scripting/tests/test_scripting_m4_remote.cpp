@@ -3,6 +3,8 @@
 #include <string>
 #include <string.h>
 #include <type_traits>
+#include <stdlib.h>
+#include <AP_HAL/utility/RingBuffer.h>
 #include <AP_Scripting/AP_ScriptingM4_Remote.h>
 
 using namespace ScriptingM4;
@@ -304,6 +306,31 @@ static int thing_string_of(lua_State *L) {
     return 1;
 }
 
+// check_uint64_t() as DroneCAN_Handle::new_handle() uses it
+static int thing_signature(lua_State *L) {
+    binding_argcheck(L, 1);
+    const uint64_t value = *check_uint64_t(L, 1);
+    lua_pushinteger(L, int32_t(value >> 32));
+    return 1;
+}
+// ScriptingCANBuffer:write_frame()'s timeout as the M7 port reads it
+static int thing_can_timeout(lua_State *L) {
+    binding_argcheck(L, 1);
+    lua_pushinteger(L, int32_t(can_write_timeout_argument(L, 1)));
+    return 1;
+}
+// DroneCAN_Handle:check_message()'s results with a payload of the given length
+static int thing_dronecan_message(lua_State *L) {
+    binding_argcheck(L, 1);
+    static char payload[MAX_STRING];
+    memset(payload, 'p', sizeof(payload));
+    lua_pushlstring(L, payload, size_t(luaL_checkinteger(L, 1)));
+    lua_pushinteger(L, 125);
+    *new_uint64_t(L) = 5000000000ULL;
+    lua_pushboolean(L, true);
+    return 4;
+}
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -320,6 +347,7 @@ struct Call {
     RpcValue values[MAX_VALUES];
     uint8_t count = 0;
     uint8_t error_arg = 0;
+    uint16_t reply_start = 0;   // sizeof(ReplyHeader): the reply frame the server sends
     uint8_t warned_severity = 0;
     char warned[128] {};
 
@@ -348,12 +376,12 @@ struct Call {
     {
         EXPECT_TRUE(args.ok());
         EXPECT_TRUE(decode_values(args_frame, args.length(), args.count(), arg_values));
-        results.begin(reply_frame, sizeof(reply_frame), 0);
+        results.begin(reply_frame, sizeof(reply_frame), reply_start);
         const ReplyStatus status = ScriptingM4Remote::run(call, arg_values, args.count(), function, flags,
                                                           results, error_arg);
         EXPECT_TRUE(results.ok());
         count = results.count();
-        EXPECT_TRUE(decode_values(reply_frame, results.length(), count, values));
+        EXPECT_TRUE(decode_values(reply_frame + reply_start, uint16_t(results.length() - reply_start), count, values));
         args.begin(args_frame, sizeof(args_frame), 0);
         return status;
     }
@@ -886,7 +914,6 @@ TEST(ScriptingM4Remote, StringResultBoundary)
     EXPECT_EQ(c.text(0), "M4: results too large");
 }
 
-AP_GTEST_MAIN()
 
 // without the nullptr/0 for a non-string, lua_tolstring() would raise an argument error (as
 // luaL_checklstring does) or hand back garbage with a stale length: the third run fails
@@ -935,3 +962,137 @@ TEST(ScriptingM4Remote, I2CBusClockArgument)
         EXPECT_EQ(c.values[0].integer, expected[i]);
     }
 }
+
+TEST(ScriptingM4Remote, Uint64Arguments)
+{
+    Call c;
+    c.call.uint64_type = 13;   // an id no other value of these tests uses
+    const uint64_t signature = 0x0F0868D0C1A7C6F1ULL;
+    c.args.blob(13, &signature, sizeof(signature));
+    ASSERT_EQ(c.run(thing_signature), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 0x0F0868D0);
+    // another value where a uint64_t is expected: luaL_checkudata()'s text
+    c.args.integer(5);
+    EXPECT_EQ(c.run(thing_signature), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "uint64_t expected, got number");
+    // the right type with the wrong length never reaches the copy
+    const uint32_t short_value = 1;
+    c.args.blob(13, &short_value, sizeof(short_value));
+    EXPECT_EQ(c.run(thing_signature), ReplyStatus::ArgError);
+}
+
+// without the clamp a timeout of 4000 s reaches CANSensor::write_frame()'s select() and holds the
+// host thread until the bus takes the frame, past the M4's 1 s call timeout
+TEST(ScriptingM4Remote, CanWriteTimeoutArgument)
+{
+    Call c;
+    const int32_t requested[] = { 0, 10000, 900000, 900001, INT32_MAX };
+    const int32_t expected[] = { 0, 10000, 900000, 900000, 900000 };
+    for (size_t i = 0; i < 5; i++) {
+        c.args.integer(requested[i]);
+        ASSERT_EQ(c.run(thing_can_timeout), ReplyStatus::Ok);
+        EXPECT_EQ(c.values[0].integer, expected[i]) << i;
+    }
+    const uint32_t large = 4000000000U;   // a uint32_t userdata, as coerce_to_uint32_t() takes it
+    c.args.blob(UINT32, &large, sizeof(large));
+    ASSERT_EQ(c.run(thing_can_timeout), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 900000);
+}
+
+// the longest payload check_message() returns crosses with the node id, timestamp and canfd
+TEST(ScriptingM4Remote, DroneCANPayloadFitsOneReply)
+{
+    Call c;
+    c.call.uint64_type = 4;
+    c.reply_start = sizeof(ReplyHeader);
+    c.args.integer(DRONECAN_PAYLOAD_MAX);
+    ASSERT_EQ(c.run(thing_dronecan_message), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 4);
+    EXPECT_EQ(c.values[0].length, DRONECAN_PAYLOAD_MAX);
+    EXPECT_EQ(c.values[1].integer, 125);
+    // one byte more no longer fits the reply: dronecan_peek_payload() drops such a payload
+    c.args.integer(DRONECAN_PAYLOAD_MAX + 1);
+    EXPECT_EQ(c.run(thing_dronecan_message), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: results too large");
+}
+
+struct TestPayload {
+    uint8_t *data;
+    uint16_t length;
+};
+
+static TestPayload test_payload(uint16_t length)
+{
+    TestPayload payload;
+    payload.data = static_cast<uint8_t *>(malloc(length));
+    payload.length = length;
+    return payload;
+}
+
+// without the drop the oversized payload stays at the head of the queue: every later
+// check_message() fails with "M4: results too large" and the subscriber never delivers again
+TEST(ScriptingM4Remote, DroneCANOversizedPayloadIsDropped)
+{
+    ObjectBuffer<TestPayload> payloads(8);
+    TestPayload empty {};
+    EXPECT_FALSE(dronecan_peek_payload(payloads, empty));
+    ASSERT_TRUE(payloads.push(test_payload(DRONECAN_PAYLOAD_MAX + 1)));
+    ASSERT_TRUE(payloads.push(test_payload(7)));
+    TestPayload payload {};
+    EXPECT_FALSE(dronecan_peek_payload(payloads, payload));   // nil for the oversized one
+    EXPECT_EQ(payloads.available(), 1U);                      // popped
+    ASSERT_TRUE(dronecan_peek_payload(payloads, payload));
+    EXPECT_EQ(payload.length, 7);
+    EXPECT_EQ(payloads.available(), 1U);                      // peeked: the caller pops once it is copied
+    ASSERT_TRUE(payloads.pop(payload));
+    free(payload.data);
+    ASSERT_TRUE(payloads.push(test_payload(DRONECAN_PAYLOAD_MAX)));
+    ASSERT_TRUE(dronecan_peek_payload(payloads, payload));    // the longest that fits
+    ASSERT_TRUE(payloads.pop(payload));
+    free(payload.data);
+}
+
+// a scripting CAN buffer as ScriptingCANBuffer has it: the members CANBufferAccess resets
+struct TestCANBuffer {
+    struct Semaphore {
+        bool available = true;
+        int held = 0;
+        bool take(uint32_t timeout_ms)
+        {
+            (void)timeout_ms;
+            held += available ? 1 : 0;
+            return available;
+        }
+        void give() { held--; }
+    } sem;
+    ObjectBuffer<uint32_t> buffer {2};
+    struct {
+        uint32_t mask;
+        uint32_t value;
+    } filter[8];
+    uint8_t num_filters;
+};
+
+// an earlier session's buffer handed out again: without the reset the new script reads the old
+// session's frames and its buffer drops every frame the old filters do not pass
+TEST(ScriptingM4Remote, ReusedCANBufferStartsEmpty)
+{
+    TestCANBuffer can_buffer {};
+    ASSERT_TRUE(can_buffer.buffer.push(1));
+    ASSERT_TRUE(can_buffer.buffer.push(2));
+    can_buffer.num_filters = 3;
+    EXPECT_TRUE(CANBufferAccess::reuse(can_buffer, 5));
+    EXPECT_EQ(can_buffer.buffer.available(), 0U);
+    EXPECT_EQ(can_buffer.buffer.get_size(), 5U);             // the depth the new script asked for
+    EXPECT_EQ(can_buffer.num_filters, 0);
+    EXPECT_EQ(can_buffer.sem.held, 0);
+    // a buffer the CAN thread holds past the bounded wait is not handed out
+    ASSERT_TRUE(can_buffer.buffer.push(3));
+    can_buffer.num_filters = 1;
+    can_buffer.sem.available = false;
+    EXPECT_FALSE(CANBufferAccess::reuse(can_buffer, 5));
+    EXPECT_EQ(can_buffer.num_filters, 1);
+    EXPECT_EQ(can_buffer.buffer.available(), 1U);
+}
+
+AP_GTEST_MAIN()

@@ -193,6 +193,25 @@ TEST(ScriptingM4Quota, FileLogFloodIsLimited)
     EXPECT_TRUE(quota.allow(QuotaClass::FileLog, 1000));    // one file a second
 }
 
+// CAN transmits from the M4 (write_frame, DroneCAN broadcast and request) share the bus with flight
+// traffic: without the class a script's loop sends at the M4's call rate
+TEST(ScriptingM4Quota, CanTransmitsAreLimited)
+{
+    Quota quota;
+    quota.reset(0);
+    const QuotaLimit &can = QUOTA_LIMITS[uint8_t(QuotaClass::Can)];
+    EXPECT_EQ(can.per_second, 100);
+    EXPECT_EQ(can.burst, 100);
+    uint16_t allowed = 0;
+    for (uint16_t i = 0; i < 300; i++) {
+        allowed += quota.allow(QuotaClass::Can, 0) ? 1 : 0;
+    }
+    EXPECT_EQ(allowed, 100);
+    EXPECT_EQ(quota.take_hits(), 200U);
+    EXPECT_FALSE(quota.allow(QuotaClass::Can, 9));
+    EXPECT_TRUE(quota.allow(QuotaClass::Can, 10));    // one frame per 10 ms
+}
+
 TEST(ScriptingM4Quota, HitsSurviveReset)
 {
     Quota quota;

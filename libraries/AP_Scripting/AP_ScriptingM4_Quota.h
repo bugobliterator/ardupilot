@@ -20,8 +20,9 @@ enum class QuotaClass : uint8_t {
     Led = 3,       // serialLED:send
     FileLog = 4,   // logger:log_file_content: each call queues an M7 heap allocation
     FileIo = 5,    // m4:fs_open for writing, m4:fs_write, m4:fs_remove: SD card writes
+    Can = 6,       // CAN write_frame, DroneCAN broadcast and request: the bus flight traffic uses
 };
-static const uint8_t QUOTA_CLASSES = 6;
+static const uint8_t QUOTA_CLASSES = 7;
 
 struct QuotaLimit {
     uint16_t per_second;
@@ -34,6 +35,7 @@ static const QuotaLimit QUOTA_LIMITS[QUOTA_CLASSES] = {
     { 100, 100 },    // Led
     { 1, 5 },        // FileLog: the logger drains its file queue at most about 10 files/s
     { 50, 100 },     // FileIo: at most about 25 KB/s of SD writes at FILE_CHUNK per write
+    { 100, 100 },    // Can
 };
 
 class Quota {

@@ -43,6 +43,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
         { "RC_Channel", BindingKind::Handle }, { "AP_EFI_Backend", BindingKind::Handle },
         { "Parameter", BindingKind::Owned }, { "AP_Scripting_SerialAccess", BindingKind::Owned },
         { "AP_HAL::I2CDevice", BindingKind::Handle }, { "AP_HAL::PWMSource", BindingKind::Handle },
+        { "ScriptingCANBuffer", BindingKind::Handle }, { "DroneCAN_Handle", BindingKind::Owned },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
         { "global", BindingKind::Global },
     };
@@ -55,8 +56,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
     EXPECT_EQ(type_named("uint64_t"), BINDING_TYPE_UINT64);
     // userdata carrying M7 pointers or state, and the manual-only ap_objects, wait for
     // IO and Manual Bindings (none of these is renamed: the C++ name is the Lua name)
-    for (const char *name : { "CRSFMenu", "CRSFParameter",
-                              "DroneCAN_Handle", "SocketAPM", "ScriptingCANBuffer" }) {
+    for (const char *name : { "CRSFMenu", "CRSFParameter", "SocketAPM" }) {
         EXPECT_EQ(type_named(name), 0) << name;
     }
 }
@@ -154,6 +154,14 @@ TEST(ScriptingM4Bindings, KnownBindings)
     const BindingRow *get_device = row_named(type_named("i2c"), "get_device");
     ASSERT_NE(get_device, nullptr);
     EXPECT_EQ(get_device->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
+
+    const uint8_t dronecan = type_named("DroneCAN_Handle");
+    EXPECT_NE(row_named(dronecan, "new"), nullptr);          // DroneCAN_Handle(...)
+    EXPECT_NE(row_named(dronecan, "broadcast"), nullptr);
+    EXPECT_EQ(row_named(dronecan, "__gc"), nullptr);          // the release replaces the in-process __gc
+    const BindingRow *can_device = row_named(type_named("CAN"), "get_device");
+    ASSERT_NE(can_device, nullptr);
+    EXPECT_EQ(can_device->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
 
     const BindingType &gps = binding_types[type_named("gps") - 1];
     bool found = false;

@@ -19,6 +19,7 @@
 #pragma once
 
 #include <AP_HAL/AP_HAL.h>
+#include "AP_Scripting_config.h"
 
 #if defined(HAL_BUILD_AP_PERIPH)
     // Must have at least two CAN ports on Periph
@@ -30,6 +31,13 @@
 #if AP_SCRIPTING_CAN_SENSOR_ENABLED
 
 #include <AP_CANManager/AP_CANSensor.h>
+
+#if AP_SCRIPTING_M4_ENABLED
+namespace ScriptingM4Remote {
+// resets a buffer an earlier M4 session was handed (AP_ScriptingM4_Remote.h)
+struct CANBufferAccess;
+}
+#endif
 
 class ScriptingCANBuffer;
 class ScriptingCANSensor : public CANSensor {
@@ -81,6 +89,9 @@ public:
     bool add_filter(uint32_t mask, uint32_t value);
 
 private:
+#if AP_SCRIPTING_M4_ENABLED
+    friend struct ScriptingM4Remote::CANBufferAccess;
+#endif
 
     ObjectBuffer<AP_HAL::CANFrame> buffer;
 

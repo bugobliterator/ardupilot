@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AP_Scripting_config.h"
 #include <AP_Param/AP_Param.h>
 #include "lua/src/lua.hpp"
 #include <AP_DroneCAN/AP_DroneCAN.h>
@@ -32,6 +33,13 @@ private:
 
 #if HAL_ENABLE_DRONECAN_DRIVERS
 
+#if AP_SCRIPTING_M4_ENABLED
+namespace ScriptingM4Remote {
+// the M4's ports of DroneCAN_Handle's functions (AP_ScriptingM4_ManualCAN.cpp)
+struct DroneCANAccess;
+}
+#endif
+
 #ifndef DRONECAN_HANDLE_MAX_PAYLOADS
 #define DRONECAN_HANDLE_MAX_PAYLOADS 8
 #endif
@@ -55,6 +63,9 @@ public:
     bool canfd;
 
 private:
+#if AP_SCRIPTING_M4_ENABLED
+    friend struct ScriptingM4Remote::DroneCANAccess;
+#endif
     AP_DroneCAN *dc;
 
     // class for subscribing to messages

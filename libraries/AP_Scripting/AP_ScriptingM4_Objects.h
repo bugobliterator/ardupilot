@@ -206,6 +206,15 @@ public:
         }
         return item;
     }
+    // as take(), but at most N in a session: past them nullptr, before make() is asked, so at
+    // most N objects are ever made (the scripting CAN buffers, which their sensor never frees)
+    template <typename Make> T *take_at_most(Make make)
+    {
+        if (_handed >= N) {
+            return nullptr;
+        }
+        return take(make);
+    }
     // a new M4 session: every kept object can be handed out again
     void new_session() { _handed = 0; }
     uint8_t count() const { return _count; }

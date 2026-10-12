@@ -144,7 +144,8 @@ class GenBindingsRemote(unittest.TestCase):
         functions = table('remote_functions')
         flags = table('remote_method_flags')
         self.assertEqual(len(functions), len(flags))
-        # the high nibble is the quota class (AP_ScriptingM4_Quota.h): 1 Text, 2 Storage, 3 Led, 4 FileLog
+        # the high nibble is the quota class (AP_ScriptingM4_Quota.h): 1 Text, 2 Storage, 3 Led, 4 FileLog,
+        # 6 Can
         quota_classes = {function: int(flag, 16) >> 4 for function, flag in zip(functions, flags) if int(flag, 16) >> 4}
         self.assertEqual(quota_classes, {
             'GCS_send_text': 1,
@@ -157,8 +158,15 @@ class GenBindingsRemote(unittest.TestCase):
             'AP_Mission_clear': 2,
             'AP_SerialLED_send': 3,
             'AP_Logger_log_file_content': 4,
+            'lua_m4_ScriptingCANBuffer_write_frame': 6,
+            'DroneCAN_Handle__broadcast': 6,
+            'DroneCAN_Handle__request': 6,
         })
-        self.assertIn('static_assert(4 < ScriptingM4::QUOTA_CLASSES', dispatch)
+        self.assertIn('static_assert(6 < ScriptingM4::QUOTA_CLASSES', dispatch)
+        # CAN transmits return false over their quota, the manual ones as the generated one
+        for function in ('lua_m4_ScriptingCANBuffer_write_frame', 'DroneCAN_Handle__broadcast',
+                         'DroneCAN_Handle__request'):
+            self.assertEqual(flags[functions.index(function)], '0x62', function)
 
     def test_changed_row_changes_the_hash(self):
         _, _, before = self.generate('hash_before', [])
@@ -372,6 +380,42 @@ class GenBindingsRemote(unittest.TestCase):
         # the in-process text keeps the unbounded take
         with open(os.path.join(self.tmp, 'i2c_sem', 'gen.cpp')) as f:
             self.assertIn('get_semaphore()->take_blocking();', self.body(f.read(), 'AP_HAL__I2CDevice_write_register'))
+
+    def test_dronecan_handles(self):
+        code, output, _ = self.generate('dronecan', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, _ = self.outputs('dronecan')
+        types = self.type_ids(tables)
+        handle, kind = types['DroneCAN_Handle']
+        self.assertEqual(kind, 6)
+        # the release is the in-process __gc, not the destructor; the C++ names lose their ::
+        self.assertIn('remote_new_owned(L, %d, DroneCAN_Handle__release)' % handle, dispatch)
+        for name in ('DroneCAN_Handle__new_handle', 'DroneCAN_Handle__broadcast', 'DroneCAN_Handle__request',
+                     'DroneCAN_Handle__check_message'):
+            self.assertIn('    %s,\n' % name, dispatch)
+        self.assertNotIn('DroneCAN_Handle::', dispatch.split('remote_functions[')[1].split('};')[0])
+        self.assertIsNone(self.row_flags(tables, handle, '__gc'))
+        self.assertEqual(self.row_flags(tables, types['CAN'][0], 'get_device2')[1], 0x11)
+        self.assertEqual(types['ScriptingCANBuffer'][1], 2)
+        # write_frame runs the port that clamps its timeout; the generated body is not in the dispatch
+        self.assertIn('    lua_m4_ScriptingCANBuffer_write_frame,\n', dispatch)
+        self.assertNotIn('static int ScriptingCANBuffer_write_frame(', dispatch)
+
+    def test_quota_on_a_manual_function_returns_a_boolean(self):
+        # over its quota a call gets false: a manual function under a quota must return one value
+        description = self.description.replace('userdata DroneCAN_Handle manual broadcast DroneCAN_Handle::broadcast 1 1',
+                                               'userdata DroneCAN_Handle manual broadcast DroneCAN_Handle::broadcast 1 2')
+        self.assertNotEqual(description, self.description)
+        work = os.path.join(self.tmp, 'manual_quota')
+        os.makedirs(work)
+        desc = os.path.join(work, 'bindings.desc')
+        with open(desc, 'w') as f:
+            f.write(description)
+        result = subprocess.run([self.generator, '-o', os.path.join(work, 'gen'), '-r', os.path.join(work, 'remote'),
+                                 '-i', desc], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('remote: a quota on DroneCAN_Handle:broadcast needs one boolean result',
+                      result.stdout + result.stderr)
 
 
 if __name__ == '__main__':
