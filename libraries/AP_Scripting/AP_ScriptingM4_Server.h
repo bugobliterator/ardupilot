@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
+#include "AP_ScriptingM4_FileServer.h"
 #include "AP_ScriptingM4_Handles.h"
 #include "AP_ScriptingM4_Quota.h"
 #include "AP_ScriptingM4_Remote.h"
@@ -34,6 +35,8 @@ public:
     // the checksums, the last error and the previous session's handles go. Host thread
     // only, never during a call; called at every M4 start and restart
     void reset(uint32_t session);
+    // the M4's files: closed when scripting goes off. Host thread, or init() before it runs
+    void close_files() { _files.reset(); }
     // calls the quotas refused since the last call (M4ST QHit)
     uint32_t take_quota_hits() { return _quota.take_hits(); }
     // one Call or Notify; for a Call the results, or the error text, go to results
@@ -86,6 +89,7 @@ private:
     bool _started;   // m4:started of this session received; under _error_sem
     ScriptingM4::HandleTable _handles;
     ScriptingM4::Quota _quota;
+    AP_ScriptingM4_FileServer _files;        // the M4's open files (m4:fs_*)
     ScriptingM4Remote::RemoteCall _call;   // the generated dispatch's call state (about 2.8 KB)
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
     bool _refuse_bindings;

@@ -151,4 +151,36 @@ TEST(ScriptingM4Files, SerialsWrapWithoutZero)
     }
 }
 
+TEST(ScriptingM4Files, PathLengthAndSelectorEdges)
+{
+    char path[MAX_FS_PATH + 1];
+    memset(path, 'a', sizeof(path));
+    EXPECT_EQ(check_script_path(path, MAX_FS_PATH - 1, PathUse::Write), 0);               // 127 bytes
+    EXPECT_EQ(check_script_path(path, MAX_FS_PATH, PathUse::Write), ENAMETOOLONG);        // 128 bytes
+    EXPECT_EQ(check_script_path(path, MAX_FS_PATH, PathUse::List), ENAMETOOLONG);
+    EXPECT_EQ(check("@X/../@Y", PathUse::Write), EROFS);                                  // selected by the first '@'
+    EXPECT_EQ(check("@SYS/", PathUse::Write), EROFS);
+    EXPECT_EQ(check("@SYS", PathUse::Write), EROFS);
+    EXPECT_EQ(check("//@PARAM/x", PathUse::Write), 0);                                    // one '/' skipped: a plain path
+    for (const PathUse use : { PathUse::List, PathUse::Read, PathUse::Write }) {
+        EXPECT_EQ(check("..", use), EACCES) << int(use);
+        EXPECT_EQ(check("/../x", use), EACCES) << int(use);
+        EXPECT_EQ(check("a/../../x", use), EACCES) << int(use);
+    }
+}
+
+TEST(ScriptingM4Files, LookupChecksFreeSlotAndSerialApart)
+{
+    FileTable table;
+    const int32_t first = table.insert(10);                  // slot 0, serial 1
+    ASSERT_EQ(first, 256);
+    // slot 1 was never used: free, and its serial (1) is the one this id carries
+    EXPECT_EQ(table.lookup((1 << 8) | 1), -1);
+    // slot 0 is open: only its serial differs
+    EXPECT_EQ(table.lookup((2 << 8) | 0), -1);
+    EXPECT_EQ(table.lookup(first), 10);
+    EXPECT_EQ(table.remove((1 << 8) | 1), -1);               // nor can a free slot be closed
+    EXPECT_EQ(table.lookup(first), 10);
+}
+
 AP_GTEST_MAIN()

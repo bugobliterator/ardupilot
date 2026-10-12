@@ -486,6 +486,8 @@ enum class MethodKind : uint8_t {
   Ids below FIRST_BINDING_METHOD are theirs; generated bindings start there.
   m4:send_text carries the runtime's own texts; print stands in for the
   manual binding until IO and Manual Bindings.
+  m4:fs_* are the M4's file calls (Lua io, require, dirlist, remove), served
+  by AP_ScriptingM4_FileServer with the reach of in-process scripting.
  */
 #define SCRIPTING_M4_SYSTEM_METHODS(X) \
     X(1, Config, "m4:config", Call) \
@@ -501,7 +503,15 @@ enum class MethodKind : uint8_t {
     X(11, Print, "global:print", Call) \
     X(12, Bindings, "m4:bindings", Call) \
     X(13, Other, "m4:other", Notify) \
-    X(14, SystemOther, "m4:sysother", Notify)
+    X(14, SystemOther, "m4:sysother", Notify) \
+    X(15, FsOpen, "m4:fs_open", Call) \
+    X(16, FsRead, "m4:fs_read", Call) \
+    X(17, FsWrite, "m4:fs_write", Call) \
+    X(18, FsSeek, "m4:fs_seek", Call) \
+    X(19, FsFlush, "m4:fs_flush", Call) \
+    X(20, FsClose, "m4:fs_close", Call) \
+    X(21, FsRemove, "m4:fs_remove", Call) \
+    X(22, FsDir, "m4:fs_dir", Call)
 
 #define SCRIPTING_M4_METHOD_ENUM(id, symbol, name, kind) symbol = id,
 enum class SystemMethod : uint16_t { SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_METHOD_ENUM) };

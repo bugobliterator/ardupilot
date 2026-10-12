@@ -375,4 +375,25 @@ TEST(ScriptingM4Rpc, NumberAndUserdataNames)
     EXPECT_STREQ(unnamed.type_name(3), "userdata");
 }
 
+TEST(ScriptingM4Rpc, FileMethods)
+{
+    struct Expected {
+        SystemMethod method;
+        uint16_t id;
+        const char *name;
+    };
+    static const Expected expected[] = {
+        { SystemMethod::FsOpen, 15, "m4:fs_open" }, { SystemMethod::FsRead, 16, "m4:fs_read" },
+        { SystemMethod::FsWrite, 17, "m4:fs_write" }, { SystemMethod::FsSeek, 18, "m4:fs_seek" },
+        { SystemMethod::FsFlush, 19, "m4:fs_flush" }, { SystemMethod::FsClose, 20, "m4:fs_close" },
+        { SystemMethod::FsRemove, 21, "m4:fs_remove" }, { SystemMethod::FsDir, 22, "m4:fs_dir" },
+    };
+    for (const Expected &e : expected) {
+        EXPECT_EQ(uint16_t(e.method), e.id);
+        EXPECT_STREQ(method_name(e.id), e.name);
+        EXPECT_EQ(method_kind(e.id), MethodKind::Call) << e.name;   // every file call has a reply
+        EXPECT_LT(e.id, FIRST_BINDING_METHOD);
+    }
+}
+
 AP_GTEST_MAIN()

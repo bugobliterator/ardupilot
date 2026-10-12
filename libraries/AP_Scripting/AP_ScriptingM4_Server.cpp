@@ -53,6 +53,8 @@ AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
 void AP_ScriptingM4_Server::reset(uint32_t session)
 {
     close_file();
+    // the previous session's files: a restart closes them, as it frees its handles (spec §8)
+    _files.reset();
     {
         WITH_SEMAPHORE(_table_sem);
         _table.clear();
@@ -101,6 +103,15 @@ ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *value
         return print(args, results, error_arg);
     case SystemMethod::Bindings:
         return bindings(args, results, error_arg);
+    case SystemMethod::FsOpen:
+    case SystemMethod::FsRead:
+    case SystemMethod::FsWrite:
+    case SystemMethod::FsSeek:
+    case SystemMethod::FsFlush:
+    case SystemMethod::FsClose:
+    case SystemMethod::FsRemove:
+    case SystemMethod::FsDir:
+        return _files.handle(SystemMethod(method), args, results, error_arg, _quota);
     case SystemMethod::Other:
     case SystemMethod::SystemOther:
         return ReplyStatus::Malformed;   // a stats row name, never a call

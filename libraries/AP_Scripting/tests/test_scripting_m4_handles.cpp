@@ -150,4 +150,21 @@ TEST(ScriptingM4Quota, RefillStopsAtTheBurst)
     EXPECT_EQ(allowed, storage.burst);
 }
 
+TEST(ScriptingM4Quota, FileIoBurstThenRate)
+{
+    Quota quota;
+    quota.reset(0);
+    const QuotaLimit &file = QUOTA_LIMITS[uint8_t(QuotaClass::FileIo)];
+    EXPECT_EQ(file.per_second, 50);
+    EXPECT_EQ(file.burst, 100);
+    for (uint16_t i = 0; i < file.burst; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::FileIo, 0)) << i;
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::FileIo, 0));             // burst spent
+    EXPECT_FALSE(quota.allow(QuotaClass::FileIo, 19));
+    EXPECT_TRUE(quota.allow(QuotaClass::FileIo, 20));             // 20 ms at 50/s: one call
+    EXPECT_TRUE(quota.allow(QuotaClass::Text, 20));               // the other classes are untouched
+    EXPECT_EQ(quota.take_hits(), 2U);
+}
+
 AP_GTEST_MAIN()
