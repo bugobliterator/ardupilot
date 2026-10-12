@@ -10,7 +10,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <new>
+#include <type_traits>
 #include "m4_bindings.h"
+#include <AP_ScriptingM4_Rpc.h>
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
@@ -25,3 +27,7 @@
 #define BINDING_FN(id, fn) fn
 // MAV_SEVERITY_WARNING, for userdata_zero_arg_check()
 #define MAV_SEVERITY_WARNING 4
+
+// the generated codecs of the local types name them unqualified
+using ScriptingM4::WireReader;
+using ScriptingM4::WireWriter;

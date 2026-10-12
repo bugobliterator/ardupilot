@@ -90,6 +90,7 @@ static uint8_t userdata_type(lua_State *L, int index)
         return size == (id == BINDING_TYPE_UINT32 ? sizeof(uint32_t) : sizeof(uint64_t)) ? uint8_t(id) : 0;
     case BindingKind::Singleton:
     case BindingKind::Global:
+    case BindingKind::LocalBlob:
         break;
     }
     return 0;
@@ -140,6 +141,7 @@ static void encode_value(lua_State *L, int index, uint8_t type_id, RpcWriter &ar
             return;
         case BindingKind::Singleton:
         case BindingKind::Global:
+        case BindingKind::LocalBlob:
             break;
         }
         break;
@@ -430,6 +432,7 @@ static int global_index(lua_State *L)
             return cache_global(L);
         case BindingKind::Handle:
         case BindingKind::Global:
+        case BindingKind::LocalBlob:
             return 0;
         }
     }

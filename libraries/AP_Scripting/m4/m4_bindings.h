@@ -12,6 +12,7 @@ extern "C" {
 #include <lua/src/lualib.h>
 #include <lua/src/lauxlib.h>
 }
+#include <AP_ScriptingM4_Wire.h>
 
 namespace ScriptingM4 {
 
@@ -19,6 +20,23 @@ namespace ScriptingM4 {
 bool fetch_binding_info();
 // the sandbox table on top of the stack: print, and the generated bindings resolved on first use
 void open_remote_functions(lua_State *L);
+
+// a pure-data type the M4 implements itself (gen-bindings -r, lua_remote_local.cpp)
+static const uint16_t LOCAL_OBJECT_MAX = 32;   // the largest local type is 16 B (Location, Quaternion)
+static const uint16_t LOCAL_WIRE_MAX = 32;     // its largest wire form is 17 B (Location)
+struct LocalCodec {
+    uint8_t type_id;
+    uint16_t size;                                          // sizeof the C++ type: the userdata's length
+    uint16_t wire_size;                                     // the blob length a remote call carries
+    void *(*create)(lua_State *L);                          // new_<type>(): pushes it with its metatable
+    bool (*decode)(WireReader &reader, void *storage);      // constructs it in storage from the wire form
+    void (*encode)(WireWriter &writer, const void *object);
+};
+// lua_remote_local.cpp (generated)
+const LocalCodec *local_codec(uint8_t type_id);             // nullptr: no local blob type
+lua_CFunction remote_local_constructor(uint8_t type_id);    // the local types' constructors, else nullptr
+// m4_bindings.cpp: a remote row of a local type (Location:change_alt_frame) on top; 0 if none
+int remote_row_index(lua_State *L, uint8_t type_id);
 
 }  // namespace ScriptingM4
 

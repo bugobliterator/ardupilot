@@ -21,8 +21,10 @@ enum class BindingKind : uint8_t {
     Singleton = 0,   // a global userdata; its methods get their self as nil
     Blob = 1,        // pure-data userdata held as the M7's wire bytes; methods write the self back
     Handle = 2,      // an M7 object of this M4 session
-    Local = 3,       // implemented on the M4 (uint32_t, uint64_t)
+    Local = 3,       // implemented on the M4 (uint32_t, uint64_t): raw bytes on the wire
     Global = 4,      // the global functions (millis, micros)
+    LocalBlob = 5,   // implemented on the M4 (AP_Math, Location): blobs on the wire; rows only for
+                     // the methods that read vehicle state, which write the self back
 };
 
 // BindingRow::flags

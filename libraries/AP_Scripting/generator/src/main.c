@@ -1327,14 +1327,18 @@ void sanity_check_userdata(void) {
   }
 }
 
+// set while the M4's local file is written: the M4 compiles every local type and learns the
+// board's availability at run time (m4:bindings), so no #if guards are written
+static int suppress_dependency_guards = 0;
+
 void start_dependency(FILE *f, const char *dependency) {
-  if (dependency != NULL) {
+  if ((dependency != NULL) && !suppress_dependency_guards) {
     fprintf(f, "#if %s\n", dependency);
   }
 }
 
 void end_dependency(FILE *f, const char *dependency) {
-  if (dependency != NULL) {
+  if ((dependency != NULL) && !suppress_dependency_guards) {
     fprintf(f, "#endif // %s\n", dependency);
   }
 }
@@ -2965,6 +2969,7 @@ enum remote_kind {                    // ScriptingM4::BindingKind
   REMOTE_HANDLE    = 2,
   REMOTE_LOCAL     = 3,
   REMOTE_GLOBAL    = 4,
+  REMOTE_LOCAL_BLOB = 5,
 };
 
 // ScriptingM4::ROW_*
@@ -2995,6 +3000,14 @@ static const char *remote_blob_userdata[] = {
   NULL };
 // userdata the M4 implements itself (<prefix>_local.cpp, m4/m4_boxed_numerics.cpp)
 static const char *remote_local_userdata[] = { "uint32_t", "uint64_t", NULL };
+// pure-data userdata the M4 implements itself (AP_Math and AP_Common/Location built into the
+// M4 image, m4/local): their fields, operators, constructor and the methods in
+// remote_local_methods run on the M4; they cross to and from remote calls in the blob wire form
+static const char *remote_local_blob_userdata[] = { NULL };
+// "Type:method" of a local blob type the M4 runs. Any other method of the type stays a remote
+// row, since it may read vehicle state (Location:change_alt_frame reads home, origin and
+// terrain): a method new to the description is remote until it is listed here
+static const char *remote_local_methods[] = { NULL };
 // ap_objects the M7 keeps for its whole run: their handles need no release
 static const char *remote_handle_ap_objects[] = {
   "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",
@@ -3136,6 +3149,15 @@ static int remote_in_list(const char *const *list, const char *name) {
   return FALSE;
 }
 
+// a userdata the wire carries as a blob: held as M7 bytes on the M4, or local there
+static int remote_is_wire_userdata(const char *name) {
+  return remote_in_list(remote_blob_userdata, name) || remote_in_list(remote_local_blob_userdata, name);
+}
+
+static int remote_kind_is_wire(enum remote_kind kind) {
+  return (kind == REMOTE_BLOB) || (kind == REMOTE_LOCAL_BLOB);
+}
+
 static char *remote_format(const char *fmt, ...) {
   char buffer[512];
   va_list args;
@@ -3148,6 +3170,55 @@ static char *remote_format(const char *fmt, ...) {
   char *text = NULL;
   string_copy(&text, buffer);
   return text;
+}
+
+// a Rotation argument may name ROTATION_CUSTOM_1/2, which only the M7 applies: on the M4,
+// AP::custom_rotations() is a stub that leaves the value unchanged (m4/shim/AP_CustomRotations)
+static int remote_method_takes_rotation(const struct method *method) {
+  for (const struct argument *arg = method->arguments; arg != NULL; arg = arg->next) {
+    if ((arg->type.type == TYPE_ENUM) && (strcmp(arg->type.data.enum_name, "Rotation") == 0)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+// a method of a local blob type that the M4 runs: it has no remote row or id
+static int remote_method_is_local(const struct userdata *node, const struct method *method) {
+  if (!remote_in_list(remote_local_blob_userdata, node->name)) {
+    return FALSE;
+  }
+  const char *label = remote_format("%s:%s", node->name, method->name);
+  if (!remote_in_list(remote_local_methods, label)) {
+    return FALSE;
+  }
+  if (method->dependency != NULL) {
+    // the M4 compiles every local type; a board's depends is runtime data, and only rows carry it
+    error(ERROR_GENERAL, "remote: local method %s has a depends: keep it remote", label);
+  }
+  if (remote_method_takes_rotation(method)) {
+    // stays a remote row: the M7 applies a custom rotation
+    return FALSE;
+  }
+  return TRUE;
+}
+
+// every listed local method is a method of a local blob type: a typo would leave it remote unnoticed
+static void remote_check_local_methods(void) {
+  for (const char *const *entry = remote_local_methods; *entry != NULL; entry++) {
+    int found = FALSE;
+    for (const struct userdata *node = parsed_userdata; node != NULL; node = node->next) {
+      if (!remote_in_list(remote_local_blob_userdata, node->name)) {
+        continue;
+      }
+      for (const struct method *method = node->methods; method != NULL; method = method->next) {
+        found |= strcmp(remote_format("%s:%s", node->name, method->name), *entry) == 0;
+      }
+    }
+    if (!found) {
+      error(ERROR_GENERAL, "remote: local method %s is no method of a local blob type", *entry);
+    }
+  }
 }
 
 // a type a remote call can carry
@@ -3167,7 +3238,7 @@ static int remote_type_supported(const struct type *t) {
     case TYPE_LITERAL:
       return TRUE;
     case TYPE_USERDATA:
-      return remote_in_list(remote_blob_userdata, t->data.ud.name) || remote_in_list(remote_local_userdata, t->data.ud.name);
+      return remote_is_wire_userdata(t->data.ud.name) || remote_in_list(remote_local_userdata, t->data.ud.name);
     case TYPE_AP_OBJECT:
       return remote_in_list(remote_handle_ap_objects, t->data.ud.name);
   }
@@ -3205,6 +3276,9 @@ static int remote_kind_of(const struct userdata *node) {
     case UD_USERDATA:
       if (remote_in_list(remote_local_userdata, node->name)) {
         return REMOTE_LOCAL;
+      }
+      if (remote_in_list(remote_local_blob_userdata, node->name)) {
+        return REMOTE_LOCAL_BLOB;
       }
       if (remote_in_list(remote_blob_userdata, node->name)) {
         return REMOTE_BLOB;
@@ -3329,10 +3403,21 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
   remote_hash_string(rt->lua_name);
 
   if (kind != REMOTE_LOCAL) {
-    const int self_flags = (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : ((kind == REMOTE_BLOB) ? ROW_WRITES_SELF : 0);
-    const int method_flags = (kind == REMOTE_BLOB) ? METHOD_WRITES_SELF : 0;
+    const int wire = remote_kind_is_wire(kind);
+    const int self_flags = (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : (wire ? ROW_WRITES_SELF : 0);
+    const int method_flags = wire ? METHOD_WRITES_SELF : 0;
     for (struct method *method = node->methods; method != NULL; method = method->next) {
       if (!remote_method_supported(method)) {
+        continue;
+      }
+      if (remote_method_is_local(node, method)) {
+        // no row and no id; hashed, so an M4 image that runs it locally never meets an M7 that serves it
+        remote_hash_string("local");
+        remote_hash_string(method->name);
+        remote_hash_type(&method->return_type);
+        for (const struct argument *arg = method->arguments; arg != NULL; arg = arg->next) {
+          remote_hash_type(&arg->type);
+        }
         continue;
       }
       const int id = REMOTE_FIRST_METHOD + method->stats_id;
@@ -3345,6 +3430,9 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
       }
     }
     for (struct method_alias *alias = node->method_aliases; alias != NULL; alias = alias->next) {
+      if (kind == REMOTE_LOCAL_BLOB) {
+        error(ERROR_GENERAL, "remote: local type %s has the alias %s: local types take none", node->name, alias->alias);
+      }
       const int id = REMOTE_FIRST_METHOD + alias->stats_id;
       if (alias->type == ALIAS_TYPE_NONE) {
         if (remote_methods[id - REMOTE_FIRST_METHOD].used) {
@@ -3357,7 +3445,7 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
     }
     for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
       if (!remote_type_supported(&field->type)) {
-        if (kind == REMOTE_BLOB) {
+        if (wire) {
           // the member would be reset on every round trip
           error(ERROR_GENERAL, "remote: blob %s.%s has a type the wire cannot carry", node->name, field->name);
         }
@@ -3365,23 +3453,36 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
       }
       // the setter sets the mask bit: the mask has to cross with the blob
       const char *valid_mask = field->type.valid_mask.name;
-      if ((kind == REMOTE_BLOB) && (valid_mask != NULL) && !remote_hidden_member(node->name, valid_mask)) {
+      if (wire && (valid_mask != NULL) && !remote_hidden_member(node->name, valid_mask)) {
         error(ERROR_GENERAL, "remote: %s.%s has a valid_mask: give the mask a wire member first", node->name, field->name);
       }
-      const int id = REMOTE_FIRST_METHOD + remote_next_id++;
-      const int row = remote_add_row(field->rename ? field->rename : field->name, id, self_flags, type_id);
-      remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, field->name),
-                        field->dependency, method_flags, row);
+      if (kind == REMOTE_LOCAL_BLOB) {
+        if (field->dependency != NULL) {
+          error(ERROR_GENERAL, "remote: local field %s.%s has a depends: the M4 cannot evaluate it", node->name, field->name);
+        }
+        if (field->type.type == TYPE_USERDATA) {
+          error(ERROR_GENERAL, "remote: local field %s.%s holds a userdata: the M4 has no codec for it", node->name, field->name);
+        }
+      } else {
+        const int id = REMOTE_FIRST_METHOD + remote_next_id++;
+        const int row = remote_add_row(field->rename ? field->rename : field->name, id, self_flags, type_id);
+        remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, field->name),
+                          field->dependency, method_flags, row);
+      }
       remote_hash_string(field->name);
       remote_hash_type(&field->type);
       remote_hash_int((int)field->access_flags);
       remote_hash_string(field->array_len ? field->array_len : "");
       remote_hash_string(valid_mask ? valid_mask : "");
     }
-    if (kind == REMOTE_BLOB) {
+    if (wire) {
       for (uint32_t op = 1; op < OP_LAST; op <<= 1) {
         const char *op_name = get_name_for_operation((enum operator_type)(node->operations & op));
         if (op_name == NULL) {
+          continue;
+        }
+        if (kind == REMOTE_LOCAL_BLOB) {
+          remote_hash_string(op_name);
           continue;
         }
         const int id = REMOTE_FIRST_METHOD + remote_next_id++;
@@ -3389,10 +3490,14 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, op_name), NULL, 0, row);
       }
       if ((node->creation == NULL) && should_emit_creation(node)) {
-        // the global is the type's name; "type:new" keeps the SRPC name short
-        const int id = REMOTE_FIRST_METHOD + remote_next_id++;
-        const int row = remote_add_row("new", id, ROW_CREATION, type_id);
-        remote_add_method(id, type_id, remote_format("lua_new_%s", node->sanitized_name), NULL, 0, row);
+        if (kind == REMOTE_LOCAL_BLOB) {
+          remote_hash_string("new");
+        } else {
+          // the global is the type's name; "type:new" keeps the SRPC name short
+          const int id = REMOTE_FIRST_METHOD + remote_next_id++;
+          const int row = remote_add_row("new", id, ROW_CREATION, type_id);
+          remote_add_method(id, type_id, remote_format("lua_new_%s", node->sanitized_name), NULL, 0, row);
+        }
       }
       for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
         if (strcmp(hidden->type, node->name) == 0) {
@@ -3456,8 +3561,10 @@ static void remote_collect(void) {
   remote_check_declared(remote_local_userdata);
   remote_check_declared(remote_handle_ap_objects);
   remote_check_declared(remote_deferred_userdata);
+  remote_check_declared(remote_local_blob_userdata);
+  remote_check_local_methods();
   for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
-    if (remote_types[remote_type_id(hidden->type) - 1].kind != REMOTE_BLOB) {
+    if (!remote_kind_is_wire(remote_types[remote_type_id(hidden->type) - 1].kind)) {
       error(ERROR_GENERAL, "remote: hidden member %s.%s of a type that is no blob", hidden->type, hidden->member);
     }
   }
@@ -3521,59 +3628,6 @@ static void remote_emit_tables(FILE *f) {
   fprintf(f, "};\n\n}  // namespace ScriptingM4\n");
 }
 
-// uint32_t and uint64_t on the M4: the in-process code, with m4/m4_binding_deps.h for AP's headers
-static void remote_emit_local(FILE *f) {
-  FILE *saved = source;
-  source = f;
-  fprintf(f, "// auto generated by gen-bindings -r, don't manually edit.  See README.md for details.\n\n");
-  fprintf(f, "#pragma GCC optimize(\"Os\")\n");
-  fprintf(f, "#include \"m4_binding_deps.h\"\n");
-  fprintf(f, "#include <generator/gen/generated_cpp_deps.h>\n\n");
-  for (int i = 0; i < remote_type_count; i++) {
-    if (remote_types[i].kind == REMOTE_LOCAL) {
-      emit_userdata_allocator(remote_types[i].node);
-      emit_userdata_checker(remote_types[i].node);
-    }
-  }
-  for (int i = 0; i < remote_type_count; i++) {
-    struct userdata *node = remote_types[i].node;
-    if (remote_types[i].kind != REMOTE_LOCAL) {
-      continue;
-    }
-    for (struct method *method = node->methods; method != NULL; method = method->next) {
-      emit_userdata_method(node, method);
-    }
-    if (node->operations) {
-      emit_operators(node);
-    }
-    emit_index_node(node);
-  }
-  fprintf(f, "static const struct userdata_meta remote_local_types[] = {\n");
-  for (int i = 0; i < remote_type_count; i++) {
-    const struct userdata *node = remote_types[i].node;
-    if (remote_types[i].kind != REMOTE_LOCAL) {
-      continue;
-    }
-    if (node->operations) {
-      fprintf(f, "    { \"%s\", %s_index, %s_operators },\n", remote_types[i].lua_name, node->sanitized_name, node->sanitized_name);
-    } else {
-      fprintf(f, "    { \"%s\", %s_index, nullptr },\n", remote_types[i].lua_name, node->sanitized_name);
-    }
-  }
-  fprintf(f, "};\n\n");
-  fprintf(f, "bool remote_local_type(const char *name, lua_CFunction &index, const luaL_Reg *&operators)\n{\n");
-  fprintf(f, "    for (const struct userdata_meta &type : remote_local_types) {\n");
-  fprintf(f, "        if (strcmp(type.name, name) == 0) {\n");
-  fprintf(f, "            index = type.func;\n");
-  fprintf(f, "            operators = type.operators;\n");
-  fprintf(f, "            return true;\n");
-  fprintf(f, "        }\n");
-  fprintf(f, "    }\n");
-  fprintf(f, "    return false;\n");
-  fprintf(f, "}\n");
-  source = saved;
-}
-
 static const char *remote_wire_ctype(const struct type *t) {
   switch (t->type) {
     case TYPE_BOOLEAN: return "uint8_t";
@@ -3595,10 +3649,12 @@ static const char *remote_wire_ctype(const struct type *t) {
   return NULL;
 }
 
+static int remote_codec_ranges = TRUE;   // FALSE for the M4: the M7's values are trusted
+
 // one value of a blob's wire form: write it from, or read it into, member
 static void remote_emit_wire_value(FILE *f, int write, const char *member, const struct type *t, const char *indent) {
   if (t->type == TYPE_USERDATA) {
-    if (!remote_in_list(remote_blob_userdata, t->data.ud.name)) {
+    if (!remote_is_wire_userdata(t->data.ud.name)) {
       error(ERROR_GENERAL, "remote: blob member %s is a %s, which the M4 cannot hold", member, t->data.ud.name);
     }
     if (write) {
@@ -3628,7 +3684,7 @@ static void remote_emit_wire_value(FILE *f, int write, const char *member, const
     fprintf(f, "%s    %s = (v != 0);\n", indent, member);
   } else {
     // the range the field's setter checks: a blob carries nothing a setter would refuse
-    if ((t->range != NULL) && !(t->flags & TYPE_FLAGS_NO_RANGE_CHECK)) {
+    if (remote_codec_ranges && (t->range != NULL) && !(t->flags & TYPE_FLAGS_NO_RANGE_CHECK)) {
       if (t->type == TYPE_FLOAT) {
         fprintf(f, "%s    if (!(v >= float(%s) && v <= float(%s))) {\n", indent, t->range->low, t->range->high);
       } else {
@@ -3808,7 +3864,168 @@ static void remote_emit_codec(FILE *f, const struct remote_type *rt) {
   end_dependency(f, node->dependency);
 }
 
-static void remote_emit_blob_support(FILE *f, const struct remote_type *rt, int type_id) {
+// the __index of a local blob type on the M4: its local methods and fields as in-process,
+// then its remote rows (ScriptingM4::remote_row_index)
+static void remote_emit_local_index(FILE *f, const struct remote_type *rt, int type_id) {
+  const struct userdata *node = rt->node;
+  fprintf(f, "const luaL_Reg %s_meta[] = {\n", node->sanitized_name);
+  for (struct method *method = node->methods; method != NULL; method = method->next) {
+    if (remote_method_is_local(node, method)) {
+      fprintf(f, "    {\"%s\", %s_%s},\n", method->rename ? method->rename : method->name,
+              node->sanitized_name, method->sanitized_name);
+    }
+  }
+  for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+    fprintf(f, "    {\"%s\", %s_%s},\n", field->rename ? field->rename : field->name, node->sanitized_name, field->name);
+  }
+  fprintf(f, "};\n\n");
+  if (node->operations) {
+    fprintf(f, "const luaL_Reg %s_operators[] = {\n", node->sanitized_name);
+    for (uint32_t op = 1; op < OP_LAST; op <<= 1) {
+      const char *op_name = get_name_for_operation((enum operator_type)(node->operations & op));
+      if (op_name != NULL) {
+        fprintf(f, "    {\"%s\", %s_%s},\n", op_name, node->sanitized_name, op_name);
+      }
+    }
+    fprintf(f, "    {NULL, NULL},\n};\n\n");
+  }
+  fprintf(f, "static int %s_index(lua_State *L) {\n", node->sanitized_name);
+  if (rt->row_count > 0) {
+    fprintf(f, "    return load_function(L, %s_meta, ARRAY_SIZE(%s_meta)) || ScriptingM4::remote_row_index(L, %d);\n",
+            node->sanitized_name, node->sanitized_name, type_id);
+  } else {
+    fprintf(f, "    return load_function(L, %s_meta, ARRAY_SIZE(%s_meta));\n", node->sanitized_name, node->sanitized_name);
+  }
+  fprintf(f, "}\n\n");
+}
+
+// one local blob type on the M4: the in-process code of its fields, listed methods and
+// operators, its codecs (no setter ranges) and its index; allocators and checkers come first
+static void remote_emit_local_blob(FILE *f, int type_index, int *wire_size_emitted) {
+  struct remote_type *rt = &remote_types[type_index];
+  struct userdata *node = rt->node;
+  for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+    emit_userdata_field(node, field);
+  }
+  for (struct method *method = node->methods; method != NULL; method = method->next) {
+    if (remote_method_is_local(node, method)) {
+      emit_userdata_method(node, method);
+    }
+  }
+  if (node->operations) {
+    emit_operators(node);
+  }
+  remote_emit_wire_size(f, type_index, wire_size_emitted);
+  remote_emit_codec(f, rt);
+  fprintf(f, "static void *create_%s(lua_State *L) {\n    return new_%s(L);\n}\n\n", node->sanitized_name, node->sanitized_name);
+  fprintf(f, "static_assert(std::is_trivially_copyable<%s>::value, \"a local type is written back as bytes\");\n", node->name);
+  fprintf(f, "static_assert(sizeof(%s) <= ScriptingM4::LOCAL_OBJECT_MAX, \"%s is larger than a local object\");\n",
+          node->name, node->name);
+  fprintf(f, "static_assert(wire_size_%s(nullptr) <= ScriptingM4::LOCAL_WIRE_MAX, \"%s's wire form is larger than a local wire buffer\");\n\n",
+          node->sanitized_name, node->name);
+  remote_emit_local_index(f, rt, type_index + 1);
+}
+
+// the M4's local types: uint32_t and uint64_t (the in-process code, with m4/m4_binding_deps.h for
+// AP's headers), and the local blob types (AP_Math and AP_Common/Location, m4/local)
+static void remote_emit_local(FILE *f) {
+  FILE *saved = source;
+  source = f;
+  suppress_dependency_guards = TRUE;
+  remote_codec_ranges = FALSE;
+  fprintf(f, "// auto generated by gen-bindings -r, don't manually edit.  See README.md for details.\n\n");
+  fprintf(f, "#pragma GCC optimize(\"Os\")\n");
+  fprintf(f, "#include <type_traits>\n");
+  fprintf(f, "#include \"m4_binding_deps.h\"\n");
+  fprintf(f, "#include <generator/gen/generated_cpp_deps.h>\n\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    if ((remote_types[i].kind == REMOTE_LOCAL) || (remote_types[i].kind == REMOTE_LOCAL_BLOB)) {
+      emit_userdata_allocator(remote_types[i].node);
+      emit_userdata_checker(remote_types[i].node);
+    }
+  }
+  for (int i = 0; i < remote_type_count; i++) {
+    struct userdata *node = remote_types[i].node;
+    if (remote_types[i].kind != REMOTE_LOCAL) {
+      continue;
+    }
+    for (struct method *method = node->methods; method != NULL; method = method->next) {
+      emit_userdata_method(node, method);
+    }
+    if (node->operations) {
+      emit_operators(node);
+    }
+    emit_index_node(node);
+  }
+  int wire_size_emitted[REMOTE_MAX_TYPES] = { 0 };
+  int local_blob_count = 0;
+  for (int i = 0; i < remote_type_count; i++) {
+    if (remote_types[i].kind == REMOTE_LOCAL_BLOB) {
+      remote_emit_local_blob(f, i, wire_size_emitted);
+      local_blob_count++;
+    }
+  }
+  fprintf(f, "static const struct userdata_meta remote_local_types[] = {\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct userdata *node = remote_types[i].node;
+    if ((remote_types[i].kind != REMOTE_LOCAL) && (remote_types[i].kind != REMOTE_LOCAL_BLOB)) {
+      continue;
+    }
+    if (node->operations) {
+      fprintf(f, "    { \"%s\", %s_index, %s_operators },\n", remote_types[i].lua_name, node->sanitized_name, node->sanitized_name);
+    } else {
+      fprintf(f, "    { \"%s\", %s_index, nullptr },\n", remote_types[i].lua_name, node->sanitized_name);
+    }
+  }
+  fprintf(f, "};\n\n");
+  fprintf(f, "bool remote_local_type(const char *name, lua_CFunction &index, const luaL_Reg *&operators)\n{\n");
+  fprintf(f, "    for (const struct userdata_meta &type : remote_local_types) {\n");
+  fprintf(f, "        if (strcmp(type.name, name) == 0) {\n");
+  fprintf(f, "            index = type.func;\n");
+  fprintf(f, "            operators = type.operators;\n");
+  fprintf(f, "            return true;\n");
+  fprintf(f, "        }\n");
+  fprintf(f, "    }\n");
+  fprintf(f, "    return false;\n");
+  fprintf(f, "}\n\n");
+  if (local_blob_count > 0) {
+    fprintf(f, "static const ScriptingM4::LocalCodec remote_local_codecs[] = {\n");
+    for (int i = 0; i < remote_type_count; i++) {
+      const struct userdata *node = remote_types[i].node;
+      if (remote_types[i].kind == REMOTE_LOCAL_BLOB) {
+        fprintf(f, "    { %d, sizeof(%s), uint16_t(wire_size_%s(nullptr)), create_%s, decode_%s, encode_%s },\n",
+                i + 1, node->name, node->sanitized_name, node->sanitized_name, node->sanitized_name, node->sanitized_name);
+      }
+    }
+    fprintf(f, "};\n\n");
+  }
+  fprintf(f, "const ScriptingM4::LocalCodec *ScriptingM4::local_codec(uint8_t type_id)\n{\n");
+  if (local_blob_count > 0) {
+    fprintf(f, "    for (const LocalCodec &codec : remote_local_codecs) {\n");
+    fprintf(f, "        if (codec.type_id == type_id) {\n            return &codec;\n        }\n    }\n");
+  } else {
+    fprintf(f, "    (void)type_id;\n");
+  }
+  fprintf(f, "    return nullptr;\n}\n\n");
+  fprintf(f, "lua_CFunction ScriptingM4::remote_local_constructor(uint8_t type_id)\n{\n    switch (type_id) {\n");
+  for (int i = 0; i < remote_type_count; i++) {
+    const struct userdata *node = remote_types[i].node;
+    if ((remote_types[i].kind != REMOTE_LOCAL) && (remote_types[i].kind != REMOTE_LOCAL_BLOB)) {
+      continue;
+    }
+    if (node->creation != NULL) {
+      fprintf(f, "    case %d:\n        return %s;\n", i + 1, node->creation);
+    } else if (should_emit_creation((struct userdata *)node)) {
+      fprintf(f, "    case %d:\n        return lua_new_%s;\n", i + 1, node->sanitized_name);
+    }
+  }
+  fprintf(f, "    default:\n        return nullptr;\n    }\n}\n");
+  suppress_dependency_guards = FALSE;
+  remote_codec_ranges = TRUE;
+  source = saved;
+}
+
+static void remote_emit_blob_support(FILE *f, const struct remote_type *rt, int type_id, int with_constructor) {
   struct userdata *node = rt->node;
   start_dependency(f, node->dependency);
   fprintf(f, "%s * check_%s(lua_State *L, int arg) {\n", node->name, node->sanitized_name);
@@ -3817,7 +4034,7 @@ static void remote_emit_blob_support(FILE *f, const struct remote_type *rt, int 
   fprintf(f, "    void *ud = remote_new_blob(L, %d, sizeof(%s));\n", type_id, node->name);
   fprintf(f, "    new (ud) %s();\n", node->name);
   fprintf(f, "    return static_cast<%s *>(ud);\n}\n\n", node->name);
-  if ((node->creation == NULL) && should_emit_creation(node)) {
+  if (with_constructor && (node->creation == NULL) && should_emit_creation(node)) {
     fprintf(f, "static int lua_new_%s(lua_State *L) {\n", node->sanitized_name);
     fprintf(f, "    static bool warned = false;\n");
     fprintf(f, "    if (!warned && userdata_zero_arg_check(L)) {\n");
@@ -3887,8 +4104,8 @@ static void remote_emit_dispatch(FILE *f) {
       start_dependency(f, node->dependency);
       fprintf(f, "%s * check_%s(lua_State *L);\n", node->name, node->sanitized_name);
       end_dependency(f, node->dependency);
-    } else if ((rt->kind == REMOTE_BLOB) || (rt->kind == REMOTE_HANDLE)) {
-      const char *pointer = (rt->kind == REMOTE_BLOB) ? "*" : "**";
+    } else if (remote_kind_is_wire(rt->kind) || (rt->kind == REMOTE_HANDLE)) {
+      const char *pointer = (rt->kind == REMOTE_HANDLE) ? "**" : "*";
       start_dependency(f, node->dependency);
       fprintf(f, "%s %s check_%s(lua_State *L, int arg);\n", node->name, pointer, node->sanitized_name);
       fprintf(f, "%s %s new_%s(lua_State *L);\n", node->name, pointer, node->sanitized_name);
@@ -3905,7 +4122,11 @@ static void remote_emit_dispatch(FILE *f) {
         emit_singleton_checker(rt->node);
         break;
       case REMOTE_BLOB:
-        remote_emit_blob_support(f, rt, i + 1);
+        remote_emit_blob_support(f, rt, i + 1, TRUE);
+        break;
+      case REMOTE_LOCAL_BLOB:
+        // other bindings take and return it; its constructor is the M4's
+        remote_emit_blob_support(f, rt, i + 1, FALSE);
         break;
       case REMOTE_HANDLE:
         remote_emit_handle_support(f, rt, i + 1);
@@ -3919,7 +4140,7 @@ static void remote_emit_dispatch(FILE *f) {
   // wire codecs; nested types refer to each other
   for (int i = 0; i < remote_type_count; i++) {
     const struct remote_type *rt = &remote_types[i];
-    if (rt->kind == REMOTE_BLOB) {
+    if (remote_kind_is_wire(rt->kind)) {
       start_dependency(f, rt->node->dependency);
       fprintf(f, "static bool read_%s(WireReader &r, %s *ud);\n", rt->node->sanitized_name, rt->node->name);
       fprintf(f, "static void write_%s(WireWriter &w, const %s *ud);\n", rt->node->sanitized_name, rt->node->name);
@@ -3929,13 +4150,13 @@ static void remote_emit_dispatch(FILE *f) {
   fprintf(f, "\n");
   int wire_size_emitted[REMOTE_MAX_TYPES] = { 0 };
   for (int i = 0; i < remote_type_count; i++) {
-    if (remote_types[i].kind == REMOTE_BLOB) {
+    if (remote_kind_is_wire(remote_types[i].kind)) {
       remote_emit_wire_size(f, i, wire_size_emitted);
     }
   }
   fprintf(f, "\n");
   for (int i = 0; i < remote_type_count; i++) {
-    if (remote_types[i].kind == REMOTE_BLOB) {
+    if (remote_kind_is_wire(remote_types[i].kind)) {
       remote_emit_codec(f, &remote_types[i]);
     }
   }
@@ -3944,25 +4165,28 @@ static void remote_emit_dispatch(FILE *f) {
   for (int i = 0; i < remote_type_count; i++) {
     const struct remote_type *rt = &remote_types[i];
     struct userdata *node = rt->node;
-    if ((rt->kind != REMOTE_SINGLETON) && (rt->kind != REMOTE_BLOB) && (rt->kind != REMOTE_HANDLE)) {
+    if ((rt->kind != REMOTE_SINGLETON) && !remote_kind_is_wire(rt->kind) && (rt->kind != REMOTE_HANDLE)) {
       continue;
     }
-    for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
-      if (!remote_type_supported(&field->type)) {
-        continue;
+    // a local type's fields and operators are the M4's own
+    if (rt->kind != REMOTE_LOCAL_BLOB) {
+      for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
+        if (!remote_type_supported(&field->type)) {
+          continue;
+        }
+        start_dependency(f, node->dependency);
+        if (rt->kind == REMOTE_SINGLETON) {
+          emit_singleton_field(node, field);
+        } else if (rt->kind == REMOTE_BLOB) {
+          emit_userdata_field(node, field);
+        } else {
+          emit_ap_object_field(node, field);
+        }
+        end_dependency(f, node->dependency);
       }
-      start_dependency(f, node->dependency);
-      if (rt->kind == REMOTE_SINGLETON) {
-        emit_singleton_field(node, field);
-      } else if (rt->kind == REMOTE_BLOB) {
-        emit_userdata_field(node, field);
-      } else {
-        emit_ap_object_field(node, field);
-      }
-      end_dependency(f, node->dependency);
     }
     for (struct method *method = node->methods; method != NULL; method = method->next) {
-      if (remote_method_supported(method)) {
+      if (remote_method_supported(method) && !remote_method_is_local(node, method)) {
         emit_userdata_method(node, method);
       }
     }
@@ -3995,7 +4219,7 @@ static void remote_emit_dispatch(FILE *f) {
   for (int i = 0; i < remote_type_count; i++) {
     const struct remote_type *rt = &remote_types[i];
     char *none = remote_format("{ \"%s\", 0, nullptr, nullptr }", rt->lua_name);
-    if (rt->kind == REMOTE_BLOB) {
+    if (remote_kind_is_wire(rt->kind)) {
       remote_emit_entry(f, rt->node->dependency,
                         remote_format("{ \"%s\", sizeof(%s), decode_%s, encode_%s }", rt->lua_name, rt->node->name,
                                       rt->node->sanitized_name, rt->node->sanitized_name),
