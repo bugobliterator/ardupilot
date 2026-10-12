@@ -46,7 +46,8 @@ int lua_get_i2c_device(lua_State *L)
     bool use_smbus = false;
 
     if (args > 3) {
-        bus_clock = coerce_to_uint32_t(L, 4);
+        // recorded deviation: in-process passes any clock through, and a low one persists on the bus
+        bus_clock = i2c_clamp_bus_clock(coerce_to_uint32_t(L, 4));
 
         if (args > 4) {
             use_smbus = static_cast<bool>(lua_toboolean(L, 5));
@@ -100,7 +101,10 @@ int AP_HAL__I2CDevice_read_registers(lua_State *L)
 
     uint8_t data[UINT8_MAX];   // in-process a variable-length array of recv_length
 
-    ud->get_semaphore()->take_blocking();
+    // bounded take and byte cap: the host thread never waits past 900 ms (I2C_* in Remote.h)
+    if (!i2c_transfer_fits(1, recv_length) || !ud->get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)) {
+        return 0;
+    }
     const bool success = static_cast<bool>(ud->read_registers(first_reg, data, recv_length));
     ud->get_semaphore()->give();
 
@@ -129,8 +133,13 @@ int AP_HAL__I2CDevice_transfer(lua_State *L)
     uint32_t rx_len = get_uint8_t(L, 3);
     uint8_t rx_data[UINT8_MAX];   // in-process a variable-length array of rx_len
 
-    // Transfer
-    ud->get_semaphore()->take_blocking();
+    // Transfer; refused beyond the byte cap and a busy bus (I2C_* in Remote.h)
+    if (!i2c_transfer_fits(send_len, rx_len)) {
+        return luaL_argerror(L, 3, "transfer longer than 256 bytes");
+    }
+    if (!ud->get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)) {
+        return 0;
+    }
     const bool success = ud->transfer(send_data, send_len, rx_data, rx_len);
     ud->get_semaphore()->give();
 

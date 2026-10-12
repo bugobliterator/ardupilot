@@ -901,3 +901,18 @@ TEST(ScriptingM4Remote, ToLString)
     EXPECT_EQ(c.values[0].tag, ValueTag::False);
     EXPECT_EQ(c.values[1].integer, 0);
 }
+
+// without the clamp a clock of 0 divides by zero in ChibiOS' timeout and 1000 Hz makes a 255-byte
+// transfer time out after 4 s; without the byte cap the 21 attempts exceed the host thread's 900 ms
+TEST(ScriptingM4Remote, I2CLimits)
+{
+    EXPECT_EQ(i2c_clamp_bus_clock(0), 100000U);
+    EXPECT_EQ(i2c_clamp_bus_clock(1000), 100000U);
+    EXPECT_EQ(i2c_clamp_bus_clock(400000), 400000U);
+    EXPECT_EQ(i2c_clamp_bus_clock(UINT32_MAX), 1000000U);
+    EXPECT_TRUE(i2c_transfer_fits(1, 255));
+    EXPECT_TRUE(i2c_transfer_fits(256, 0));
+    EXPECT_FALSE(i2c_transfer_fits(2, 255));
+    EXPECT_FALSE(i2c_transfer_fits(0, 257));
+    EXPECT_FALSE(i2c_transfer_fits(1000, 1));
+}

@@ -51,6 +51,32 @@ struct BlobCodec {
     void (*encode)(WireWriter &writer, const void *object);
 };
 
+// I2C limits on the M7 host thread (AP_ScriptingM4_ManualI2C.cpp). ChibiOS times a transfer out
+// after 1 + 2 * (8e6 / busclock * bytes) / 1000 ms per attempt and a device retries up to 20 times
+// (set_retries), so the clock floor and the byte cap bound the host thread's wait: at the floor
+// 256 bytes time out after 41 ms, 21 attempts take 861 ms, and the bounded semaphore take adds
+// at most I2C_SEMAPHORE_WAIT_MS: 891 ms, below the 900 ms rule. In-process passes any clock and
+// length through (recorded deviation)
+static const uint32_t I2C_CLOCK_MIN_HZ = 100000;
+static const uint32_t I2C_CLOCK_MAX_HZ = 1000000;
+static const uint32_t I2C_TRANSFER_BYTES_MAX = 256;
+static const uint32_t I2C_SEMAPHORE_WAIT_MS = 30;
+static const uint32_t I2C_ATTEMPTS_MAX = 21;
+static_assert(I2C_SEMAPHORE_WAIT_MS + I2C_ATTEMPTS_MAX *
+              (1 + 2 * ((8 * 1000000UL / I2C_CLOCK_MIN_HZ) * I2C_TRANSFER_BYTES_MAX) / 1000) <= 900,
+              "the worst I2C transfer fits the host thread's 900 ms");
+
+inline uint32_t i2c_clamp_bus_clock(uint32_t hertz)
+{
+    return hertz < I2C_CLOCK_MIN_HZ ? I2C_CLOCK_MIN_HZ : (hertz > I2C_CLOCK_MAX_HZ ? I2C_CLOCK_MAX_HZ : hertz);
+}
+
+inline bool i2c_transfer_fits(size_t send_bytes, size_t receive_bytes)
+{
+    return send_bytes <= I2C_TRANSFER_BYTES_MAX && receive_bytes <= I2C_TRANSFER_BYTES_MAX &&
+           send_bytes + receive_bytes <= I2C_TRANSFER_BYTES_MAX;
+}
+
 // method flags (gen-bindings -r); the high nibble is the ScriptingM4::QuotaClass
 static const uint8_t METHOD_WRITES_SELF = 0x01;   // the reply ends with the updated self blob
 static const uint8_t METHOD_QUOTA_FALSE = 0x02;   // over its quota the call returns false, else it is dropped
