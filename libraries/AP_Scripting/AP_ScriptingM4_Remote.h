@@ -103,7 +103,8 @@ struct RemoteCall {
     const ScriptingM4::RpcValue *args;
     uint8_t argc;
     struct Result {
-        enum Kind : uint8_t { Value, Object, Handle } kind;
+        enum Kind : uint8_t { Value, Object, Handle };
+        Kind kind;
         uint8_t type_id;
         ScriptingM4::RpcValue value;   // Value; a string points into the arena
         void *object;                  // Object: in the arena; Handle: an arena slot holding the pointer

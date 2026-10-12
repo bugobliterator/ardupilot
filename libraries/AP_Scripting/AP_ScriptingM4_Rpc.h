@@ -503,11 +503,9 @@ enum class MethodKind : uint8_t {
     X(13, Other, "m4:other", Notify) \
     X(14, SystemOther, "m4:sysother", Notify)
 
-enum class SystemMethod : uint16_t {
 #define SCRIPTING_M4_METHOD_ENUM(id, symbol, name, kind) symbol = id,
-    SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_METHOD_ENUM)
+enum class SystemMethod : uint16_t { SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_METHOD_ENUM) };
 #undef SCRIPTING_M4_METHOD_ENUM
-};
 static const uint16_t FIRST_BINDING_METHOD = 64;
 
 inline const char *method_name(uint16_t method)
