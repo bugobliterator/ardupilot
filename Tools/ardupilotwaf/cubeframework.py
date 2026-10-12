@@ -24,9 +24,9 @@ LUA_DIR = 'libraries/AP_Scripting/lua/src'
 # the Lua core the M4 runtime links: no io, package, os, debug, coroutine, bit32 or utf8
 # library (io and require come with the IO and Manual Bindings sub-phase)
 M4_LUA_SOURCES = ['lapi.c', 'lauxlib.c', 'lbaselib.c', 'lcode.c', 'lctype.c', 'ldebug.c', 'ldo.c',
-                  'ldump.c', 'lfunc.c', 'lgc.c', 'llex.c', 'lmathlib.c', 'lmem.c', 'lobject.c',
-                  'lopcodes.c', 'lparser.c', 'lstate.c', 'lstring.c', 'lstrlib.c', 'ltable.c',
-                  'ltablib.c', 'ltm.c', 'lundump.c', 'lvm.c', 'lzio.c']
+                  'ldump.c', 'lfunc.c', 'lgc.c', 'liolib.c', 'llex.c', 'lmathlib.c', 'lmem.c', 'loadlib.c',
+                  'lobject.c', 'lopcodes.c', 'lparser.c', 'lstate.c', 'lstring.c', 'lstrlib.c',
+                  'ltable.c', 'ltablib.c', 'ltm.c', 'lundump.c', 'lvm.c', 'lzio.c']
 
 
 def _cf(paths):
