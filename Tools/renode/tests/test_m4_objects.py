@@ -7,7 +7,9 @@ Needs RENODE and a CubeOrangePlus-M4Lua build:
   ./waf configure --board CubeOrangePlus-M4Lua && ./waf copter
 """
 
+import os
 import sys
+import time
 
 from pathlib import Path
 
@@ -16,9 +18,9 @@ from pymavlink import DFReader
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from test_m4_containment import start_m4lua  # noqa: E402,F401
-from test_m4_scripts import (SCRIPT_TIMEOUT, host_thread_stack, start_with_scripts,  # noqa: E402
-                             stop_and_read_log, wait_all)
+from test_m4_containment import BUILD, STEP_TIMEOUT, start_m4lua  # noqa: E402,F401
+from test_m4_scripts import (SCRIPT_TIMEOUT, host_thread_stack, m4_symbols, start_with_scripts,  # noqa: E402
+                             stop_and_read_log, symbol_range, wait_all)
 
 # a simulated device on the first scripting serial port (serial_loopback.lua, m4_objects.lua)
 SERIAL_DEVICE = {'SCR_VM_I_COUNT': 1000000, 'SCR_SDEV_EN': 1, 'SCR_SDEV1_PROTO': 28}
@@ -29,6 +31,23 @@ def assert_host_stack(run, tmp_path):
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
     print('ScriptingM4 host thread stack: %u of %u bytes free' % (free, size), flush=True)
     assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
+
+
+def assert_no_protocol_errors(run, tmp_path):
+    '''Stops Renode: no M4ST row of the run carries a protocol error.'''
+    run.wait_alive(10)   # M4ST rows are written once a second
+    log = stop_and_read_log(run, tmp_path / 'logs')
+    reader = DFReader.DFReader_binary(str(log), zero_time_base=True)
+    rows = 0
+    errors = 0
+    while True:
+        row = reader.recv_match(type='M4ST')
+        if row is None:
+            break
+        rows += 1
+        errors += row.PErr
+    assert rows > 0, 'no M4ST rows in the log'
+    assert errors == 0, '%u M4 protocol errors across the restart' % errors
 
 
 def test_m4_objects(start_m4lua, tmp_path):  # noqa: F811
@@ -57,9 +76,9 @@ LOG_ROWS = {'LOG_DISARMED': 1, 'LOG_DARM_RATEMAX': 0, 'LOG_FILE_RATEMAX': 0}
 
 
 def test_m4_objects_end_with_the_session(start_m4lua, tmp_path):  # noqa: F811
-    '''A restarted M4 starts clean: the M7 freed the objects the first session held (the new one gets
-    all 64 again), and the release queue, which lives in .lua_bss that the M4 zeroes at boot, sends
-    no stale release (no protocol error).'''
+    '''A restarted M4 starts clean: the M7 freed the objects, aux auth ids and port buffers the first
+    session held (the new one gets 64 objects, id 0 and empty buffers). The release queue is not
+    covered here: nothing is queued at this restart (see the dropped-objects test).'''
     run = start_with_scripts(start_m4lua, ['tests/m4_objects_hold.lua'], dict(SERIAL_DEVICE, **LOG_ROWS))
     run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
     held = r'^M4 holding \d+ objects, auth \S+$'
@@ -74,16 +93,35 @@ def test_m4_objects_end_with_the_session(start_m4lua, tmp_path):  # noqa: F811
     state = run.wait_text(r'^M4 hold: ', timeout=SCRIPT_TIMEOUT)
     assert state.endswith('left 0, port ok'), state
     assert_host_stack(run, tmp_path)
-    run.wait_alive(10)   # M4ST rows are written once a second
-    log = stop_and_read_log(run, tmp_path / 'logs')
-    reader = DFReader.DFReader_binary(str(log), zero_time_base=True)
-    rows = 0
-    errors = 0
-    while True:
-        row = reader.recv_match(type='M4ST')
-        if row is None:
-            break
-        rows += 1
-        errors += row.PErr
-    assert rows > 0, 'no M4ST rows in the log'
-    assert errors == 0, '%u M4 protocol errors across the restart' % errors
+    assert_no_protocol_errors(run, tmp_path)
+
+
+def test_m4_dropped_objects_do_not_cross_a_restart(start_m4lua, tmp_path):  # noqa: F811
+    '''A restart while releases are queued on the M4: the queue (pending_releases, in .lua_bss) is
+    non-empty when the M4 faults, and the new session starts with an empty one, so it sends no
+    stale release (no protocol error) and holds its 64 objects again.'''
+    symbols = m4_symbols(os.environ.get('M4LUA_M4_ELF', BUILD / 'scripting_m4.elf'))
+    # ReleaseQueue: 64 entries of 8 bytes, then the count byte
+    queue_count = symbol_range(symbols, 'ScriptingM4::pending_releases')[0] + 64 * 8
+    run = start_with_scripts(start_m4lua, ['tests/m4_objects_drop.lua'],
+                             dict({'SCR_VM_I_COUNT': 1000000}, **LOG_ROWS))
+    run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
+    held = r'^M4 holding \d+ objects$'
+    first = run.wait_text(held, timeout=SCRIPT_TIMEOUT)
+    assert first == 'M4 holding 64 objects', first
+    run.wait_text(r'^M4 dropping$', timeout=SCRIPT_TIMEOUT)
+    deadline = time.monotonic() + STEP_TIMEOUT
+    while run.read_word(queue_count) & 0xFF == 0:   # the collector queued a release; none is sent
+        run.check()
+        assert time.monotonic() < deadline, 'no release was queued on the M4'
+        run.mav.recv_match(blocking=True, timeout=1)
+    queued = run.read_word(queue_count) & 0xFF
+    assert not any(text.startswith('M4 spin done') for text in run.texts), 'the spin ended: nothing was pending'
+    run.set('SCR_M4_INJECT', 1)   # a fault in the M4 service: the M7 restarts it
+    run.wait_text(r'^Scripting: M4 restarted \(1/\d+\)$', timeout=SCRIPT_TIMEOUT)
+    assert not any(text.startswith('M4 spin done') for text in run.texts), 'the spin ended before the restart'
+    print('ScriptingM4: %u releases queued at the restart' % queued, flush=True)
+    second = run.wait_text(held, timeout=SCRIPT_TIMEOUT)
+    assert second == 'M4 holding 64 objects', second
+    assert_host_stack(run, tmp_path)
+    assert_no_protocol_errors(run, tmp_path)
