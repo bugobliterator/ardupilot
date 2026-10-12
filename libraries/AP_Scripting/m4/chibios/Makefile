@@ -153,6 +153,22 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	    }' || { rm -f '$<'; exit 1; }
 	@touch '$@'
 
+# The local pure-data types are built against shims with no vehicle state (AP_AHRS.h,
+# AP_Terrain.h, AP_CustomRotations.h): a Location method that reads home, the EKF origin
+# or terrain returns false there, and a custom rotation is left unapplied. Those methods
+# must stay remote rows; fails (and removes the image) if any is in the image
+STATE_READING_SYMBOLS = Location::(get_alt_cm|get_alt_m|change_alt_frame|get_height_above|get_distance_NED_alt_frame|get_vector_from_origin_NEU|get_vector_xy_from_origin_NE)\\( \
+                        Vector3<[a-z]+>::rotate\\(Rotation QuaternionT<[a-z]+>::(from_rotation|rotate)\\(Rotation AP_CustomRotations::
+empty :=
+space := $(empty) $(empty)
+all: $(BUILDDIR)/local_pure_data.ok
+$(BUILDDIR)/local_pure_data.ok: $(BUILDDIR)/$(PROJECT).elf
+	@$(TRGT)nm -C --defined-only '$<' | awk -v pattern='^($(subst $(space),|,$(STATE_READING_SYMBOLS)))' ' \
+	    { name = $$0; sub(/^[0-9a-f]+ [A-Za-z] /, "", name) } \
+	    name ~ pattern { print "scripting_m4: " name " is state-reading and must not be local"; status = 1 } \
+	    END { exit status }' || { rm -f '$<'; exit 1; }
+	@touch '$@'
+
 # Privileged objects may call only each other, ChibiOS, CubeFramework and the
 # stateless libc/libgcc helpers below: newlib's errno, malloc, stdio and locale
 # state is in Lua RAM, where Lua can rewrite it. Outside ChibiOS itself none may
