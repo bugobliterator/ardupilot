@@ -97,6 +97,8 @@ static uint8_t userdata_type(lua_State *L, int index)
         return (codec != nullptr && size == codec->size) ? uint8_t(id) : 0;
     }
     case BindingKind::Singleton:
+        // the 0-byte userdata of a singleton: a dot call is told apart by it (ROW_DOT_ACCESS)
+        return size == 0 ? uint8_t(id) : 0;
     case BindingKind::Global:
         break;
     }
@@ -401,12 +403,22 @@ int remote_call(lua_State *L)
     for (int i = 1; i <= top; i++) {
         type_ids[i - 1] = userdata_type(L, i);
     }
+    // a dot call (serial.find_serial(0)): argument 1 is no self, so the M7 gets a nil self and
+    // every argument, as fix_dot_access_never_add_another_call() leaves them in-process
+    const bool dot = (flags & ROW_DOT_ACCESS) != 0 && (top == 0 || type_ids[0] != owner);
+    if (dot && top + 1 > MAX_VALUES) {
+        // in-process the inserted self makes this call's argument count top + 1
+        return luaL_argerror(L, top + 1, "too many arguments");
+    }
     for (uint8_t attempt = 0; ; attempt++) {
         // the releases first: the M7 may need the slots of objects the M4 collected
         flush_releases();
         RpcWriter &args = rpc.begin(method);
+        if (dot) {
+            args.nil();
+        }
         for (int i = 1; i <= top; i++) {
-            if (i == 1 && (flags & ROW_HAS_SELF) != 0) {
+            if (!dot && i == 1 && (flags & ROW_HAS_SELF) != 0) {
                 args.nil();   // a singleton: the M7 finds it itself
                 continue;
             }

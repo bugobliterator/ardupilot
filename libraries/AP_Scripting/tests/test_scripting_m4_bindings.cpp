@@ -41,7 +41,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
         { "CANFrame", BindingKind::Blob }, { "RangeFinder_State", BindingKind::Blob },
         { "ServoTelemetryData", BindingKind::Blob },
         { "RC_Channel", BindingKind::Handle }, { "AP_EFI_Backend", BindingKind::Handle },
-        { "Parameter", BindingKind::Owned },
+        { "Parameter", BindingKind::Owned }, { "AP_Scripting_SerialAccess", BindingKind::Owned },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
         { "global", BindingKind::Global },
     };
@@ -54,7 +54,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
     EXPECT_EQ(type_named("uint64_t"), BINDING_TYPE_UINT64);
     // userdata carrying M7 pointers or state, and the manual-only ap_objects, wait for
     // IO and Manual Bindings (none of these is renamed: the C++ name is the Lua name)
-    for (const char *name : { "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter",
+    for (const char *name : { "CRSFMenu", "CRSFParameter",
                               "DroneCAN_Handle", "SocketAPM", "ScriptingCANBuffer", "AP_HAL::I2CDevice",
                               "AP_HAL::PWMSource" }) {
         EXPECT_EQ(type_named(name), 0) << name;
@@ -135,6 +135,18 @@ TEST(ScriptingM4Bindings, KnownBindings)
     const BindingRow *parameter_new = row_named(type_named("Parameter"), "new");
     ASSERT_NE(parameter_new, nullptr);
     EXPECT_EQ(parameter_new->flags, ROW_CREATION);
+
+    // dot calls keep their arguments: the rows of fix_dot_access_never_add_another_call()
+    const BindingRow *find_serial = row_named(type_named("serial"), "find_serial");
+    ASSERT_NE(find_serial, nullptr);
+    EXPECT_EQ(find_serial->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
+    const BindingRow *find_simulated = row_named(type_named("serial"), "find_simulated_device");
+    ASSERT_NE(find_simulated, nullptr);
+    EXPECT_EQ(find_simulated->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
+    const BindingRow *writestring = row_named(type_named("AP_Scripting_SerialAccess"), "writestring");
+    ASSERT_NE(writestring, nullptr);
+    EXPECT_EQ(writestring->flags, 0);
+    EXPECT_EQ(row_named(type_named("AP_Scripting_SerialAccess"), "new"), nullptr);   // creation null
 
     const BindingType &gps = binding_types[type_named("gps") - 1];
     bool found = false;

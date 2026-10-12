@@ -271,6 +271,38 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('    lua_m4_Parameter_init_by_info,\n', dispatch)
         self.assertNotIn('static int Parameter_init_by_info(', dispatch)
 
+    def test_serial_ports(self):
+        code, output, _ = self.generate('serial', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, _ = self.outputs('serial')
+        types = self.type_ids(tables)
+        serial, _ = types['serial']
+        access, kind = types['AP_Scripting_SerialAccess']
+        self.assertEqual(kind, 6)
+        # a dot call (serial.find_serial(0)) sends a nil self and every argument
+        for name in ('find_serial', 'find_simulated_device'):
+            self.assertEqual(self.row_flags(tables, serial, name)[1], 0x11, name)
+        for name in ('begin', 'writestring', 'readstring'):
+            self.assertEqual(self.row_flags(tables, access, name)[1], 0x00, name)
+        self.assertIsNone(self.row_flags(tables, access, 'new'))   # no constructor, as in-process
+        self.assertIn('    lua_serial_find_serial,\n', dispatch)
+        self.assertIn('AP_Scripting_SerialAccess * ud = check_AP_Scripting_SerialAccess(L, 1);', dispatch)
+
+    def test_dot_access_names_a_singleton_manual(self):
+        # every remote_dot_access entry is checked against the description: without the check a
+        # renamed manual function would lose its dot-call fix silently
+        description = self.description.replace('lua_serial_find_serial', 'lua_serial_find_serial_renamed')
+        work = os.path.join(self.tmp, 'dot')
+        os.makedirs(work)
+        desc = os.path.join(work, 'bindings.desc')
+        with open(desc, 'w') as f:
+            f.write(description)
+        result = subprocess.run([self.generator, '-o', os.path.join(work, 'gen'), '-r', os.path.join(work, 'remote'),
+                                 '-i', desc], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('remote: dot access lua_serial_find_serial is no manual function of a singleton',
+                      result.stdout + result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

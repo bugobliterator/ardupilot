@@ -256,23 +256,57 @@ void lua_pushnumber(lua_State *L, lua_Number value)
     result.value.number = value;
 }
 
-void lua_pushstring(lua_State *L, const char *text)
+void lua_pushlstring(lua_State *L, const char *text, size_t length)
 {
     RemoteCall::Result &result = push_result(L);
     result.kind = RemoteCall::Result::Value;
-    if (text == nullptr) {
-        result.value.tag = ValueTag::Nil;
-        return;
-    }
-    const size_t length = strlen(text);
     if (length > ScriptingM4::MAX_STRING) {
         raise_error(L, ReplyStatus::Error, 0, "M4: results too large");
     }
     char *copy = static_cast<char *>(arena_alloc(L, length));
-    memcpy(copy, text, length);
+    if (length > 0) {
+        memcpy(copy, text, length);
+    }
     result.value.tag = ValueTag::String;
     result.value.string = copy;
     result.value.length = uint16_t(length);
+}
+
+void lua_pushstring(lua_State *L, const char *text)
+{
+    if (text == nullptr) {
+        RemoteCall::Result &result = push_result(L);
+        result.kind = RemoteCall::Result::Value;
+        result.value.tag = ValueTag::Nil;
+        return;
+    }
+    lua_pushlstring(L, text, strlen(text));
+}
+
+int lua_type(lua_State *L, int arg)
+{
+    const RpcValue *value = arg_value(L, arg);
+    if (value == nullptr) {
+        return -1;
+    }
+    switch (value->tag) {
+    case ValueTag::Nil:
+        return 0;
+    case ValueTag::False:
+    case ValueTag::True:
+        return 1;
+    case ValueTag::Integer:
+    case ValueTag::Number:
+        return 3;
+    case ValueTag::String:
+        return 4;
+    case ValueTag::Blob:
+    case ValueTag::Handle:
+        return 7;
+    case ValueTag::Opaque:
+        return value->lua_type;
+    }
+    return -1;
 }
 
 uint32_t *new_uint32_t(lua_State *L)

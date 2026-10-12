@@ -2978,6 +2978,7 @@ enum remote_kind {                    // ScriptingM4::BindingKind
 #define ROW_WRITES_SELF 0x02
 #define ROW_OPERATOR    0x04
 #define ROW_CREATION    0x08
+#define ROW_DOT_ACCESS  0x10
 // ScriptingM4Remote::METHOD_*; the quota class (ScriptingM4::QuotaClass) is the high nibble
 #define METHOD_WRITES_SELF 0x01
 #define METHOD_QUOTA_FALSE 0x02
@@ -3027,7 +3028,7 @@ static const char *remote_handle_ap_objects[] = {
   NULL };
 // userdata carrying M7 pointers or state: the object lives in the M7's object pool
 // (AP_ScriptingM4_Objects.h), the M4 userdata holds an owned handle that its __gc releases
-static const char *remote_owned_userdata[] = { "Parameter", NULL };
+static const char *remote_owned_userdata[] = { "Parameter", "AP_Scripting_SerialAccess", NULL };
 // an owned type's release when it has one of its own (its in-process __gc), else its destructor
 struct remote_release {
   const char *type;
@@ -3037,11 +3038,20 @@ static const struct remote_release remote_owned_release[] = { { NULL, NULL } };
 // userdata carrying M7 pointers or state and the manual-only ap_objects: left out until
 // IO and Manual Bindings. A userdata or ap_object in none of these lists fails generation
 static const char *remote_deferred_userdata[] = {
-  "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter", "DroneCAN_Handle",
+  "CRSFMenu", "CRSFParameter", "DroneCAN_Handle",
   "SocketAPM", "ScriptingCANBuffer", "AP_HAL::I2CDevice", "AP_HAL::PWMSource",
   NULL };
 // manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
-static const char *remote_ready_manual[] = { "lua_millis", "lua_micros", "lua_new_Parameter", NULL };
+static const char *remote_ready_manual[] = {
+  "lua_millis", "lua_micros", "lua_new_Parameter", "lua_serial_begin", "lua_serial_writestring",
+  "lua_serial_readstring", "lua_serial_find_serial", "lua_serial_find_simulated_device", NULL };
+// manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
+// a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)
+static const char *remote_dot_access[] = {
+  "lua_serial_find_serial", "lua_serial_find_simulated_device", "lua_get_i2c_device",
+  "lua_get_CAN_device", "lua_get_CAN_device2", "lua_mavlink_init", "lua_mavlink_register_rx_msgid",
+  "lua_mavlink_send_chan", "lua_mavlink_receive_chan", "lua_mavlink_block_command", "AP_Logger_Write",
+  NULL };
 // methods whose M7 function is a port of its own (AP_ScriptingM4_Manual*.cpp) in place of the
 // generated one: what an M4 script must not make the M7 do that the generated code does
 struct remote_replacement {
@@ -3239,8 +3249,27 @@ static char *remote_sanitize(const char *name) {
 
 // the row flags of a ported manual function
 static int remote_manual_flags(enum remote_kind kind, const struct method_alias *alias) {
-  (void)alias;
-  return (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : 0;
+  int flags = (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : 0;
+  if (remote_in_list(remote_dot_access, alias->name)) {
+    flags |= ROW_DOT_ACCESS;
+  }
+  return flags;
+}
+
+// every function in remote_dot_access is a manual function of a singleton: a typo, or a renamed
+// function, would lose its dot calls' first argument unnoticed
+static void remote_check_dot_access(void) {
+  for (const char *const *entry = remote_dot_access; *entry != NULL; entry++) {
+    int found = FALSE;
+    for (struct userdata *node = parsed_singletons; node != NULL; node = node->next) {
+      for (struct method_alias *alias = node->method_aliases; alias != NULL; alias = alias->next) {
+        found |= (alias->type == ALIAS_TYPE_MANUAL) && (strcmp(alias->name, *entry) == 0);
+      }
+    }
+    if (!found) {
+      error(ERROR_GENERAL, "remote: dot access %s is no manual function of a singleton", *entry);
+    }
+  }
 }
 
 // a Rotation argument may name ROTATION_CUSTOM_1/2, which only the M7 applies: on the M4,
@@ -3664,6 +3693,7 @@ static void remote_collect(void) {
             remote_replaced_methods[i].type, remote_replaced_methods[i].method);
     }
   }
+  remote_check_dot_access();
   remote_check_local_methods();
   for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
     if (!remote_kind_is_wire(remote_types[remote_type_id(hidden->type) - 1].kind)) {

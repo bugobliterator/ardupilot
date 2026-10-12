@@ -27,6 +27,12 @@
 
 namespace ScriptingM4Remote {
 
+// bytes per reply of a manual function that reads "up to" a count the script gives
+// (readstring, recv): what fits one reply frame with the values that follow it
+static const uint16_t IO_CHUNK = 768;
+static_assert(IO_CHUNK + 3 + 8 + 5 <= ScriptingM4::MAX_FRAME - sizeof(ScriptingM4::ReplyHeader),
+              "a chunk, a uint32_t blob and an integer fit one reply");
+
 typedef int32_t lua_Integer;   // LUA_32BITS, as on the M4
 typedef float lua_Number;
 struct RemoteCall;
@@ -117,6 +123,8 @@ void lua_pushboolean(lua_State *L, int value);
 void lua_pushinteger(lua_State *L, lua_Integer value);
 void lua_pushnumber(lua_State *L, lua_Number value);
 void lua_pushstring(lua_State *L, const char *text);
+void lua_pushlstring(lua_State *L, const char *text, size_t length);   // binary, NULs included
+int lua_type(lua_State *L, int arg);   // lua.h's LUA_TNONE (-1), LUA_TNIL (0), ... of an argument
 uint32_t *new_uint32_t(lua_State *L);
 uint64_t *new_uint64_t(lua_State *L);   // gps:time_epoch_usec()
 __attribute__((noreturn)) int not_supported_error(lua_State *L, int arg, const char *name);
@@ -141,6 +149,12 @@ void *remote_new_owned(lua_State *L, uint8_t type_id, ScriptingM4::ObjectPool::D
 int lua_millis(lua_State *L);
 int lua_micros(lua_State *L);
 int lua_new_Parameter(lua_State *L);
+// AP_ScriptingM4_ManualSerial.cpp
+int lua_serial_find_serial(lua_State *L);
+int lua_serial_find_simulated_device(lua_State *L);
+int lua_serial_begin(lua_State *L);
+int lua_serial_writestring(lua_State *L);
+int lua_serial_readstring(lua_State *L);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
 int lua_m4_Parameter_init_by_info(lua_State *L);
 

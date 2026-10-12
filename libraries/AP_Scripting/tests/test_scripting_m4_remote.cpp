@@ -189,6 +189,37 @@ static int thing_no_object(lua_State *L) {
     return 1;
 }
 
+// binary results, and the type of an argument, as lua_bindings.cpp's manual functions use them
+static int thing_bytes(lua_State *L) {
+    binding_argcheck(L, 1);
+    static const char bytes[] = { 'a', 0, 'b' };
+    lua_pushlstring(L, bytes, sizeof(bytes));
+    return 1;
+}
+static int thing_types(lua_State *L) {
+    for (int arg = 1; arg <= 4; arg++) {
+        lua_pushinteger(L, lua_type(L, arg));
+    }
+    return 4;
+}
+// the most a readstring() reply carries, with the values that follow it
+static int thing_chunk(lua_State *L) {
+    binding_argcheck(L, 1);
+    static char chunk[IO_CHUNK];
+    memset(chunk, 'c', sizeof(chunk));
+    lua_pushlstring(L, chunk, sizeof(chunk));
+    *new_uint32_t(L) = 7;
+    lua_pushinteger(L, 5);
+    return 3;
+}
+static int thing_too_long(lua_State *L) {
+    binding_argcheck(L, 1);
+    // past what a uint16_t length holds, and past the arena
+    static char text[70000];
+    lua_pushlstring(L, text, sizeof(text));
+    return 1;
+}
+
 // an owned type: the object lives in the pool, the M4 holds an owned handle
 struct Counter {
     int32_t value;
@@ -721,6 +752,62 @@ TEST(ScriptingM4Remote, ReleasedOwnedHandleIsStale)
     c.args.handle(OBJECT, 0, c.handles.generation(0));
     EXPECT_EQ(c.run(counter_value), ReplyStatus::ArgError);
     EXPECT_EQ(c.text(0), "Counter expected, got Object");
+}
+
+TEST(ScriptingM4Remote, BinaryStringResults)
+{
+    Call c;
+    c.args.nil();
+    ASSERT_EQ(c.run(thing_bytes), ReplyStatus::Ok);
+    ASSERT_EQ(c.values[0].tag, ValueTag::String);
+    // lua_pushstring() would stop at the NUL: 1 byte
+    EXPECT_EQ(c.values[0].length, 3);
+    EXPECT_EQ(memcmp(c.values[0].string, "a\0b", 3), 0);
+}
+
+TEST(ScriptingM4Remote, ArgumentTypes)
+{
+    Call c;
+    c.args.nil();
+    c.args.integer(3);
+    c.args.string("s", 1);
+    ASSERT_EQ(c.run(thing_types), ReplyStatus::Ok);
+    // lua.h: LUA_TNIL 0, LUA_TNUMBER 3, LUA_TSTRING 4, LUA_TNONE -1
+    EXPECT_EQ(c.values[0].integer, 0);
+    EXPECT_EQ(c.values[1].integer, 3);
+    EXPECT_EQ(c.values[2].integer, 4);
+    EXPECT_EQ(c.values[3].integer, -1);
+
+    // LUA_TBOOLEAN 1, LUA_TNUMBER for a float, LUA_TTABLE 5 (an opaque value), LUA_TUSERDATA 7
+    c.args.boolean(true);
+    c.args.number(1.5f);
+    c.args.opaque(5);
+    c.args.handle(OBJECT, 0, c.handles.generation(0));
+    ASSERT_EQ(c.run(thing_types), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 1);
+    EXPECT_EQ(c.values[1].integer, 3);
+    EXPECT_EQ(c.values[2].integer, 5);
+    EXPECT_EQ(c.values[3].integer, 7);
+}
+
+TEST(ScriptingM4Remote, ReadChunkFitsOneReply)
+{
+    Call c;
+    c.args.nil();
+    // without IO_CHUNK sized for the values that follow the string the reply overflows
+    ASSERT_EQ(c.run(thing_chunk), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 3);
+    EXPECT_EQ(c.values[0].length, IO_CHUNK);
+    EXPECT_EQ(c.values[2].integer, 5);
+}
+
+TEST(ScriptingM4Remote, StringResultLimit)
+{
+    Call c;
+    c.args.nil();
+    // without the bound in lua_pushlstring() the arena's "M4: call too large" is the text
+    EXPECT_EQ(c.run(thing_too_long), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: results too large");
 }
 
 AP_GTEST_MAIN()
