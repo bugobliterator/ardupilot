@@ -5,6 +5,7 @@
 
 local EACCES = 13
 local EROFS = 30
+local EMFILE = 24
 
 local failures = 0
 local function check(ok, name)
@@ -100,13 +101,18 @@ local function reach()
   refused("backslash dotdot", EACCES, io.open("m4_cwd\\..\\..\\m4_escape.txt", "w"))
   refused("dotdot read", EACCES, io.open("../m4_escape.txt", "r"))
   local listing, err = dirlist(dir .. "/../../../..")
-  check(listing == nil and type(err) == "string", "dirlist above root")
-  -- no writes on the @ filesystems, with or without a leading "/": EROFS, not ENOENT
-  refused("sys write", EROFS, io.open("@SYS/m4_escape.txt", "w"))
-  refused("romfs write", EROFS, io.open("@ROMFS/scripts/m4_escape.lua", "w"))
+  -- dirlist returns nil and strerror(errno), as in-process
+  check(listing == nil and err == "Permission denied", "dirlist above root")
+  -- no writes on the @ filesystems, with or without a leading "/": EROFS, not ENOENT.
+  -- Proofs of the M7 check: @PARAM and @MISSION answer ENOENT to these names on their own,
+  -- and the removes below return errno 0. @SYS and @ROMFS refuse writes themselves: parity checks.
   refused("param write", EROFS, io.open("@PARAM/m4_escape.txt", "w"))
   refused("slash param write", EROFS, io.open("/@PARAM/m4_escape.txt", "w"))
+  refused("mission write", EROFS, io.open("@MISSION/m4_escape.txt", "w"))
+  refused("slash mission write", EROFS, io.open("/@MISSION/m4_escape.txt", "w"))
+  refused("sys write", EROFS, io.open("@SYS/m4_escape.txt", "w"))
   refused("slash sys write", EROFS, io.open("/@SYS/m4_escape.txt", "w"))
+  refused("romfs write", EROFS, io.open("@ROMFS/scripts/m4_escape.lua", "w"))
   local ok, msg, code = remove("@SYS/threads.txt")
   check(ok == nil and type(msg) == "string" and code == EROFS, "sys remove")
   ok, msg, code = remove("/@PARAM/m4_escape.txt")
@@ -152,8 +158,8 @@ local function open_files()
     opened = opened + (held[i] and 1 or 0)
   end
   check(opened == 8, "eight open")
-  local ninth, err = io.open(name(9), "w")
-  check(ninth == nil and type(err) == "string", "ninth refused")
+  local ninth, err, ninth_code = io.open(name(9), "w")
+  check(ninth == nil and type(err) == "string" and ninth_code == EMFILE, "ninth refused")
   held = nil
   -- collectgarbage is not in the sandbox: allocate until the collector has run the finalizers
   -- that close the dropped files on the M7 (re-opening for reading, which is not quota'd)
@@ -200,6 +206,13 @@ local function quota()
   check(refusals > 0 and (errno == 35 or errno == 11), "quota")
 end
 
+local function cleanup()
+  remove(path)
+  for i = 1, 8 do
+    remove(string.format("%s/m4_files_%d.txt", dir, i))
+  end
+end
+
 local stages = { round_trip, reach, listing_and_remove, open_files, quota }
 local stage = 0
 
@@ -211,10 +224,15 @@ local function update()
   end
   stage = stage + 1
   if stage <= #stages then
-    stages[stage]()
+    local ok, err = pcall(stages[stage])
+    if not ok then
+      gcs:send_text(3, string.sub("M4 files FAILED: " .. tostring(err), 1, 50))
+      cleanup()
+      return
+    end
     return update, 2000   -- the FileIo bucket refills between stages
   end
-  remove(path)
+  cleanup()
   if failures == 0 then
     gcs:send_text(6, "M4 files passed")
   else
