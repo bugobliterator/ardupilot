@@ -11,8 +11,8 @@
     internal-error flag and continues with the same result (AP_Math.cpp:317,421,
     quaternion.cpp:395,673,803, vector3.cpp:273)
   - ROTATION_CUSTOM_1/2 have no custom rotation: Vector3::rotate and
-    Quaternion::from_rotation leave the value unchanged and set a flag the local
-    binding layer must check (AP_CustomRotations.h)
+    Quaternion::from_rotation leave the value unchanged. Methods with a Rotation
+    argument stay remote, so this is never reached (AP_CustomRotations.h)
   - Location methods that read home, the EKF origin or terrain are not built
     (AP_AHRS.h, AP_Terrain.h); they stay remote
  */

@@ -2,9 +2,10 @@
 /*
   M4 Lua build: the M7's custom rotations (ROTATION_CUSTOM_1/2) are parameters
   the M4 cannot read. Vector3::rotate and Quaternion::from_rotation (and so
-  Quaternion::rotate) call these instead: the value is left unchanged and
-  `refused` is set. The local binding layer clears `refused` before a call
-  that takes a Rotation and raises a Lua error when it is set afterwards.
+  Quaternion::rotate) compile against these stubs, which leave the value
+  unchanged. They are never reached: gen-bindings keeps every method with a
+  Rotation argument remote (remote_method_takes_rotation), and the M4 build
+  fails if the image contains them (STATE_READING_SYMBOLS in chibios/Makefile).
  */
 #include <AP_Math/AP_Math.h>
 
@@ -12,12 +13,10 @@
 
 class AP_CustomRotations {
 public:
-    bool refused;
-
     template <typename T>
-    void rotate(enum Rotation, Vector3<T> &) { refused = true; }
+    void rotate(enum Rotation, Vector3<T> &) {}
     template <typename T>
-    void from_rotation(enum Rotation, QuaternionT<T> &) { refused = true; }
+    void from_rotation(enum Rotation, QuaternionT<T> &) {}
 };
 
 namespace AP {
