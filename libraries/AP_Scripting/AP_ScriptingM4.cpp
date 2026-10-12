@@ -12,6 +12,9 @@
 #include "AP_ScriptingM4_Layout.h"
 #include "AP_ScriptingM4_Rpc.h"
 
+static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
+              "the M4 computes Location math in double (m4/shim/AP_HAL/AP_HAL_Boards.h)");
+
 extern const AP_HAL::HAL& hal;
 
 namespace PeerHeader = CubePilotFW::PeerHeader;
