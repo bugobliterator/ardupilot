@@ -91,6 +91,10 @@ def _chibios_image(bld):
                src.ant_glob('libraries/AP_Scripting/AP_ScriptingM4_*.h') +
                [src.find_node('libraries/AP_Scripting/AP_Scripting_BindingHistogram.h')] +
                src.ant_glob(LUA_DIR + '/*.h') +
+               src.ant_glob('libraries/AP_Math/*') +
+               [src.find_node('libraries/AP_Common/Location.h'),
+                src.find_node('libraries/AP_Common/Location.cpp'),
+                src.find_node('libraries/AP_Common/AP_Common.h')] +
                [src.find_node('%s/%s' % (LUA_DIR, path)) for path in M4_LUA_SOURCES] +
                [src.find_node('libraries/AP_HAL_ChibiOS/ap_setjmp.c')] +
                src.ant_glob(CUBEFRAMEWORK + '/CubePilotFW/**/*.h') +
@@ -115,8 +119,11 @@ def _sitl_program(bld):
     # the shim directory comes first: the Lua core finds its AP headers there. 'libraries'
     # also reaches the generated headers in the build directory (AP_Scripting/lua_remote_*)
     runtime = [node.path_from(bld.srcnode) for node in bld.srcnode.ant_glob(M4_DIR + '/*.cpp')]
+    # AP_Math and AP_Common/Location for the M4's local pure-data types: the real sources
+    # through wrappers, with the SITL vehicle's own flags, as the SITL M7 compiles them
+    local = [node.path_from(bld.srcnode) for node in bld.srcnode.ant_glob(M4_DIR + '/local/*.cpp')]
     bld.program(target='bin/scripting_m4', name='scripting_m4_image',
-                source=(runtime +
+                source=(runtime + local +
                         [M4_DIR + '/sitl/main.cpp', M4_DIR + '/sitl/lua_port.cpp'] +
                         ['%s/%s' % (LUA_DIR, path) for path in M4_LUA_SOURCES] +
                         _cf(CF_POSIX_SOURCES)),
