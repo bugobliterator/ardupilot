@@ -22356,6 +22356,16 @@ RTL_ALT_M 111
             raise NotAchievedException("M4 script: '%s'" % m.text)
         return m
 
+    def m4_protocol_errors(self):
+        '''M4ST.PErr summed over the current onboard log'''
+        dfreader = self.dfreader_for_current_onboard_log()
+        errors = 0
+        while True:
+            m = dfreader.recv_match(type="M4ST")
+            if m is None:
+                return errors
+            errors += m.PErr
+
     def m4_quota_hits(self):
         '''M4ST.QHit summed over the current onboard log'''
         dfreader = self.dfreader_for_current_onboard_log()
@@ -22517,6 +22527,27 @@ RTL_ALT_M 111
         self.progress("SRPC binding calls logged %u, script made %u" % (logged, script_total))
         if logged != script_total:
             raise NotAchievedException("SRPC binding calls: %u logged, script made %u (%s)" % (logged, script_total, totals))
+        self.context_pop()
+
+        # owned objects (m4_owned_objects.lua): the pool limit after the M4's collect and retry, no
+        # collection nested in a finalizer, init_by_info refused, and every m4:release well formed
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_VM_I_COUNT": 1000000,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_script_context("m4_owned_objects.lua")
+        self.reboot_sitl()
+        self.wait_m4_script_text("M4 owned objects passed", timeout=120)
+        self.delay_sim_time(2, reason="M4ST is written once a second")
+        protocol_errors = self.m4_protocol_errors()
+        if protocol_errors != 0:
+            raise NotAchievedException("M4ST PErr %u: a malformed m4:release reached the M7" % protocol_errors)
         self.context_pop()
 
         # a refused m4:bindings image: no script runs and prearm stays failed
