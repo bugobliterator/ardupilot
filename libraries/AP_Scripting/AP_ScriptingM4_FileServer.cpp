@@ -187,6 +187,9 @@ ReplyStatus AP_ScriptingM4_FileServer::seek(RpcArgs &args, RpcWriter &results, u
     if (fd < 0) {
         return fail(results, EBADF);
     }
+    if (whence == SEEK_SET && offset < 0) {
+        return fail(results, EINVAL);
+    }
     errno = 0;
     const int32_t position = AP::FS().lseek(fd, offset, int(whence));
     if (position < 0) {

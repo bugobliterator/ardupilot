@@ -148,6 +148,18 @@ TEST_F(FileServerTest, WriteReadSeekRemove)
     EXPECT_EQ(open_file(path("a.txt"), "r"), -ENOENT);
 }
 
+TEST_F(FileServerTest, NegativeSeekFromStartIsInvalid)
+{
+    const int32_t id = open_file(path("n.txt"), "w+");
+    ASSERT_GE(id, 256);
+    EXPECT_EQ(call_integer(SystemMethod::FsWrite, { integer(id), string("abc", 3) }), 3);
+    EXPECT_EQ(call_integer(SystemMethod::FsSeek, { integer(id), integer(-1), integer(SEEK_SET) }), -EINVAL);
+    EXPECT_EQ(call_integer(SystemMethod::FsSeek, { integer(id), integer(INT32_MIN), integer(SEEK_SET) }), -EINVAL);
+    // the position is unchanged, and seeking back from the end is still allowed
+    EXPECT_EQ(call_integer(SystemMethod::FsSeek, { integer(id), integer(0), integer(SEEK_CUR) }), 3);
+    EXPECT_EQ(call_integer(SystemMethod::FsSeek, { integer(id), integer(-2), integer(SEEK_END) }), 1);
+}
+
 TEST_F(FileServerTest, ForgedAndStaleIdsAreBadDescriptors)
 {
     const int32_t id = open_file(path("b.txt"), "w");
@@ -293,7 +305,7 @@ TEST_F(FileServerTest, DirectoryPagesCoverEveryEntryOnce)
 {
     std::set<std::string> created;
     for (int i = 0; i < 40; i++) {
-        // long names: a page holds DIR_REPLY_BYTES of them, fewer than 40 entries
+        // short names: the value count ends a page before DIR_REPLY_BYTES does
         const std::string name = std::string(40, 'a' + i % 26) + std::to_string(i);
         write_file(path(name.c_str()), "");
         quota.reset(AP_HAL::millis());
