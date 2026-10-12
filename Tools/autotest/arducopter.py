@@ -22934,34 +22934,62 @@ RTL_ALT_M 111
         errors = self.m4_protocol_errors()
         if errors != 0:
             raise NotAchievedException("%u M4 protocol errors" % errors)
-        self.set_parameter("SCR_USER1", 0)   # m4_objects.lua leaves 5 in it
         self.context_pop()
+        # m4_objects.lua leaves 5 in it, and the context restores what it read after that
+        self.set_parameter("SCR_USER1", 0, add_to_context=False)
         self.reboot_sitl()
 
-        # a session's objects and aux auth ids go when the M4 restarts
-        self.context_push()
-        self.set_parameter("SIM_SPEEDUP", 1)
-        self.context_collect("STATUSTEXT")
-        self.set_parameters({
-            "SCR_ENABLE": 1,
-            "SCR_HEAP_SIZE": 188416,
-        })
-        self.install_test_script_context("m4_objects_hold.lua")
-        self.reboot_sitl()
-        held = r"M4 holding \d+ objects, auth \S+"
-        m = self.wait_m4_script_text(held, timeout=60)
-        if m.text != "M4 holding 64 objects, auth 0":
-            raise NotAchievedException("first session: '%s'" % m.text)
-        self.context_clear_collection("STATUSTEXT")
-        self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: the M7 restarts it
-        self.wait_statustext(r"Scripting: M4 restarted \(1/\d+\)", regex=True, check_context=True, timeout=30)
-        m = self.wait_m4_script_text(held, timeout=60)
-        # without end_session() at the restart the new session holds 0 objects; without the aux
-        # auth reset it gets id 1
-        if m.text != "M4 holding 64 objects, auth 0":
-            raise NotAchievedException("after the restart: '%s'" % m.text)
-        self.context_pop()
-        self.reboot_sitl()
+        # a session's objects, files, aux auth ids and serial buffers go when the M4 restarts
+        try:
+            self.context_push()
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_collect("STATUSTEXT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_HEAP_SIZE": 188416,
+                "SCR_SDEV_EN": 1,
+                "SCR_SDEV1_PROTO": 28,
+                "LOG_DISARMED": 1,
+                "LOG_DARM_RATEMAX": 0,
+                "LOG_FILE_RATEMAX": 0,
+            })
+            self.install_test_script_context("m4_objects_hold.lua")
+            self.reboot_sitl()
+            held = r"M4 holding \d+ objects, auth \S+"
+            state = "M4 hold: 3 files, left 0, port ok"
+            m = self.wait_m4_script_text(held, timeout=60)
+            if m.text != "M4 holding 64 objects, auth 0":
+                raise NotAchievedException("first session: '%s'" % m.text)
+            m = self.wait_m4_script_text("M4 hold: .*", timeout=10)
+            if m.text != state:
+                raise NotAchievedException("first session: '%s'" % m.text)
+            files = self.m4_files_held_open()
+            if files != 3:
+                raise NotAchievedException("%u files open in the first session, expected 3" % files)
+            self.context_clear_collection("STATUSTEXT")
+            self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: the M7 restarts it
+            self.wait_statustext(r"Scripting: M4 restarted \(1/\d+\)", regex=True, check_context=True, timeout=30)
+            m = self.wait_m4_script_text(held, timeout=60)
+            # without end_session() at the restart the new session holds 0 objects (the ports and
+            # Parameters of the first are still in the pool); without the aux auth reset it gets id 1
+            if m.text != "M4 holding 64 objects, auth 0":
+                raise NotAchievedException("after the restart: '%s'" % m.text)
+            # 11 unread bytes each way were left by the first session: the device buffers are cleared
+            m = self.wait_m4_script_text("M4 hold: .*", timeout=10)
+            if m.text != state:
+                raise NotAchievedException("after the restart: '%s'" % m.text)
+            # the first session's three files are closed and the new session's are open
+            files = self.m4_files_held_open()
+            if files != 3:
+                raise NotAchievedException("%u files open after the restart, expected 3" % files)
+            self.delay_sim_time(2, reason="M4ST is written once a second")
+            errors = self.m4_protocol_errors()
+            if errors != 0:
+                raise NotAchievedException("%u M4 protocol errors across the restart" % errors)
+            self.context_pop()
+            self.reboot_sitl()
+        finally:
+            self.remove_m4_files_leftovers("m4_hold_objects_*.txt")
 
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
