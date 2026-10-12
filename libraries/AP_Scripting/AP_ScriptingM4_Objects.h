@@ -57,6 +57,14 @@ public:
         return true;
     }
 
+    // whether address lies in any slot, live or free: no kept or session handle may name such memory
+    bool contains(const void *address) const
+    {
+        const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+        const uintptr_t first = reinterpret_cast<uintptr_t>(&_slots[0]);
+        return value >= first && value < first + sizeof(_slots);
+    }
+
     // every live object: the end of an M4 session
     void clear()
     {

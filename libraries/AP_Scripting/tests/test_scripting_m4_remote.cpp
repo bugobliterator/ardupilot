@@ -276,6 +276,13 @@ static int counter_pair(lua_State *L) {
     new_Counter(L)->value = 2;
     return 2;
 }
+// a kept handle result naming a pool object, as a manual port could write it
+static int counter_as_kept_handle(lua_State *L) {
+    binding_argcheck(L, 0);
+    Counter *counter = new_Counter(L);
+    *remote_new_handle(L, OBJECT) = counter;
+    return 2;
+}
 static int thing_string_of(lua_State *L) {
     binding_argcheck(L, 1);
     static char text[MAX_STRING + 1];
@@ -733,6 +740,18 @@ TEST(ScriptingM4Remote, FailedSecondOwnedResultRetiresTheFirstEntry)
     EXPECT_EQ(c.objects.used(), 0);
     EXPECT_EQ(counters_destroyed, 2);
     EXPECT_EQ(c.handles.count(), HandleTable::CAPACITY - 1);
+}
+
+TEST(ScriptingM4Remote, PoolObjectNeverGetsAKeptEntry)
+{
+    Call c;
+    counters_destroyed = 0;
+    // without the pool check the Handle result inserts a kept entry that outlives the owned one
+    EXPECT_EQ(c.run(counter_as_kept_handle), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: malformed binding");
+    EXPECT_EQ(c.objects.used(), 0);
+    EXPECT_EQ(counters_destroyed, 1);
+    EXPECT_EQ(c.handles.count(), 0);
 }
 
 TEST(ScriptingM4Remote, OwnedObjectLimits)

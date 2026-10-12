@@ -204,6 +204,19 @@ TEST(ScriptingM4Objects, FullReleaseQueueCountsDrops)
     EXPECT_EQ(queue.dropped(), 1U);
 }
 
+TEST(ScriptingM4Objects, ObjectPoolContainsItsSlotsOnly)
+{
+    ObjectPool pool;
+    uint8_t *slot = static_cast<uint8_t *>(pool.allocate(count_destroy));
+    ASSERT_NE(slot, nullptr);
+    int outside = 0;
+    EXPECT_TRUE(pool.contains(slot));
+    EXPECT_TRUE(pool.contains(slot + 1));                       // inside the object
+    EXPECT_TRUE(pool.contains(slot + ObjectPool::SLOT_SIZE));   // a free slot
+    EXPECT_FALSE(pool.contains(&outside));
+    EXPECT_FALSE(pool.contains(nullptr));
+}
+
 TEST(ScriptingM4Objects, ReleaseOfAnEarlierSessionsHandleDestroysNothing)
 {
     HandleTable handles;

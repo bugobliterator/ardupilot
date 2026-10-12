@@ -562,6 +562,10 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
                 results.nil();
                 break;
             }
+            // a pool object has one owner, its owned handle: a second entry would outlive its release
+            if (call.objects != nullptr && call.objects->contains(object)) {
+                return fail_call(call, results, "M4: malformed binding");
+            }
             const int16_t index = call.handles != nullptr ? call.handles->insert(result.type_id, object) : -1;
             if (index < 0) {
                 return fail_call(call, results, ScriptingM4::TOO_MANY_OBJECTS);
