@@ -1538,22 +1538,49 @@ struct EndingSocket {
     int get_read_fd() const { return fd; }
 };
 
-// at the session end every socket is set to close with a reset before it is deleted. Without
-// abort() the delete closes gracefully, which can hold the host thread waiting for a FIN segment
+// at the session end a stream socket is set to close with a reset before it is deleted. Without
+// the reset the delete closes gracefully, which can hold the host thread waiting for a FIN segment
 TEST(ScriptingM4Remote, SocketsEndWithAReset)
 {
-    int aborted_fd = -2;
+    int reset_fd = -2;
     bool deleted = false;
-    EndingSocket *slot = new EndingSocket{7, &aborted_fd, &deleted};
-    bool deleted_at_abort = true;
-    socket_end(slot, [&](int fd) { aborted_fd = fd; deleted_at_abort = deleted; });
-    EXPECT_EQ(aborted_fd, 7);
-    EXPECT_FALSE(deleted_at_abort);   // the reset is set before the close
+    EndingSocket *slot = new EndingSocket{7, nullptr, &deleted};
+    bool deleted_at_reset = true;
+    socket_end(slot, [](int) { return SocketKind::Stream; },
+               [&](int fd) { reset_fd = fd; deleted_at_reset = deleted; });
+    EXPECT_EQ(reset_fd, 7);
+    EXPECT_FALSE(deleted_at_reset);   // the reset is set before the close
     EXPECT_TRUE(deleted);
     EXPECT_EQ(slot, nullptr);
     int calls = 0;
-    socket_end(slot, [&](int) { calls++; });   // an empty slot
+    socket_end(slot, [&](int) { calls++; return SocketKind::Stream; }, [&](int) { calls++; });   // an empty slot
     EXPECT_EQ(calls, 0);
+}
+
+// only a stream socket that is not listening is reset: lwIP's close of a listening socket with a
+// linger of 0 reads unsent/unacked past its smaller listen PCB and aborts it; a datagram socket, a
+// socket of unknown kind and one sendfile took (descriptor -1) are closed as they are. Without the
+// skip a listening socket left open at the session end gets the reset
+TEST(ScriptingM4Remote, SocketEndResetsOnlyStreamSockets)
+{
+    EXPECT_TRUE(socket_end_resets(SocketKind::Stream));
+    EXPECT_FALSE(socket_end_resets(SocketKind::Listening));
+    EXPECT_FALSE(socket_end_resets(SocketKind::Other));
+    const SocketKind kinds[] = { SocketKind::Listening, SocketKind::Other };
+    for (const SocketKind kind : kinds) {
+        bool deleted = false;
+        int resets = 0;
+        EndingSocket *slot = new EndingSocket{9, nullptr, &deleted};
+        socket_end(slot, [kind](int) { return kind; }, [&](int) { resets++; });
+        EXPECT_EQ(resets, 0) << int(kind);
+        EXPECT_TRUE(deleted) << int(kind);
+    }
+    bool deleted = false;
+    int asked = 0;
+    EndingSocket *handed_over = new EndingSocket{-1, nullptr, &deleted};
+    socket_end(handed_over, [&](int) { asked++; return SocketKind::Stream; }, [&](int) { asked++; });
+    EXPECT_EQ(asked, 0);
+    EXPECT_TRUE(deleted);
 }
 
 AP_GTEST_MAIN()

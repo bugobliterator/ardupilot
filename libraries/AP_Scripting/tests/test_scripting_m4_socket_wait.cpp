@@ -157,6 +157,43 @@ TEST(ScriptingM4SocketWait, NonBlockingSendEndsAtAShortPiece)
     EXPECT_EQ(clock.sleeps, 0U);
 }
 
+// an empty string is one call of nothing; a multiple of the piece size makes no empty last call
+TEST(ScriptingM4SocketWait, EmptyAndWholePieceSends)
+{
+    TestClock clock;
+    TestSend empty;
+    empty.take = [](size_t piece, size_t) { return int32_t(piece); };
+    EXPECT_EQ(send_all(empty, clock, 0, 0, false, true), 0);
+    ASSERT_EQ(empty.pieces.size(), 1U);
+    EXPECT_EQ(empty.pieces[0], 0U);
+    TestSend exact;
+    exact.take = [](size_t piece, size_t) { return int32_t(piece); };
+    EXPECT_EQ(send_all(exact, clock, 2 * SOCKET_SEND_CHUNK, 2 * SOCKET_SEND_CHUNK, false, false),
+              int32_t(2 * SOCKET_SEND_CHUNK));
+    EXPECT_EQ(exact.pieces.size(), 2U);
+    EXPECT_EQ(clock.sleeps, 0U);
+}
+
+// a short first piece: a non-blocking send returns its count; a blocking one sleeps and goes on
+// from where it stopped, so no byte is lost or sent twice
+TEST(ScriptingM4SocketWait, ShortFirstPiece)
+{
+    TestClock clock;
+    TestSend nonblocking;
+    nonblocking.take = [](size_t, size_t) { return int32_t(100); };
+    EXPECT_EQ(send_all(nonblocking, clock, 2000, 2000, false, false), 100);
+    EXPECT_EQ(nonblocking.pieces.size(), 1U);
+    TestSend blocking;
+    blocking.take = [](size_t piece, size_t call) { return call == 0 ? int32_t(100) : int32_t(piece); };
+    EXPECT_EQ(send_all(blocking, clock, 2000, 2000, false, true), 2000);
+    ASSERT_EQ(blocking.pieces.size(), 4U);
+    EXPECT_EQ(blocking.offsets[1], 100U);
+    EXPECT_EQ(blocking.pieces[1], SOCKET_SEND_CHUNK);
+    EXPECT_EQ(blocking.offsets[3], 100 + 2 * SOCKET_SEND_CHUNK);
+    EXPECT_EQ(blocking.pieces[3], 2000 - 100 - 2 * SOCKET_SEND_CHUNK);
+    EXPECT_EQ(clock.sleeps, 1U);
+}
+
 // a datagram goes whole: cutting it would make several datagrams of one
 TEST(ScriptingM4SocketWait, DatagramGoesWhole)
 {

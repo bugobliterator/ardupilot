@@ -243,12 +243,22 @@ void sockets_end_session()
     // clear allocated sockets, with a reset in place of a FIN the stack may wait for
     for (uint8_t i = 0; i < SCRIPTING_MAX_NUM_NET_SOCKET; i++) {
         socket_end(scripting->_net_sockets[i], [](int fd) {
-            if (fd != -1) {
-                struct linger reset {};
-                reset.l_onoff = 1;
-                reset.l_linger = 0;
-                (void)SOCKET_CALL(setsockopt)(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset));
+            int value = 0;
+            socklen_t length = sizeof(value);
+            if (SOCKET_CALL(getsockopt)(fd, SOL_SOCKET, SO_TYPE, &value, &length) != 0 || value != SOCK_STREAM) {
+                return SocketKind::Other;
             }
+            value = 0;
+            length = sizeof(value);
+            if (SOCKET_CALL(getsockopt)(fd, SOL_SOCKET, SO_ACCEPTCONN, &value, &length) != 0) {
+                return SocketKind::Other;
+            }
+            return value != 0 ? SocketKind::Listening : SocketKind::Stream;
+        }, [](int fd) {
+            struct linger reset {};
+            reset.l_onoff = 1;
+            reset.l_linger = 0;
+            (void)SOCKET_CALL(setsockopt)(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset));
         });
     }
     // a file handed over stays with AP_Networking until it is sent, past the session's end

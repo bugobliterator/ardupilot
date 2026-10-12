@@ -493,16 +493,35 @@ bool socket_sendfile(SocketSendfiles &sendfiles, int fd, Semaphore &sem, HandOve
     return true;
 }
 
-// a session's socket at the session end: set to close abortively (abort(fd): SO_LINGER {1, 0}, a
-// reset), then deleted. A graceful close can hold the host thread while the network stack has no
-// segment for the FIN (lwIP: up to 20 s and more); the dying session's unsent data is dropped
-// (recorded deviation). A script's own sock:close() stays graceful, as in-process
-template <typename Socket, typename Abort> void socket_end(Socket *&slot, Abort abort)
+// what a socket is at the session end, as its descriptor reports it (SO_TYPE, SO_ACCEPTCONN)
+enum class SocketKind : uint8_t {
+    Stream,      // a TCP socket that is not listening: connected, connecting or never connected
+    Listening,   // a TCP socket after listen()
+    Other,       // a datagram socket, or one whose kind could not be read
+};
+
+// only a non-listening stream socket is reset at the session end. lWIP closes a listening socket
+// without waiting, and its close path reads unsent/unacked from the smaller listen PCB, so a
+// linger of 0 there would abort a listen PCB; a datagram socket has nothing to linger for
+inline bool socket_end_resets(SocketKind kind)
+{
+    return kind == SocketKind::Stream;
+}
+
+// a session's socket at the session end: a stream socket set to close abortively (reset(fd):
+// SO_LINGER {1, 0}), then every socket deleted. A graceful close of a stream socket can hold the
+// host thread while the network stack has no segment for the FIN (lwIP: up to 20 s and more); the
+// dying session's unsent data is dropped (recorded deviation). A script's own sock:close() stays
+// graceful, as in-process
+template <typename Socket, typename KindOf, typename Reset> void socket_end(Socket *&slot, KindOf kind_of, Reset reset)
 {
     if (slot == nullptr) {
         return;
     }
-    abort(slot->get_read_fd());
+    const int fd = slot->get_read_fd();
+    if (fd != -1 && socket_end_resets(kind_of(fd))) {
+        reset(fd);
+    }
     delete slot;
     slot = nullptr;
 }

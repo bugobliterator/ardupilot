@@ -8,8 +8,9 @@
   tried again every SOCKET_RETRY_MS until it completes or fails, or until it
   has made no progress for SOCKET_IDLE_LIMIT_MS. Each try is one short M7
   call, well inside the 1 s call timeout. As in-process, the VM's instruction
-  budget does not run while a binding waits; the idle limit is the wait's own
-  budget (recorded deviation: in-process waits as long as the network stack).
+  budget does not run while a binding waits; the idle limit, and for a send
+  SOCKET_SEND_LIMIT_MS (30 s) in all, are the wait's own budget (recorded
+  deviation: in-process waits as long as the network stack).
   C++11, no dependencies (host unit tests).
  */
 
