@@ -160,7 +160,7 @@ local function open_files()
   check(opened == 8, "eight open")
   local ninth, err, ninth_code = io.open(name(9), "w")
   check(ninth == nil and type(err) == "string" and ninth_code == EMFILE, "ninth refused")
-  held = nil
+  held = nil   -- luacheck: ignore 311
   -- collectgarbage is not in the sandbox: allocate until the collector has run the finalizers
   -- that close the dropped files on the M7 (re-opening for reading, which is not quota'd)
   local again = {}
@@ -170,6 +170,7 @@ local function open_files()
     for i = 1, 100 do
       garbage[i] = string.rep("g", 256) .. i
     end
+    check(#garbage == 100, "garbage filled")
     for i = 1, 8 do
       if not again[i] then
         again[i] = io.open(name(i), "r") or false

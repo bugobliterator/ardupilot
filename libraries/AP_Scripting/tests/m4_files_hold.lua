@@ -8,7 +8,9 @@ for template in string.gmatch(package.path, "[^;]+") do
   end
 end
 
-held = {}   -- a global of the script: never collected
+-- a global of the script: never collected
+-- luacheck: globals held
+held = {}
 for i = 1, 8 do
   local f = dir and io.open(string.format("%s/m4_hold_%d.txt", dir, i), "w")
   if f then
