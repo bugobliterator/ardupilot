@@ -204,6 +204,11 @@ static int thing_tolstring(lua_State *L) {
     lua_pushinteger(L, int32_t(length));
     return 2;
 }
+// the bus clock argument as lua_get_i2c_device() reads it
+static int thing_i2c_clock(lua_State *L) {
+    lua_pushinteger(L, lua_Integer(i2c_bus_clock_argument(L, 1)));
+    return 1;
+}
 static int thing_types(lua_State *L) {
     for (int arg = 1; arg <= 4; arg++) {
         lua_pushinteger(L, lua_type(L, arg));
@@ -915,4 +920,18 @@ TEST(ScriptingM4Remote, I2CLimits)
     EXPECT_FALSE(i2c_transfer_fits(2, 255));
     EXPECT_FALSE(i2c_transfer_fits(0, 257));
     EXPECT_FALSE(i2c_transfer_fits(1000, 1));
+}
+
+// the argument the call site reads: without the clamp in i2c_bus_clock_argument() a clock of 0
+// reaches ChibiOS' timeout formula as a division by zero and 1000 Hz times a transfer out after 4 s
+TEST(ScriptingM4Remote, I2CBusClockArgument)
+{
+    Call c;
+    const int32_t requested[] = { 0, 1000, 400000, 5000000 };
+    const int32_t expected[] = { 100000, 100000, 400000, 1000000 };
+    for (size_t i = 0; i < 4; i++) {
+        c.args.integer(requested[i]);
+        ASSERT_EQ(c.run(thing_i2c_clock), ReplyStatus::Ok);
+        EXPECT_EQ(c.values[0].integer, expected[i]);
+    }
 }

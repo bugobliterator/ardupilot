@@ -47,7 +47,7 @@ int lua_get_i2c_device(lua_State *L)
 
     if (args > 3) {
         // recorded deviation: in-process passes any clock through, and a low one persists on the bus
-        bus_clock = i2c_clamp_bus_clock(coerce_to_uint32_t(L, 4));
+        bus_clock = i2c_bus_clock_argument(L, 4);
 
         if (args > 4) {
             use_smbus = static_cast<bool>(lua_toboolean(L, 5));
@@ -135,7 +135,7 @@ int AP_HAL__I2CDevice_transfer(lua_State *L)
 
     // Transfer; refused beyond the byte cap and a busy bus (I2C_* in Remote.h)
     if (!i2c_transfer_fits(send_len, rx_len)) {
-        return luaL_argerror(L, 3, "transfer longer than 256 bytes");
+        return luaL_argerror(L, 2, "transfer longer than 256 bytes");
     }
     if (!ud->get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)) {
         return 0;
@@ -150,6 +150,22 @@ int AP_HAL__I2CDevice_transfer(lua_State *L)
     // Return a string
     lua_pushlstring(L, reinterpret_cast<const char *>(rx_data), rx_len);
     return 1;
+}
+
+// dev:set_retries(count): the generated method with the count capped at I2C_RETRIES_MAX, which
+// bounds the attempts of a transfer on the host thread (recorded deviation: in-process allows 20),
+// and the bounded semaphore take
+int lua_m4_I2CDevice_set_retries(lua_State *L)
+{
+    binding_argcheck(L, 2);
+    AP_HAL::I2CDevice *ud = *check_AP_HAL__I2CDevice(L, 1);
+    const uint8_t retries = static_cast<uint8_t>(get_integer(L, 2, 0, I2C_RETRIES_MAX));
+    if (!ud->get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)) {
+        return 0;
+    }
+    ud->set_retries(retries);
+    ud->get_semaphore()->give();
+    return 0;
 }
 
 // PWMSource(): lua_get_PWMSource()

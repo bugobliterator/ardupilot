@@ -356,6 +356,23 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('remote: M4 wrapper wrap_I2CDevice_read_registers of AP_HAL__I2CDevice_read_registers '
                       'matches no ported row', result.stdout + result.stderr)
 
+    def test_i2c_methods_bound_the_semaphore(self):
+        code, output, _ = self.generate('i2c_sem', [])
+        self.assertEqual(code, 0, output)
+        _, dispatch, _ = self.outputs('i2c_sem')
+        for name in ('set_address', 'write_register'):
+            text = self.body(dispatch, 'AP_HAL__I2CDevice_' + name)
+            self.assertIn('get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)', text)
+            self.assertNotIn('take_blocking', text)
+            self.assertIn('if (!semaphore_taken) {', text)
+        self.assertIn('lua_pushboolean(L, 0);', self.body(dispatch, 'AP_HAL__I2CDevice_write_register'))
+        # set_retries runs the port that caps the count; the generated body is not in the dispatch
+        self.assertIn('    lua_m4_I2CDevice_set_retries,\n', dispatch)
+        self.assertNotIn('static int AP_HAL__I2CDevice_set_retries(', dispatch)
+        # the in-process text keeps the unbounded take
+        with open(os.path.join(self.tmp, 'i2c_sem', 'gen.cpp')) as f:
+            self.assertIn('get_semaphore()->take_blocking();', self.body(f.read(), 'AP_HAL__I2CDevice_write_register'))
+
 
 if __name__ == '__main__':
     unittest.main()

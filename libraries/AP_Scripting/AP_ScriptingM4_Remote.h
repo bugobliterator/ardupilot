@@ -51,25 +51,31 @@ struct BlobCodec {
     void (*encode)(WireWriter &writer, const void *object);
 };
 
-// I2C limits on the M7 host thread (AP_ScriptingM4_ManualI2C.cpp). ChibiOS times a transfer out
-// after 1 + 2 * (8e6 / busclock * bytes) / 1000 ms per attempt and a device retries up to 20 times
-// (set_retries), so the clock floor and the byte cap bound the host thread's wait: at the floor
-// 256 bytes time out after 41 ms, 21 attempts take 861 ms, and the bounded semaphore take adds
-// at most I2C_SEMAPHORE_WAIT_MS: 891 ms, below the 900 ms rule. In-process passes any clock and
-// length through (recorded deviation)
+// I2C limits on the M7 host thread (AP_ScriptingM4_ManualI2C.cpp, and the generated methods of
+// AP_HAL::I2CDevice, which take the semaphore for at most I2C_SEMAPHORE_WAIT_MS). ChibiOS times
+// a transfer out after 1 + 2 * (8e6 / busclock * bytes) / 1000 ms per attempt and makes
+// retries + 1 attempts, clearing the bus between them (20 x 10 us, under 1 ms). At the clock floor
+// 256 bytes time out after 41 ms; with at most 18 retries (19 attempts) the nominal worst case is
+// 30 + 19 * (41 + 1) = 828 ms, below the 850 ms budget of the 900 ms rule. In-process passes any
+// clock, length and retry count through (recorded deviation). A request at the floor still sets
+// the shared bus to 100 kHz until reboot, as in-process: the floor does not prevent that
 static const uint32_t I2C_CLOCK_MIN_HZ = 100000;
 static const uint32_t I2C_CLOCK_MAX_HZ = 1000000;
 static const uint32_t I2C_TRANSFER_BYTES_MAX = 256;
 static const uint32_t I2C_SEMAPHORE_WAIT_MS = 30;
-static const uint32_t I2C_ATTEMPTS_MAX = 21;
-static_assert(I2C_SEMAPHORE_WAIT_MS + I2C_ATTEMPTS_MAX *
-              (1 + 2 * ((8 * 1000000UL / I2C_CLOCK_MIN_HZ) * I2C_TRANSFER_BYTES_MAX) / 1000) <= 900,
-              "the worst I2C transfer fits the host thread's 900 ms");
+static const uint32_t I2C_RETRIES_MAX = 18;
+static const uint32_t I2C_BUS_CLEAR_MS = 1;
+static_assert(I2C_SEMAPHORE_WAIT_MS + (I2C_RETRIES_MAX + 1) *
+              (1 + 2 * ((8 * 1000000UL / I2C_CLOCK_MIN_HZ) * I2C_TRANSFER_BYTES_MAX) / 1000 + I2C_BUS_CLEAR_MS) <= 850,
+              "the worst I2C transfer fits the host thread's budget");
 
 inline uint32_t i2c_clamp_bus_clock(uint32_t hertz)
 {
     return hertz < I2C_CLOCK_MIN_HZ ? I2C_CLOCK_MIN_HZ : (hertz > I2C_CLOCK_MAX_HZ ? I2C_CLOCK_MAX_HZ : hertz);
 }
+
+// the bus clock argument of i2c:get_device, clamped
+uint32_t i2c_bus_clock_argument(lua_State *L, int arg);
 
 inline bool i2c_transfer_fits(size_t send_bytes, size_t receive_bytes)
 {
@@ -187,6 +193,7 @@ int lua_get_i2c_device(lua_State *L);
 int AP_HAL__I2CDevice_read_registers(lua_State *L);
 int AP_HAL__I2CDevice_transfer(lua_State *L);
 int lua_get_PWMSource(lua_State *L);
+int lua_m4_I2CDevice_set_retries(lua_State *L);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
 int lua_m4_Parameter_init_by_info(lua_State *L);
 int lua_m4_analog_channel(lua_State *L);

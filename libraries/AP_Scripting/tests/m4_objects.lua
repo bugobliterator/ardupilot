@@ -117,7 +117,24 @@ local function analog_channel()
   end
 end
 
-local stages = { parameters, limit, released, churn, serial_ports, analog_channel }
+local function i2c_limits()
+  -- a clock of 0 is accepted (the M7 clamps it; without the clamp ChibiOS divides by zero)
+  local device = i2c:get_device(0, 0x10, 0)
+  check(device ~= nil, "i2c clock 0")
+  if device == nil then
+    return
+  end
+  -- 200 sent + 100 received is over 256 bytes: refused (without the cap 21 attempts at 41+ ms each exceed the 900 ms bound)
+  local ok, err = pcall(device.transfer, device, string.rep("x", 200), 100)
+  check(not ok and has(err, "transfer longer than 256 bytes"), "transfer 300 bytes: " .. tostring(err))
+  -- the retry count is capped at 18 (without the cap 20 is accepted)
+  device:set_retries(18)
+  ok, err = pcall(device.set_retries, device, 19)
+  check(not ok, "set_retries(19): " .. tostring(err))
+  check(device:write_register(0, 0) ~= nil, "write_register through the bounded take")
+end
+
+local stages = { parameters, limit, released, churn, serial_ports, analog_channel, i2c_limits }
 local stage = 0
 
 local function update()

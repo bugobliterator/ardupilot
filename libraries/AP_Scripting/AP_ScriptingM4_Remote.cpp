@@ -169,6 +169,11 @@ const char *lua_tolstring(lua_State *L, int arg, size_t *length)
     return luaL_checklstring(L, arg, length);
 }
 
+uint32_t i2c_bus_clock_argument(lua_State *L, int arg)
+{
+    return i2c_clamp_bus_clock(coerce_to_uint32_t(L, arg));
+}
+
 int lua_toboolean(lua_State *L, int arg)
 {
     const RpcValue *value = arg_value(L, arg);
