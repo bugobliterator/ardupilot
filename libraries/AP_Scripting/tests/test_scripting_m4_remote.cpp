@@ -331,6 +331,46 @@ static int thing_dronecan_message(lua_State *L) {
     return 4;
 }
 
+// a DroneCAN payload as DroneCAN_Handle::Subscriber::Payload has it
+struct TestPayload {
+    uint8_t *data;
+    uint16_t length;
+    uint8_t node_id;
+    uint64_t timestamp;
+};
+static ObjectBuffer<TestPayload> *test_payloads;
+// check_message()'s results through the helper the port calls
+static int thing_check_message(lua_State *L) {
+    TestPayload payload;
+    return dronecan_push_payload(L, *test_payloads, payload) ? 3 : 0;
+}
+// a scripting CAN buffer's write_frame(), recording the timeout it was given
+struct TestFrameBuffer {
+    uint32_t timeout_us = 0;
+    bool write_frame(Pair &frame, uint32_t timeout)
+    {
+        (void)frame;
+        timeout_us = timeout;
+        return true;
+    }
+};
+static TestFrameBuffer test_frame_buffer;
+static int thing_write_frame(lua_State *L) {
+    Pair frame;
+    return CAN_write_frame(L, test_frame_buffer, frame, 1);
+}
+// broadcast()'s and request()'s quota charge for their payload
+static int thing_can_charge(lua_State *L) {
+    size_t length;
+    luaL_checklstring(L, 1, &length);
+    lua_pushboolean(L, can_transfer_allowed(L, length));
+    return 1;
+}
+static int thing_target_node(lua_State *L) {
+    lua_pushinteger(L, dronecan_target_node(L, 1));
+    return 1;
+}
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -1016,16 +1056,14 @@ TEST(ScriptingM4Remote, DroneCANPayloadFitsOneReply)
     EXPECT_EQ(c.text(0), "M4: results too large");
 }
 
-struct TestPayload {
-    uint8_t *data;
-    uint16_t length;
-};
-
 static TestPayload test_payload(uint16_t length)
 {
-    TestPayload payload;
+    TestPayload payload {};
     payload.data = static_cast<uint8_t *>(malloc(length));
+    memset(payload.data, 'd', length);
     payload.length = length;
+    payload.node_id = 42;
+    payload.timestamp = 5000000000ULL;
     return payload;
 }
 
@@ -1093,6 +1131,179 @@ TEST(ScriptingM4Remote, ReusedCANBufferStartsEmpty)
     EXPECT_FALSE(CANBufferAccess::reuse(can_buffer, 5));
     EXPECT_EQ(can_buffer.num_filters, 1);
     EXPECT_EQ(can_buffer.buffer.available(), 1U);
+}
+
+// check_message()'s port through dronecan_push_payload(): without the drop an oversized payload
+// stays queued and every later call fails "M4: results too large"; the next payload then crosses
+TEST(ScriptingM4Remote, CheckMessageDropsAnOversizedPayload)
+{
+    ObjectBuffer<TestPayload> payloads(8);
+    test_payloads = &payloads;
+    ASSERT_TRUE(payloads.push(test_payload(DRONECAN_PAYLOAD_MAX + 1)));
+    ASSERT_TRUE(payloads.push(test_payload(7)));
+    Call c;
+    c.call.uint64_type = 4;
+    c.reply_start = sizeof(ReplyHeader);
+    c.args.nil();
+    ASSERT_EQ(c.run(thing_check_message), ReplyStatus::Ok);
+    EXPECT_EQ(c.count, 0);                                    // nil
+    c.args.nil();
+    ASSERT_EQ(c.run(thing_check_message), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 3);
+    EXPECT_EQ(c.text(0), "ddddddd");
+    EXPECT_EQ(c.values[1].integer, 42);
+    EXPECT_EQ(payloads.available(), 0U);                      // popped once copied
+    c.args.nil();
+    ASSERT_EQ(c.run(thing_check_message), ReplyStatus::Ok);
+    EXPECT_EQ(c.count, 0);
+    test_payloads = nullptr;
+}
+
+// write_frame()'s port through CAN_write_frame(): without the clamp the buffer gets 4000 s
+TEST(ScriptingM4Remote, WriteFrameGetsTheClampedTimeout)
+{
+    Call c;
+    const uint32_t large = 4000000000U;
+    c.args.blob(UINT32, &large, sizeof(large));
+    ASSERT_EQ(c.run(thing_write_frame), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(test_frame_buffer.timeout_us, CAN_WRITE_TIMEOUT_MAX_US);
+}
+
+// CAN:get_device*()'s buffer through take_CAN_buffer(): without the reset the next session's
+// script gets the old session's frames and filters; without the cap a 9th buffer is made
+TEST(ScriptingM4Remote, TakeCANBufferResetsEarlierSessionsBuffers)
+{
+    static TestCANBuffer buffers[CAN_BUFFERS_PER_SESSION + 1];
+    int made = 0;
+    auto make = [&made]() { return &buffers[made++]; };
+    SessionRecycler<TestCANBuffer, CAN_BUFFERS_PER_SESSION> recycler;
+    TestCANBuffer *first = take_CAN_buffer(recycler, make, 3);
+    ASSERT_EQ(first, &buffers[0]);
+    for (uint8_t i = 1; i < CAN_BUFFERS_PER_SESSION; i++) {
+        ASSERT_NE(take_CAN_buffer(recycler, make, 3), nullptr);
+    }
+    EXPECT_EQ(take_CAN_buffer(recycler, make, 3), nullptr);
+    EXPECT_EQ(made, CAN_BUFFERS_PER_SESSION);
+    ASSERT_TRUE(first->buffer.push(1));
+    first->num_filters = 2;
+    recycler.new_session();
+    EXPECT_EQ(take_CAN_buffer(recycler, make, 4), first);
+    EXPECT_EQ(first->buffer.available(), 0U);
+    EXPECT_EQ(first->num_filters, 0);
+    EXPECT_EQ(first->buffer.get_size(), 4U);
+    EXPECT_EQ(made, CAN_BUFFERS_PER_SESSION);
+}
+
+// broadcast()/request() charge their frames: without the weighting a 1000-byte broadcast costs
+// one unit and 800 of them pass in a second, about 115,000 frames
+TEST(ScriptingM4Remote, DroneCANTransfersChargeTheirFrames)
+{
+    EXPECT_EQ(dronecan_transfer_frames(0), 1);
+    EXPECT_EQ(dronecan_transfer_frames(7), 1);
+    EXPECT_EQ(dronecan_transfer_frames(8), 2);
+    EXPECT_EQ(dronecan_transfer_frames(12), 2);
+    EXPECT_EQ(dronecan_transfer_frames(13), 3);
+    EXPECT_EQ(dronecan_transfer_frames(1000), 144);
+    Quota quota;
+    quota.reset(0);
+    Call c;
+    c.call.quota = &quota;
+    c.call.now_ms = 0;
+    static char payload[1000];
+    memset(payload, 'x', sizeof(payload));
+    for (int i = 0; i < 5; i++) {
+        c.args.string(payload, sizeof(payload));
+        ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+        EXPECT_EQ(c.values[0].tag, ValueTag::True) << i;      // 720 frames
+    }
+    c.args.string(payload, sizeof(payload));
+    ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);              // 80 left
+    c.args.string(payload, 7);
+    ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(quota.take_hits(), 1U);
+}
+
+struct TestTransfer {
+    uint64_t data_type_signature;
+    uint16_t data_type_id;
+    uint8_t *inout_transfer_id;
+    uint8_t priority;
+    const void *payload;
+    uint16_t payload_len;
+    uint32_t timeout_ms;
+};
+struct TestHandle {
+    uint64_t signature;
+    uint16_t data_type;
+    uint8_t transfer_id;
+};
+
+// without the priority an M4 transfer goes at CANARD_TRANSFER_PRIORITY_HIGHEST (0), above ESC commands
+TEST(ScriptingM4Remote, DroneCANTransfersAreMediumPriority)
+{
+    TestTransfer transfer {};
+    TestHandle handle { 0x0F0868D0C1A7C6F1ULL, 341, 3 };
+    const char data[] = "abc";
+    dronecan_fill_transfer(transfer, handle, data, 3);
+    EXPECT_EQ(transfer.priority, 16);    // CANARD_TRANSFER_PRIORITY_MEDIUM
+    EXPECT_EQ(transfer.data_type_signature, handle.signature);
+    EXPECT_EQ(transfer.data_type_id, 341);
+    EXPECT_EQ(transfer.inout_transfer_id, &handle.transfer_id);
+    EXPECT_EQ(transfer.payload, data);
+    EXPECT_EQ(transfer.payload_len, 3);
+    EXPECT_EQ(transfer.timeout_ms, 10U);
+}
+
+struct TestSubscriber {
+    static int destroyed;
+    ~TestSubscriber() { destroyed++; }
+};
+int TestSubscriber::destroyed = 0;
+
+// without the cap a script's 64 handles each hold a subscriber and up to 8 payloads of M7 heap
+TEST(ScriptingM4Remote, DroneCANSubscribersAreCapped)
+{
+    DroneCANSubscribers subscribers;
+    TestSubscriber *slots[DRONECAN_SUBSCRIBERS_PER_SESSION + 1] {};
+    int made = 0;
+    auto make = [&made]() { made++; return new TestSubscriber; };
+    for (uint8_t i = 0; i < DRONECAN_SUBSCRIBERS_PER_SESSION; i++) {
+        EXPECT_TRUE(subscribers.replace(slots[i], make)) << int(i);
+    }
+    EXPECT_FALSE(subscribers.replace(slots[DRONECAN_SUBSCRIBERS_PER_SESSION], make));
+    EXPECT_EQ(slots[DRONECAN_SUBSCRIBERS_PER_SESSION], nullptr);
+    EXPECT_EQ(made, DRONECAN_SUBSCRIBERS_PER_SESSION);
+    // a handle that subscribes again replaces its own subscriber, within the cap
+    TestSubscriber::destroyed = 0;
+    EXPECT_TRUE(subscribers.replace(slots[0], make));
+    EXPECT_EQ(TestSubscriber::destroyed, 1);
+    // a released handle frees its place
+    subscribers.drop(slots[1]);
+    EXPECT_EQ(slots[1], nullptr);
+    EXPECT_EQ(subscribers.live(), DRONECAN_SUBSCRIBERS_PER_SESSION - 1);
+    EXPECT_TRUE(subscribers.replace(slots[DRONECAN_SUBSCRIBERS_PER_SESSION], make));
+    for (TestSubscriber *&slot : slots) {
+        subscribers.drop(slot);
+    }
+    EXPECT_EQ(subscribers.live(), 0);
+}
+
+// request()'s node: without the check 300.0 becomes another node on x86 and NaN is undefined
+TEST(ScriptingM4Remote, DroneCANTargetNode)
+{
+    Call c;
+    c.args.integer(127);
+    ASSERT_EQ(c.run(thing_target_node), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 127);
+    c.args.integer(128);
+    EXPECT_EQ(c.run(thing_target_node), ReplyStatus::ArgError);
+    c.args.integer(-1);
+    EXPECT_EQ(c.run(thing_target_node), ReplyStatus::ArgError);
+    c.args.number(5.5f);
+    EXPECT_EQ(c.run(thing_target_node), ReplyStatus::ArgError);
 }
 
 AP_GTEST_MAIN()

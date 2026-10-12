@@ -20,7 +20,7 @@ enum class QuotaClass : uint8_t {
     Led = 3,       // serialLED:send
     FileLog = 4,   // logger:log_file_content: each call queues an M7 heap allocation
     FileIo = 5,    // m4:fs_open for writing, m4:fs_write, m4:fs_remove: SD card writes
-    Can = 6,       // CAN write_frame, DroneCAN broadcast and request: the bus flight traffic uses
+    Can = 6,       // CAN frames of write_frame, DroneCAN broadcast and request: the bus flight traffic uses
 };
 static const uint8_t QUOTA_CLASSES = 7;
 
@@ -35,7 +35,7 @@ static const QuotaLimit QUOTA_LIMITS[QUOTA_CLASSES] = {
     { 100, 100 },    // Led
     { 1, 5 },        // FileLog: the logger drains its file queue at most about 10 files/s
     { 50, 100 },     // FileIo: at most about 25 KB/s of SD writes at FILE_CHUNK per write
-    { 100, 100 },    // Can
+    { 800, 800 },    // Can: frames, about 10 % of a 1 Mbit/s bus
 };
 
 class Quota {
@@ -50,8 +50,9 @@ public:
         }
     }
 
-    // true if a call of this class may run now (and takes it from the bucket)
-    bool allow(QuotaClass quota, uint32_t now_ms)
+    // true if a call of this class costing cost units (calls; CAN frames) may run now, and
+    // takes them from the bucket
+    bool allow(QuotaClass quota, uint32_t now_ms, uint16_t cost = 1)
     {
         const uint8_t index = uint8_t(quota);
         if (quota == QuotaClass::None || index >= QUOTA_CLASSES) {
@@ -64,11 +65,12 @@ public:
         const uint32_t cap = uint32_t(limit.burst) * 1000;
         bucket.millicalls = refilled > cap ? cap : uint32_t(refilled);
         bucket.last_ms = now_ms;
-        if (bucket.millicalls < 1000) {
+        const uint32_t needed = uint32_t(cost) * 1000;
+        if (bucket.millicalls < needed) {
             _hits++;
             return false;
         }
-        bucket.millicalls -= 1000;
+        bucket.millicalls -= needed;
         return true;
     }
 

@@ -159,14 +159,13 @@ class GenBindingsRemote(unittest.TestCase):
             'AP_SerialLED_send': 3,
             'AP_Logger_log_file_content': 4,
             'lua_m4_ScriptingCANBuffer_write_frame': 6,
-            'DroneCAN_Handle__broadcast': 6,
-            'DroneCAN_Handle__request': 6,
         })
         self.assertIn('static_assert(6 < ScriptingM4::QUOTA_CLASSES', dispatch)
-        # CAN transmits return false over their quota, the manual ones as the generated one
-        for function in ('lua_m4_ScriptingCANBuffer_write_frame', 'DroneCAN_Handle__broadcast',
-                         'DroneCAN_Handle__request'):
-            self.assertEqual(flags[functions.index(function)], '0x62', function)
+        # write_frame returns false over its quota; DroneCAN broadcast and request charge their
+        # frames in their ports, so the dispatch charges them nothing more
+        self.assertEqual(flags[functions.index('lua_m4_ScriptingCANBuffer_write_frame')], '0x62')
+        for function in ('DroneCAN_Handle__broadcast', 'DroneCAN_Handle__request'):
+            self.assertEqual(flags[functions.index(function)], '0x00', function)
 
     def test_changed_row_changes_the_hash(self):
         _, _, before = self.generate('hash_before', [])
@@ -400,22 +399,9 @@ class GenBindingsRemote(unittest.TestCase):
         # write_frame runs the port that clamps its timeout; the generated body is not in the dispatch
         self.assertIn('    lua_m4_ScriptingCANBuffer_write_frame,\n', dispatch)
         self.assertNotIn('static int ScriptingCANBuffer_write_frame(', dispatch)
-
-    def test_quota_on_a_manual_function_returns_a_boolean(self):
-        # over its quota a call gets false: a manual function under a quota must return one value
-        description = self.description.replace('userdata DroneCAN_Handle manual broadcast DroneCAN_Handle::broadcast 1 1',
-                                               'userdata DroneCAN_Handle manual broadcast DroneCAN_Handle::broadcast 1 2')
-        self.assertNotEqual(description, self.description)
-        work = os.path.join(self.tmp, 'manual_quota')
-        os.makedirs(work)
-        desc = os.path.join(work, 'bindings.desc')
-        with open(desc, 'w') as f:
-            f.write(description)
-        result = subprocess.run([self.generator, '-o', os.path.join(work, 'gen'), '-r', os.path.join(work, 'remote'),
-                                 '-i', desc], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('remote: a quota on DroneCAN_Handle:broadcast needs one boolean result',
-                      result.stdout + result.stderr)
+        # subscribe runs the port that caps the session's subscribers
+        self.assertIn('    lua_m4_DroneCAN_Handle_subscribe,\n', dispatch)
+        self.assertNotIn('static int DroneCAN_Handle_subscribe(', dispatch)
 
 
 if __name__ == '__main__':

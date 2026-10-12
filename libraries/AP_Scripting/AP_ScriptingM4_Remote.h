@@ -24,6 +24,7 @@
 #include "AP_ScriptingM4_Rpc.h"
 #include "AP_ScriptingM4_Handles.h"
 #include "AP_ScriptingM4_Objects.h"
+#include "AP_ScriptingM4_Quota.h"
 #include "AP_ScriptingM4_Wire.h"
 
 namespace ScriptingM4Remote {
@@ -95,40 +96,6 @@ uint32_t can_write_timeout_argument(lua_State *L, int arg);
 static const uint8_t CAN_BUFFERS_PER_SESSION = 8;
 static const uint32_t CAN_BUFFER_WAIT_MS = 30;
 
-// the members of ScriptingCANBuffer a buffer handed out again resets (a friend of the class)
-struct CANBufferAccess {
-    // empty, unfiltered and of the depth the new script asked for; false if the CAN thread held
-    // the buffer past the wait or the new depth could not be allocated (it then holds no frame)
-    template <typename Buffer> static bool reuse(Buffer &buffer, uint32_t depth)
-    {
-        if (!buffer.sem.take(CAN_BUFFER_WAIT_MS)) {
-            return false;
-        }
-        buffer.num_filters = 0;
-        const bool resized = buffer.buffer.set_size(depth);
-        buffer.sem.give();
-        return resized;
-    }
-};
-
-// DroneCAN_Handle:check_message()'s results are the payload, the node id (integer, 5 bytes), the
-// uint64_t timestamp (blob, 12 bytes) and canfd (1 byte): a longer payload cannot cross in one reply
-static const uint16_t DRONECAN_PAYLOAD_MAX = ScriptingM4::MAX_STRING - (5 + 12 + 1);
-// the next payload of a subscriber's queue, peeked: the caller pops it once copied. One that
-// cannot cross is popped and freed, and false returned, so it never blocks the queue
-template <typename Payloads, typename Payload> bool dronecan_peek_payload(Payloads &payloads, Payload &payload)
-{
-    if (!payloads.peek(payload)) {
-        return false;
-    }
-    if (payload.length > DRONECAN_PAYLOAD_MAX) {
-        payloads.pop();
-        free(payload.data);
-        return false;
-    }
-    return true;
-}
-
 // method flags (gen-bindings -r); the high nibble is the ScriptingM4::QuotaClass
 static const uint8_t METHOD_WRITES_SELF = 0x01;   // the reply ends with the updated self blob
 static const uint8_t METHOD_QUOTA_FALSE = 0x02;   // over its quota the call returns false, else it is dropped
@@ -139,6 +106,7 @@ struct RemoteCall {
     ScriptingM4::ObjectPool *objects;    // the owned objects (Owned results)
     void (*warn)(void *context, uint8_t severity, const char *text);   // set_and_print_new_error_message()
     void *warn_context;
+    ScriptingM4::Quota *quota;           // the quotas a port charges itself (CAN frames)
     // set by dispatch()
     const BlobCodec *codecs;
     uint8_t codec_count;
@@ -146,6 +114,7 @@ struct RemoteCall {
     uint8_t uint64_type;
 
     // per call (run())
+    uint32_t now_ms;                   // set by the server before dispatch()
     const ScriptingM4::RpcValue *args;
     uint8_t argc;
     struct Result {
@@ -249,6 +218,7 @@ int DroneCAN_Handle__new_handle(lua_State *L);
 int DroneCAN_Handle__broadcast(lua_State *L);
 int DroneCAN_Handle__request(lua_State *L);
 int DroneCAN_Handle__check_message(lua_State *L);
+int lua_m4_DroneCAN_Handle_subscribe(lua_State *L);
 // an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
 void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
@@ -258,6 +228,143 @@ int lua_m4_analog_channel(lua_State *L);
 void analog_new_session();
 // the CAN buffers earlier sessions were handed may be handed out again (AP_ScriptingM4_Server::reset())
 void can_new_session();
+
+// the members of ScriptingCANBuffer a buffer handed out again resets (a friend of the class)
+struct CANBufferAccess {
+    // empty, unfiltered and of the depth the new script asked for; false if the CAN thread held
+    // the buffer past the wait or the new depth could not be allocated (it then holds no frame).
+    // A frame the CAN thread accepted under the old filters just before the reset can still be
+    // pushed after it: the new session accepts every frame, so it is a new frame, not an old one
+    template <typename Buffer> static bool reuse(Buffer &buffer, uint32_t depth)
+    {
+        if (!buffer.sem.take(CAN_BUFFER_WAIT_MS)) {
+            return false;
+        }
+        buffer.num_filters = 0;
+        const bool resized = buffer.buffer.set_size(depth);
+        buffer.sem.give();
+        return resized;
+    }
+};
+
+// CAN:get_device*()'s buffer: one an earlier session was handed, else make()'s, reset for this
+// session; nullptr past CAN_BUFFERS_PER_SESSION (before make()) or when the reset fails. A
+// failed reset still spends the session's slot; the buffer is handed out again next session
+template <typename Buffer, typename Make>
+Buffer *take_CAN_buffer(ScriptingM4::SessionRecycler<Buffer, CAN_BUFFERS_PER_SESSION> &buffers, Make make,
+                        uint32_t depth)
+{
+    Buffer *buffer = buffers.take_at_most(make);
+    if (buffer == nullptr || !CANBufferAccess::reuse(*buffer, depth)) {
+        return nullptr;
+    }
+    return buffer;
+}
+
+// buffer:write_frame(frame, timeout_us)'s call, the timeout clamped. Back-to-back calls on a bus
+// that takes no frame keep the host thread busy up to 900 ms each (Bench Validation)
+template <typename Buffer, typename Frame> int CAN_write_frame(lua_State *L, Buffer &buffer, Frame &frame, int timeout_arg)
+{
+    lua_pushboolean(L, buffer.write_frame(frame, can_write_timeout_argument(L, timeout_arg)));
+    return 1;
+}
+
+// DroneCAN_Handle:check_message()'s results are the payload, the node id (integer, 5 bytes), the
+// uint64_t timestamp (blob, 12 bytes) and canfd (1 byte): a longer payload cannot cross in one reply
+static const uint16_t DRONECAN_PAYLOAD_MAX = ScriptingM4::MAX_STRING - (5 + 12 + 1);
+// the next payload of a subscriber's queue, peeked: the caller pops it once copied. One that
+// cannot cross is popped and freed, and false returned, so it never blocks the queue
+template <typename Payloads, typename Payload> bool dronecan_peek_payload(Payloads &payloads, Payload &payload)
+{
+    if (!payloads.peek(payload)) {
+        return false;
+    }
+    if (payload.length > DRONECAN_PAYLOAD_MAX) {
+        payloads.pop();
+        free(payload.data);
+        return false;
+    }
+    return true;
+}
+
+// check_message()'s payload, node id and timestamp pushed and the payload popped and freed, as
+// in-process (peek first: a payload stays queued if a push faults); false for none (nil)
+template <typename Payloads, typename Payload> bool dronecan_push_payload(lua_State *L, Payloads &payloads, Payload &payload)
+{
+    if (!dronecan_peek_payload(payloads, payload)) {
+        return false;
+    }
+    lua_pushlstring(L, reinterpret_cast<const char *>(payload.data), payload.length);
+    payloads.pop();
+    free(payload.data);
+    lua_pushinteger(L, payload.node_id);
+    *new_uint64_t(L) = payload.timestamp;
+    return true;
+}
+
+// the CAN frames of a DroneCAN transfer of length payload bytes: one for a single-frame transfer,
+// else 7 bytes per frame after the 2-byte transfer CRC. The Can quota counts frames, as a long
+// payload is up to 145 frames on the bus
+inline uint16_t dronecan_transfer_frames(size_t length)
+{
+    return length <= 7 ? 1 : uint16_t((length + 2 + 6) / 7);
+}
+// broadcast()/request(): takes the transfer's frames from the Can quota; false over it
+bool can_transfer_allowed(lua_State *L, size_t length);
+// request()'s node: an integer 0..127, else an argument error (in-process a float conversion)
+uint8_t dronecan_target_node(lua_State *L, int arg);
+
+// the priority of every M4 DroneCAN transfer: CANARD_TRANSFER_PRIORITY_MEDIUM, below ESC and
+// actuator traffic (recorded deviation: in-process sends at CANARD_TRANSFER_PRIORITY_HIGHEST)
+static const uint8_t DRONECAN_M4_TRANSFER_PRIORITY = 16;
+// the fields of a broadcast's or request's Canard::Transfer that come from the handle and payload
+template <typename Transfer, typename Handle>
+void dronecan_fill_transfer(Transfer &transfer, Handle &handle, const void *data, size_t length)
+{
+    transfer.data_type_signature = handle.signature;
+    transfer.data_type_id = handle.data_type;
+    transfer.inout_transfer_id = &handle.transfer_id;
+    transfer.priority = DRONECAN_M4_TRANSFER_PRIORITY;
+    transfer.payload = data;
+    transfer.payload_len = length;
+    transfer.timeout_ms = 10;
+}
+
+// M4 DroneCAN subscribers live at once: each holds up to 8 payloads of M7 heap and runs on the
+// DroneCAN thread for every matching transfer (recorded deviation: in-process has no cap)
+static const uint8_t DRONECAN_SUBSCRIBERS_PER_SESSION = 8;
+// the live subscribers of this session's handles; the caller holds the canard rx semaphore
+class DroneCANSubscribers {
+public:
+    // slot's subscriber, if any, replaced by make()'s; false (no subscriber) past the cap
+    template <typename Subscriber, typename Make> bool replace(Subscriber *&slot, Make make)
+    {
+        drop(slot);
+        if (_live >= DRONECAN_SUBSCRIBERS_PER_SESSION) {
+            return false;
+        }
+        slot = make();
+        if (slot == nullptr) {
+            return false;
+        }
+        _live++;
+        return true;
+    }
+    template <typename Subscriber> void drop(Subscriber *&slot)
+    {
+        if (slot != nullptr) {
+            delete slot;
+            slot = nullptr;
+            _live--;
+        }
+    }
+    // the release of every handle ran at the session end; a new session starts from none
+    void new_session() { _live = 0; }
+    uint8_t live() const { return _live; }
+
+private:
+    uint8_t _live = 0;
+};
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)
 bool method_available(uint16_t method);

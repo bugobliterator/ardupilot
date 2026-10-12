@@ -3089,6 +3089,7 @@ static const struct remote_replacement remote_replaced_methods[] = {
   { "hal.analogin", "channel", "lua_m4_analog_channel" },   // a new HAL slot per M4 session
   { "AP_HAL::I2CDevice", "set_retries", "lua_m4_I2CDevice_set_retries" },   // retries bound the host thread's wait
   { "ScriptingCANBuffer", "write_frame", "lua_m4_ScriptingCANBuffer_write_frame" },   // the timeout bounds it too
+  { "DroneCAN_Handle", "subscribe", "lua_m4_DroneCAN_Handle_subscribe" },   // M7 heap per subscriber: capped
   { NULL, NULL, NULL } };
 static int remote_replacement_matched[sizeof(remote_replaced_methods) / sizeof(remote_replaced_methods[0])];
 
@@ -3165,11 +3166,9 @@ static const struct remote_quota_entry remote_quotas[] = {
   { "AP_Mission", "clear", QUOTA_STORAGE },
   { "AP_SerialLED", "send", QUOTA_LED },
   { "AP_Logger", "log_file_content", QUOTA_FILE_LOG },
-  // the CAN bus is shared with flight traffic; manual functions (broadcast, request) match by
-  // their Lua name, and over the quota return false: they return one boolean
+  // the CAN bus is shared with flight traffic: one frame per call. DroneCAN broadcast and request
+  // charge their frames in their ports (can_transfer_allowed())
   { "ScriptingCANBuffer", "write_frame", QUOTA_CAN },
-  { "DroneCAN_Handle", "broadcast", QUOTA_CAN },
-  { "DroneCAN_Handle", "request", QUOTA_CAN },
   { NULL, NULL, QUOTA_NONE } };
 static int remote_quota_matched[sizeof(remote_quotas) / sizeof(remote_quotas[0])];
 
@@ -3537,25 +3536,6 @@ static int remote_quota_flags(const struct userdata *node, const struct method *
   return 0;
 }
 
-// the quota of a ported manual function: over it the call returns false, its failure value
-static int remote_manual_quota_flags(const struct userdata *node, const struct method_alias *alias) {
-  if (node->name == NULL) {
-    return 0;   // the global functions: no quota names them
-  }
-  for (int i = 0; remote_quotas[i].type != NULL; i++) {
-    const struct remote_quota_entry *quota = &remote_quotas[i];
-    if ((strcmp(quota->type, node->name) != 0) || (strcmp(quota->method, alias->alias) != 0)) {
-      continue;
-    }
-    remote_quota_matched[i] = TRUE;
-    if (alias->num_ret != 1) {
-      error(ERROR_GENERAL, "remote: a quota on %s:%s needs one boolean result", node->name, alias->alias);
-    }
-    return (quota->quota << 4) | METHOD_QUOTA_FALSE;
-  }
-  return 0;
-}
-
 static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
   if (remote_type_count >= REMOTE_MAX_TYPES) {
     error(ERROR_INTERNAL, "remote: too many types");
@@ -3625,8 +3605,7 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         }
       } else if ((alias->type == ALIAS_TYPE_MANUAL) && remote_in_list(remote_ready_manual, alias->name)) {
         const int row = remote_add_row(alias->alias, id, remote_manual_flags(kind, alias), type_id);
-        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency,
-                          remote_manual_quota_flags(node, alias), row);
+        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency, 0, row);
       }
     }
     for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {

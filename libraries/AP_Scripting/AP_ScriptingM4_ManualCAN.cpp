@@ -34,10 +34,12 @@ static ScriptingM4::SessionRecycler<ScriptingCANBuffer, CAN_BUFFERS_PER_SESSION>
 // buffers without bound)
 static int push_CAN_buffer(lua_State *L, ScriptingCANSensor &sensor, uint8_t sensor_index, uint32_t buffer_len)
 {
-    ScriptingCANBuffer *buffer = can_buffers[sensor_index].take_at_most([&sensor, buffer_len]() {
+    // add_buffer() takes the sensor's semaphore blocking, as in-process: the CAN thread holds it
+    // per frame, walking at most CAN_BUFFERS_PER_SESSION of this sensor's buffers
+    ScriptingCANBuffer *buffer = take_CAN_buffer(can_buffers[sensor_index], [&sensor, buffer_len]() {
         return sensor.add_buffer(buffer_len);
-    });
-    if (buffer == nullptr || !CANBufferAccess::reuse(*buffer, buffer_len)) {
+    }, buffer_len);
+    if (buffer == nullptr) {
         return 0;
     }
     // a handle refused after the buffer was taken takes another when the M4 retries; at most
@@ -105,24 +107,21 @@ int lua_m4_ScriptingCANBuffer_write_frame(lua_State *L)
     binding_argcheck(L, 3);
     ScriptingCANBuffer *ud = *check_ScriptingCANBuffer(L, 1);
     AP_HAL::CANFrame &frame = *check_AP_HAL__CANFrame(L, 2);
-    const uint32_t timeout_us = can_write_timeout_argument(L, 3);
-    lua_pushboolean(L, ud->write_frame(frame, timeout_us));
-    return 1;
+    return CAN_write_frame(L, *ud, frame, 3);
 }
 #endif  // AP_SCRIPTING_CAN_SENSOR_ENABLED
-
-void can_new_session()
-{
-#if AP_SCRIPTING_CAN_SENSOR_ENABLED
-    for (auto &buffers : can_buffers) {
-        buffers.new_session();
-    }
-#endif
-}
 
 #if HAL_ENABLE_DRONECAN_DRIVERS
 
 #define IFACE_ALL uint8_t(((1U<<(HAL_NUM_CAN_IFACES))-1U))
+
+static_assert(DRONECAN_M4_TRANSFER_PRIORITY == CANARD_TRANSFER_PRIORITY_MEDIUM, "M4 transfers are medium priority");
+
+// the subscribers of this session's handles (subscribe, request), at most DRONECAN_SUBSCRIBERS_PER_SESSION.
+// Their changes take the canard rx semaphore blocking, as in-process: the DroneCAN thread holds it
+// per received frame and per stale-transfer cleanup, and release() must not give up, as the
+// subscriber would stay linked to a freed pool slot
+static DroneCANSubscribers dronecan_subscribers;
 
 // generated (lua_remote_dispatch.cpp)
 DroneCAN_Handle *check_DroneCAN_Handle(lua_State *L, int arg);
@@ -134,6 +133,7 @@ struct DroneCANAccess {
     static int broadcast(lua_State *L);
     static int request(lua_State *L);
     static int check_message(lua_State *L);
+    static int subscribe(lua_State *L);
     static void release(void *object);
 };
 
@@ -183,21 +183,21 @@ int DroneCANAccess::broadcast(lua_State *L)
     size_t data_length;
     const void *data = luaL_checklstring(L, 2, &data_length);
 
+    // the Can quota counts the transfer's frames; over it false, as a full TX queue gives
+    if (!can_transfer_allowed(L, data_length)) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+
     auto &iface = h->dc->get_canard_iface();
     Canard::Transfer transfer;
 
     transfer.transfer_type = CanardTransferTypeBroadcast;
-    transfer.data_type_signature = h->signature;
-    transfer.data_type_id = h->data_type;
-    transfer.inout_transfer_id = &h->transfer_id;
-    transfer.priority = 0;
-    transfer.payload = data;
-    transfer.payload_len = data_length;
+    dronecan_fill_transfer(transfer, *h, data, data_length);
     transfer.iface_mask = IFACE_ALL;
 #if CANARD_ENABLE_CANFD
     transfer.canfd = h->canfd;
 #endif
-    transfer.timeout_ms = 10;
 
     bool ok = iface.broadcast(transfer);
     lua_pushboolean(L, ok);
@@ -211,36 +211,32 @@ int DroneCANAccess::request(lua_State *L)
     binding_argcheck(L, 3);
 
     DroneCAN_Handle *h = check_DroneCAN_Handle(L, 1);
-    uint8_t target_node = luaL_checknumber(L, 2);
+    const uint8_t target_node = dronecan_target_node(L, 2);
 
     size_t data_length;
     const void *data = luaL_checklstring(L, 3, &data_length);
+
+    if (!can_transfer_allowed(L, data_length)) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
 
     auto &iface = h->dc->get_canard_iface();
 
     Canard::Transfer transfer;
 
     transfer.transfer_type = CanardTransferTypeRequest;
-    transfer.data_type_signature = h->signature;
-    transfer.data_type_id = h->data_type;
-    transfer.inout_transfer_id = &h->transfer_id;
-    transfer.priority = 0;
-    transfer.payload = data;
-    transfer.payload_len = data_length;
+    dronecan_fill_transfer(transfer, *h, data, data_length);
     transfer.iface_mask = IFACE_ALL;
 #if CANARD_ENABLE_CANFD
     transfer.canfd = h->canfd;
 #endif
-    transfer.timeout_ms = 10;
 
     WITH_SEMAPHORE(iface.get_sem_rx());
 
-    if (h->subscriber != nullptr) {
-        delete h->subscriber;
-    }
-
-    h->subscriber = NEW_NOTHROW DroneCAN_Handle::Subscriber(*h, CanardTransferTypeResponse);
-    bool ok = h->subscriber != nullptr;
+    bool ok = dronecan_subscribers.replace(h->subscriber, [h]() {
+        return NEW_NOTHROW DroneCAN_Handle::Subscriber(*h, CanardTransferTypeResponse);
+    });
 
     if (ok) {
         h->subscriber->node_id = target_node;
@@ -263,19 +259,11 @@ int DroneCANAccess::check_message(lua_State *L)
         return 0;
     }
     DroneCAN_Handle::Subscriber::Payload payload;
-    // peek first, as in-process; a payload longer than one reply carries is dropped, giving nil
-    // (recorded deviation: in-process it is returned)
-    if (!dronecan_peek_payload(s->payloads, payload)) {
+    // a payload longer than one reply carries is dropped, giving nil (recorded deviation:
+    // in-process it is returned)
+    if (!dronecan_push_payload(L, s->payloads, payload)) {
         return 0;
     }
-
-    lua_pushlstring(L, (char *)payload.data, payload.length);
-
-    s->payloads.pop();
-    free(payload.data);
-
-    lua_pushinteger(L, payload.node_id);
-    *new_uint64_t(L) = payload.timestamp;
 #if CANARD_ENABLE_CANFD
     lua_pushboolean(L, payload.canfd);
 #else
@@ -285,11 +273,22 @@ int DroneCANAccess::check_message(lua_State *L)
     if (s->trans_type == CanardTransferTypeResponse) {
         // request reply removes the subscriber
         WITH_SEMAPHORE(h->dc->get_canard_iface().get_sem_rx());
-        delete h->subscriber;
-        h->subscriber = nullptr;
+        dronecan_subscribers.drop(h->subscriber);
     }
 
     return 4;
+}
+
+// handle:subscribe(): DroneCAN_Handle::subscribe(), within the session's subscriber cap; false past it
+int DroneCANAccess::subscribe(lua_State *L)
+{
+    binding_argcheck(L, 1);
+    DroneCAN_Handle *h = check_DroneCAN_Handle(L, 1);
+    WITH_SEMAPHORE(h->dc->get_canard_iface().get_sem_rx());
+    lua_pushboolean(L, dronecan_subscribers.replace(h->subscriber, [h]() {
+        return NEW_NOTHROW DroneCAN_Handle::Subscriber(*h, CanardTransferTypeBroadcast);
+    }));
+    return 1;
 }
 
 // DroneCAN_Handle::__gc(): run when the M4 collects the handle (m4:release) or the session ends
@@ -300,8 +299,7 @@ void DroneCANAccess::release(void *object)
         return;
     }
     WITH_SEMAPHORE(h->dc->get_canard_iface().get_sem_rx());
-    delete h->subscriber;
-    h->subscriber = nullptr;
+    dronecan_subscribers.drop(h->subscriber);
 }
 
 int DroneCAN_Handle__new_handle(lua_State *L)
@@ -324,12 +322,29 @@ int DroneCAN_Handle__check_message(lua_State *L)
     return DroneCANAccess::check_message(L);
 }
 
+int lua_m4_DroneCAN_Handle_subscribe(lua_State *L)
+{
+    return DroneCANAccess::subscribe(L);
+}
+
 void DroneCAN_Handle__release(void *object)
 {
     DroneCANAccess::release(object);
 }
 
 #endif  // HAL_ENABLE_DRONECAN_DRIVERS
+
+void can_new_session()
+{
+#if AP_SCRIPTING_CAN_SENSOR_ENABLED
+    for (auto &buffers : can_buffers) {
+        buffers.new_session();
+    }
+#endif
+#if HAL_ENABLE_DRONECAN_DRIVERS
+    dronecan_subscribers.new_session();
+#endif
+}
 
 }  // namespace ScriptingM4Remote
 

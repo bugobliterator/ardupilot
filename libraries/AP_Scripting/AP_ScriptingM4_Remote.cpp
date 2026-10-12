@@ -180,6 +180,16 @@ uint32_t can_write_timeout_argument(lua_State *L, int arg)
     return timeout_us < CAN_WRITE_TIMEOUT_MAX_US ? timeout_us : CAN_WRITE_TIMEOUT_MAX_US;
 }
 
+bool can_transfer_allowed(lua_State *L, size_t length)
+{
+    return L->quota->allow(ScriptingM4::QuotaClass::Can, L->now_ms, dronecan_transfer_frames(length));
+}
+
+uint8_t dronecan_target_node(lua_State *L, int arg)
+{
+    return static_cast<uint8_t>(get_integer(L, arg, 0, 127));
+}
+
 int lua_toboolean(lua_State *L, int arg)
 {
     const RpcValue *value = arg_value(L, arg);

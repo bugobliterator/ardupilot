@@ -53,6 +53,7 @@ AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
     _call.objects = &_objects;
     _call.warn = remote_warning;
     _call.warn_context = this;
+    _call.quota = &_quota;
 }
 
 void AP_ScriptingM4_Server::reset(uint32_t session)
@@ -499,7 +500,8 @@ ReplyStatus AP_ScriptingM4_Server::binding_call(uint16_t method, const RpcValue 
                                                 RpcWriter &results, uint8_t &error_arg)
 {
     const uint8_t flags = ScriptingM4Remote::method_flags(method);
-    if (!_quota.allow(QuotaClass(flags >> 4), AP_HAL::millis())) {
+    _call.now_ms = AP_HAL::millis();
+    if (!_quota.allow(QuotaClass(flags >> 4), _call.now_ms)) {
         if ((flags & ScriptingM4Remote::METHOD_QUOTA_FALSE) != 0) {
             results.boolean(false);   // over its quota the call fails, as it can in-process
         }

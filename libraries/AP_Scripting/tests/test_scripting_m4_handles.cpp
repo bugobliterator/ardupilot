@@ -194,22 +194,23 @@ TEST(ScriptingM4Quota, FileLogFloodIsLimited)
 }
 
 // CAN transmits from the M4 (write_frame, DroneCAN broadcast and request) share the bus with flight
-// traffic: without the class a script's loop sends at the M4's call rate
-TEST(ScriptingM4Quota, CanTransmitsAreLimited)
+// traffic: the class counts frames. Without the cost a 145-frame broadcast takes one unit
+TEST(ScriptingM4Quota, CanFramesAreLimited)
 {
     Quota quota;
     quota.reset(0);
     const QuotaLimit &can = QUOTA_LIMITS[uint8_t(QuotaClass::Can)];
-    EXPECT_EQ(can.per_second, 100);
-    EXPECT_EQ(can.burst, 100);
-    uint16_t allowed = 0;
-    for (uint16_t i = 0; i < 300; i++) {
-        allowed += quota.allow(QuotaClass::Can, 0) ? 1 : 0;
+    EXPECT_EQ(can.per_second, 800);
+    EXPECT_EQ(can.burst, 800);
+    for (uint8_t i = 0; i < 5; i++) {
+        EXPECT_TRUE(quota.allow(QuotaClass::Can, 0, 145)) << int(i);   // 725 frames
     }
-    EXPECT_EQ(allowed, 100);
-    EXPECT_EQ(quota.take_hits(), 200U);
-    EXPECT_FALSE(quota.allow(QuotaClass::Can, 9));
-    EXPECT_TRUE(quota.allow(QuotaClass::Can, 10));    // one frame per 10 ms
+    EXPECT_FALSE(quota.allow(QuotaClass::Can, 0, 145));    // 75 left
+    EXPECT_EQ(quota.take_hits(), 1U);
+    EXPECT_TRUE(quota.allow(QuotaClass::Can, 0, 75));
+    EXPECT_FALSE(quota.allow(QuotaClass::Can, 0));
+    EXPECT_FALSE(quota.allow(QuotaClass::Can, 1, 2));      // 0.8 frames refilled
+    EXPECT_TRUE(quota.allow(QuotaClass::Can, 3, 2));       // 2.4 frames
 }
 
 TEST(ScriptingM4Quota, HitsSurviveReset)
