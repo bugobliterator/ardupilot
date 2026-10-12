@@ -109,6 +109,12 @@ extern "C"
 #define LWIP_COMPAT_SOCKETS        0
 #define LWIP_SO_RCVTIMEO           1
 #define LWIP_SO_RCVBUF             1
+#if defined(AP_SCRIPTING_M4_ENABLED) && AP_SCRIPTING_M4_ENABLED && CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+// SO_LINGER {1, 0}: the M4 session's sockets close with a reset at its end, so the scripting
+// thread never waits for a FIN segment (AP_ScriptingM4_ManualSocket.cpp). SITL scripting uses
+// native sockets
+#define LWIP_SO_LINGER             1
+#endif
 
 #define LWIP_TCPIP_CORE_LOCKING    1
 
