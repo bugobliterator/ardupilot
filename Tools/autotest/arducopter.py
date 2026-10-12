@@ -19608,6 +19608,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4TargetLocation,
             self.ScriptingPureDataReference,
             self.ScriptingM4PureData,
+            self.ScriptingM4Files,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22688,6 +22689,30 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+    def ScriptingM4Files(self):
+        '''io, require, dirlist and remove on the SITL M4, through the M7's file proxy'''
+        # Rover's require tests, unmodified, with the test modules
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_VM_I_COUNT": 1000000,
+            "SCR_HEAP_SIZE": 188416,   # the CubeOrangePlus-M4Lua default: the M4 heap less newlib's reserve
+        })
+        self.install_test_modules_context()
+        self.install_test_scripts_context(["scripting_test.lua", "scripting_require_test_2.lua"])
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
+                             check_context=True, timeout=30)
+        for text in ("Internal tests passed", "Require test 2 passed"):
+            self.wait_statustext(text, check_context=True, timeout=60)
+        for m in self.context_collection("STATUSTEXT"):
+            if m.text.startswith("Lua: ") or m.text.startswith("Failed"):
+                raise NotAchievedException("M4 require tests: '%s'" % m.text)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -24813,6 +24838,7 @@ return update, 1000
             "ScriptingM4TargetLocation": "Requires --enable-scripting-m4 SITL build",
             "ScriptingPureDataReference": "Reference for ScriptingM4PureData; run it on a plain SITL build first",
             "ScriptingM4PureData": "Requires --enable-scripting-m4 SITL build and ScriptingPureDataReference",
+            "ScriptingM4Files": "Requires --enable-scripting-m4 SITL build",
         }
 
 
