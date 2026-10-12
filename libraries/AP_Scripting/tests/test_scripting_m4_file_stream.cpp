@@ -264,4 +264,23 @@ TEST(ScriptingM4FileStream, ItemCountOverflowFails)
     EXPECT_TRUE(file.error());
 }
 
+TEST(ScriptingM4FileStream, IdAndPositionForAHandOver)
+{
+    MemoryBackend backend;
+    backend.content = pattern(600);
+    FileStream stream;
+    EXPECT_EQ(stream.id(), -1);
+    ASSERT_TRUE(stream.open(backend, "f", "r"));
+    EXPECT_EQ(stream.id(), 300);
+    char buf[4];
+    ASSERT_EQ(stream.read(backend, buf, 1, sizeof(buf)), sizeof(buf));
+    EXPECT_EQ(backend.position, size_t(FILE_READ_AHEAD));   // the read-ahead moved the M7's file on
+    // what file_proxy_id() does before sock:sendfile() hands the id over: without it the M7
+    // would send from byte 256, where in-process it sends from byte 4
+    stream.seek(backend, 0, SEEK_CUR);
+    EXPECT_EQ(backend.position, sizeof(buf));
+    EXPECT_EQ(stream.close(backend), 0);
+    EXPECT_EQ(stream.id(), -1);
+}
+
 AP_GTEST_MAIN()

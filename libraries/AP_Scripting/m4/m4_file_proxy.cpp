@@ -200,6 +200,16 @@ void ScriptingM4::open_file_functions(lua_State *L)
     lua_setfield(L, -2, "remove");
 }
 
+int32_t ScriptingM4::file_proxy_id(void *file)
+{
+    FileStream *stream = stream_of(static_cast<APFS_FILE *>(file));
+    if (stream == nullptr) {
+        return -1;
+    }
+    (void)stream->seek(backend, 0, SEEK_CUR);
+    return stream->id();
+}
+
 extern "C" {
 
 APFS_FILE *apfs_fopen(const char *pathname, const char *mode)

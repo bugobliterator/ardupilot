@@ -27,6 +27,7 @@ static_assert(FILE_READ_AHEAD <= FILE_CHUNK, "a read-ahead is one m4:fs_read");
 class FileStream {
 public:
     bool is_open() const { return _id >= 0; }
+    int32_t id() const { return _id; }   // the M7's file id, -1 when closed
     bool error() const { return _error; }
     bool eof() const { return _eof; }
     void clear_error() { _error = false; }

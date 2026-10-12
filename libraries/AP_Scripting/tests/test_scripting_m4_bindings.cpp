@@ -44,6 +44,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
         { "Parameter", BindingKind::Owned }, { "AP_Scripting_SerialAccess", BindingKind::Owned },
         { "AP_HAL::I2CDevice", BindingKind::Handle }, { "AP_HAL::PWMSource", BindingKind::Handle },
         { "ScriptingCANBuffer", BindingKind::Handle }, { "DroneCAN_Handle", BindingKind::Owned },
+        { "SocketAPM", BindingKind::Handle },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
         { "global", BindingKind::Global },
     };
@@ -56,7 +57,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
     EXPECT_EQ(type_named("uint64_t"), BINDING_TYPE_UINT64);
     // userdata carrying M7 pointers or state, and the manual-only ap_objects, wait for
     // IO and Manual Bindings (none of these is renamed: the C++ name is the Lua name)
-    for (const char *name : { "CRSFMenu", "CRSFParameter", "SocketAPM" }) {
+    for (const char *name : { "CRSFMenu", "CRSFParameter" }) {
         EXPECT_EQ(type_named(name), 0) << name;
     }
 }
@@ -162,6 +163,21 @@ TEST(ScriptingM4Bindings, KnownBindings)
     const BindingRow *can_device = row_named(type_named("CAN"), "get_device");
     ASSERT_NE(can_device, nullptr);
     EXPECT_EQ(can_device->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
+
+    EXPECT_NE(row_named(global, "Socket"), nullptr);
+    const uint8_t socket = type_named("SocketAPM");
+    const BindingRow *sendfile = row_named(socket, "sendfile");
+    ASSERT_NE(sendfile, nullptr);
+    EXPECT_EQ(sendfile->flags, ROW_M4_WRAPPER);         // the M4 sends the file's id
+    // the M4 waits for the calls a blocking socket would wait in; the M7 never blocks
+    for (const char *name : { "connect", "send", "sendto", "set_blocking" }) {
+        const BindingRow *row = row_named(socket, name);
+        ASSERT_NE(row, nullptr) << name;
+        EXPECT_EQ(row->flags, ROW_M4_WRAPPER) << name;
+    }
+    const BindingRow *pollin = row_named(socket, "pollin");
+    ASSERT_NE(pollin, nullptr);
+    EXPECT_EQ(pollin->flags, 0);                         // an M7 replacement, same row
 
     const BindingType &gps = binding_types[type_named("gps") - 1];
     bool found = false;

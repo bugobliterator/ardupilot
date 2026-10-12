@@ -29,7 +29,7 @@ struct BlobHeader {
 // a handle userdata: an M7 object of this M4 session (Handle and Owned kinds)
 struct HandleUserdata {
     uint8_t type_id;
-    uint8_t reserved;
+    uint8_t state;         // the row wrappers' own (handle_state())
     uint16_t index;
     uint32_t generation;
 };
@@ -209,6 +209,18 @@ uint32_t releases_dropped()
     return pending_releases.dropped();
 }
 
+uint8_t *handle_state(lua_State *L, int arg, uint8_t type_id)
+{
+    if (type_id == 0 || userdata_type(L, arg) != type_id) {
+        return nullptr;
+    }
+    const BindingKind kind = BindingKind(type_of(type_id).kind);
+    if (kind != BindingKind::Handle && kind != BindingKind::Owned) {
+        return nullptr;
+    }
+    return &static_cast<HandleUserdata *>(lua_touserdata(L, arg))->state;
+}
+
 static int remote_index(lua_State *L);
 
 // upvalues: method id, row flags, owning type id. A row that wraps its call (ROW_M4_WRAPPER)
@@ -325,7 +337,7 @@ static bool push_value(lua_State *L, const RpcValue &value)
         }
         HandleUserdata *handle = static_cast<HandleUserdata *>(lua_newuserdata(L, sizeof(HandleUserdata)));
         handle->type_id = value.type_id;
-        handle->reserved = 0;
+        handle->state = 0;
         handle->index = value.handle_index;
         handle->generation = value.handle_generation;
         push_metatable(L, value.type_id);

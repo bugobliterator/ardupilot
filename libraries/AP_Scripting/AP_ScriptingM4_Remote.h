@@ -13,6 +13,7 @@
   their wire form) or handles (HandleTable). Scripting host thread only.
  */
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@
 #include <AP_HAL/AP_HAL_Boards.h>
 #include <AP_HAL/ap_setjmp.h>
 #include "AP_ScriptingM4_Rpc.h"
+#include "AP_ScriptingM4_Files.h"
 #include "AP_ScriptingM4_Handles.h"
 #include "AP_ScriptingM4_Objects.h"
 #include "AP_ScriptingM4_Quota.h"
@@ -104,6 +106,7 @@ struct RemoteCall {
     // set once by the server
     ScriptingM4::HandleTable *handles;
     ScriptingM4::ObjectPool *objects;    // the owned objects (Owned results)
+    ScriptingM4::FileTable *files;    // the M4 session's open files (sock:sendfile)
     void (*warn)(void *context, uint8_t severity, const char *text);   // set_and_print_new_error_message()
     void *warn_context;
     ScriptingM4::Quota *quota;           // the quotas a port charges itself (CAN frames)
@@ -219,6 +222,22 @@ int DroneCAN_Handle__broadcast(lua_State *L);
 int DroneCAN_Handle__request(lua_State *L);
 int DroneCAN_Handle__check_message(lua_State *L);
 int lua_m4_DroneCAN_Handle_subscribe(lua_State *L);
+// AP_ScriptingM4_ManualSocket.cpp
+int lua_get_SocketAPM(lua_State *L);
+int SocketAPM_close(lua_State *L);
+int SocketAPM_sendfile(lua_State *L);
+int SocketAPM_recv(lua_State *L);
+int SocketAPM_accept(lua_State *L);
+int SocketAPM_ipv4_addr_to_string(lua_State *L);
+int SocketAPM_string_to_ipv4_addr(lua_State *L);
+int SocketAPM_send_checked(lua_State *L);
+int SocketAPM_sendto_checked(lua_State *L);
+int lua_m4_SocketAPM_pollin(lua_State *L);
+int lua_m4_SocketAPM_pollout(lua_State *L);
+int lua_m4_SocketAPM_set_blocking(lua_State *L);
+// the session's sockets are deleted and its sendfile hand-overs counted afresh
+// (AP_ScriptingM4_Server::end_session())
+void sockets_end_session();
 // an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
 void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
@@ -365,6 +384,100 @@ public:
 private:
     uint8_t _live = 0;
 };
+
+// Sockets (AP_ScriptingM4_ManualSocket.cpp). The M7 issues every socket call non-blocking, so
+// its host thread never waits on the network: a script's blocking socket (the in-process default,
+// or set_blocking(true)) is the M4's, which tries a connect or send again until it completes
+// (m4/m4_socket_wait.h). pollin()/pollout() wait in select() for at most this long (recorded
+// deviation: in-process waits as long as the script asks)
+static const uint32_t SOCKET_POLL_TIMEOUT_MAX_MS = 900;
+// the timeout argument of SocketAPM:pollin/pollout, clamped
+uint32_t socket_poll_timeout_argument(lua_State *L, int arg);
+// sock:sendfile() hand-overs per M4 session: each leaves an M7 descriptor and a socket with
+// AP_Networking until the file is sent, past the session's end (recorded deviation)
+static const uint8_t SOCKET_SENDFILES_PER_SESSION = 2;
+
+// a socket the M7 hands out (Socket(), sock:accept()), made non-blocking; nullptr stays nullptr
+template <typename Socket> Socket *socket_nonblocking(Socket *sock)
+{
+    if (sock != nullptr) {
+        (void)sock->set_blocking(false);
+    }
+    return sock;
+}
+
+// sock:set_blocking(blocking)'s call: the socket stays non-blocking whatever the script asks
+// (the M4 keeps the script's mode); true if the socket is open, as in-process
+template <typename Socket> int socket_set_blocking(lua_State *L, Socket &sock)
+{
+    (void)lua_toboolean(L, 2);
+    lua_pushboolean(L, sock.set_blocking(false));
+    return 1;
+}
+
+// sock:pollin(timeout_ms)/pollout(timeout_ms)'s call, the timeout clamped
+template <typename Socket> int socket_poll(lua_State *L, Socket &sock, bool out)
+{
+    const uint32_t timeout_ms = socket_poll_timeout_argument(L, 2);
+    lua_pushboolean(L, out ? sock.pollout(timeout_ms) : sock.pollin(timeout_ms));
+    return 1;
+}
+
+// a send's results: the count, as in-process, and whether the call would have blocked, which the
+// M4 drops after it tried again (m4_wrappers.cpp)
+inline int socket_send_results(lua_State *L, int32_t count)
+{
+    lua_pushinteger(L, count);
+    lua_pushboolean(L, count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+    return 2;
+}
+
+// sock:send(data, len)'s call, the length bounded by the string: in-process SocketAPM reads len
+// bytes from the Lua string, which here would read past the call's copy into M7 memory
+template <typename Socket> int socket_send(lua_State *L, Socket &sock)
+{
+    size_t length = 0;
+    const char *data = luaL_checklstring(L, 2, &length);
+    const uint32_t requested = coerce_to_uint32_t(L, 3);
+    errno = 0;   // a failure that sets none (a closed socket) is no earlier call's EAGAIN
+    const auto count = sock.send(data, requested < length ? size_t(requested) : length);
+    return socket_send_results(L, int32_t(count));
+}
+
+// sock:sendto(data, len, addr, port)'s call, the length bounded as send()'s
+template <typename Socket> int socket_sendto(lua_State *L, Socket &sock)
+{
+    size_t length = 0;
+    const char *data = luaL_checklstring(L, 2, &length);
+    const uint32_t requested = coerce_to_uint32_t(L, 3);
+    const uint32_t address = coerce_to_uint32_t(L, 4);
+    const uint16_t port = get_uint16_t(L, 5);
+    errno = 0;
+    const auto count = sock.sendto(data, requested < length ? size_t(requested) : length, address, port);
+    return socket_send_results(L, int32_t(count));
+}
+
+// the session's sock:sendfile() hand-overs
+class SocketSendfiles {
+public:
+    bool available() const { return _handed_over < SOCKET_SENDFILES_PER_SESSION; }
+    void take() { _handed_over++; }
+    void new_session() { _handed_over = 0; }
+
+private:
+    uint8_t _handed_over = 0;
+};
+
+// sock:sendfile()'s hand-over of descriptor fd: hand_over(fd) only while the session has
+// hand-overs left; one refused spends none. True if handed over
+template <typename HandOver> bool socket_sendfile(SocketSendfiles &sendfiles, int fd, HandOver hand_over)
+{
+    if (fd == -1 || !sendfiles.available() || !hand_over(fd)) {
+        return false;
+    }
+    sendfiles.take();
+    return true;
+}
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)
 bool method_available(uint16_t method);

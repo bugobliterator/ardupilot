@@ -29,6 +29,8 @@ public:
                                     ScriptingM4::RpcWriter &results, uint8_t &error_arg, ScriptingM4::Quota &quota);
     // closes every file the M4 left open; their ids go stale
     void reset();
+    // the session's files: sock:sendfile hands a descriptor to AP_Networking (AP_ScriptingM4_ManualSocket.cpp)
+    ScriptingM4::FileTable &table() { return _table; }
 
 private:
     using Status = ScriptingM4::ReplyStatus;

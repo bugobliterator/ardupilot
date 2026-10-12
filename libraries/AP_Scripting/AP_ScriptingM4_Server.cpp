@@ -51,6 +51,7 @@ AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
 {
     _call.handles = &_handles;
     _call.objects = &_objects;
+    _call.files = &_files.table();
     _call.warn = remote_warning;
     _call.warn_context = this;
     _call.quota = &_quota;
@@ -106,6 +107,11 @@ void AP_ScriptingM4_Server::end_session()
         scripting->_pwm_source[i] = nullptr;
     }
     scripting->num_pwm_source = 0;
+#if AP_NETWORKING_ENABLED
+    // clear allocated sockets. _files.reset() ran first: a descriptor sendfile handed to
+    // AP_Networking has left the table already, so it is not closed twice
+    ScriptingM4Remote::sockets_end_session();
+#endif // AP_NETWORKING_ENABLED
 #if AP_SCRIPTING_SERIALDEVICE_ENABLED
     // clear data in serial buffers that hasn't been transmitted
     scripting->_serialdevice.clear();

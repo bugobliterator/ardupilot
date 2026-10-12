@@ -3043,7 +3043,7 @@ static const char *remote_local_methods[] = {
 static const char *remote_handle_ap_objects[] = {
   "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",
   "AP_Vehicle::custom_mode_state", "RC_Channel", "AP_HAL::AnalogSource", "AP_EFI_Backend",
-  "AP_HAL::I2CDevice", "AP_HAL::PWMSource", "ScriptingCANBuffer",
+  "AP_HAL::I2CDevice", "AP_HAL::PWMSource", "ScriptingCANBuffer", "SocketAPM",
   NULL };
 // userdata carrying M7 pointers or state: the object lives in the M7's object pool
 // (AP_ScriptingM4_Objects.h), the M4 userdata holds an owned handle that its __gc releases
@@ -3059,7 +3059,7 @@ static const struct remote_release remote_owned_release[] = {
 // userdata carrying M7 pointers or state and the manual-only ap_objects: left out until
 // IO and Manual Bindings. A userdata or ap_object in none of these lists fails generation
 static const char *remote_deferred_userdata[] = {
-  "CRSFMenu", "CRSFParameter", "SocketAPM",
+  "CRSFMenu", "CRSFParameter",
   NULL };
 // manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
 static const char *remote_ready_manual[] = {
@@ -3069,6 +3069,8 @@ static const char *remote_ready_manual[] = {
   "lua_get_CAN_device", "lua_get_CAN_device2",
   "DroneCAN_Handle::new_handle", "DroneCAN_Handle::broadcast", "DroneCAN_Handle::request",
   "DroneCAN_Handle::check_message",
+  "lua_get_SocketAPM", "SocketAPM_close", "SocketAPM_sendfile", "SocketAPM_recv", "SocketAPM_accept",
+  "SocketAPM_ipv4_addr_to_string", "SocketAPM_string_to_ipv4_addr",
   NULL };
 // manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
 // a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)
@@ -3090,17 +3092,29 @@ static const struct remote_replacement remote_replaced_methods[] = {
   { "AP_HAL::I2CDevice", "set_retries", "lua_m4_I2CDevice_set_retries" },   // retries bound the host thread's wait
   { "ScriptingCANBuffer", "write_frame", "lua_m4_ScriptingCANBuffer_write_frame" },   // the timeout bounds it too
   { "DroneCAN_Handle", "subscribe", "lua_m4_DroneCAN_Handle_subscribe" },   // M7 heap per subscriber: capped
+  { "SocketAPM", "send", "SocketAPM_send_checked" },       // the length the script gives is read
+  { "SocketAPM", "sendto", "SocketAPM_sendto_checked" },   // from the string: bounded by it
+  { "SocketAPM", "pollin", "lua_m4_SocketAPM_pollin" },    // the wait is bounded, and the socket
+  { "SocketAPM", "pollout", "lua_m4_SocketAPM_pollout" },  // stays non-blocking: the host thread
+  { "SocketAPM", "set_blocking", "lua_m4_SocketAPM_set_blocking" },   // never waits on the network
   { NULL, NULL, NULL } };
 static int remote_replacement_matched[sizeof(remote_replaced_methods) / sizeof(remote_replaced_methods[0])];
 
-// manual rows whose M4 end is a C function of the M4 runtime around the call (m4/m4_wrappers.cpp,
-// ScriptingM4::ROW_M4_WRAPPER): it turns what cannot cross as is, a Lua table or a Lua file, into values
+// rows whose M4 end is a C function of the M4 runtime around the call (m4/m4_wrappers.cpp,
+// ScriptingM4::ROW_M4_WRAPPER): it turns what cannot cross as is, a Lua table or a Lua file, into
+// values, or waits on the M4 where the in-process call blocks. Manual rows and methods, by the
+// M7 function the row runs (a replacement's name for a replaced method)
 struct remote_wrapper {
   const char *function;   // the M7 function of the row
   const char *wrapper;    // its M4 end, declared in m4/m4_bindings.h
 };
 static const struct remote_wrapper remote_m4_wrappers[] = {
   { "AP_HAL__I2CDevice_read_registers", "wrap_I2CDevice_read_registers" },   // a table of bytes
+  { "SocketAPM_sendfile", "wrap_SocketAPM_sendfile" },                       // a Lua file
+  { "SocketAPM_connect", "wrap_SocketAPM_connect" },     // a blocking socket: the M4 waits
+  { "SocketAPM_send_checked", "wrap_SocketAPM_send" },
+  { "SocketAPM_sendto_checked", "wrap_SocketAPM_sendto" },
+  { "lua_m4_SocketAPM_set_blocking", "wrap_SocketAPM_set_blocking" },   // the M4 keeps the mode
   { NULL, NULL } };
 static int remote_wrapper_matched[sizeof(remote_m4_wrappers) / sizeof(remote_m4_wrappers[0])];
 
@@ -3580,12 +3594,13 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         continue;
       }
       const int id = REMOTE_FIRST_METHOD + method->stats_id;
-      const int row = remote_add_row(method->rename ? method->rename : method->name, id, self_flags, type_id);
       const char *replacement = remote_replacement_of(node, method);
-      remote_add_method(id, type_id,
-                        replacement != NULL ? remote_format("%s", replacement) :
-                                              remote_format("%s_%s", node->sanitized_name, method->sanitized_name),
-                        method->dependency, method_flags | remote_quota_flags(node, method), row);
+      char *function = replacement != NULL ? remote_format("%s", replacement) :
+                                             remote_format("%s_%s", node->sanitized_name, method->sanitized_name);
+      const int row_flags = self_flags | ((remote_wrapper_of(function) != NULL) ? ROW_M4_WRAPPER : 0);
+      const int row = remote_add_row(method->rename ? method->rename : method->name, id, row_flags, type_id);
+      remote_add_method(id, type_id, function, method->dependency, method_flags | remote_quota_flags(node, method),
+                        row);
       if (replacement != NULL) {
         remote_hash_string(replacement);   // an image whose M7 runs another function is another contract
       }

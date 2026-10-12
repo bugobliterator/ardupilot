@@ -164,6 +164,11 @@ static void sleep_ms(uint32_t ms)
     }
 }
 
+void lua_sleep_ms(uint32_t ms)
+{
+    sleep_ms(ms);
+}
+
 static Script *allocate_script()
 {
     for (uint8_t i = 0; i < MAX_SCRIPTS; i++) {

@@ -359,6 +359,54 @@ static int thing_write_frame(lua_State *L) {
     Pair frame;
     return CAN_write_frame(L, test_frame_buffer, frame, 1);
 }
+// a SocketAPM as the socket ports call it: records what it was asked, returns result with error
+// as errno (error 0 leaves errno as it was)
+struct TestSocket {
+    ssize_t result = 0;
+    int error = 0;
+    size_t size = 0;
+    uint32_t address = 0;
+    uint16_t port = 0;
+    uint32_t timeout_ms = 0;
+    int blocking = -1;   // the last set_blocking() argument, -1 for none
+    bool open = true;
+    ssize_t send(const void *, size_t length)
+    {
+        size = length;
+        if (error != 0) {
+            errno = error;
+        }
+        return result;
+    }
+    ssize_t sendto(const void *buf, size_t length, uint32_t to_address, uint16_t to_port)
+    {
+        address = to_address;
+        port = to_port;
+        return send(buf, length);
+    }
+    bool pollin(uint32_t timeout) { timeout_ms = timeout; return true; }
+    bool pollout(uint32_t timeout) { timeout_ms = timeout + 1; return true; }
+    bool set_blocking(bool value) { blocking = value ? 1 : 0; return open; }
+};
+static TestSocket test_socket;
+// sock:send(data, len), sock:sendto(data, len, addr, port), sock:pollin/pollout(timeout) and
+// sock:set_blocking(blocking) through the helpers the M7 ports call (argument 1: the self)
+static int thing_socket_send(lua_State *L) {
+    return socket_send(L, test_socket);
+}
+static int thing_socket_sendto(lua_State *L) {
+    return socket_sendto(L, test_socket);
+}
+static int thing_socket_pollin(lua_State *L) {
+    return socket_poll(L, test_socket, false);
+}
+static int thing_socket_pollout(lua_State *L) {
+    return socket_poll(L, test_socket, true);
+}
+static int thing_socket_set_blocking(lua_State *L) {
+    return socket_set_blocking(L, test_socket);
+}
+
 // broadcast()'s and request()'s quota charge for their payload
 static int thing_can_charge(lua_State *L) {
     size_t length;
@@ -1304,6 +1352,150 @@ TEST(ScriptingM4Remote, DroneCANTargetNode)
     EXPECT_EQ(c.run(thing_target_node), ReplyStatus::ArgError);
     c.args.number(5.5f);
     EXPECT_EQ(c.run(thing_target_node), ReplyStatus::ArgError);
+}
+
+// sock:send(data, len) through socket_send(): without the bound SocketAPM reads 100 bytes from
+// the 6-byte copy of "hello", past it into M7 memory
+TEST(ScriptingM4Remote, SocketSendIsBoundedByTheString)
+{
+    Call c;
+    test_socket = TestSocket();
+    test_socket.result = 5;
+    c.args.nil();
+    c.args.string("hello", 5);
+    c.args.integer(100);
+    ASSERT_EQ(c.run(thing_socket_send), ReplyStatus::Ok);
+    EXPECT_EQ(test_socket.size, 5U);
+    ASSERT_EQ(c.count, 2);
+    EXPECT_EQ(c.values[0].integer, 5);
+    EXPECT_EQ(c.values[1].tag, ValueTag::False);
+    // a shorter length is kept
+    c.args.nil();
+    c.args.string("hello", 5);
+    c.args.integer(3);
+    ASSERT_EQ(c.run(thing_socket_send), ReplyStatus::Ok);
+    EXPECT_EQ(test_socket.size, 3U);
+}
+
+// sock:sendto(data, len, addr, port) through socket_sendto(): bounded as send is
+TEST(ScriptingM4Remote, SocketSendToIsBoundedByTheString)
+{
+    Call c;
+    test_socket = TestSocket();
+    test_socket.result = 5;
+    const uint32_t address = 0x7f000001;
+    c.args.nil();
+    c.args.string("hello", 5);
+    c.args.integer(100);
+    c.args.blob(UINT32, &address, sizeof(address));
+    c.args.integer(15903);
+    ASSERT_EQ(c.run(thing_socket_sendto), ReplyStatus::Ok);
+    EXPECT_EQ(test_socket.size, 5U);
+    EXPECT_EQ(test_socket.address, address);
+    EXPECT_EQ(test_socket.port, 15903);
+    ASSERT_EQ(c.count, 2);
+    EXPECT_EQ(c.values[0].integer, 5);
+    EXPECT_EQ(c.values[1].tag, ValueTag::False);
+}
+
+// the second result tells the M4's blocking emulation to try again: only for a call that would
+// have blocked. Without the errno reset a failed send after an earlier EAGAIN is retried until
+// the M4 gives up, where in-process it fails at once
+TEST(ScriptingM4Remote, SocketSendReportsWouldBlock)
+{
+    Call c;
+    const int errors[] = { EAGAIN, EWOULDBLOCK, EPIPE };
+    const ValueTag expected[] = { ValueTag::True, ValueTag::True, ValueTag::False };
+    for (size_t i = 0; i < 3; i++) {
+        test_socket = TestSocket();
+        test_socket.result = -1;
+        test_socket.error = errors[i];
+        c.args.nil();
+        c.args.string("hello", 5);
+        c.args.integer(5);
+        ASSERT_EQ(c.run(thing_socket_send), ReplyStatus::Ok);
+        EXPECT_EQ(c.values[0].integer, -1) << i;
+        EXPECT_EQ(c.values[1].tag, expected[i]) << i;
+    }
+    // a closed socket fails without setting errno: an earlier EAGAIN is not this call's
+    test_socket = TestSocket();
+    test_socket.result = -1;
+    errno = EAGAIN;
+    c.args.nil();
+    c.args.string("hello", 5);
+    c.args.integer(5);
+    ASSERT_EQ(c.run(thing_socket_send), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[1].tag, ValueTag::False);
+}
+
+// pollin/pollout through socket_poll(): without the clamp the host thread waits in select() for
+// the script's 4000 s
+TEST(ScriptingM4Remote, SocketPollWaitsAtMost900ms)
+{
+    Call c;
+    const uint32_t large = 4000000000U;
+    test_socket = TestSocket();
+    c.args.nil();
+    c.args.blob(UINT32, &large, sizeof(large));
+    ASSERT_EQ(c.run(thing_socket_pollin), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(test_socket.timeout_ms, SOCKET_POLL_TIMEOUT_MAX_MS);
+    c.args.nil();
+    c.args.integer(901);
+    ASSERT_EQ(c.run(thing_socket_pollout), ReplyStatus::Ok);
+    EXPECT_EQ(test_socket.timeout_ms, SOCKET_POLL_TIMEOUT_MAX_MS + 1);   // TestSocket's pollout mark
+    c.args.nil();
+    c.args.integer(250);
+    ASSERT_EQ(c.run(thing_socket_pollin), ReplyStatus::Ok);
+    EXPECT_EQ(test_socket.timeout_ms, 250U);
+}
+
+// set_blocking(true) through socket_set_blocking(), and new sockets through
+// socket_nonblocking(): the M7's socket stays non-blocking, so no call waits on the network.
+// Without them set_blocking(true) makes the M7's connect and send wait for the peer
+TEST(ScriptingM4Remote, SocketsStayNonBlocking)
+{
+    Call c;
+    test_socket = TestSocket();
+    c.args.nil();
+    c.args.boolean(true);
+    ASSERT_EQ(c.run(thing_socket_set_blocking), ReplyStatus::Ok);
+    EXPECT_EQ(test_socket.blocking, 0);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    // a closed socket's set_blocking() fails, as in-process
+    test_socket.open = false;
+    c.args.nil();
+    c.args.boolean(false);
+    ASSERT_EQ(c.run(thing_socket_set_blocking), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);
+
+    TestSocket made;
+    EXPECT_EQ(socket_nonblocking(&made), &made);
+    EXPECT_EQ(made.blocking, 0);
+    EXPECT_EQ(socket_nonblocking(static_cast<TestSocket *>(nullptr)), nullptr);
+}
+
+// sock:sendfile() through socket_sendfile(): each hand-over leaves a descriptor and a socket
+// with AP_Networking until the file is sent. Without the cap the third is handed over
+TEST(ScriptingM4Remote, SendfileHandOversAreCapped)
+{
+    SocketSendfiles sendfiles;
+    int handed = 0;
+    bool accept = true;
+    auto hand_over = [&](int fd) { handed++; EXPECT_EQ(fd, 5); return accept; };
+    EXPECT_FALSE(socket_sendfile(sendfiles, -1, hand_over));   // no open file: never handed over
+    EXPECT_EQ(handed, 0);
+    accept = false;
+    EXPECT_FALSE(socket_sendfile(sendfiles, 5, hand_over));    // refused: spends nothing
+    accept = true;
+    for (uint8_t i = 0; i < SOCKET_SENDFILES_PER_SESSION; i++) {
+        EXPECT_TRUE(socket_sendfile(sendfiles, 5, hand_over)) << int(i);
+    }
+    handed = 0;
+    EXPECT_FALSE(socket_sendfile(sendfiles, 5, hand_over));
+    EXPECT_EQ(handed, 0);
+    sendfiles.new_session();
+    EXPECT_TRUE(socket_sendfile(sendfiles, 5, hand_over));
 }
 
 AP_GTEST_MAIN()

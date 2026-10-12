@@ -403,6 +403,38 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('    lua_m4_DroneCAN_Handle_subscribe,\n', dispatch)
         self.assertNotIn('static int DroneCAN_Handle_subscribe(', dispatch)
 
+    def test_sockets(self):
+        code, output, _ = self.generate('sockets', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, local = self.outputs('sockets')
+        types = self.type_ids(tables)
+        socket, kind = types['SocketAPM']
+        self.assertEqual(kind, 2)
+        # send and sendto run the M7 ports that bound the length by the string; the generated
+        # bodies, which pass the script's length on, are not emitted at all
+        for name in ('send', 'sendto'):
+            self.assertNotIn('static int SocketAPM_%s(' % name, dispatch)
+            self.assertIn('    SocketAPM_%s_checked,\n' % name, dispatch)
+        method, flags = self.row_flags(tables, socket, 'sendfile')
+        self.assertEqual(flags, 0x20)
+        self.assertIn('    case %d:\n        return wrap_SocketAPM_sendfile;\n' % method, local)
+        self.assertIn('    SocketAPM_close,\n', dispatch)
+        # the M7 never blocks: pollin/pollout clamp their wait, set_blocking keeps the socket
+        # non-blocking; without the replacements the generated bodies pass the script's values on
+        for name in ('pollin', 'pollout', 'set_blocking'):
+            self.assertNotIn('static int SocketAPM_%s(' % name, dispatch)
+            self.assertIn('    lua_m4_SocketAPM_%s,\n' % name, dispatch)
+        # the M4 waits in place of a blocking call: generated and replaced methods get wrappers too
+        wrappers = {'connect': 'wrap_SocketAPM_connect', 'send': 'wrap_SocketAPM_send',
+                    'sendto': 'wrap_SocketAPM_sendto', 'set_blocking': 'wrap_SocketAPM_set_blocking'}
+        for name, wrapper in wrappers.items():
+            method, flags = self.row_flags(tables, socket, name)
+            self.assertEqual(flags, 0x20, name)
+            self.assertIn('    case %d:\n        return %s;\n' % (method, wrapper), local)
+        self.assertIn('static int SocketAPM_connect(', dispatch)
+        self.assertEqual(self.row_flags(tables, socket, 'pollin')[1], 0)
+        self.assertEqual(self.row_flags(tables, socket, 'recv')[1], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

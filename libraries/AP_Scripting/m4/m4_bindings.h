@@ -32,6 +32,14 @@ uint32_t releases_dropped();
 lua_CFunction remote_wrapper(uint16_t method);
 // m4_wrappers.cpp: around remote_call(), with the row's upvalues
 int wrap_I2CDevice_read_registers(lua_State *L);
+int wrap_SocketAPM_sendfile(lua_State *L);
+int wrap_SocketAPM_connect(lua_State *L);
+int wrap_SocketAPM_send(lua_State *L);
+int wrap_SocketAPM_sendto(lua_State *L);
+int wrap_SocketAPM_set_blocking(lua_State *L);
+// m4_bindings.cpp: the byte a handle userdata of type_id at arg keeps for its wrappers (a socket's
+// blocking mode), 0 when the M4 makes it; nullptr if arg is no such handle
+uint8_t *handle_state(lua_State *L, int arg, uint8_t type_id);
 
 // a pure-data type the M4 implements itself (gen-bindings -r, lua_remote_local.cpp)
 static const uint16_t LOCAL_OBJECT_MAX = 32;   // the largest local type is 16 B (Location, Quaternion)
