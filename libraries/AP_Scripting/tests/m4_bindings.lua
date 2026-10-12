@@ -4,9 +4,10 @@
 -- tests check that no SRPC row logs more than these counts and that all binding
 -- rows, m4:other included, add up to the total. Vector2f, Vector3f, Quaternion and
 -- Location run on the M4 itself (fields, operators, constructors, math): those calls
--- are not counted, and the tests check that no SRPC row names them. The first step
--- waits until the load-time calls have their own window. Runs unchanged in-process
--- (no M4 needed for the checks).
+-- are not counted, so one that went remote would break that total. Location's five
+-- state rows (change_alt_frame, get_alt_m, get_vector_from_origin_NEU*) stay remote
+-- and are counted. The first step waits until the load-time calls have their own
+-- window. Runs unchanged in-process (no M4 needed for the checks).
 
 local counts = {}
 local order = {}
@@ -120,19 +121,61 @@ local steps = {
     check(quadplane == nil and sub == nil, "bindings of other vehicles")
   end,
   function()   -- values the M7 made come back intact; a remote row writes into a local object
-    local home_set = ahrs:home_is_set()
-    count("ahrs:home_is_set", 1)
     local home = ahrs:get_home()   -- now a Location on the M4
     count("ahrs:get_home", 1)
     check(home ~= nil, "ahrs:get_home")
-    -- decoded on the M7 with every field, loiter_ccw included (no 'M4: invalid Location')
-    check(type(ahrs:set_home(home)) == "boolean", "ahrs:set_home")
+    if not ahrs:home_is_set() then
+      -- no GPS fix yet (SITL) or none at all (Renode): a home of the test's own
+      home:lat(-353632621)
+      home:lng(1491652374)
+      home:alt(58409)
+    end
+    count("ahrs:home_is_set", 1)
+    -- decoded on the M7 with every field, loiter_ccw included (no 'M4: invalid Location'),
+    -- and read back unchanged
+    check(ahrs:set_home(home), "ahrs:set_home")
     count("ahrs:set_home", 1)
-    local item = mission:get_item(0)
-    count("mission:get_item", 1)
-    if item then
-      check(type(mission:set_item(0, item)) == "boolean", "mission:set_item")
+    local again = ahrs:get_home()
+    count("ahrs:get_home", 1)
+    check(again:lat() == home:lat() and again:lng() == home:lng() and again:alt() == home:alt() and
+          again:relative_alt() == 0, "home round trip")
+    -- a mission item written and read back; item 0 is home, so it goes after it
+    local before = mission:num_commands()
+    count("mission:num_commands", 1)
+    local wp = mavlink_mission_item_int_t()
+    count("mavlink_mission_item_int_t:new", 1)
+    wp:command(16)   -- MAV_CMD_NAV_WAYPOINT
+    wp:frame(3)      -- MAV_FRAME_GLOBAL_RELATIVE_ALT
+    wp:x(-353632621)
+    wp:y(1491652374)
+    wp:z(25.5)
+    count("mavlink_mission_item_int_t:command", 1)
+    count("mavlink_mission_item_int_t:frame", 1)
+    count("mavlink_mission_item_int_t:x", 1)
+    count("mavlink_mission_item_int_t:y", 1)
+    count("mavlink_mission_item_int_t:z", 1)
+    if before == 0 then
+      check(mission:set_item(0, wp), "mission:set_item home")   -- writes home to storage
       count("mission:set_item", 1)
+    end
+    local index = mission:num_commands()
+    count("mission:num_commands", 1)
+    check(mission:set_item(index, wp), "mission:set_item")
+    count("mission:set_item", 1)
+    local back = mission:get_item(index)
+    count("mission:get_item", 1)
+    check(back ~= nil, "mission:get_item")
+    local command, frame, x, y, z = back:command(), back:frame(), back:x(), back:y(), back:z()
+    count("mavlink_mission_item_int_t:command", 1)
+    count("mavlink_mission_item_int_t:frame", 1)
+    count("mavlink_mission_item_int_t:x", 1)
+    count("mavlink_mission_item_int_t:y", 1)
+    count("mavlink_mission_item_int_t:z", 1)
+    check(command == 16 and frame == 3 and x == -353632621 and y == 1491652374, "mission item")
+    check(math.abs(z - 25.5) < 0.01, "mission item z " .. tostring(z))   -- stored in cm
+    if before <= 1 then
+      check(mission:clear(), "mission:clear")   -- the mission was empty before
+      count("mission:clear", 1)
     end
     local l = Location()
     l:lat(-353632621)
@@ -142,12 +185,12 @@ local steps = {
     local alias = l   -- a reference: the write-back shows through it
     local changed = l:change_alt_frame(0)   -- ABOVE_HOME to ABSOLUTE: reads home on the M7
     count("Location:change_alt_frame", 1)
-    check(type(changed) == "boolean", "change_alt_frame")
-    if home_set then
-      check(changed, "change_alt_frame with home set")
-      check(alias:relative_alt() == 0, "change_alt_frame wrote back")   -- a flag field reads as 0 or 1
-      check(alias:alt() == 1000 + home:alt(), "absolute altitude " .. tostring(alias:alt()))
-    end
+    -- home is set above: the write-back decoded every field (a flag field reads as 0 or 1)
+    check(changed, "change_alt_frame with home set")
+    check(alias:lat() == -353632621 and alias:lng() == 1491652374 and alias:terrain_alt() == 0,
+          "change_alt_frame kept the position")
+    check(alias:relative_alt() == 0, "change_alt_frame wrote back")
+    check(alias:alt() == 1000 + again:alt(), "absolute altitude " .. tostring(alias:alt()))
   end,
   function()   -- an origin for the GUIDED step
     if not ahrs:get_origin() then
