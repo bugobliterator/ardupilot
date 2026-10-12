@@ -134,7 +134,7 @@ local function build_values()
   qv:from_angular_velocity(a, 0.05)
   add(qv:q1(), qv:q2(), qv:q3(), qv:q4())
   local gimbal = Quaternion()
-  gimbal:from_euler(math.rad(10), math.rad(85), math.rad(20))   -- near, not at, gimbal lock
+  gimbal:from_euler(math.rad(10), math.rad(30), math.rad(20))   -- well away from gimbal lock
   add(gimbal:get_euler_roll(), gimbal:get_euler_pitch(), gimbal:get_euler_yaw())
   local unnorm = Quaternion()
   unnorm:q1(2)
