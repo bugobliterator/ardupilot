@@ -42,33 +42,48 @@ def remote_file_sizes(ftp, directory):
     return {entry.name: entry.size_b for entry in ftp.list_result if not entry.is_dir}
 
 
-def upload_scripts(run, paths):
-    '''Copies scripts to APM/scripts on the board's SD card over MAVLink FTP.'''
+def make_directories(ftp, directory):
+    '''Creates a board directory and its parents; one that exists already is fine.'''
+    parts = directory.split('/')
+    for end in range(1, len(parts) + 1):
+        ftp.cmd_mkdir(['/'.join(parts[:end])])
+        ftp.process_ftp_reply('CreateDirectory', timeout=60)
+
+
+def upload_files(run, files):
+    '''Copies (local path, board directory) pairs to the board's SD card over MAVLink FTP.'''
     ftp = mavftp.MAVFTP(run.mav, run.mav.target_system, run.mav.target_component)
-    ftp.cmd_mkdir(['APM/scripts'])   # AP_Scripting creates it at boot: a failure here is fine
-    ftp.process_ftp_reply('CreateDirectory', timeout=60)
-    for path in paths:
-        source = SCRIPTS / path
+    expected = {}
+    for source, directory in files:
+        if directory not in expected:
+            make_directories(ftp, directory)   # AP_Scripting creates APM/scripts at boot
+            expected[directory] = {}
         finished = []   # the put's callback: the length once every block is acknowledged, None on failure
-        ret = ftp.cmd_put([str(source), 'APM/scripts/' + source.name], callback=finished.append)
-        assert ret.error_code == 0, 'put %s: %s' % (path, ret)
+        ret = ftp.cmd_put([str(source), directory + '/' + source.name], callback=finished.append)
+        assert ret.error_code == 0, 'put %s: %s' % (source, ret)
         deadline = time.monotonic() + UPLOAD_TIMEOUT
         while not finished:
-            assert time.monotonic() < deadline, 'upload of %s did not finish' % path
+            assert time.monotonic() < deadline, 'upload of %s did not finish' % source
             ftp.process_ftp_reply('CreateFile', timeout=60)
-        assert finished == [source.stat().st_size], 'upload of %s failed: %s' % (path, finished)
+        assert finished == [source.stat().st_size], 'upload of %s failed: %s' % (source, finished)
+        expected[directory][source.name] = source.stat().st_size
     # the board writes a file's size into its directory entry when the FTP session ends;
     # process_ftp_reply() returns after 1.2 s without a reply, so a stalled Renode can
     # leave that TerminateSession unprocessed, and a stop then leaves an empty script
     # (it loads, runs once and makes no call): end the session until the sizes show
-    expected = {(SCRIPTS / path).name: (SCRIPTS / path).stat().st_size for path in paths}
-    deadline = time.monotonic() + UPLOAD_TIMEOUT
-    while True:
-        sizes = remote_file_sizes(ftp, 'APM/scripts')
-        if all(sizes.get(name) == size for name, size in expected.items()):
-            return
-        assert time.monotonic() < deadline, 'APM/scripts on the board holds %s, expected %s' % (sizes, expected)
-        ftp.cmd_cancel()
+    for directory, wanted in expected.items():
+        deadline = time.monotonic() + UPLOAD_TIMEOUT
+        while True:
+            sizes = remote_file_sizes(ftp, directory)
+            if all(sizes.get(name) == size for name, size in wanted.items()):
+                break
+            assert time.monotonic() < deadline, '%s on the board holds %s, expected %s' % (directory, sizes, wanted)
+            ftp.cmd_cancel()
+
+
+def upload_scripts(run, paths):
+    '''Copies scripts to APM/scripts on the board's SD card over MAVLink FTP.'''
+    upload_files(run, [(SCRIPTS / path, 'APM/scripts') for path in paths])
 
 
 def host_thread_stack(run, local_path):
@@ -129,8 +144,9 @@ def wait_all(run, patterns, timeout):
         run.mav.recv_match(blocking=True, timeout=1)
 
 
-def start_with_scripts(start_m4lua, paths, parameters):  # noqa: F811
-    '''Sets parameters and uploads scripts on a first run, then starts the board again so they load.'''
+def start_with_scripts(start_m4lua, paths, parameters, files=()):  # noqa: F811
+    '''Sets parameters and uploads scripts (and other (path, directory) files) on a first
+    run, then starts the board again so they load.'''
     first = start_m4lua()
     for name, value in parameters.items():
         first.set(name, value)
@@ -138,6 +154,8 @@ def start_with_scripts(start_m4lua, paths, parameters):  # noqa: F811
     # count races with the upload
     first.wait_text(r'^Scripting: started on M4 \(0 scripts, heap \d+KB\)$', timeout=START_TIMEOUT)
     upload_scripts(first, paths)
+    if files:
+        upload_files(first, files)
     first.stop()
     run = start_m4lua()
     for name, value in parameters.items():
