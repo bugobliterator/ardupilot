@@ -45,6 +45,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
         { "AP_HAL::I2CDevice", BindingKind::Handle }, { "AP_HAL::PWMSource", BindingKind::Handle },
         { "ScriptingCANBuffer", BindingKind::Handle }, { "DroneCAN_Handle", BindingKind::Owned },
         { "SocketAPM", BindingKind::Handle },
+        { "CRSFMenu", BindingKind::Owned }, { "CRSFParameter", BindingKind::Owned },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
         { "global", BindingKind::Global },
     };
@@ -55,11 +56,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
     }
     EXPECT_EQ(type_named("uint32_t"), BINDING_TYPE_UINT32);
     EXPECT_EQ(type_named("uint64_t"), BINDING_TYPE_UINT64);
-    // userdata carrying M7 pointers or state, and the manual-only ap_objects, wait for
-    // IO and Manual Bindings (none of these is renamed: the C++ name is the Lua name)
-    for (const char *name : { "CRSFMenu", "CRSFParameter" }) {
-        EXPECT_EQ(type_named(name), 0) << name;
-    }
+    // every userdata and ap_object of the description is served: none is deferred
 }
 
 TEST(ScriptingM4Bindings, RowsAndIdsAgree)
@@ -148,6 +145,11 @@ TEST(ScriptingM4Bindings, KnownBindings)
     ASSERT_NE(writestring, nullptr);
     EXPECT_EQ(writestring->flags, 0);
     EXPECT_EQ(row_named(type_named("AP_Scripting_SerialAccess"), "new"), nullptr);   // creation null
+
+    EXPECT_NE(row_named(type_named("CRSFMenu"), "new"), nullptr);         // lua_CRSF_new_menu
+    // CRSFParameter's generated constructor would leave its menu pointer unset: none on the M4
+    EXPECT_EQ(row_named(type_named("CRSFParameter"), "new"), nullptr);
+    EXPECT_NE(row_named(type_named("crsf"), "get_menu_event"), nullptr);
 
     const BindingRow *read_registers = row_named(type_named("AP_HAL::I2CDevice"), "read_registers");
     ASSERT_NE(read_registers, nullptr);

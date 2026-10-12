@@ -419,6 +419,13 @@ static int thing_target_node(lua_State *L) {
     return 1;
 }
 
+static int thing_crsf_required(lua_State *L) {
+    int telem = 5;
+    int *given = crsf_required(lua_toboolean(L, 1) ? &telem : nullptr, L);
+    lua_pushinteger(L, *given);
+    return 1;
+}
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -1581,6 +1588,115 @@ TEST(ScriptingM4Remote, SocketEndResetsOnlyStreamSockets)
     socket_end(handed_over, [&](int) { asked++; return SocketKind::Stream; }, [&](int) { asked++; });
     EXPECT_EQ(asked, 0);
     EXPECT_TRUE(deleted);
+}
+
+// a menu name reaches AP_CRSF_Telem as at most 15 characters and a NUL: it stores 16 bytes of
+// the string it is given in a 17-byte block and later reads it as a C string. Without the cut a
+// name of 16 or more characters is stored unterminated
+TEST(ScriptingM4Remote, CRSFMenuNamesAreCutTo15Characters)
+{
+    char cut[CRSF_NAME_LENGTH + 1];
+    memset(cut, 0x55, sizeof(cut));
+    crsf_cut_name(cut, "Roll Tuning Menu And Some More");
+    EXPECT_STREQ(cut, "Roll Tuning Men");
+    EXPECT_EQ(cut[CRSF_NAME_LENGTH], 0);
+    memset(cut, 0x55, sizeof(cut));
+    crsf_cut_name(cut, "123456789012345");   // 15: kept whole
+    EXPECT_STREQ(cut, "123456789012345");
+    memset(cut, 0x55, sizeof(cut));
+    crsf_cut_name(cut, "1234567890123456");  // 16: the 16th goes
+    EXPECT_STREQ(cut, "123456789012345");
+    memset(cut, 0x55, sizeof(cut));
+    crsf_cut_name(cut, "Tune");
+    EXPECT_STREQ(cut, "Tune");
+    EXPECT_EQ(CRSF_NAME_LENGTH, 15);
+}
+
+
+// the menu the port makes receives the cut name; a refusal makes nothing
+TEST(ScriptingM4Remote, CRSFMenusAreMadeWithCutNames)
+{
+    CRSFMenuBudget budget;
+    std::string received;
+    auto make = [&received](const char *name) { received = name; return true; };
+    EXPECT_TRUE(crsf_add_menu(budget, true, "A name of more than fifteen characters", make));
+    EXPECT_EQ(received, "A name of more ");
+    // AP_CRSF_Telem has no menu to give (heap exhausted): it is no menu of the session
+    CRSFMenuBudget empty;
+    EXPECT_FALSE(crsf_add_menu(empty, true, "x", [](const char *) { return false; }));
+    EXPECT_FALSE(empty.any());
+}
+
+// AP_CRSF_Telem numbers menus up to MAX_SCRIPTED_MENUS and does not check it. Without the cap
+// the 11th menu is made
+TEST(ScriptingM4Remote, CRSFMenusAreCappedPerSession)
+{
+    CRSFMenuBudget budget;
+    int made = 0;
+    auto make = [&made](const char *) { made++; return true; };
+    for (uint8_t i = 0; i < CRSF_MENUS_PER_SESSION; i++) {
+        EXPECT_TRUE(crsf_add_menu(budget, true, "m", make)) << int(i);
+    }
+    EXPECT_EQ(made, CRSF_MENUS_PER_SESSION);
+    EXPECT_TRUE(budget.any());
+    EXPECT_FALSE(crsf_add_menu(budget, true, "m", make));
+    EXPECT_EQ(made, CRSF_MENUS_PER_SESSION);   // nothing was made for the refused one
+    // a new session starts from none
+    budget.new_session();
+    EXPECT_FALSE(budget.any());
+    EXPECT_TRUE(crsf_add_menu(budget, true, "m", make));
+}
+
+// a sub-menu is a parameter of its parent: a parent holding CRSF_PARAMETERS_PER_MENU takes none,
+// and the refusal spends none of the session's menus. Without the parent check the 21st entry
+// of the parent is written past its 20 ids
+TEST(ScriptingM4Remote, CRSFSubMenusNeedRoomInTheirParent)
+{
+    CRSFMenuBudget budget;
+    int made = 0;
+    auto make = [&made](const char *) { made++; return true; };
+    EXPECT_TRUE(crsf_add_menu(budget, crsf_menu_has_room(CRSF_PARAMETERS_PER_MENU - 1), "s", make));
+    EXPECT_FALSE(crsf_add_menu(budget, crsf_menu_has_room(CRSF_PARAMETERS_PER_MENU), "s", make));
+    EXPECT_EQ(made, 1);
+    for (uint8_t i = 1; i < CRSF_MENUS_PER_SESSION; i++) {
+        EXPECT_TRUE(crsf_add_menu(budget, true, "s", make)) << int(i);   // the refusal spent none
+    }
+}
+
+// 256 add_parameter() calls wrap the uint8_t num_params of AP_CRSF_Telem's menu and write
+// params[-1]. Without the cap the 21st is added
+TEST(ScriptingM4Remote, CRSFParametersAreCappedPerMenu)
+{
+    uint8_t num_params = 0;
+    int made = 0;
+    auto make = [&]() { made++; num_params++; return true; };
+    for (uint8_t i = 0; i < CRSF_PARAMETERS_PER_MENU; i++) {
+        EXPECT_TRUE(crsf_add_parameter(num_params, make)) << int(i);
+    }
+    for (int i = 0; i < 300; i++) {
+        EXPECT_FALSE(crsf_add_parameter(num_params, make)) << i;
+    }
+    EXPECT_EQ(made, CRSF_PARAMETERS_PER_MENU);   // no object made for a refusal
+    EXPECT_EQ(num_params, CRSF_PARAMETERS_PER_MENU);
+    EXPECT_TRUE(crsf_menu_has_room(CRSF_PARAMETERS_PER_MENU - 1));
+    EXPECT_FALSE(crsf_menu_has_room(CRSF_PARAMETERS_PER_MENU));
+    EXPECT_FALSE(crsf_menu_has_room(255));
+    // a parameter AP_CRSF_Telem could not allocate is not made
+    uint8_t empty = 0;
+    EXPECT_FALSE(crsf_add_parameter(empty, []() { return false; }));
+}
+
+// AP::crsf_telem() is null while armed if CRSF telemetry was never made. Without the check the
+// call dereferences it: a fault of the M7
+TEST(ScriptingM4Remote, CRSFTelemetryMustExist)
+{
+    Call c;
+    c.args.boolean(true);
+    ASSERT_EQ(c.run(thing_crsf_required), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 5);
+    c.args.boolean(false);
+    ASSERT_EQ(c.run(thing_crsf_required), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "internal error: crsf is null");
 }
 
 AP_GTEST_MAIN()

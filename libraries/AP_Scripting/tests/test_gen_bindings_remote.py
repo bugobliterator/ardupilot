@@ -403,6 +403,23 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('    lua_m4_DroneCAN_Handle_subscribe,\n', dispatch)
         self.assertNotIn('static int DroneCAN_Handle_subscribe(', dispatch)
 
+    def test_crsf_menus(self):
+        code, output, _ = self.generate('crsf', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, _ = self.outputs('crsf')
+        types = self.type_ids(tables)
+        menu, kind = types['CRSFMenu']
+        self.assertEqual(kind, 6)
+        parameter, kind = types['CRSFParameter']
+        self.assertEqual(kind, 6)
+        self.assertEqual(self.row_flags(tables, menu, 'new')[1], 0x08)
+        self.assertIsNone(self.row_flags(tables, parameter, 'new'))
+        self.assertNotIn('lua_new_CRSFParameter', dispatch)
+        for name in ('lua_CRSF_new_menu', 'lua_CRSF_add_parameter', 'lua_CRSF_add_menu', 'lua_CRSF_param_data',
+                     'lua_CRSF_add_root_menu', 'lua_CRSF_get_menu_event', 'lua_CRSF_peek_menu_event',
+                     'lua_CRSF_send_response'):
+            self.assertIn('    %s,\n' % name, dispatch)
+
     def test_sockets(self):
         code, output, _ = self.generate('sockets', [])
         self.assertEqual(code, 0, output)

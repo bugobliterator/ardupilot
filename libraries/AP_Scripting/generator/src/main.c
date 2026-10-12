@@ -3047,7 +3047,7 @@ static const char *remote_handle_ap_objects[] = {
   NULL };
 // userdata carrying M7 pointers or state: the object lives in the M7's object pool
 // (AP_ScriptingM4_Objects.h), the M4 userdata holds an owned handle that its __gc releases
-static const char *remote_owned_userdata[] = { "Parameter", "AP_Scripting_SerialAccess", "DroneCAN_Handle", NULL };
+static const char *remote_owned_userdata[] = { "Parameter", "AP_Scripting_SerialAccess", "DroneCAN_Handle", "CRSFMenu", "CRSFParameter", NULL };
 // an owned type's release when it has one of its own (its in-process __gc), else its destructor
 struct remote_release {
   const char *type;
@@ -3056,11 +3056,9 @@ struct remote_release {
 static const struct remote_release remote_owned_release[] = {
   { "DroneCAN_Handle", "DroneCAN_Handle__release" },
   { NULL, NULL } };
-// userdata carrying M7 pointers or state and the manual-only ap_objects: left out until
-// IO and Manual Bindings. A userdata or ap_object in none of these lists fails generation
-static const char *remote_deferred_userdata[] = {
-  "CRSFMenu", "CRSFParameter",
-  NULL };
+// userdata and ap_objects left out of the M4 bindings: none since Script Objects. A userdata or
+// ap_object in no list fails generation
+static const char *remote_deferred_userdata[] = { NULL };
 // manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
 static const char *remote_ready_manual[] = {
   "lua_millis", "lua_micros", "lua_new_Parameter", "lua_serial_begin", "lua_serial_writestring",
@@ -3071,6 +3069,8 @@ static const char *remote_ready_manual[] = {
   "DroneCAN_Handle::check_message",
   "lua_get_SocketAPM", "SocketAPM_close", "SocketAPM_sendfile", "SocketAPM_recv", "SocketAPM_accept",
   "SocketAPM_ipv4_addr_to_string", "SocketAPM_string_to_ipv4_addr",
+  "lua_CRSF_new_menu", "lua_CRSF_add_parameter", "lua_CRSF_add_menu", "lua_CRSF_param_data",
+  "lua_CRSF_add_root_menu", "lua_CRSF_get_menu_event", "lua_CRSF_peek_menu_event", "lua_CRSF_send_response",
   NULL };
 // manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
 // a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)

@@ -238,6 +238,17 @@ int lua_m4_SocketAPM_set_blocking(lua_State *L);
 // the session's sockets are deleted and its sendfile hand-overs counted afresh
 // (AP_ScriptingM4_Server::end_session())
 void sockets_end_session();
+// AP_ScriptingM4_ManualCRSF.cpp
+int lua_CRSF_new_menu(lua_State *L);
+int lua_CRSF_add_parameter(lua_State *L);
+int lua_CRSF_add_menu(lua_State *L);
+int lua_CRSF_param_data(lua_State *L);
+int lua_CRSF_add_root_menu(lua_State *L);
+int lua_CRSF_get_menu_event(lua_State *L);
+int lua_CRSF_peek_menu_event(lua_State *L);
+int lua_CRSF_send_response(lua_State *L);
+// the session's scripted CRSF menus go, if it made any (AP_ScriptingM4_Server::end_session())
+void crsf_end_session();
 // an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
 void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
@@ -524,6 +535,76 @@ template <typename Socket, typename KindOf, typename Reset> void socket_end(Sock
     }
     delete slot;
     slot = nullptr;
+}
+
+// CRSF scripted menus. AP_CRSF_Telem keeps a menu's parameters in an array of
+// MAX_SCRIPTED_MENU_SIZE ids and numbers menus up to MAX_SCRIPTED_MENUS, but add_parameter()
+// and add_menu() check neither: 256 add_parameter() calls wrap the uint8_t num_params and write
+// params[-1]. The M7 stops at the limits (ManualCRSF.cpp static_asserts them) before AP code
+// runs: past one the call returns its refusal value (recorded deviation)
+static const uint8_t CRSF_MENUS_PER_SESSION = 10;
+static const uint8_t CRSF_PARAMETERS_PER_MENU = 20;   // a sub-menu is one of its parent's
+// AP_CRSF_Telem stores names in 17 bytes and copies 16 from the string it is given, so a longer
+// name is stored unterminated: the M7 gives it 15 characters and a NUL
+static const uint8_t CRSF_NAME_LENGTH = 15;
+
+inline void crsf_cut_name(char (&cut)[CRSF_NAME_LENGTH + 1], const char *name)
+{
+    strncpy(cut, name, CRSF_NAME_LENGTH);
+    cut[CRSF_NAME_LENGTH] = 0;
+}
+
+// AP::crsf_telem() for a call: null while armed if CRSF telemetry was never made. The in-process
+// bindings dereference it; from an M4 script that would fault the M7
+template <typename Telem> Telem *crsf_required(Telem *telem, lua_State *L)
+{
+    if (telem == nullptr) {
+        luaL_error(L, "internal error: %s is null", "crsf");
+    }
+    return telem;
+}
+
+// the menus this session made, roots and sub-menus: they live until the session ends
+class CRSFMenuBudget {
+public:
+    bool available() const { return _made < CRSF_MENUS_PER_SESSION; }
+    void take() { _made++; }
+    bool any() const { return _made != 0; }
+    void new_session() { _made = 0; }
+
+private:
+    uint8_t _made = 0;
+};
+
+// a menu for the script, a root or a sub-menu (parent_has_room: the parent can take the
+// parameter that stands for it). make(name) makes the script's object and the menu, with the name
+// cut, and returns whether it did. Nothing is made past the session's menus or in a full parent
+template <typename MakeMenu>
+bool crsf_add_menu(CRSFMenuBudget &budget, bool parent_has_room, const char *name, MakeMenu make)
+{
+    if (!budget.available() || !parent_has_room) {
+        return false;
+    }
+    char cut[CRSF_NAME_LENGTH + 1];
+    crsf_cut_name(cut, name);
+    if (!make(cut)) {
+        return false;
+    }
+    budget.take();
+    return true;
+}
+
+// room for another parameter in a menu holding num_params
+inline bool crsf_menu_has_room(uint8_t num_params)
+{
+    return num_params < CRSF_PARAMETERS_PER_MENU;
+}
+
+// a parameter for the script in a menu holding num_params: make() makes the object and the
+// parameter and returns whether it did. Nothing is made in a full menu
+template <typename MakeParameter> bool crsf_add_parameter(uint8_t num_params, MakeParameter make)
+{
+    return crsf_menu_has_room(num_params) && make();
 }
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)

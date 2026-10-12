@@ -112,6 +112,8 @@ void AP_ScriptingM4_Server::end_session()
     // AP_Networking has left the table already, so it is not closed twice
     ScriptingM4Remote::sockets_end_session();
 #endif // AP_NETWORKING_ENABLED
+    // the scripted CRSF menus; _objects.clear() ran first, so no owned CRSFMenu outlives its menu
+    ScriptingM4Remote::crsf_end_session();
 #if AP_SCRIPTING_SERIALDEVICE_ENABLED
     // clear data in serial buffers that hasn't been transmitted
     scripting->_serialdevice.clear();
