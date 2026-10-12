@@ -396,7 +396,8 @@ static bool encode_object(const RemoteCall &call, uint8_t type_id, const void *o
     if (codec == nullptr || codec->encode == nullptr) {
         return false;
     }
-    WireWriter wire;
+    uint8_t wire_buf[ScriptingM4::MAX_BLOB];
+    WireWriter wire(wire_buf, sizeof(wire_buf));
     codec->encode(wire, object);
     if (!wire.ok()) {
         return false;

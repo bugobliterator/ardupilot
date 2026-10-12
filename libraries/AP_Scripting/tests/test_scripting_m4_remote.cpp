@@ -539,4 +539,29 @@ TEST(ScriptingM4Remote, RaiseOutsideRunTraps)
     EXPECT_DEATH(thing_set(&c.call), "");
 }
 
+TEST(ScriptingM4Remote, WireWriterCapacity)
+{
+    // the writer fills its caller's buffer: a value past the end is refused whole
+    uint8_t buf[6];
+    ScriptingM4::WireWriter w(buf, sizeof(buf));
+    w.write(uint32_t(0x01020304));
+    EXPECT_TRUE(w.ok());
+    EXPECT_EQ(w.length(), 4);
+    w.write(uint32_t(5));
+    EXPECT_FALSE(w.ok());
+    EXPECT_EQ(w.length(), 4);
+    // once failed, it stays failed: a codec cannot leave a blob with a hole in it
+    w.write(uint8_t(6));
+    EXPECT_FALSE(w.ok());
+    EXPECT_EQ(w.length(), 4);
+    EXPECT_EQ(w.data(), buf);
+    ScriptingM4::WireReader r(buf, 4);
+    uint32_t value = 0;
+    EXPECT_TRUE(r.read(value));
+    EXPECT_EQ(value, 0x01020304U);
+    EXPECT_TRUE(r.done());
+    uint8_t extra = 0;
+    EXPECT_FALSE(r.read(extra));
+}
+
 AP_GTEST_MAIN()
