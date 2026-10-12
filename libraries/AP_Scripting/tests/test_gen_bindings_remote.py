@@ -165,6 +165,60 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertNotEqual(before, after)
 
+    def read(self, name, suffix):
+        with open(os.path.join(self.tmp, name, 'remote_' + suffix)) as f:
+            return f.read()
+
+    @staticmethod
+    def body(source, function):
+        # the definition, not a declaration before it
+        start = re.search(r'^static \w+ ' + function + r'\(.*\) \{$', source, re.M).start()
+        return source[start:source.index('\n}\n', start)]
+
+    def test_local_blob_types(self):
+        code, output, _ = self.generate('local', [])
+        self.assertEqual(code, 0, output)
+        tables = self.read('local', 'tables.cpp')
+        dispatch = self.read('local', 'dispatch.cpp')
+        local = self.read('local', 'local.cpp')
+        types = re.findall(r'^    \{ "([^"]+)", (\d+), (\d+), (\d+), (\d+), (\d+) \},$', tables, re.M)
+        rows = re.findall(r'^    \{ "([^"]+)", (\d+), 0x([0-9a-f]{2}), (\d+) \},$', tables, re.M)
+        by_name = {t[0]: t for t in types}
+        for name in ('Vector2f', 'Vector3f', 'Quaternion', 'Location'):
+            self.assertEqual(int(by_name[name][1]), 5, name)            # BindingKind::LocalBlob
+        for name in ('Vector2f', 'Vector3f', 'Quaternion'):
+            self.assertEqual(int(by_name[name][4]), 0, name)
+        first, count = int(by_name['Location'][3]), int(by_name['Location'][4])
+        self.assertEqual(sorted(row[0] for row in rows[first:first + count]),
+                         ['change_alt_frame', 'get_alt_m', 'get_vector_from_origin_NEU',
+                          'get_vector_from_origin_NEU_cm', 'get_vector_from_origin_NEU_m'])
+        # the M7 keeps the codecs (singleton methods carry these types) and the state rows only
+        self.assertIn('static bool read_Vector3f(', dispatch)
+        self.assertIn('read_Location', dispatch)
+        self.assertNotIn('Vector3f_length(lua_State', dispatch)
+        self.assertNotIn('Location_get_distance(lua_State', dispatch)
+        self.assertNotIn('lua_new_Vector3f(lua_State', dispatch)
+        self.assertIn('Location_change_alt_frame(lua_State', dispatch)
+        # the M4 runs the rest, for every board (no guard), and trusts the M7's ranges on decode
+        self.assertIn('static int Vector3f_length(lua_State', local)
+        self.assertIn('static int Quaternion_earth_to_body(lua_State', local)
+        self.assertNotIn('#if AP_AHRS_ENABLED', local)
+        self.assertNotIn('900000000', self.body(local, 'read_Location'))
+        self.assertIn('ud->loiter_ccw = (v != 0);', self.body(local, 'read_Location'))
+        self.assertIn('ScriptingM4::remote_row_index(L, ', local)
+        self.assertIn('remote_local_codecs[] = {', local)
+
+    def test_new_method_of_local_type_stays_remote(self):
+        # a method not in remote_local_methods may read vehicle state: the M7 serves it
+        code, output, _ = self.generate('new_local_method', ['userdata Vector3f method length_squared float'])
+        self.assertEqual(code, 0, output)
+        self.assertIn('{ "length_squared", ', self.read('new_local_method', 'tables.cpp'))
+        self.assertIn('Vector3f_length_squared(lua_State', self.read('new_local_method', 'dispatch.cpp'))
+
+    def test_local_method_with_depends(self):
+        self.assert_refused('local_depends', ['userdata Vector3f method length depends AP_AHRS_ENABLED'],
+                            'remote: local method Vector3f:length has a depends')
+
 
 if __name__ == '__main__':
     unittest.main()

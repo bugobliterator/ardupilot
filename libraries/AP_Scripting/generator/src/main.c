@@ -2992,7 +2992,6 @@ enum remote_quota {                   // ScriptingM4::QuotaClass
 // userdata the M4 holds as wire bytes: plain data, no pointers, every member that
 // matters described (or listed in remote_hidden_members)
 static const char *remote_blob_userdata[] = {
-  "Vector2f", "Vector3f", "Quaternion", "Location",
   "AP_Camera::camera_state_t", "AP_ESC_Telem_Backend::TelemetryData", "AP_Filesystem::stat_t",
   "AP_HAL::CANFrame", "AP_MotorsMatrix_Scripting_Dynamic::factor_table", "AP_Servo_Telem::TelemetryData",
   "BattMonitorScript_State", "Cylinder_Status", "EFI_State", "RangeFinder::RangeFinder_State",
@@ -3003,11 +3002,23 @@ static const char *remote_local_userdata[] = { "uint32_t", "uint64_t", NULL };
 // pure-data userdata the M4 implements itself (AP_Math and AP_Common/Location built into the
 // M4 image, m4/local): their fields, operators, constructor and the methods in
 // remote_local_methods run on the M4; they cross to and from remote calls in the blob wire form
-static const char *remote_local_blob_userdata[] = { NULL };
+static const char *remote_local_blob_userdata[] = { "Vector2f", "Vector3f", "Quaternion", "Location", NULL };
 // "Type:method" of a local blob type the M4 runs. Any other method of the type stays a remote
 // row, since it may read vehicle state (Location:change_alt_frame reads home, origin and
 // terrain): a method new to the description is remote until it is listed here
-static const char *remote_local_methods[] = { NULL };
+static const char *remote_local_methods[] = {
+  "Vector2f:length", "Vector2f:normalize", "Vector2f:is_nan", "Vector2f:is_inf", "Vector2f:is_zero",
+  "Vector2f:angle", "Vector2f:rotate", "Vector2f:copy",
+  "Vector3f:length", "Vector3f:normalize", "Vector3f:is_nan", "Vector3f:is_inf", "Vector3f:is_zero",
+  "Vector3f:dot", "Vector3f:cross", "Vector3f:scale", "Vector3f:copy", "Vector3f:xy", "Vector3f:rotate_xy",
+  "Vector3f:angle",
+  "Quaternion:length", "Quaternion:normalize", "Quaternion:get_euler_roll", "Quaternion:get_euler_pitch",
+  "Quaternion:get_euler_yaw", "Quaternion:from_euler", "Quaternion:inverse", "Quaternion:earth_to_body",
+  "Quaternion:to_axis_angle", "Quaternion:from_axis_angle", "Quaternion:from_angular_velocity",
+  "Location:get_distance", "Location:offset", "Location:offset_bearing", "Location:offset_bearing_and_pitch",
+  "Location:get_bearing", "Location:get_distance_NED", "Location:get_distance_NE", "Location:get_alt_frame",
+  "Location:copy", "Location:set_alt_m",
+  NULL };
 // ap_objects the M7 keeps for its whole run: their handles need no release
 static const char *remote_handle_ap_objects[] = {
   "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",

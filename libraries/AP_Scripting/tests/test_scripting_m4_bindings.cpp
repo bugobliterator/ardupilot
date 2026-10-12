@@ -36,7 +36,9 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
 {
     struct { const char *name; BindingKind kind; } expected[] = {
         { "ahrs", BindingKind::Singleton }, { "gcs", BindingKind::Singleton }, { "rc", BindingKind::Singleton },
-        { "Location", BindingKind::Blob }, { "Vector3f", BindingKind::Blob }, { "RangeFinder_State", BindingKind::Blob },
+        { "Location", BindingKind::LocalBlob }, { "Vector3f", BindingKind::LocalBlob },
+        { "Vector2f", BindingKind::LocalBlob }, { "Quaternion", BindingKind::LocalBlob },
+        { "CANFrame", BindingKind::Blob }, { "RangeFinder_State", BindingKind::Blob },
         { "ServoTelemetryData", BindingKind::Blob },
         { "RC_Channel", BindingKind::Handle }, { "AP_EFI_Backend", BindingKind::Handle },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
@@ -73,7 +75,7 @@ TEST(ScriptingM4Bindings, RowsAndIdsAgree)
             if (type.kind == uint8_t(BindingKind::Singleton)) {
                 EXPECT_TRUE(row.flags & ROW_HAS_SELF) << type.name << ":" << row.name;
             }
-            if (type.kind == uint8_t(BindingKind::Blob) && plain) {
+            if ((type.kind == uint8_t(BindingKind::Blob) || type.kind == uint8_t(BindingKind::LocalBlob)) && plain) {
                 EXPECT_TRUE(row.flags & ROW_WRITES_SELF) << type.name << ":" << row.name;
             }
         }
@@ -116,13 +118,9 @@ TEST(ScriptingM4Bindings, KnownBindings)
     binding_method_label(differential->method, label, sizeof(label));
     EXPECT_STREQ(label, "AP_Airspeed_Backend:handle_script_differential_pressure");
 
-    const uint8_t location = type_named("Location");
-    const BindingRow *creation = row_named(location, "new");
+    const BindingRow *creation = row_named(type_named("CANFrame"), "new");
     ASSERT_NE(creation, nullptr);
     EXPECT_TRUE(creation->flags & ROW_CREATION);
-    const BindingRow *add = row_named(type_named("Vector3f"), "__add");
-    ASSERT_NE(add, nullptr);
-    EXPECT_TRUE(add->flags & ROW_OPERATOR);
     EXPECT_NE(row_named(type_named("rc"), "get_channel"), nullptr);
     EXPECT_NE(row_named(type_named("param"), "set"), nullptr);   // set_by_name, renamed
     EXPECT_NE(row_named(type_named("efi"), "get_backend"), nullptr);
@@ -138,6 +136,27 @@ TEST(ScriptingM4Bindings, KnownBindings)
         found |= strcmp(binding_enum_names[gps.first_enum + i], "GPS_OK_FIX_3D") == 0;
     }
     EXPECT_TRUE(found);
+}
+
+TEST(ScriptingM4Bindings, LocalTypesKeepOnlyStateRows)
+{
+    // a local type's fields, operators, constructor and listed methods run on the M4: no row
+    for (const char *name : { "Vector2f", "Vector3f", "Quaternion" }) {
+        EXPECT_EQ(binding_types[type_named(name) - 1].row_count, 0) << name;
+    }
+    const uint8_t location = type_named("Location");
+    for (const char *name : { "new", "lat", "loiter_xtrack", "get_distance", "offset", "get_distance_NE", "copy",
+                              "set_alt_m", "get_alt_frame" }) {
+        EXPECT_EQ(row_named(location, name), nullptr) << name;
+    }
+    // the methods that read home, origin or terrain stay rows and write the result back
+    for (const char *name : { "change_alt_frame", "get_alt_m", "get_vector_from_origin_NEU",
+                              "get_vector_from_origin_NEU_m", "get_vector_from_origin_NEU_cm" }) {
+        const BindingRow *row = row_named(location, name);
+        ASSERT_NE(row, nullptr) << name;
+        EXPECT_TRUE(row->flags & ROW_WRITES_SELF) << name;
+    }
+    EXPECT_EQ(binding_types[location - 1].row_count, 5);
 }
 
 TEST(ScriptingM4Bindings, ContractCoversTheTable)
