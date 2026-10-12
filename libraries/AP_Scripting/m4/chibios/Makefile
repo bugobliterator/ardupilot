@@ -65,6 +65,7 @@ CPPSRC = $(ALLCPPSRC) \
          $(M4DIR)/m4_boxed_numerics.cpp \
          $(M4DIR)/m4_binding_local.cpp \
          $(M4DIR)/m4_file_proxy.cpp \
+         $(M4DIR)/m4_wrappers.cpp \
          $(addprefix $(M4DIR)/local/,$(M4_LOCAL_SOURCES)) \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
@@ -104,6 +105,7 @@ ULIBS = --specs=nano.specs --specs=nosys.specs -u _printf_float -lm
 # and newlib (the malloc behind lua_alloc, errno and the reent state of printf and strtod).
 LUA_RAM_OBJECTS = $(M4_LUA_SOURCES:.c=.o) ap_setjmp.o m4_lua.o lua_heap.o m4_rpc_client.o \
                   m4_bindings.o m4_boxed_numerics.o m4_binding_local.o m4_file_proxy.o \
+                  m4_wrappers.o \
                   $(M4_LOCAL_SOURCES:.cpp=.o)
 LUA_RAM_ARCHIVES = libc_nano.a libg_nano.a libm.a libnosys.a
 lua_ram_input = $(foreach object,$(LUA_RAM_OBJECTS),'*/obj/$(object)($(1))') \

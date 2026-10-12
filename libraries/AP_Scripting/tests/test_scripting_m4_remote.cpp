@@ -196,6 +196,14 @@ static int thing_bytes(lua_State *L) {
     lua_pushlstring(L, bytes, sizeof(bytes));
     return 1;
 }
+// lua_tolstring() as AP_HAL__I2CDevice_transfer() uses it
+static int thing_tolstring(lua_State *L) {
+    size_t length = 99;
+    const char *text = lua_tolstring(L, 1, &length);
+    lua_pushboolean(L, text != nullptr);
+    lua_pushinteger(L, int32_t(length));
+    return 2;
+}
 static int thing_types(lua_State *L) {
     for (int arg = 1; arg <= 4; arg++) {
         lua_pushinteger(L, lua_type(L, arg));
@@ -874,3 +882,22 @@ TEST(ScriptingM4Remote, StringResultBoundary)
 }
 
 AP_GTEST_MAIN()
+
+// without the nullptr/0 for a non-string, lua_tolstring() would raise an argument error (as
+// luaL_checklstring does) or hand back garbage with a stale length: the third run fails
+TEST(ScriptingM4Remote, ToLString)
+{
+    Call c;
+    c.args.string("a\0b", 3);
+    ASSERT_EQ(c.run(thing_tolstring), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(c.values[1].integer, 3);
+    c.args.integer(42);                      // a number converts, as in-process
+    ASSERT_EQ(c.run(thing_tolstring), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(c.values[1].integer, 2);
+    c.args.nil();                            // anything else: nullptr and length 0, no error
+    ASSERT_EQ(c.run(thing_tolstring), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);
+    EXPECT_EQ(c.values[1].integer, 0);
+}

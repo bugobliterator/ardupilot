@@ -154,6 +154,21 @@ const char *luaL_checklstring(lua_State *L, int arg, size_t *length)
     return copy;
 }
 
+// lua_tolstring(): a string, or a number as its text, as a terminated arena copy; nullptr and a
+// length of 0 for any other value, without an error, as in-process
+const char *lua_tolstring(lua_State *L, int arg, size_t *length)
+{
+    const RpcValue *value = arg_value(L, arg);
+    if (value == nullptr || (value->tag != ValueTag::String && value->tag != ValueTag::Integer &&
+                             value->tag != ValueTag::Number)) {
+        if (length != nullptr) {
+            *length = 0;
+        }
+        return nullptr;
+    }
+    return luaL_checklstring(L, arg, length);
+}
+
 int lua_toboolean(lua_State *L, int arg)
 {
     const RpcValue *value = arg_value(L, arg);

@@ -37,6 +37,9 @@ static const uint8_t ROW_CREATION = 0x08;      // the constructor of a blob type
 static const uint8_t ROW_DOT_ACCESS = 0x10;    // a legacy singleton function also called with a dot
                                                // (serial.find_serial(0)): when argument 1 is not the
                                                // singleton the stub sends a nil self and every argument
+static const uint8_t ROW_M4_WRAPPER = 0x20;    // the M4 end is a C function of its runtime around the
+                                               // call (remote_wrapper()): what cannot cross as is,
+                                               // a Lua table or a Lua file, is turned into values
 
 struct BindingType {
     const char *name;        // global name and metatable name (__name)

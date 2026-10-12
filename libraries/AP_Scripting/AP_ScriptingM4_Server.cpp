@@ -91,6 +91,19 @@ void AP_ScriptingM4_Server::end_session()
     // as in-process the userdata are collected when the Lua state closes
     _objects.clear();
     AP_Scripting *scripting = AP_Scripting::get_singleton();
+    // clear allocated i2c devices
+    for (uint8_t i = 0; i < SCRIPTING_MAX_NUM_I2C_DEVICE; i++) {
+        delete scripting->_i2c_dev[i];
+        scripting->_i2c_dev[i] = nullptr;
+    }
+    scripting->num_i2c_devices = 0;
+
+    // clear allocated PWM sources
+    for (uint8_t i = 0; i < SCRIPTING_MAX_NUM_PWM_SOURCE; i++) {
+        delete scripting->_pwm_source[i];
+        scripting->_pwm_source[i] = nullptr;
+    }
+    scripting->num_pwm_source = 0;
 #if AP_SCRIPTING_SERIALDEVICE_ENABLED
     // clear data in serial buffers that hasn't been transmitted
     scripting->_serialdevice.clear();

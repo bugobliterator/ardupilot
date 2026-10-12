@@ -211,13 +211,22 @@ uint32_t releases_dropped()
 
 static int remote_index(lua_State *L);
 
-// upvalues: method id, row flags, owning type id
+// upvalues: method id, row flags, owning type id. A row that wraps its call (ROW_M4_WRAPPER)
+// gets its wrapper, which calls remote_call() itself
 static void push_stub(lua_State *L, uint16_t method, uint8_t flags, uint8_t type_id)
 {
+    lua_CFunction function = remote_call;
+    if ((flags & ROW_M4_WRAPPER) != 0) {
+        function = remote_wrapper(method);
+        if (function == nullptr) {
+            // the tables and this image disagree: refuse the row, never hand the raw reply to the script
+            luaL_error(L, "M4: no wrapper for method %d", int(method));
+        }
+    }
     lua_pushinteger(L, method);
     lua_pushinteger(L, flags);
     lua_pushinteger(L, type_id);
-    lua_pushcclosure(L, remote_call, 3);
+    lua_pushcclosure(L, function, 3);
 }
 
 // the metatable of a binding type, made on its first use: __name, __m4type, __index and,

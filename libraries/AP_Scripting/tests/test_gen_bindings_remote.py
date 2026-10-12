@@ -328,6 +328,34 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('remote: replacement lua_m4_analog_channel of hal.analogin:channel matches no method',
                       result.stdout + result.stderr)
 
+    def test_i2c_wrapper(self):
+        code, output, _ = self.generate('i2c', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, local = self.outputs('i2c')
+        types = self.type_ids(tables)
+        device, kind = types['AP_HAL::I2CDevice']
+        self.assertEqual(kind, 2)                            # a session handle
+        method, flags = self.row_flags(tables, device, 'read_registers')
+        self.assertEqual(flags, 0x20)
+        # the M4 end of the row: its wrapper, by method id
+        self.assertIn('    case %d:\n        return wrap_I2CDevice_read_registers;\n' % method, local)
+        self.assertIn('    AP_HAL__I2CDevice_read_registers,\n', dispatch)
+        self.assertEqual(self.row_flags(tables, types['i2c'][0], 'get_device')[1], 0x11)
+
+    def test_wrapper_names_a_ported_function(self):
+        description = self.description.replace('AP_HAL__I2CDevice_read_registers', 'AP_HAL__I2CDevice_read_regs')
+        self.assertNotEqual(description, self.description)
+        work = os.path.join(self.tmp, 'wrapper')
+        os.makedirs(work)
+        desc = os.path.join(work, 'bindings.desc')
+        with open(desc, 'w') as f:
+            f.write(description)
+        result = subprocess.run([self.generator, '-o', os.path.join(work, 'gen'), '-r', os.path.join(work, 'remote'),
+                                 '-i', desc], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('remote: M4 wrapper wrap_I2CDevice_read_registers of AP_HAL__I2CDevice_read_registers '
+                      'matches no ported row', result.stdout + result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

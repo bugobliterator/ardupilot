@@ -125,6 +125,7 @@ void lua_pushnumber(lua_State *L, lua_Number value);
 void lua_pushstring(lua_State *L, const char *text);
 void lua_pushlstring(lua_State *L, const char *text, size_t length);   // binary, NULs included
 int lua_type(lua_State *L, int arg);   // lua.h's LUA_TNONE (-1), LUA_TNIL (0), ... of an argument
+const char *lua_tolstring(lua_State *L, int arg, size_t *length);   // nullptr for a non-string
 uint32_t *new_uint32_t(lua_State *L);
 uint64_t *new_uint64_t(lua_State *L);   // gps:time_epoch_usec()
 __attribute__((noreturn)) int not_supported_error(lua_State *L, int arg, const char *name);
@@ -155,6 +156,11 @@ int lua_serial_find_simulated_device(lua_State *L);
 int lua_serial_begin(lua_State *L);
 int lua_serial_writestring(lua_State *L);
 int lua_serial_readstring(lua_State *L);
+// AP_ScriptingM4_ManualI2C.cpp
+int lua_get_i2c_device(lua_State *L);
+int AP_HAL__I2CDevice_read_registers(lua_State *L);
+int AP_HAL__I2CDevice_transfer(lua_State *L);
+int lua_get_PWMSource(lua_State *L);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
 int lua_m4_Parameter_init_by_info(lua_State *L);
 int lua_m4_analog_channel(lua_State *L);

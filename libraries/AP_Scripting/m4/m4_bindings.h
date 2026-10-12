@@ -28,6 +28,11 @@ void flush_releases();
 // owned objects collected while the release queue was full: the M7 frees them at the session end
 uint32_t releases_dropped();
 
+// lua_remote_local.cpp (generated): the M4 end of a ROW_M4_WRAPPER row, nullptr for any other
+lua_CFunction remote_wrapper(uint16_t method);
+// m4_wrappers.cpp: around remote_call(), with the row's upvalues
+int wrap_I2CDevice_read_registers(lua_State *L);
+
 // a pure-data type the M4 implements itself (gen-bindings -r, lua_remote_local.cpp)
 static const uint16_t LOCAL_OBJECT_MAX = 32;   // the largest local type is 16 B (Location, Quaternion)
 static const uint16_t LOCAL_WIRE_MAX = 32;     // its largest wire form is 17 B (Location)

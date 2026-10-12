@@ -42,6 +42,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
         { "ServoTelemetryData", BindingKind::Blob },
         { "RC_Channel", BindingKind::Handle }, { "AP_EFI_Backend", BindingKind::Handle },
         { "Parameter", BindingKind::Owned }, { "AP_Scripting_SerialAccess", BindingKind::Owned },
+        { "AP_HAL::I2CDevice", BindingKind::Handle }, { "AP_HAL::PWMSource", BindingKind::Handle },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
         { "global", BindingKind::Global },
     };
@@ -55,8 +56,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
     // userdata carrying M7 pointers or state, and the manual-only ap_objects, wait for
     // IO and Manual Bindings (none of these is renamed: the C++ name is the Lua name)
     for (const char *name : { "CRSFMenu", "CRSFParameter",
-                              "DroneCAN_Handle", "SocketAPM", "ScriptingCANBuffer", "AP_HAL::I2CDevice",
-                              "AP_HAL::PWMSource" }) {
+                              "DroneCAN_Handle", "SocketAPM", "ScriptingCANBuffer" }) {
         EXPECT_EQ(type_named(name), 0) << name;
     }
 }
@@ -129,7 +129,7 @@ TEST(ScriptingM4Bindings, KnownBindings)
     EXPECT_NE(row_named(global, "millis"), nullptr);
     EXPECT_NE(row_named(global, "micros"), nullptr);
     EXPECT_EQ(row_named(global, "dirlist"), nullptr);           // manual: IO and Manual Bindings
-    EXPECT_EQ(row_named(global, "PWMSource"), nullptr);         // manual-only ap_object
+    EXPECT_NE(row_named(global, "PWMSource"), nullptr);         // a manual-only ap_object, now ported
 
     // an owned type's constructor is its ported creation function, called as the global Parameter
     const BindingRow *parameter_new = row_named(type_named("Parameter"), "new");
@@ -147,6 +147,13 @@ TEST(ScriptingM4Bindings, KnownBindings)
     ASSERT_NE(writestring, nullptr);
     EXPECT_EQ(writestring->flags, 0);
     EXPECT_EQ(row_named(type_named("AP_Scripting_SerialAccess"), "new"), nullptr);   // creation null
+
+    const BindingRow *read_registers = row_named(type_named("AP_HAL::I2CDevice"), "read_registers");
+    ASSERT_NE(read_registers, nullptr);
+    EXPECT_EQ(read_registers->flags, ROW_M4_WRAPPER);    // the M4 builds the table
+    const BindingRow *get_device = row_named(type_named("i2c"), "get_device");
+    ASSERT_NE(get_device, nullptr);
+    EXPECT_EQ(get_device->flags, ROW_HAS_SELF | ROW_DOT_ACCESS);
 
     const BindingType &gps = binding_types[type_named("gps") - 1];
     bool found = false;
