@@ -341,6 +341,40 @@ TEST_F(FileServerTest, DirectoryPagesCoverEveryEntryOnce)
     EXPECT_EQ(call_integer(SystemMethod::FsDir, { string("m4_no_such_directory", 20), integer(0) }), -ENOENT);
 }
 
+TEST_F(FileServerTest, DirectoryPagesOfLongNamesStayWithinTheByteLimit)
+{
+    // 12 names of 200 bytes: DIR_REPLY_BYTES ends a page after 3, long before the value count does
+    std::set<std::string> created;
+    for (int i = 0; i < 12; i++) {
+        const std::string name = std::string(1, 'a' + i) + std::string(199, 'n');
+        write_file(path(name.c_str()), "");
+        quota.reset(AP_HAL::millis());
+        created.insert(name);
+    }
+    std::set<std::string> listed;
+    uint16_t pages = 0;
+    int32_t start = 0;
+    do {
+        ASSERT_EQ(call(SystemMethod::FsDir, { string(dir_name, strlen(dir_name)), integer(start) }), ReplyStatus::Ok);
+        ASSERT_GE(reply_count, 1);
+        ASSERT_EQ(reply[reply_count - 1].tag, ValueTag::Integer);
+        EXPECT_LE(reply_count - 1, 3);
+        uint16_t bytes = 0;
+        for (uint8_t i = 0; i + 1 < reply_count; i++) {
+            ASSERT_EQ(reply[i].tag, ValueTag::String);
+            bytes += reply[i].length + 3;
+            EXPECT_TRUE(listed.insert(std::string(reply[i].string, reply[i].length)).second);
+        }
+        EXPECT_LE(bytes, DIR_REPLY_BYTES);
+        const int32_t next = reply[reply_count - 1].integer;
+        ASSERT_TRUE(next == 0 || next > start) << "paging does not advance";
+        start = next;
+        ASSERT_LT(++pages, 100);
+    } while (start != 0);
+    EXPECT_GE(pages, 4U);
+    EXPECT_EQ(listed, created);
+}
+
 TEST_F(FileServerTest, EmptyDirectoryPathIsLeftToTheFilesystem)
 {
     // dirlist("") is AP_Filesystem's call in-process (FatFs lists the root with the "@" ones, the
