@@ -148,6 +148,11 @@ public:
                 _error = true;
                 break;
             }
+            if (written > n) {
+                errno = EIO;   // the M7 wrote more than it was given
+                _error = true;
+                break;
+            }
             done += size_t(written);
             if (written < n) {
                 _error = true;   // the card is full
@@ -166,13 +171,14 @@ public:
         if (whence == SEEK_CUR) {
             offset -= long(_len - _pos);   // the M7 is past the bytes read ahead
         }
-        _pos = 0;
-        _len = 0;
-        _unget = -1;
-        _eof = false;
         const int32_t position = backend.seek(_id, int32_t(offset), whence);
         if (position < 0) {
-            errno = int(-position);
+            errno = int(-position);   // refused: the bytes read ahead are still the file at the M7's position
+        } else {
+            _pos = 0;
+            _len = 0;
+            _unget = -1;
+            _eof = false;
         }
         return 0;
     }
@@ -187,6 +193,10 @@ public:
         const int32_t position = backend.seek(_id, 0, SEEK_CUR);
         if (position < 0) {
             errno = int(-position);
+            return -1;
+        }
+        if (position < long(_len - _pos)) {
+            errno = EIO;
             return -1;
         }
         return long(position) - long(_len - _pos);

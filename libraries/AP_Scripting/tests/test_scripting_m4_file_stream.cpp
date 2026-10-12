@@ -12,6 +12,8 @@ struct MemoryBackend {
     size_t position = 0;
     bool open_file = false;
     int32_t open_result = 300;     // the id
+    int32_t write_reply_extra = 0; // added to every write reply
+    int32_t write_short = 0;       // bytes a write falls short by
     int32_t write_error = 0;       // a negative errno makes every write fail
     unsigned reads = 0;
     std::vector<uint16_t> write_sizes;
@@ -47,7 +49,7 @@ struct MemoryBackend {
         content.replace(position, std::min(size_t(count), content.size() - position),
                         reinterpret_cast<const char *>(buf), count);
         position += count;
-        return count;
+        return count - write_short + write_reply_extra;
     }
     int32_t seek(int32_t, int32_t offset, int whence)
     {
@@ -199,6 +201,52 @@ TEST(ScriptingM4FileStream, ClosedStreamFailsCleanly)
     EXPECT_EQ(file.close(backend), EOF);
     EXPECT_EQ(backend.reads, 0U);                     // the M7 is never asked about a stream that is not open
     EXPECT_TRUE(backend.write_sizes.empty());
+}
+
+TEST(ScriptingM4FileStream, RefusedSeekKeepsReadAhead)
+{
+    MemoryBackend backend;
+    backend.content = pattern(600);
+    FileStream file;
+    ASSERT_TRUE(file.open(backend, "s/f.txt", "r"));
+    char first[5];
+    ASSERT_EQ(file.read(backend, first, 1, 5), 5U);        // the M7 is at 256
+    EXPECT_EQ(file.seek(backend, -1, SEEK_SET), 0);
+    EXPECT_EQ(file.tell(backend), 5);
+    char next[5];
+    ASSERT_EQ(file.read(backend, next, 1, 5), 5U);
+    EXPECT_EQ(std::string(next, 5), backend.content.substr(5, 5));
+}
+
+TEST(ScriptingM4FileStream, OversizedWriteReplyIsAnError)
+{
+    MemoryBackend backend;
+    FileStream file;
+    ASSERT_TRUE(file.open(backend, "s/f.txt", "w"));
+    backend.write_reply_extra = 7;
+    EXPECT_LE(file.write(backend, "abcd", 1, 4), 4U);
+    EXPECT_TRUE(file.error());
+}
+
+TEST(ScriptingM4FileStream, ShortWriteIsAnError)
+{
+    MemoryBackend backend;
+    FileStream file;
+    ASSERT_TRUE(file.open(backend, "s/f.txt", "w"));
+    backend.write_short = 1;
+    EXPECT_EQ(file.write(backend, "abcd", 1, 4), 3U);
+    EXPECT_TRUE(file.error());
+}
+
+TEST(ScriptingM4FileStream, ItemCountOverflowFails)
+{
+    MemoryBackend backend;
+    FileStream file;
+    ASSERT_TRUE(file.open(backend, "s/f.txt", "w"));
+    errno = 0;
+    EXPECT_EQ(file.write(backend, "x", 4, SIZE_MAX / 2), 0U);
+    EXPECT_EQ(errno, EOVERFLOW);
+    EXPECT_TRUE(file.error());
 }
 
 AP_GTEST_MAIN()
