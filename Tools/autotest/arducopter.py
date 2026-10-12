@@ -19611,6 +19611,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4PureData,
             self.ScriptingM4Files,
             self.ScriptingM4Objects,
+            self.ScriptingM4Devices,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22350,10 +22351,11 @@ RTL_ALT_M 111
             os.unlink(leftover)
 
     def wait_m4_script_text(self, text, timeout):
-        '''waits for an M4 test script's text (a regex), failing at once on a Lua error or a FAILED text'''
-        m = self.wait_statustext(r"(?:%s)|Lua: .*|.*FAILED.*" % text, regex=True, check_context=True,
-                                 timeout=timeout)
-        if m.text.startswith("Lua: ") or "FAILED" in m.text:
+        '''waits for an M4 test script's text (a regex), failing at once on a Lua error, FAILED or a check's FAIL text'''
+        failure = r"M4 \w+ FAIL "   # a test script's per-check text
+        m = self.wait_statustext(r"(?:%s)|Lua: .*|.*FAILED.*|%s.*" % (text, failure), regex=True,
+                                 check_context=True, timeout=timeout)
+        if m.text.startswith("Lua: ") or "FAILED" in m.text or re.match(failure, m.text):
             raise NotAchievedException("M4 script: '%s'" % m.text)
         return m
 
@@ -22990,6 +22992,128 @@ RTL_ALT_M 111
             self.reboot_sitl()
         finally:
             self.remove_m4_files_leftovers("m4_hold_objects_*.txt")
+
+    # the CAN drivers and networking m4_devices.lua uses; they start at boot
+    M4_DEVICE_PARAMETERS = {
+        "CAN_P1_DRIVER": 1,
+        "CAN_P2_DRIVER": 2,
+        "CAN_D1_PROTOCOL": 1,    # DroneCAN
+        "CAN_D2_PROTOCOL": 10,   # scripting
+        "NET_ENABLE": 1,
+    }
+    M4_DEVICE_LISTEN_PORT = 15905   # m4_devices_hold.lua
+
+    def m4_devices_connect(self, port):
+        '''a TCP connection to a port of the M4 script, which accepts it within a second'''
+        peer = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.wait_m4_script_text("M4 devices accepted", timeout=30)
+        return peer
+
+    def ScriptingM4Devices(self):
+        '''I2C devices, PWM sources, CAN buffers, DroneCAN handles, sockets and CRSF menus of SITL M4 scripts'''
+        self.m4_devices_stages()
+        self.m4_devices_restart()
+
+    def m4_devices_stages(self):
+        '''m4_devices.lua: the stages of every device'''
+        try:
+            self.context_push()
+            self.set_parameters(self.M4_DEVICE_PARAMETERS)
+            self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+            self.context_collect("STATUSTEXT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_VM_I_COUNT": 1000000,
+                "SCR_HEAP_SIZE": 188416,
+                "LOG_DISARMED": 1,
+            })
+            self.install_test_script_context("m4_devices.lua")
+            self.reboot_sitl()
+            self.wait_statustext(r"Scripting: started on M4 \(1 scripts, heap \d+KB\)", regex=True,
+                                 check_context=True, timeout=30)
+            done = self.wait_m4_script_text(r"M4 devices (passed|failed \d+)", timeout=240)
+            failed = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 devices FAIL")]
+            if failed or "passed" not in done.text:
+                raise NotAchievedException("m4_devices.lua: %s" % (failed or done.text))
+            self.delay_sim_time(2, reason="M4ST is written once a second")
+            # the DroneCAN broadcasts past the CAN frame quota are counted
+            if self.m4_quota_hits() == 0:
+                raise NotAchievedException("no CAN quota hit counted in M4ST")
+            errors = self.m4_protocol_errors()
+            if errors != 0:
+                raise NotAchievedException("%u M4 protocol errors" % errors)
+            self.context_pop()
+            self.reboot_sitl()
+        finally:
+            self.remove_m4_files_leftovers("m4_devices_send.txt")
+
+    def m4_devices_restart(self):
+        '''a session's devices go when the M4 restarts'''
+        peers = []
+        try:
+            self.context_push()
+            self.set_parameters(self.M4_DEVICE_PARAMETERS)
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_collect("STATUSTEXT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_HEAP_SIZE": 188416,
+                "LOG_DISARMED": 1,
+            })
+            self.install_test_script_context("m4_devices_hold.lua")
+            self.reboot_sitl()
+            held = [
+                r"M4 devices i2c \d+ pwm \d+ bound \S+ menu \S+",
+                r"M4 devices crsf sub \S+ params \d+",
+                r"M4 devices can \d+ filt \d+ sub \d+ ninth refused \S+",
+                r"M4 devices listening \S+",
+            ]
+            first = [self.wait_m4_script_text(pattern, timeout=60).text for pattern in held]
+            expected = [
+                None,
+                None,
+                "M4 devices can 8 filt 8 sub 8 ninth refused true",
+                "M4 devices listening true",
+            ]
+            if not first[0].startswith("M4 devices i2c 4 pwm 4 bound true menu ") or first[0].endswith(" nil"):
+                raise NotAchievedException("first session: '%s'" % first[0])
+            if "nil" in first[1] or first[1].endswith("params 0"):
+                raise NotAchievedException("first session: '%s'" % first[1])
+            for text, want in zip(first, expected):
+                if want is not None and text != want:
+                    raise NotAchievedException("first session: '%s', expected '%s'" % (text, want))
+            peers.append(self.m4_devices_connect(self.M4_DEVICE_LISTEN_PORT))
+            self.context_clear_collection("STATUSTEXT")
+            self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: the M7 restarts it
+            self.wait_statustext(r"Scripting: M4 restarted \(1/\d+\)", regex=True, check_context=True, timeout=30)
+            again = [self.wait_m4_script_text(pattern, timeout=60).text for pattern in held]
+            # without end_session(): i2c 0, pwm 0, bound false (the old socket holds the port), a
+            # menu id one menu further on (the old menu is still there), no CAN buffer past the
+            # cap or filter free, no subscription free, and the listener not bound
+            if again != first:
+                raise NotAchievedException("after the restart: %s, first session %s" % (again, first))
+            # the M7 resets a connected stream socket at the session end, where a close sends a FIN
+            # and the peer reads an empty string
+            peers[0].settimeout(10)
+            try:
+                data = peers[0].recv(16)
+            except ConnectionResetError:
+                self.progress("the peer's connection was reset")
+            except socket.timeout:
+                raise NotAchievedException("the peer of the first session's socket saw nothing")
+            else:
+                raise NotAchievedException("the peer of the first session's socket read %s, not a reset" % data)
+            # the new session's listener takes a connection: the first listener's port was freed
+            peers.append(self.m4_devices_connect(self.M4_DEVICE_LISTEN_PORT))
+            self.delay_sim_time(2, reason="M4ST is written once a second")
+            errors = self.m4_protocol_errors()
+            if errors != 0:
+                raise NotAchievedException("%u M4 protocol errors across the restart" % errors)
+            self.context_pop()
+            self.reboot_sitl()
+        finally:
+            for peer in peers:
+                peer.close()
 
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
@@ -25118,6 +25242,7 @@ return update, 1000
             "ScriptingM4PureData": "Requires --enable-scripting-m4 SITL build and ScriptingPureDataReference",
             "ScriptingM4Files": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Objects": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4Devices": "Requires --enable-scripting-m4 SITL build",
         }
 
 
