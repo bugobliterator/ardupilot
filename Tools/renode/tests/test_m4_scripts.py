@@ -128,13 +128,19 @@ def check_log_rows(run, directory):
         assert name in calls, 'no SRPC row for %s (got %s)' % (name, calls)
 
 
-def wait_all(run, patterns, timeout):
-    '''Each pattern matches a STATUSTEXT received after the last wait_text() match, in any order.'''
+def wait_all(run, patterns, timeout, failure=None):
+    '''Each pattern matches a STATUSTEXT received after the last wait_text() match, in any order.
+    A text matching the failure pattern ends the wait at once.'''
     start = run.next_text
     pending = [re.compile(pattern) for pattern in patterns]
+    failure = re.compile(failure) if failure else None
     deadline = time.monotonic() + timeout
     while True:
         run.check()
+        if failure:
+            failed = [text for text in run.texts[start:] if failure.search(text)]
+            if failed:
+                raise RuntimeError('failure text %s; waiting for %s' % (failed[0], [regex.pattern for regex in pending]))
         pending = [regex for regex in pending if not any(regex.search(text) for text in run.texts[start:])]
         if not pending:
             return

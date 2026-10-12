@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fat_image  # noqa: E402
 from test_m4_containment import start_m4lua  # noqa: E402,F401
-from test_m4_scripts import SCRIPTS, SCRIPT_TIMEOUT, start_with_scripts, wait_all  # noqa: E402
+from test_m4_scripts import SCRIPTS, SCRIPT_TIMEOUT, host_thread_stack, start_with_scripts, wait_all  # noqa: E402
 
 MODULES = [(SCRIPTS / 'tests' / 'modules' / 'test' / name, 'APM/scripts/modules/test')
            for name in ('nested.lua', 'top.lua')]
@@ -41,13 +41,17 @@ def test_m4_module_loading(start_m4lua, tmp_path):  # noqa: F811
                              files=MODULES + [(root_listing, 'APM/scripts')])
     run.wait_text(r'^Scripting: started on M4 \(3 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
     wait_all(run, [r'^Internal tests passed$', r'^M4 files (passed|failed \d+)$',
-                   r'^M4 root listing (ok|failed)$'], SCRIPT_TIMEOUT)
+                   r'^M4 root listing (ok|failed)$'], SCRIPT_TIMEOUT, failure=r'^(Lua: |M4 files FAIL)')
     failed = [text for text in run.texts
               if text.startswith('M4 files FAIL') or text.startswith('M4 files failed') or text.startswith('Lua: ')
               or text == 'M4 root listing failed']
     assert not failed, failed
     assert 'M4 files passed' in run.texts, run.texts[-15:]
     assert 'M4 root listing ok' in run.texts, run.texts[-15:]
+    # the file calls ran on FatFs under the RPC dispatch: the host thread keeps 2 KB of its 8 KB stack
+    free, size = host_thread_stack(run, tmp_path / 'threads.txt')
+    print('ScriptingM4 host thread stack: %u of %u bytes free' % (free, size), flush=True)
+    assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
     run.wait_alive(10)
     run.stop()
     # a ".." above the root lands at the SD root on FatFs: the refused writes left nothing there,
