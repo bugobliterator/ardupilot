@@ -22415,12 +22415,16 @@ RTL_ALT_M 111
         self.delay_sim_time(3, reason="the M4 reports call counts once a second")
         totals = self.m4_srpc_totals()
         self.m4_assert_no_local_rows(totals)
-        # the script's only remote calls are its texts: no local call leaked into m4:other
+        # the script's remote calls are its texts and the Location rows that read M7 state: no local call
+        # leaked into m4:other
+        state_calls = sum(totals.get(name, 0) for name in self.M4_LOCATION_STATE_ROWS)
         logged = self.m4_binding_calls_logged(totals)
-        self.progress("SRPC binding calls logged %u, script texts %u" % (logged, texts))
-        if logged != texts:
+        self.progress("SRPC binding calls logged %u, script texts %u, Location state calls %u" %
+                      (logged, texts, state_calls))
+        if state_calls == 0 or logged != texts + state_calls:
             raise NotAchievedException(
-                "SRPC binding calls: %u logged, the script sent %u texts (%s)" % (logged, texts, totals))
+                "SRPC binding calls: %u logged, the script sent %u texts and %u Location state calls (%s)" %
+                (logged, texts, state_calls, totals))
         self.context_pop()
         self.reboot_sitl()
 
