@@ -109,15 +109,15 @@ const char *name(uint16_t id)
 
 
 // @LoggerMessage: SRPC
-// @Description: Scripting binding call statistics over the last second (stats builds only)
+// @Description: Scripting binding call statistics over the last second (stats builds only). On M4 scripting builds the rows are the M4's calls to the M7, measured as round trips on the M4: per-method rows, then m4:other (the binding calls past the top rows and the untimed ones, summed) and m4:sysother (the m4:* system methods past them, summed). Calls the M7 refused by quota are counted in M4ST.QHit.
 // @Field: TimeUS: Time since system startup
-// @Field: Id: binding id
-// @Field: Name: binding name
+// @Field: Id: binding id; on the M4, the RPC method id
+// @Field: Name: binding name; on the M4, the name the M4 sent ("type:method", m4:* for system methods), with bytes outside printable ASCII replaced by '?'
 // @Field: N: calls in the window
-// @Field: P50: median call time bucket bound
-// @Field: P99: 99th percentile call time bucket bound
-// @Field: Max: longest call
-// @Field: SemMax: longest semaphore wait inside the binding
+// @Field: P50: median call time bucket bound; for m4:other and m4:sysother, the largest of the summed methods (an upper bound)
+// @Field: P99: 99th percentile call time bucket bound; for m4:other and m4:sysother, the largest of the summed methods (an upper bound)
+// @Field: Max: longest call; for m4:other and m4:sysother, the longest of the summed methods
+// @Field: SemMax: longest semaphore wait inside the binding; on the M4, the longest M7 wake plus execution time of one call, not a semaphore wait
 // @Field: Tot: total call time in the window
 void update(uint32_t now_ms)
 {
