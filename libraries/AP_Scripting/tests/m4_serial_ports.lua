@@ -85,6 +85,40 @@ local stages = {
     check(first .. second == data, "the chunks join to what was written")
     check(device:readstring(65535) == "", "nothing left after the chunks")
   end,
+  function()   -- counts around the bound with 1000 bytes available: up to the count, at most 768
+    local function read_boundary(count)
+      local data = string.rep("0123456789", 100)
+      check(driver:writestring(data) == #data, "write 1000 for " .. count)
+      local first = device:readstring(count)
+      local left = 0
+      while true do
+        local rest = device:readstring(CHUNK)
+        if rest == "" then
+          break
+        end
+        left = left + #rest
+      end
+      return #first, left
+    end
+    -- without the 768 bound a count above it returns more than one reply
+    local got, left = read_boundary(1000)
+    check(got == CHUNK and left == 232, "readstring(1000) " .. got .. "+" .. left)
+    got, left = read_boundary(65535)
+    check(got == CHUNK and left == 232, "readstring(65535) " .. got .. "+" .. left)
+    got, left = read_boundary(CHUNK - 1)
+    check(got == CHUNK - 1 and left == 233, "readstring(767) " .. got .. "+" .. left)
+    got, left = read_boundary(CHUNK)
+    check(got == CHUNK and left == 232, "readstring(768) " .. got .. "+" .. left)
+    got, left = read_boundary(CHUNK + 1)
+    check(got == CHUNK and left == 232, "readstring(769) " .. got .. "+" .. left)
+    got, left = read_boundary(0)
+    check(got == 0 and left == 1000, "readstring(0) leaves everything " .. got .. "+" .. left)
+    -- a negative count is out of range before anything is read
+    check(driver:writestring("0123456789") == 10, "write 10")
+    local err = raises("readstring(-1)", device.readstring, device, -1)
+    check(string.find(err, "out of range", 1, true) ~= nil, "readstring(-1) '" .. err .. "'")
+    check(device:readstring(10) == "0123456789", "readstring(-1) read nothing")
+  end,
 }
 local stage = 0
 

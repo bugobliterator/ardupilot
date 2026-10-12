@@ -5,7 +5,6 @@
 -- Needs SCR_SDEV_EN 1 and SCR_SDEV1_PROTO 28 (a simulated device on the first scripting port).
 
 local POOL_SLOTS = 64     -- ScriptingM4::ObjectPool::SLOTS
-local IO_CHUNK = 768      -- ScriptingM4Remote::IO_CHUNK: bytes per readstring() reply
 
 local failures = 0
 local function check(ok, name)
@@ -92,62 +91,21 @@ local function churn()
   check(made == 1000, "churn " .. made)
 end
 
--- write 1000 bytes to the far end, then read count bytes from the port: what a call returns
--- and what is left. Without the 768-byte bound a count above it returns more than one reply
-local function read_boundary(driver, device, count)
-  local data = string.rep("0123456789", 100)
-  check(driver:writestring(data) == #data, "write 1000 for " .. count)
-  local first = device:readstring(count)
-  local left = 0
-  while true do
-    local rest = device:readstring(IO_CHUNK)
-    if rest == nil or #rest == 0 then
-      break
-    end
-    left = left + #rest
-  end
-  return first, left
-end
-
+-- serial port objects are pool objects too: 200 of them in one run, 400 with the far ends, are
+-- only made if the M4 releases the dropped ones. Without the release of that type the pool is
+-- full after 64. (Dot calls, argument errors and readstring bounds: m4_serial_ports.lua)
 local function serial_ports()
-  check(serial:find_serial(0) ~= nil, "serial:find_serial(0)")
-  -- a dot call keeps its argument: without ROW_DOT_ACCESS the 0 is replaced by the nil self
-  -- and the M7 answers "too few arguments"
-  local ok, by_dot = pcall(serial.find_serial, 0)
-  check(ok and by_dot ~= nil, "serial.find_serial(0): " .. tostring(by_dot))
-  local driver = serial.find_serial(0)
-  local device = serial.find_simulated_device(28, 0)
-  check(device ~= nil, "serial.find_simulated_device(28, 0)")
-  check(serial:find_serial(9) == nil, "no tenth scripting port")
-  check(has(error_of(serial.find_serial), "too few arguments"), "dot call without arguments")
-  local many = {}
-  for i = 1, 16 do
-    many[i] = i
+  local made = 0
+  for _ = 1, 200 do
+    local driver = serial.find_serial(0)
+    local device = serial.find_simulated_device(28, 0)
+    if driver ~= nil and device ~= nil then
+      made = made + 1
+    end
   end
-  -- 16 arguments and the nil self are 17 values, as in-process after the dot fix
-  check(has(error_of(serial.find_serial, table.unpack(many)), "#17 ") and
-        has(error_of(serial.find_serial, table.unpack(many)), "too many arguments"), "dot call with 16 arguments")
-  if device and driver then
-    -- 1000 bytes available: a call returns up to the count and never more than IO_CHUNK
-    local first, left = read_boundary(driver, device, 1000)
-    check(first ~= nil and #first == IO_CHUNK and left == 232, "readstring(1000): " .. tostring(first and #first) .. "+" .. left)
-    first, left = read_boundary(driver, device, 65535)
-    check(first ~= nil and #first == IO_CHUNK and left == 232, "readstring(65535)")
-    first, left = read_boundary(driver, device, IO_CHUNK - 1)
-    check(first ~= nil and #first == IO_CHUNK - 1 and left == 233, "readstring(767)")
-    first, left = read_boundary(driver, device, IO_CHUNK)
-    check(first ~= nil and #first == IO_CHUNK and left == 232, "readstring(768)")
-    first, left = read_boundary(driver, device, IO_CHUNK + 1)
-    check(first ~= nil and #first == IO_CHUNK and left == 232, "readstring(769)")
-    first, left = read_boundary(driver, device, 0)
-    check(first == "" and left == 1000, "readstring(0) leaves everything")
-    -- a negative count is out of range before anything is read
-    local data = string.rep("x", 10)
-    check(driver:writestring(data) == 10, "write 10")
-    check(has(error_of(device.readstring, device, -1), "out of range"), "readstring(-1)")
-    check(device:readstring(10) == data, "readstring(-1) read nothing")
-    check(driver:writestring("") == 0, "writestring empty")
-  end
+  check(made == 200, "serial churn " .. made)
+  local driver = serial:find_serial(0)
+  check(driver ~= nil and driver:writestring("") == 0, "writestring empty")
 end
 
 local function analog_channel()
