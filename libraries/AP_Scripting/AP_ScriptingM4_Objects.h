@@ -181,4 +181,31 @@ private:
     uint32_t _dropped = 0;
 };
 
+// objects the HAL hands out but never takes back (AnalogIn::channel()): those earlier M4 sessions
+// were handed are handed out again, in order, before make() is asked for a new one. Up to N are
+// kept; past that a new object is still handed out, as in-process. Host thread only
+template <typename T, uint8_t N> class SessionRecycler {
+public:
+    template <typename Make> T *take(Make make)
+    {
+        if (_handed < _count) {
+            return _items[_handed++];
+        }
+        T *item = make();
+        if (item != nullptr && _count < N) {
+            _items[_count++] = item;
+            _handed = _count;
+        }
+        return item;
+    }
+    // a new M4 session: every kept object can be handed out again
+    void new_session() { _handed = 0; }
+    uint8_t count() const { return _count; }
+
+private:
+    T *_items[N] {};
+    uint8_t _count = 0;
+    uint8_t _handed = 0;
+};
+
 }  // namespace ScriptingM4

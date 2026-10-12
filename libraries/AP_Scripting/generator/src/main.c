@@ -3061,6 +3061,7 @@ struct remote_replacement {
 };
 static const struct remote_replacement remote_replaced_methods[] = {
   { "Parameter", "init_by_info", "lua_m4_Parameter_init_by_info" },   // an M7 allocation per call, never freed
+  { "hal.analogin", "channel", "lua_m4_analog_channel" },   // a new HAL slot per M4 session
   { NULL, NULL, NULL } };
 static int remote_replacement_matched[sizeof(remote_replaced_methods) / sizeof(remote_replaced_methods[0])];
 

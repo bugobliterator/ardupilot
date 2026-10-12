@@ -465,8 +465,9 @@ void AP_ScriptingM4::go_off(const char *reason)
     }
     // after run_permit: stopping rings the restart doorbell, which the M4 reads as park
     platform_stop();
-    // an M4 that is off never closes its files
-    _server.close_files();
+    // an M4 that is off never closes its files or frees its objects and devices. A stale handle
+    // or object entry cannot be reached afterwards: the M4 is stopped and the next start resets
+    _server.end_session();
     enter(State::Off, AP_HAL::millis());
 }
 

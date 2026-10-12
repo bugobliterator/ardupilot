@@ -2,6 +2,7 @@
 
 #if AP_SCRIPTING_M4_ENABLED
 
+#include <AP_Arming/AP_Arming.h>
 #include <AP_Filesystem/AP_Filesystem.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Logger/AP_Logger.h>
@@ -57,25 +58,52 @@ AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
 void AP_ScriptingM4_Server::reset(uint32_t session)
 {
     close_file();
-    // the previous session's files: a restart closes them, as it frees its handles (spec §8)
-    _files.reset();
+    // the previous session's files, owned objects and devices: a restart frees them (spec §8).
+    // Before the handles reset and the session id advances, so every owned object is destroyed
+    // while its session is still current
+    end_session();
     {
         WITH_SEMAPHORE(_table_sem);
         _table.clear();
     }
     _listed = false;
     _next_read_index = 0;
-    // the previous session's owned objects: destroyed, as in-process their userdata are
-    // collected when the Lua state closes
-    _objects.clear();
     // handles of the previous session are stale from here on, even if the M4 repeats
     // its session number: the table is emptied unconditionally
     _handles.reset(session);
+    ScriptingM4Remote::analog_new_session();
+#if AP_ARMING_ENABLED && AP_ARMING_AUX_AUTH_ENABLED
+    // Clear any dangling pre-arms from previous script loads (in-process at every start)
+    AP_Arming::get_singleton()->reset_all_aux_auths();
+#endif
     _quota.reset(AP_HAL::millis());
     WITH_SEMAPHORE(_error_sem);
     _last_error[0] = 0;
     _error_prints = ERROR_REPRINTS;
     _started = false;
+}
+
+// AP_Scripting::thread() after lua->run(): the session's files, owned objects and devices go,
+// and data the scripts did not take or send is dropped
+void AP_ScriptingM4_Server::end_session()
+{
+    _files.reset();
+    // as in-process the userdata are collected when the Lua state closes
+    _objects.clear();
+    AP_Scripting *scripting = AP_Scripting::get_singleton();
+#if AP_SCRIPTING_SERIALDEVICE_ENABLED
+    // clear data in serial buffers that hasn't been transmitted
+    scripting->_serialdevice.clear();
+#endif
+    // Clear blocked commands
+    {
+        WITH_SEMAPHORE(scripting->mavlink_command_block_list_sem);
+        while (scripting->mavlink_command_block_list != nullptr) {
+            AP_Scripting::command_block_list *next_item = scripting->mavlink_command_block_list->next;
+            delete scripting->mavlink_command_block_list;
+            scripting->mavlink_command_block_list = next_item;
+        }
+    }
 }
 
 ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *values, uint8_t argc,

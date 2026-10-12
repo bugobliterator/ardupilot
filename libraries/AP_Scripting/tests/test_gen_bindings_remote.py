@@ -303,6 +303,31 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('remote: dot access lua_serial_find_serial is no manual function of a singleton',
                       result.stdout + result.stderr)
 
+    def test_replaced_method(self):
+        code, output, _ = self.generate('replaced', [])
+        self.assertEqual(code, 0, output)
+        _, dispatch, _ = self.outputs('replaced')
+        # analog:channel() runs the M7 port; the generated body is not emitted, so nothing can reach it
+        self.assertIn('    lua_m4_analog_channel,\n', dispatch)
+        self.assertNotIn('static int hal_analogin_channel(', dispatch)
+
+    def test_replacement_names_a_method(self):
+        # without the matched check a renamed method leaves its replacement in the list unused, silently
+        description = self.description.replace(
+            "singleton hal.analogin method channel AP_HAL::AnalogSource ANALOG_INPUT_NONE'literal",
+            "singleton hal.analogin method channel_renamed AP_HAL::AnalogSource ANALOG_INPUT_NONE'literal")
+        self.assertNotEqual(description, self.description)
+        work = os.path.join(self.tmp, 'replacement')
+        os.makedirs(work)
+        desc = os.path.join(work, 'bindings.desc')
+        with open(desc, 'w') as f:
+            f.write(description)
+        result = subprocess.run([self.generator, '-o', os.path.join(work, 'gen'), '-r', os.path.join(work, 'remote'),
+                                 '-i', desc], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('remote: replacement lua_m4_analog_channel of hal.analogin:channel matches no method',
+                      result.stdout + result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

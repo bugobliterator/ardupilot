@@ -36,8 +36,10 @@ public:
     // the checksums, the last error and the previous session's handles go. Host thread
     // only, never during a call; called at every M4 start and restart
     void reset(uint32_t session);
-    // the M4's files: closed when scripting goes off. Host thread, or init() before it runs
-    void close_files() { _files.reset(); }
+    // what the in-process scripting thread does when a run ends: the session's files, owned
+    // objects and devices go. Called by reset() and when scripting goes off. Host thread,
+    // or init() before it runs
+    void end_session();
     // calls the quotas refused since the last call (M4ST QHit)
     uint32_t take_quota_hits() { return _quota.take_hits(); }
     // one Call or Notify; for a Call the results, or the error text, go to results

@@ -157,6 +157,9 @@ int lua_serial_writestring(lua_State *L);
 int lua_serial_readstring(lua_State *L);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
 int lua_m4_Parameter_init_by_info(lua_State *L);
+int lua_m4_analog_channel(lua_State *L);
+// the analog sources earlier sessions were handed may be handed out again (AP_ScriptingM4_Server::reset())
+void analog_new_session();
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)
 bool method_available(uint16_t method);

@@ -204,4 +204,34 @@ TEST(ScriptingM4Objects, FullReleaseQueueCountsDrops)
     EXPECT_EQ(queue.dropped(), 1U);
 }
 
+TEST(ScriptingM4Objects, RecyclerHandsOutEarlierSessionsSources)
+{
+    static int sources[6];
+    int made = 0;
+    auto make = [&]() -> int * { return made < 6 ? &sources[made++] : nullptr; };
+    SessionRecycler<int, 4> recycler;
+    EXPECT_EQ(recycler.take(make), &sources[0]);
+    EXPECT_EQ(recycler.take(make), &sources[1]);
+    EXPECT_EQ(made, 2);
+    recycler.new_session();
+    // the next session gets the same two before anything new: without the recycler the HAL
+    // would hand out two more of its slots per M4 restart
+    EXPECT_EQ(recycler.take(make), &sources[0]);
+    EXPECT_EQ(recycler.take(make), &sources[1]);
+    EXPECT_EQ(made, 2);
+    EXPECT_EQ(recycler.take(make), &sources[2]);
+    EXPECT_EQ(made, 3);
+    EXPECT_EQ(recycler.count(), 3);
+    // past its capacity a source is still handed out, only not kept for later sessions
+    EXPECT_EQ(recycler.take(make), &sources[3]);
+    EXPECT_EQ(recycler.take(make), &sources[4]);
+    EXPECT_EQ(recycler.count(), 4);
+    recycler.new_session();
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(recycler.take(make), &sources[i]) << i;
+    }
+    EXPECT_EQ(recycler.take(make), &sources[5]);
+    EXPECT_EQ(recycler.take(make), nullptr);   // the HAL ran out: nil, as in-process
+}
+
 AP_GTEST_MAIN()

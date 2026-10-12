@@ -10,7 +10,10 @@
 
 #include <AP_HAL/AP_HAL.h>
 #include "AP_Scripting_helpers.h"
+#include "AP_ScriptingM4_Objects.h"
 #include "AP_ScriptingM4_Remote.h"
+
+extern const AP_HAL::HAL& hal;
 
 namespace ScriptingM4Remote {
 
@@ -60,6 +63,36 @@ int lua_new_Parameter(lua_State *L)
 int lua_m4_Parameter_init_by_info(lua_State *L)
 {
     return luaL_error(L, "init_by_info not supported on M4");
+}
+
+#if !defined(HAL_DISABLE_ADC_DRIVER)
+// generated (lua_remote_dispatch.cpp)
+AP_HAL::AnalogSource **new_AP_HAL__AnalogSource(lua_State *L);
+
+// the analog sources M4 sessions were handed: the HAL never frees one (ChibiOS has 16), and every
+// session's scripts ask again, so new ones would use the HAL's slots up after a few M4 restarts
+static ScriptingM4::SessionRecycler<AP_HAL::AnalogSource, 16> analog_sources;
+
+// analog:channel(): hal_analogin_channel() of the generated bindings, handing out a source an
+// earlier session was handed before asking the HAL for a new one. A reused source keeps the pin
+// its last script set until set_pin(); a new one has none, as in-process
+int lua_m4_analog_channel(lua_State *L)
+{
+    binding_argcheck(L, 1);
+    AP_HAL::AnalogSource *data = analog_sources.take([]() { return hal.analogin->channel(ANALOG_INPUT_NONE); });
+    if (data == nullptr) {
+        return 0;
+    }
+    *new_AP_HAL__AnalogSource(L) = data;
+    return 1;
+}
+#endif  // !defined(HAL_DISABLE_ADC_DRIVER)
+
+void analog_new_session()
+{
+#if !defined(HAL_DISABLE_ADC_DRIVER)
+    analog_sources.new_session();
+#endif
 }
 
 }  // namespace ScriptingM4Remote
