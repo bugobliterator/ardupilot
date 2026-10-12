@@ -22343,10 +22343,18 @@ RTL_ALT_M 111
                 raise NotAchievedException("SRPC p99 below p50: %s" % str(m))
             totals[m.Name] = totals.get(m.Name, 0) + m.N
 
-    def remove_m4_files_leftovers(self, pattern):
-        '''deletes the files an M4 file test leaves in the scripts directory'''
-        for leftover in glob.glob(os.path.join("scripts", pattern)):
+    def remove_m4_files_leftovers(self, pattern, directory="scripts"):
+        '''deletes the files an M4 file test leaves in the scripts directory (or the SITL working directory)'''
+        for leftover in glob.glob(os.path.join(directory, pattern)):
             os.unlink(leftover)
+
+    def wait_m4_script_text(self, text, timeout):
+        '''waits for an M4 test script's text (a regex), failing at once on a Lua error or a FAILED text'''
+        m = self.wait_statustext(r"(?:%s)|Lua: .*|.*FAILED.*" % text, regex=True, check_context=True,
+                                 timeout=timeout)
+        if m.text.startswith("Lua: ") or "FAILED" in m.text:
+            raise NotAchievedException("M4 script: '%s'" % m.text)
+        return m
 
     def m4_quota_hits(self):
         '''M4ST.QHit summed over the current onboard log'''
@@ -22735,7 +22743,7 @@ RTL_ALT_M 111
         self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
                              check_context=True, timeout=30)
         for text in ("Internal tests passed", "Require test 2 passed"):
-            self.wait_statustext(text, check_context=True, timeout=60)
+            self.wait_m4_script_text(text, timeout=60)
         for m in self.context_collection("STATUSTEXT"):
             if m.text.startswith("Lua: ") or m.text.startswith("Failed"):
                 raise NotAchievedException("M4 require tests: '%s'" % m.text)
@@ -22757,7 +22765,7 @@ RTL_ALT_M 111
             })
             self.install_test_script_context("m4_files.lua")
             self.reboot_sitl()
-            done = self.wait_statustext(r"M4 files (passed|failed \d+|FAILED)", regex=True, check_context=True, timeout=120)
+            done = self.wait_m4_script_text(r"M4 files (passed|failed \d+)", timeout=120)
             failed = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 files FAIL")]
             if failed or "passed" not in done.text:
                 raise NotAchievedException("m4_files.lua: %s" % (failed or done.text))
@@ -22777,6 +22785,8 @@ RTL_ALT_M 111
             self.reboot_sitl()
         finally:
             self.remove_m4_files_leftovers("m4_files*.txt")
+            for leftover in ("m4_files_cwd.txt", "miss.txt", "m4_escape.txt"):
+                self.remove_m4_files_leftovers(leftover, directory=".")
 
         # files an M4 session leaves open are closed when the M4 restarts
         try:
@@ -22789,7 +22799,7 @@ RTL_ALT_M 111
             })
             self.install_test_script_context("m4_files_hold.lua")
             self.reboot_sitl()
-            self.wait_statustext("M4 holding 8 files", check_context=True, timeout=60)
+            self.wait_m4_script_text("M4 holding 8 files", timeout=60)
             held = self.m4_files_held_open()
             self.progress("m4_hold files open before the restart: %u" % held)
             if held != 8:
@@ -22803,6 +22813,30 @@ RTL_ALT_M 111
             if held != 8:
                 raise NotAchievedException(
                     "%u m4_hold files open after the restart: the M7 kept the previous session's" % held)
+            self.context_pop()
+            self.reboot_sitl()
+
+            # files are closed too when the M4 goes off until reboot
+            self.context_push()
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_collect("STATUSTEXT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_HEAP_SIZE": 188416,
+                "SCR_M4_RST_MAX": 0,
+            })
+            self.install_test_script_context("m4_files_hold.lua")
+            self.reboot_sitl()
+            self.wait_m4_script_text("M4 holding 8 files", timeout=60)
+            held = self.m4_files_held_open()
+            if held != 8:
+                raise NotAchievedException("%u m4_hold files open, expected 8" % held)
+            self.set_parameter("SCR_M4_INJECT", 1)
+            self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=30)
+            held = self.m4_files_held_open()
+            self.progress("m4_hold files open after the M4 went off: %u" % held)
+            if held != 0:
+                raise NotAchievedException("%u m4_hold files open after the M4 went off" % held)
             self.context_pop()
             self.reboot_sitl()
         finally:
