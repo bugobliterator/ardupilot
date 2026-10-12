@@ -19610,6 +19610,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingPureDataReference,
             self.ScriptingM4PureData,
             self.ScriptingM4Files,
+            self.ScriptingM4Objects,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22901,6 +22902,67 @@ RTL_ALT_M 111
         finally:
             self.remove_m4_files_leftovers("m4_hold_*.txt")
 
+    def ScriptingM4Objects(self):
+        '''Parameter and serial ports on the SITL M4: M7 objects, released on collection and at the session end'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_VM_I_COUNT": 1000000,
+            "SCR_HEAP_SIZE": 188416,   # the CubeOrangePlus-M4Lua default
+            "SCR_SDEV_EN": 1,
+            "SCR_SDEV1_PROTO": 28,
+            "LOG_DISARMED": 1,
+            "LOG_DARM_RATEMAX": 0,
+            "LOG_FILE_RATEMAX": 0,
+        })
+        self.install_test_scripts_context(["serial_loopback.lua", "m4_objects.lua"])
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
+                             check_context=True, timeout=30)
+        for text in ("driver -> device good", "device -> driver good"):
+            self.wait_m4_script_text(text, timeout=60)
+        done = self.wait_m4_script_text(r"M4 objects (passed|failed \d+)", timeout=180)
+        failed = [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("M4 objects FAIL")]
+        if failed or "passed" not in done.text:
+            raise NotAchievedException("m4_objects.lua: %s" % (failed or done.text))
+        self.delay_sim_time(2, reason="M4ST is written once a second")
+        if self.m4_quota_hits() == 0:
+            raise NotAchievedException("no Storage quota hit counted in M4ST")
+        # every m4:release named a live owned object of its session: any other is a protocol error
+        errors = self.m4_protocol_errors()
+        if errors != 0:
+            raise NotAchievedException("%u M4 protocol errors" % errors)
+        self.set_parameter("SCR_USER1", 0)   # m4_objects.lua leaves 5 in it
+        self.context_pop()
+        self.reboot_sitl()
+
+        # a session's objects and aux auth ids go when the M4 restarts
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_HEAP_SIZE": 188416,
+        })
+        self.install_test_script_context("m4_objects_hold.lua")
+        self.reboot_sitl()
+        held = r"M4 holding \d+ objects, auth \S+"
+        m = self.wait_m4_script_text(held, timeout=60)
+        if m.text != "M4 holding 64 objects, auth 0":
+            raise NotAchievedException("first session: '%s'" % m.text)
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_M4_INJECT", 1)   # a fault in the M4 service: the M7 restarts it
+        self.wait_statustext(r"Scripting: M4 restarted \(1/\d+\)", regex=True, check_context=True, timeout=30)
+        m = self.wait_m4_script_text(held, timeout=60)
+        # without end_session() at the restart the new session holds 0 objects; without the aux
+        # auth reset it gets id 1
+        if m.text != "M4 holding 64 objects, auth 0":
+            raise NotAchievedException("after the restart: '%s'" % m.text)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -25027,6 +25089,7 @@ return update, 1000
             "ScriptingPureDataReference": "Reference for ScriptingM4PureData; run it on a plain SITL build first",
             "ScriptingM4PureData": "Requires --enable-scripting-m4 SITL build and ScriptingPureDataReference",
             "ScriptingM4Files": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4Objects": "Requires --enable-scripting-m4 SITL build",
         }
 
 
