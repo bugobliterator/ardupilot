@@ -60,6 +60,7 @@ static const BlobCodec test_codecs[] = {
     { "Pair", sizeof(Pair), decode_Pair, encode_Pair },
     { "Object", 0, nullptr, nullptr },
     { "uint32_t", 0, nullptr, nullptr },
+    { "Counter", 0, nullptr, nullptr },
 };
 
 static Pair * check_Pair(lua_State *L, int arg) {
@@ -188,6 +189,56 @@ static int thing_no_object(lua_State *L) {
     return 1;
 }
 
+// an owned type: the object lives in the pool, the M4 holds an owned handle
+struct Counter {
+    int32_t value;
+};
+static const uint8_t COUNTER = 4;
+static int counters_destroyed = 0;
+static void destroy_Counter(void *object)
+{
+    counters_destroyed++;
+    static_cast<Counter *>(object)->~Counter();
+}
+static Counter * check_Counter(lua_State *L, int arg) {
+    return static_cast<Counter *>(remote_check_owned(L, arg, COUNTER));
+}
+static Counter * new_Counter(lua_State *L) {
+    void *ud = remote_new_owned(L, COUNTER, destroy_Counter);
+    new (ud) Counter();
+    return static_cast<Counter *>(ud);
+}
+// Counter(start): made before its argument is checked, as the in-process creators make their userdata first
+static int counter_new(lua_State *L) {
+    binding_argcheck(L, 1);
+    Counter *counter = new_Counter(L);
+    counter->value = luaL_checkinteger(L, 1);
+    return 1;
+}
+static int counter_add(lua_State *L) {
+    binding_argcheck(L, 2);
+    Counter *ud = check_Counter(L, 1);
+    ud->value += luaL_checkinteger(L, 2);
+    return 0;
+}
+static int counter_value(lua_State *L) {
+    binding_argcheck(L, 1);
+    lua_pushinteger(L, check_Counter(L, 1)->value);
+    return 1;
+}
+static int counter_new_dropped(lua_State *L) {
+    binding_argcheck(L, 0);
+    new_Counter(L);
+    return 0;
+}
+// two objects, only the last returned
+static int counter_two(lua_State *L) {
+    binding_argcheck(L, 0);
+    new_Counter(L)->value = 1;
+    new_Counter(L)->value = 2;
+    return 1;
+}
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -195,6 +246,7 @@ using namespace ScriptingM4Remote;
 struct Call {
     RemoteCall call {};
     HandleTable handles;
+    ObjectPool objects;
     uint8_t args_frame[MAX_FRAME];
     RpcWriter args;
     RpcValue arg_values[MAX_VALUES];
@@ -217,10 +269,11 @@ struct Call {
     {
         handles.reset(7);
         call.handles = &handles;
+        call.objects = &objects;
         call.warn = warn;
         call.warn_context = this;
         call.codecs = test_codecs;
-        call.codec_count = 3;
+        call.codec_count = 4;
         call.uint32_type = UINT32;
         call.uint64_type = 0;   // no uint64_t in these tests
         args.begin(args_frame, sizeof(args_frame), 0);
@@ -566,6 +619,108 @@ TEST(ScriptingM4Remote, WireWriterCapacity)
     EXPECT_TRUE(r.done());
     uint8_t extra = 0;
     EXPECT_FALSE(r.read(extra));
+}
+
+TEST(ScriptingM4Remote, OwnedObjectsKeepTheirStateOnTheM7)
+{
+    Call c;
+    counters_destroyed = 0;
+    c.args.integer(5);
+    ASSERT_EQ(c.run(counter_new), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 1);
+    ASSERT_EQ(c.values[0].tag, ValueTag::Handle);
+    EXPECT_EQ(c.values[0].type_id, COUNTER);
+    const uint16_t index = c.values[0].handle_index;
+    const uint32_t generation = c.values[0].handle_generation;
+    EXPECT_EQ(c.objects.used(), 1);
+    c.args.handle(COUNTER, index, generation);
+    c.args.integer(2);
+    EXPECT_EQ(c.run(counter_add), ReplyStatus::Ok);
+    EXPECT_EQ(c.count, 0);                       // no write-back: the object is the M7's
+    c.args.handle(COUNTER, index, generation);
+    ASSERT_EQ(c.run(counter_value), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 7);
+    // two constructions are two objects under two handles, never deduplicated
+    c.args.integer(1);
+    ASSERT_EQ(c.run(counter_new), ReplyStatus::Ok);
+    EXPECT_NE(c.values[0].handle_index, index);
+    EXPECT_EQ(c.objects.used(), 2);
+    EXPECT_EQ(counters_destroyed, 0);
+}
+
+TEST(ScriptingM4Remote, OwnedObjectsOfAFailedCallAreDestroyed)
+{
+    Call c;
+    counters_destroyed = 0;
+    // made, then an argument error: without the clean-up its slot stays taken until the session ends
+    c.args.string("x", 1);
+    EXPECT_EQ(c.run(counter_new), ReplyStatus::ArgError);
+    EXPECT_EQ(c.objects.used(), 0);
+    EXPECT_EQ(counters_destroyed, 1);
+    EXPECT_EQ(c.handles.count(), 0);
+    // made and not returned
+    EXPECT_EQ(c.run(counter_new_dropped), ReplyStatus::Ok);
+    EXPECT_EQ(c.count, 0);
+    EXPECT_EQ(c.objects.used(), 0);
+    EXPECT_EQ(counters_destroyed, 2);
+    // two made, the last one returned
+    ASSERT_EQ(c.run(counter_two), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 1);
+    EXPECT_EQ(c.objects.used(), 1);
+    EXPECT_EQ(counters_destroyed, 3);
+    c.args.handle(COUNTER, c.values[0].handle_index, c.values[0].handle_generation);
+    ASSERT_EQ(c.run(counter_value), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].integer, 2);
+}
+
+TEST(ScriptingM4Remote, OwnedObjectLimits)
+{
+    Call c;
+    counters_destroyed = 0;
+    for (uint8_t i = 0; i < ObjectPool::SLOTS; i++) {
+        c.args.integer(i);
+        ASSERT_EQ(c.run(counter_new), ReplyStatus::Ok) << int(i);
+    }
+    // the pool is full: refused with the text the M4 retries on; without the bound the 65th is made
+    c.args.integer(0);
+    EXPECT_EQ(c.run(counter_new), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), TOO_MANY_OBJECTS);
+    EXPECT_EQ(c.objects.used(), uint8_t(ObjectPool::SLOTS));
+    EXPECT_EQ(counters_destroyed, 0);
+}
+
+TEST(ScriptingM4Remote, FullHandleTableDestroysTheNewObject)
+{
+    Call c;
+    counters_destroyed = 0;
+    static int others[HandleTable::CAPACITY];
+    for (int &other : others) {
+        ASSERT_GE(c.handles.insert(OBJECT, &other), 0);
+    }
+    c.args.integer(3);
+    EXPECT_EQ(c.run(counter_new), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), TOO_MANY_OBJECTS);
+    // without the clean-up the object would hold its slot with no handle naming it
+    EXPECT_EQ(c.objects.used(), 0);
+    EXPECT_EQ(counters_destroyed, 1);
+}
+
+TEST(ScriptingM4Remote, ReleasedOwnedHandleIsStale)
+{
+    Call c;
+    c.args.integer(1);
+    ASSERT_EQ(c.run(counter_new), ReplyStatus::Ok);
+    const RpcValue handle = c.values[0];
+    void *object = c.handles.release_owned(COUNTER, handle.handle_index, handle.handle_generation);
+    ASSERT_NE(object, nullptr);
+    EXPECT_TRUE(c.objects.destroy(object));
+    c.args.handle(COUNTER, handle.handle_index, handle.handle_generation);
+    EXPECT_EQ(c.run(counter_value), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "M4: stale Counter");
+    // another type's handle where a Counter is expected keeps the in-process text
+    c.args.handle(OBJECT, 0, c.handles.generation(0));
+    EXPECT_EQ(c.run(counter_value), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "Counter expected, got Object");
 }
 
 AP_GTEST_MAIN()

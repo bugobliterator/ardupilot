@@ -2970,6 +2970,7 @@ enum remote_kind {                    // ScriptingM4::BindingKind
   REMOTE_LOCAL     = 3,
   REMOTE_GLOBAL    = 4,
   REMOTE_LOCAL_BLOB = 5,
+  REMOTE_OWNED      = 6,
 };
 
 // ScriptingM4::ROW_*
@@ -3024,14 +3025,34 @@ static const char *remote_handle_ap_objects[] = {
   "AP_Proximity_Backend", "AP_RangeFinder_Backend", "AP_Airspeed_Backend",
   "AP_Vehicle::custom_mode_state", "RC_Channel", "AP_HAL::AnalogSource", "AP_EFI_Backend",
   NULL };
+// userdata carrying M7 pointers or state: the object lives in the M7's object pool
+// (AP_ScriptingM4_Objects.h), the M4 userdata holds an owned handle that its __gc releases
+static const char *remote_owned_userdata[] = { "Parameter", NULL };
+// an owned type's release when it has one of its own (its in-process __gc), else its destructor
+struct remote_release {
+  const char *type;
+  const char *function;   // void function(void *object), declared in AP_ScriptingM4_Remote.h
+};
+static const struct remote_release remote_owned_release[] = { { NULL, NULL } };
 // userdata carrying M7 pointers or state and the manual-only ap_objects: left out until
 // IO and Manual Bindings. A userdata or ap_object in none of these lists fails generation
 static const char *remote_deferred_userdata[] = {
-  "Parameter", "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter", "DroneCAN_Handle",
+  "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter", "DroneCAN_Handle",
   "SocketAPM", "ScriptingCANBuffer", "AP_HAL::I2CDevice", "AP_HAL::PWMSource",
   NULL };
 // manual functions ported to the M7 adapter (AP_ScriptingM4_Manual.cpp)
-static const char *remote_ready_manual[] = { "lua_millis", "lua_micros", NULL };
+static const char *remote_ready_manual[] = { "lua_millis", "lua_micros", "lua_new_Parameter", NULL };
+// methods whose M7 function is a port of its own (AP_ScriptingM4_Manual*.cpp) in place of the
+// generated one: what an M4 script must not make the M7 do that the generated code does
+struct remote_replacement {
+  const char *type;       // the description's name of the type
+  const char *method;
+  const char *function;   // declared in AP_ScriptingM4_Remote.h
+};
+static const struct remote_replacement remote_replaced_methods[] = {
+  { "Parameter", "init_by_info", "lua_m4_Parameter_init_by_info" },   // an M7 allocation per call, never freed
+  { NULL, NULL, NULL } };
+static int remote_replacement_matched[sizeof(remote_replaced_methods) / sizeof(remote_replaced_methods[0])];
 
 // members a blob carries besides its described fields: undescribed state a value the
 // M7 made must keep when it comes back (mission items), and the valid_mask members
@@ -3080,6 +3101,7 @@ static const struct remote_quota_entry remote_quotas[] = {
   { "GCS", "send_named_int", QUOTA_TEXT },
   { "GCS", "send_named_string", QUOTA_TEXT },
   { "AP_Param", "set_and_save_by_name", QUOTA_STORAGE },
+  { "Parameter", "set_and_save", QUOTA_STORAGE },
   { "AP_Mission", "set_item", QUOTA_STORAGE },
   { "AP_Mission", "clear", QUOTA_STORAGE },
   { "AP_SerialLED", "send", QUOTA_LED },
@@ -3160,6 +3182,27 @@ static int remote_in_list(const char *const *list, const char *name) {
   return FALSE;
 }
 
+static const char *remote_owned_release_of(const char *type) {
+  for (const struct remote_release *release = remote_owned_release; release->type != NULL; release++) {
+    if (strcmp(release->type, type) == 0) {
+      return release->function;
+    }
+  }
+  return NULL;
+}
+
+// the M7 function replacing a generated method, or NULL
+static const char *remote_replacement_of(const struct userdata *node, const struct method *method) {
+  for (int i = 0; remote_replaced_methods[i].type != NULL; i++) {
+    if ((strcmp(remote_replaced_methods[i].type, node->name) == 0) &&
+        (strcmp(remote_replaced_methods[i].method, method->name) == 0)) {
+      remote_replacement_matched[i] = TRUE;
+      return remote_replaced_methods[i].function;
+    }
+  }
+  return NULL;
+}
+
 // a userdata the wire carries as a blob: held as M7 bytes on the M4, or local there
 static int remote_is_wire_userdata(const char *name) {
   return remote_in_list(remote_blob_userdata, name) || remote_in_list(remote_local_blob_userdata, name);
@@ -3181,6 +3224,23 @@ static char *remote_format(const char *fmt, ...) {
   char *text = NULL;
   string_copy(&text, buffer);
   return text;
+}
+
+// a C++ function name as the M7 dispatch names it: DroneCAN_Handle::broadcast -> DroneCAN_Handle__broadcast
+static char *remote_sanitize(const char *name) {
+  char *out = remote_format("%s", name);
+  for (char *c = out; *c != 0; c++) {
+    if (*c == ':') {
+      *c = '_';
+    }
+  }
+  return out;
+}
+
+// the row flags of a ported manual function
+static int remote_manual_flags(enum remote_kind kind, const struct method_alias *alias) {
+  (void)alias;
+  return (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : 0;
 }
 
 // a Rotation argument may name ROTATION_CUSTOM_1/2, which only the M7 applies: on the M4,
@@ -3290,6 +3350,9 @@ static int remote_kind_of(const struct userdata *node) {
       }
       if (remote_in_list(remote_local_blob_userdata, node->name)) {
         return REMOTE_LOCAL_BLOB;
+      }
+      if (remote_in_list(remote_owned_userdata, node->name)) {
+        return REMOTE_OWNED;
       }
       if (remote_in_list(remote_blob_userdata, node->name)) {
         return REMOTE_BLOB;
@@ -3433,8 +3496,14 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
       }
       const int id = REMOTE_FIRST_METHOD + method->stats_id;
       const int row = remote_add_row(method->rename ? method->rename : method->name, id, self_flags, type_id);
-      remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, method->sanitized_name),
+      const char *replacement = remote_replacement_of(node, method);
+      remote_add_method(id, type_id,
+                        replacement != NULL ? remote_format("%s", replacement) :
+                                              remote_format("%s_%s", node->sanitized_name, method->sanitized_name),
                         method->dependency, method_flags | remote_quota_flags(node, method), row);
+      if (replacement != NULL) {
+        remote_hash_string(replacement);   // an image whose M7 runs another function is another contract
+      }
       remote_hash_type(&method->return_type);
       for (const struct argument *arg = method->arguments; arg != NULL; arg = arg->next) {
         remote_hash_type(&arg->type);
@@ -3450,8 +3519,8 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
           remote_add_row(alias->alias, id, self_flags, type_id);   // its target's id and function
         }
       } else if ((alias->type == ALIAS_TYPE_MANUAL) && remote_in_list(remote_ready_manual, alias->name)) {
-        const int row = remote_add_row(alias->alias, id, (kind == REMOTE_SINGLETON) ? ROW_HAS_SELF : 0, type_id);
-        remote_add_method(id, type_id, alias->name, alias->dependency, 0, row);
+        const int row = remote_add_row(alias->alias, id, remote_manual_flags(kind, alias), type_id);
+        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency, 0, row);
       }
     }
     for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
@@ -3521,6 +3590,13 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         }
       }
     }
+    if ((kind == REMOTE_OWNED) && (node->creation != NULL) && remote_in_list(remote_ready_manual, node->creation)) {
+      // the constructor is the ported creation function; an owned type gets no generated one,
+      // which would leave its M7 pointers unset (CRSFParameter)
+      const int id = REMOTE_FIRST_METHOD + remote_next_id++;
+      const int row = remote_add_row("new", id, ROW_CREATION, type_id);
+      remote_add_method(id, type_id, remote_sanitize(node->creation), NULL, 0, row);
+    }
   }
   if ((kind == REMOTE_LOCAL_BLOB) && (node->enums != NULL)) {
     error(ERROR_GENERAL, "remote: local type %s has enums: the M4 local index does not serve them", node->name);
@@ -3576,6 +3652,18 @@ static void remote_collect(void) {
   remote_check_declared(remote_handle_ap_objects);
   remote_check_declared(remote_deferred_userdata);
   remote_check_declared(remote_local_blob_userdata);
+  remote_check_declared(remote_owned_userdata);
+  for (const struct remote_release *release = remote_owned_release; release->type != NULL; release++) {
+    if (!remote_in_list(remote_owned_userdata, release->type)) {
+      error(ERROR_GENERAL, "remote: release %s of %s, which is no owned type", release->function, release->type);
+    }
+  }
+  for (int i = 0; remote_replaced_methods[i].type != NULL; i++) {
+    if (!remote_replacement_matched[i]) {
+      error(ERROR_GENERAL, "remote: replacement %s of %s:%s matches no method", remote_replaced_methods[i].function,
+            remote_replaced_methods[i].type, remote_replaced_methods[i].method);
+    }
+  }
   remote_check_local_methods();
   for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
     if (!remote_kind_is_wire(remote_types[remote_type_id(hidden->type) - 1].kind)) {
@@ -4070,6 +4158,27 @@ static void remote_emit_handle_support(FILE *f, const struct remote_type *rt, in
   end_dependency(f, node->dependency);
 }
 
+// an owned type: the object lives in the M7's object pool; check_ returns it, new_ makes it there
+static void remote_emit_owned_support(FILE *f, const struct remote_type *rt, int type_id) {
+  struct userdata *node = rt->node;
+  const char *release = remote_owned_release_of(node->name);
+  start_dependency(f, node->dependency);
+  fprintf(f, "%s * check_%s(lua_State *L, int arg) {\n", node->name, node->sanitized_name);
+  fprintf(f, "    return static_cast<%s *>(remote_check_owned(L, arg, %d));\n}\n\n", node->name, type_id);
+  fprintf(f, "%s * new_%s(lua_State *L) {\n", node->name, node->sanitized_name);
+  fprintf(f, "    static_assert(sizeof(%s) <= ScriptingM4::ObjectPool::SLOT_SIZE && alignof(%s) <= ScriptingM4::ObjectPool::SLOT_ALIGN,\n",
+          node->name, node->name);
+  fprintf(f, "                  \"%s fits an object pool slot\");\n", node->name);
+  if (release != NULL) {
+    fprintf(f, "    void *ud = remote_new_owned(L, %d, %s);\n", type_id, release);
+  } else {
+    fprintf(f, "    void *ud = remote_new_owned(L, %d, ScriptingM4::destroy_object<%s>);\n", type_id, node->name);
+  }
+  fprintf(f, "    new (ud) %s();\n", node->name);
+  fprintf(f, "    return static_cast<%s *>(ud);\n}\n\n", node->name);
+  end_dependency(f, node->dependency);
+}
+
 // the #if of a table entry: the owning type's and the method's own depends
 static const char *remote_dependency(const struct remote_method *method) {
   const char *type_dependency = remote_types[method->type - 1].node->dependency;
@@ -4118,7 +4227,7 @@ static void remote_emit_dispatch(FILE *f) {
       start_dependency(f, node->dependency);
       fprintf(f, "%s * check_%s(lua_State *L);\n", node->name, node->sanitized_name);
       end_dependency(f, node->dependency);
-    } else if (remote_kind_is_wire(rt->kind) || (rt->kind == REMOTE_HANDLE)) {
+    } else if (remote_kind_is_wire(rt->kind) || (rt->kind == REMOTE_HANDLE) || (rt->kind == REMOTE_OWNED)) {
       const char *pointer = (rt->kind == REMOTE_HANDLE) ? "**" : "*";
       start_dependency(f, node->dependency);
       fprintf(f, "%s %s check_%s(lua_State *L, int arg);\n", node->name, pointer, node->sanitized_name);
@@ -4144,6 +4253,9 @@ static void remote_emit_dispatch(FILE *f) {
         break;
       case REMOTE_HANDLE:
         remote_emit_handle_support(f, rt, i + 1);
+        break;
+      case REMOTE_OWNED:
+        remote_emit_owned_support(f, rt, i + 1);
         break;
       case REMOTE_LOCAL:
       case REMOTE_GLOBAL:
@@ -4179,7 +4291,8 @@ static void remote_emit_dispatch(FILE *f) {
   for (int i = 0; i < remote_type_count; i++) {
     const struct remote_type *rt = &remote_types[i];
     struct userdata *node = rt->node;
-    if ((rt->kind != REMOTE_SINGLETON) && !remote_kind_is_wire(rt->kind) && (rt->kind != REMOTE_HANDLE)) {
+    if ((rt->kind != REMOTE_SINGLETON) && !remote_kind_is_wire(rt->kind) && (rt->kind != REMOTE_HANDLE) &&
+        (rt->kind != REMOTE_OWNED)) {
       continue;
     }
     // a local type's fields and operators are the M4's own
@@ -4191,7 +4304,7 @@ static void remote_emit_dispatch(FILE *f) {
         start_dependency(f, node->dependency);
         if (rt->kind == REMOTE_SINGLETON) {
           emit_singleton_field(node, field);
-        } else if (rt->kind == REMOTE_BLOB) {
+        } else if ((rt->kind == REMOTE_BLOB) || (rt->kind == REMOTE_OWNED)) {
           emit_userdata_field(node, field);
         } else {
           emit_ap_object_field(node, field);
@@ -4200,7 +4313,8 @@ static void remote_emit_dispatch(FILE *f) {
       }
     }
     for (struct method *method = node->methods; method != NULL; method = method->next) {
-      if (remote_method_supported(method) && !remote_method_is_local(node, method)) {
+      if (remote_method_supported(method) && !remote_method_is_local(node, method) &&
+          (remote_replacement_of(node, method) == NULL)) {
         emit_userdata_method(node, method);
       }
     }

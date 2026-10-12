@@ -16,7 +16,7 @@ namespace ScriptingM4 {
 enum class QuotaClass : uint8_t {
     None = 0,
     Text = 1,      // gcs:send_text, send_named_*, print
-    Storage = 2,   // param:set_and_save, mission:set_item, mission:clear
+    Storage = 2,   // param:set_and_save, Parameter:set_and_save, mission:set_item, mission:clear
     Led = 3,       // serialLED:send
     FileLog = 4,   // logger:log_file_content: each call queues an M7 heap allocation
     FileIo = 5,    // m4:fs_open for writing, m4:fs_write, m4:fs_remove: SD card writes

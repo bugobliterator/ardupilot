@@ -6,7 +6,7 @@
   userdata; here it lives in a slot of this pool, the M4 userdata holds an
   owned handle to it (HandleTable), and the object is destroyed when the M4
   collects the userdata (m4:release), when the call that made it fails, or
-  when the M4 session ends. Host thread only.
+  when the M4 session ends. Host thread only; ReleaseQueue is the M4's end.
   C++11, no ArduPilot dependencies (host unit tests).
  */
 
@@ -29,14 +29,14 @@ public:
     typedef void (*Destroy)(void *object);
 
     // a zeroed slot, whose object destroy() ends; nullptr if every slot is taken
-    void *allocate(Destroy destroy)
+    void *allocate(Destroy destroy_function)
     {
-        if (destroy == nullptr) {
+        if (destroy_function == nullptr) {
             return nullptr;
         }
         for (uint8_t i = 0; i < SLOTS; i++) {
             if (_destroy[i] == nullptr) {
-                _destroy[i] = destroy;
+                _destroy[i] = destroy_function;
                 memset(_slots[i].bytes, 0, SLOT_SIZE);
                 return _slots[i].bytes;
             }
@@ -120,5 +120,65 @@ inline ReplyStatus release_objects(const RpcValue *values, uint8_t count, Handle
     }
     return all ? ReplyStatus::Ok : ReplyStatus::Malformed;
 }
+
+// the M4's side of m4:release (m4/m4_bindings.cpp): the owned handles its collector found, sent
+// before the next remote call and after each script run's collection. A finalizer can run while
+// the RPC client holds a reply its caller still reads, so __gc only queues. An M4 userdata of an
+// owned type holds one of the pool's slots until its release is sent, so at most SLOTS wait
+class ReleaseQueue {
+public:
+    struct Entry {
+        uint8_t type_id;
+        uint16_t index;
+        uint32_t generation;
+    };
+
+    // queues the handle of a collected userdata and sets its generation to 0, which no live
+    // handle has: a second __gc of the same userdata queues nothing, and a later use of it is
+    // a stale handle on the M7. False if nothing was queued; a full queue counts the drop, and
+    // the M7 frees that object at the session end
+    bool push(uint8_t type_id, uint16_t index, uint32_t &generation)
+    {
+        if (generation == 0) {
+            return false;
+        }
+        const uint32_t queued = generation;
+        generation = 0;
+        if (_count >= ObjectPool::SLOTS) {
+            _dropped++;
+            return false;
+        }
+        Entry &entry = _entries[_count++];
+        entry.type_id = type_id;
+        entry.index = index;
+        entry.generation = queued;
+        return true;
+    }
+
+    // send(entries, count) sends at most MAX_VALUES handles in one m4:release and returns false
+    // if it could not: that batch and the rest stay queued for the next flush
+    template <typename Send>
+    void flush(Send send)
+    {
+        uint8_t sent = 0;
+        while (sent < _count) {
+            const uint8_t batch = uint8_t(_count - sent) < MAX_VALUES ? uint8_t(_count - sent) : MAX_VALUES;
+            if (!send(&_entries[sent], batch)) {
+                break;
+            }
+            sent = uint8_t(sent + batch);
+        }
+        memmove(&_entries[0], &_entries[sent], (_count - sent) * sizeof(Entry));
+        _count = uint8_t(_count - sent);
+    }
+
+    uint8_t count() const { return _count; }
+    uint32_t dropped() const { return _dropped; }
+
+private:
+    Entry _entries[ObjectPool::SLOTS] {};
+    uint8_t _count = 0;
+    uint32_t _dropped = 0;
+};
 
 }  // namespace ScriptingM4

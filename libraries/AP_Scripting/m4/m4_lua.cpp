@@ -33,6 +33,7 @@ static const uint32_t OPTION_RUNTIME_MSG = 1U << 1;
 static const uint32_t OPTION_LOG_RUNTIME = 1U << 3;
 // MAV_SEVERITY values the runtime reports with
 static const int32_t SEVERITY_CRITICAL = 2;
+static const int32_t SEVERITY_WARNING = 4;
 static const int32_t SEVERITY_DEBUG = 7;
 // longest idle sleep: Lua-thread fault requests are taken this promptly
 static const uint32_t MAX_SLEEP_MS = 100;
@@ -472,6 +473,7 @@ static int run_engine(lua_State *L)
     lua_pop(L, 1);
 
     char text[64];
+    uint32_t releases_reported = 0;
     if (rt.options & OPTION_RUNTIME_MSG) {
         snprintf(text, sizeof(text), "Lua: State memory usage: %i", int(memory_in_use(L)));
         send_text(SEVERITY_DEBUG, text);
@@ -507,6 +509,13 @@ static int run_engine(lua_State *L)
         const int32_t end_mem = memory_in_use(L);
         send_run_stats(index, end_us - start_us, end_mem, end_mem - start_mem);
         lua_gc(L, LUA_GCCOLLECT, 0);
+        // the owned objects this collection found: released before the next script runs
+        flush_releases();
+        if (releases_dropped() != releases_reported) {
+            releases_reported = releases_dropped();
+            snprintf(text, sizeof(text), "M4: %u object releases dropped", unsigned(releases_reported));
+            send_text(SEVERITY_WARNING, text);
+        }
     }
     return 0;
 }

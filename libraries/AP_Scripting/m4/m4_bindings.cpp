@@ -2,8 +2,8 @@
   The generated bindings on the M4 (spec §6). The sandbox resolves a binding
   name on first use, as the in-process load_generated_sandbox() does:
   singletons, blob types (pure-data userdata held as the M7's wire bytes) and
-  handle types (M7 objects) get a metatable whose __index finds the name in
-  the generated rows and caches a remote_stub closure for it. uint32_t,
+  handle and owned types (M7 objects) get a metatable whose __index finds the
+  name in the generated rows and caches a remote_call closure for it. uint32_t,
   uint64_t and the local blob types (Vector2f, Vector3f, Quaternion, Location)
   run on the M4 (lua_remote_local.cpp, m4/local), crossing to remote calls as
   blobs. What
@@ -14,6 +14,7 @@
 
 #include <string.h>
 #include <AP_ScriptingM4_Bindings.h>
+#include <AP_ScriptingM4_Objects.h>
 #include "m4_rpc_client.h"
 
 namespace ScriptingM4 {
@@ -25,7 +26,7 @@ struct BlobHeader {
     uint16_t length;
 };
 
-// a handle userdata: an M7 object of this M4 session
+// a handle userdata: an M7 object of this M4 session (Handle and Owned kinds)
 struct HandleUserdata {
     uint8_t type_id;
     uint8_t reserved;
@@ -87,6 +88,7 @@ static uint8_t userdata_type(lua_State *L, int index)
                uint8_t(id) : 0;
     }
     case BindingKind::Handle:
+    case BindingKind::Owned:
         return size == sizeof(HandleUserdata) ? uint8_t(id) : 0;
     case BindingKind::Local:
         return size == (id == BINDING_TYPE_UINT32 ? sizeof(uint32_t) : sizeof(uint64_t)) ? uint8_t(id) : 0;
@@ -136,7 +138,8 @@ static void encode_value(lua_State *L, int index, uint8_t type_id, RpcWriter &ar
             args.blob(type_id, blob + 1, blob->length);
             return;
         }
-        case BindingKind::Handle: {
+        case BindingKind::Handle:
+        case BindingKind::Owned: {
             const HandleUserdata *handle = static_cast<const HandleUserdata *>(data);
             args.handle(type_id, handle->index, handle->generation);
             return;
@@ -168,8 +171,43 @@ static void encode_value(lua_State *L, int index, uint8_t type_id, RpcWriter &ar
     args.opaque(uint8_t(lua_type(L, index)));   // the M7 names it in "... expected, got table"
 }
 
+// owned objects the M4 collected, released on the M7 before the next remote call and after
+// each script run's collection
+static ReleaseQueue pending_releases;
+
+// __gc of an owned type. A finalizer runs inside an allocation, possibly while the RPC client
+// holds a reply its caller still reads, so it only queues; the queue zeroes the userdata's
+// generation, so a second __gc of it queues nothing
+static int owned_gc(lua_State *L)
+{
+    const uint8_t type_id = userdata_type(L, 1);
+    if (type_id == 0 || BindingKind(type_of(type_id).kind) != BindingKind::Owned) {
+        return 0;
+    }
+    HandleUserdata *handle = static_cast<HandleUserdata *>(lua_touserdata(L, 1));
+    (void)pending_releases.push(type_id, handle->index, handle->generation);
+    return 0;
+}
+
+// m4:release of the queued handles, MAX_VALUES per Notify; a batch whose Notify was not sent
+// (a stalled M7) stays queued
+void flush_releases()
+{
+    pending_releases.flush([](const ReleaseQueue::Entry *entries, uint8_t count) {
+        RpcWriter &args = rpc.begin(SystemMethod::Release, true);
+        for (uint8_t i = 0; i < count; i++) {
+            args.handle(entries[i].type_id, entries[i].index, entries[i].generation);
+        }
+        return rpc.invoke() == 0;
+    });
+}
+
+uint32_t releases_dropped()
+{
+    return pending_releases.dropped();
+}
+
 static int remote_index(lua_State *L);
-static int remote_stub(lua_State *L);
 
 // upvalues: method id, row flags, owning type id
 static void push_stub(lua_State *L, uint16_t method, uint8_t flags, uint8_t type_id)
@@ -177,7 +215,7 @@ static void push_stub(lua_State *L, uint16_t method, uint8_t flags, uint8_t type
     lua_pushinteger(L, method);
     lua_pushinteger(L, flags);
     lua_pushinteger(L, type_id);
-    lua_pushcclosure(L, remote_stub, 3);
+    lua_pushcclosure(L, remote_call, 3);
 }
 
 // the metatable of a binding type, made on its first use: __name, __m4type, __index and,
@@ -194,6 +232,11 @@ static void push_metatable(lua_State *L, uint8_t type_id)
     lua_newtable(L);   // the stubs __index made so far
     lua_pushcclosure(L, remote_index, 2);
     lua_setfield(L, -2, "__index");
+    if (BindingKind(type.kind) == BindingKind::Owned) {
+        // the M7 destroys the object once the M4 has collected the userdata (m4:release)
+        lua_pushcfunction(L, owned_gc);
+        lua_setfield(L, -2, "__gc");
+    }
     for (uint16_t i = type.first_row; i < type.first_row + type.row_count; i++) {
         const BindingRow &row = binding_rows[i];
         if ((row.flags & ROW_OPERATOR) != 0 && info_method_available(binding_info, row.method)) {
@@ -262,8 +305,11 @@ static bool push_value(lua_State *L, const RpcValue &value)
         return true;
     }
     case ValueTag::Handle: {
-        if (value.type_id == 0 || value.type_id > BINDING_TYPE_COUNT ||
-            BindingKind(type_of(value.type_id).kind) != BindingKind::Handle) {
+        if (value.type_id == 0 || value.type_id > BINDING_TYPE_COUNT) {
+            return false;
+        }
+        const BindingKind kind = BindingKind(type_of(value.type_id).kind);
+        if (kind != BindingKind::Handle && kind != BindingKind::Owned) {
             return false;
         }
         HandleUserdata *handle = static_cast<HandleUserdata *>(lua_newuserdata(L, sizeof(HandleUserdata)));
@@ -304,6 +350,16 @@ static bool write_back(lua_State *L, uint8_t owner, const RpcValue &value)
     return true;
 }
 
+// the reply is an error with the M7's object-limit text (pool or handle table full)
+static bool reply_is_object_limit()
+{
+    if (rpc.status() != ReplyStatus::Error || rpc.count() < 1 || rpc.value(0).tag != ValueTag::String) {
+        return false;
+    }
+    const RpcValue &text = rpc.value(0);
+    return text.length == sizeof(TOO_MANY_OBJECTS) - 1 && memcmp(text.string, TOO_MANY_OBJECTS, text.length) == 0;
+}
+
 // raises the error of a failed reply; luaL_argerror() renumbers for method calls, as in-process
 static int raise_reply_error(lua_State *L)
 {
@@ -330,7 +386,7 @@ static int raise_reply_error(lua_State *L)
 }
 
 // the client stub of every remote binding (upvalues: method id, row flags, owning type id)
-static int remote_stub(lua_State *L)
+int remote_call(lua_State *L)
 {
     const uint16_t method = uint16_t(lua_tointeger(L, lua_upvalueindex(1)));
     const uint8_t flags = uint8_t(lua_tointeger(L, lua_upvalueindex(2)));
@@ -345,22 +401,37 @@ static int remote_stub(lua_State *L)
     for (int i = 1; i <= top; i++) {
         type_ids[i - 1] = userdata_type(L, i);
     }
-    RpcWriter &args = rpc.begin(method);
-    for (int i = 1; i <= top; i++) {
-        if (i == 1 && (flags & ROW_HAS_SELF) != 0) {
-            args.nil();   // a singleton: the M7 finds it itself
+    for (uint8_t attempt = 0; ; attempt++) {
+        // the releases first: the M7 may need the slots of objects the M4 collected
+        flush_releases();
+        RpcWriter &args = rpc.begin(method);
+        for (int i = 1; i <= top; i++) {
+            if (i == 1 && (flags & ROW_HAS_SELF) != 0) {
+                args.nil();   // a singleton: the M7 finds it itself
+                continue;
+            }
+            encode_value(L, i, type_ids[i - 1], args);
+        }
+        if (!args.ok()) {
+            return luaL_error(L, "M4: call arguments too large");
+        }
+        const int ret = rpc.invoke();
+        if (ret != 0) {
+            return luaL_error(L, "M4: call failed (%d)", ret);
+        }
+        if (rpc.status() == ReplyStatus::Ok) {
+            break;
+        }
+        // the M7's pool or handle table is full: collect, release and send the call once more,
+        // so objects this run dropped do not count against the limit. A refused call made no
+        // owned object, and the ported creators make theirs before any side effect; a handle
+        // result refused at encoding may repeat its call's side effect. Never inside a
+        // finalizer (GCTM stops the collector while one runs): a collection there would run
+        // further finalizers, nested in this one
+        if (attempt == 0 && reply_is_object_limit() && lua_gc(L, LUA_GCISRUNNING, 0) != 0) {
+            lua_gc(L, LUA_GCCOLLECT, 0);
             continue;
         }
-        encode_value(L, i, type_ids[i - 1], args);
-    }
-    if (!args.ok()) {
-        return luaL_error(L, "M4: call arguments too large");
-    }
-    const int ret = rpc.invoke();
-    if (ret != 0) {
-        return luaL_error(L, "M4: call failed (%d)", ret);
-    }
-    if (rpc.status() != ReplyStatus::Ok) {
         return raise_reply_error(L);
     }
     // pushing allocates, which may run a finalizer that calls a binding and reuses the
@@ -481,6 +552,7 @@ static int global_index(lua_State *L)
             lua_setmetatable(L, -2);
             return cache_global(L);
         case BindingKind::Blob:
+        case BindingKind::Owned:
             for (uint16_t i = type.first_row; i < type.first_row + type.row_count; i++) {
                 const BindingRow &row = binding_rows[i];
                 if ((row.flags & ROW_CREATION) != 0 && info_method_available(binding_info, row.method)) {
@@ -513,7 +585,7 @@ void open_remote_functions(lua_State *L)
     lua_pushinteger(L, lua_Integer(SystemMethod::Print));
     lua_pushinteger(L, 0);
     lua_pushinteger(L, 0);
-    lua_pushcclosure(L, remote_stub, 3);
+    lua_pushcclosure(L, remote_call, 3);
     lua_setfield(L, -2, "print");
     // the generated bindings resolve on first use, as the in-process load_generated_sandbox()
     lua_createtable(L, 0, 1);

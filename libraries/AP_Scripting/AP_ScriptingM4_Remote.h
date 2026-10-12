@@ -22,6 +22,7 @@
 #include <AP_HAL/ap_setjmp.h>
 #include "AP_ScriptingM4_Rpc.h"
 #include "AP_ScriptingM4_Handles.h"
+#include "AP_ScriptingM4_Objects.h"
 #include "AP_ScriptingM4_Wire.h"
 
 namespace ScriptingM4Remote {
@@ -51,6 +52,7 @@ static const uint8_t METHOD_QUOTA_FALSE = 0x02;   // over its quota the call ret
 struct RemoteCall {
     // set once by the server
     ScriptingM4::HandleTable *handles;
+    ScriptingM4::ObjectPool *objects;    // the owned objects (Owned results)
     void (*warn)(void *context, uint8_t severity, const char *text);   // set_and_print_new_error_message()
     void *warn_context;
     // set by dispatch()
@@ -63,11 +65,12 @@ struct RemoteCall {
     const ScriptingM4::RpcValue *args;
     uint8_t argc;
     struct Result {
-        enum Kind : uint8_t { Value, Object, Handle };
+        enum Kind : uint8_t { Value, Object, Handle, Owned };
         Kind kind;
         uint8_t type_id;
         ScriptingM4::RpcValue value;   // Value; a string points into the arena
-        void *object;                  // Object: in the arena; Handle: an arena slot holding the pointer
+        void *object;                  // Object: in the arena; Handle: an arena slot holding the pointer;
+                                       // Owned: the pool slot
     } results[ScriptingM4::MAX_VALUES];
     uint8_t result_count;
     void *self;                        // argument 1 decoded as a blob: written back
@@ -129,10 +132,17 @@ void *remote_check_blob(lua_State *L, int arg, uint8_t type_id);
 void *remote_new_blob(lua_State *L, uint8_t type_id, size_t size);
 void **remote_check_handle(lua_State *L, int arg, uint8_t type_id);
 void **remote_new_handle(lua_State *L, uint8_t type_id);
+// storage of the generated check_<type>()/new_<type>() of an owned type: the object itself, in
+// the pool; a failed call destroys the objects it made (run())
+void *remote_check_owned(lua_State *L, int arg, uint8_t type_id);
+void *remote_new_owned(lua_State *L, uint8_t type_id, ScriptingM4::ObjectPool::Destroy destroy);
 
 // manual bindings ported to the adapter (AP_ScriptingM4_Manual.cpp; gen-bindings -r remote_ready_manual[])
 int lua_millis(lua_State *L);
 int lua_micros(lua_State *L);
+int lua_new_Parameter(lua_State *L);
+// M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
+int lua_m4_Parameter_init_by_info(lua_State *L);
 
 // generated (lua_remote_dispatch.cpp, M4 builds only)
 bool method_available(uint16_t method);

@@ -118,4 +118,90 @@ TEST(ScriptingM4Objects, ReleaseManyInOneCall)
     EXPECT_EQ(handles.count(), 0);
 }
 
+// the M4 calling a userdata's __gc twice (by hand, or a finalizer run again): one release
+// reaches the M7, and it is no protocol error. Without the generation reset in push() the same
+// handle goes out twice and the second makes the m4:release Malformed
+TEST(ScriptingM4Objects, SecondFinalizerSendsNoRelease)
+{
+    HandleTable handles;
+    handles.reset(4);
+    ObjectPool pool;
+    destroyed = 0;
+    const int16_t index = handles.insert_owned(5, pool.allocate(count_destroy));
+    ASSERT_GE(index, 0);
+    uint32_t userdata_generation = handles.generation(uint16_t(index));
+    ReleaseQueue queue;
+    EXPECT_TRUE(queue.push(5, uint16_t(index), userdata_generation));
+    EXPECT_EQ(userdata_generation, 0U);
+    EXPECT_FALSE(queue.push(5, uint16_t(index), userdata_generation));
+    EXPECT_EQ(queue.count(), 1);
+    int sends = 0;
+    ReplyStatus status = ReplyStatus::Error;
+    queue.flush([&](const ReleaseQueue::Entry *entries, uint8_t count) {
+        RpcValue values[MAX_VALUES];
+        for (uint8_t i = 0; i < count; i++) {
+            values[i] = handle_value(entries[i].type_id, int16_t(entries[i].index), entries[i].generation);
+        }
+        status = release_objects(values, count, handles, pool);
+        sends++;
+        return true;
+    });
+    EXPECT_EQ(sends, 1);
+    EXPECT_EQ(status, ReplyStatus::Ok);
+    EXPECT_EQ(destroyed, 1);
+    EXPECT_EQ(queue.count(), 0);
+    // the zeroed userdata, used again, names no object
+    EXPECT_EQ(handles.lookup(5, uint16_t(index), userdata_generation), nullptr);
+}
+
+// a send that fails (the RPC call timed out) keeps its batch and the rest for the next flush;
+// without that, the M7 keeps those objects until the session ends
+TEST(ScriptingM4Objects, ReleaseQueueKeepsWhatItCouldNotSend)
+{
+    ReleaseQueue queue;
+    const uint8_t total = MAX_VALUES + 4;
+    for (uint8_t i = 0; i < total; i++) {
+        uint32_t generation = 0x700 + i;
+        ASSERT_TRUE(queue.push(3, i, generation));
+    }
+    uint8_t calls = 0;
+    queue.flush([&](const ReleaseQueue::Entry *entries, uint8_t count) {
+        calls++;
+        if (calls == 1) {
+            EXPECT_EQ(count, MAX_VALUES);
+            EXPECT_EQ(entries[0].index, 0);
+            return true;
+        }
+        return false;
+    });
+    EXPECT_EQ(calls, 2);
+    ASSERT_EQ(queue.count(), 4);
+    uint16_t first = 0;
+    uint32_t first_generation = 0;
+    queue.flush([&](const ReleaseQueue::Entry *entries, uint8_t count) {
+        EXPECT_EQ(count, 4);
+        first = entries[0].index;
+        first_generation = entries[0].generation;
+        return true;
+    });
+    EXPECT_EQ(first, MAX_VALUES);
+    EXPECT_EQ(first_generation, 0x700U + MAX_VALUES);
+    EXPECT_EQ(queue.count(), 0);
+}
+
+// a full queue drops and counts; without the bound the 65th entry is written past the queue
+TEST(ScriptingM4Objects, FullReleaseQueueCountsDrops)
+{
+    ReleaseQueue queue;
+    const uint8_t slots = ObjectPool::SLOTS;
+    for (uint8_t i = 0; i < slots; i++) {
+        uint32_t generation = 0x100 + i;
+        ASSERT_TRUE(queue.push(2, i, generation));
+    }
+    uint32_t generation = 0x200;
+    EXPECT_FALSE(queue.push(2, 100, generation));
+    EXPECT_EQ(queue.count(), slots);
+    EXPECT_EQ(queue.dropped(), 1U);
+}
+
 AP_GTEST_MAIN()

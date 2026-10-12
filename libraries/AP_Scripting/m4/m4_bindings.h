@@ -20,6 +20,13 @@ namespace ScriptingM4 {
 bool fetch_binding_info();
 // the sandbox table on top of the stack: print, and the generated bindings resolved on first use
 void open_remote_functions(lua_State *L);
+// the stub of every remote row (upvalues: method id, row flags, owning type id)
+int remote_call(lua_State *L);
+// sends the m4:release of the owned objects collected since the last call; what it could not
+// send stays queued for the next call
+void flush_releases();
+// owned objects collected while the release queue was full: the M7 frees them at the session end
+uint32_t releases_dropped();
 
 // a pure-data type the M4 implements itself (gen-bindings -r, lua_remote_local.cpp)
 static const uint16_t LOCAL_OBJECT_MAX = 32;   // the largest local type is 16 B (Location, Quaternion)

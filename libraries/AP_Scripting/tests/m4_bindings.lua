@@ -69,6 +69,16 @@ local steps = {
     check(param:get("SCR_USER2") == 5, "SCR_USER2")
     count("param:get", 1)
   end,
+  function()   -- an owned object (Parameter): it lives on the M7, its state stays there
+    local p = Parameter("SCR_USER3")
+    count("Parameter:new", 1)
+    check(p:set(7), "Parameter:set")
+    count("Parameter:set", 1)
+    check(p:get() == 7, "Parameter:get")
+    count("Parameter:get", 1)
+    check(param:get("SCR_USER3") == 7, "SCR_USER3")
+    count("param:get", 1)
+  end,
   function()   -- scheduler-semaphore methods; a mode change runs mode code on the M7's host thread
     local mode = vehicle:get_mode()
     count("vehicle:get_mode", 1)

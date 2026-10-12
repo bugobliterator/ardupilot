@@ -41,6 +41,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
         { "CANFrame", BindingKind::Blob }, { "RangeFinder_State", BindingKind::Blob },
         { "ServoTelemetryData", BindingKind::Blob },
         { "RC_Channel", BindingKind::Handle }, { "AP_EFI_Backend", BindingKind::Handle },
+        { "Parameter", BindingKind::Owned },
         { "uint32_t", BindingKind::Local }, { "uint64_t", BindingKind::Local },
         { "global", BindingKind::Global },
     };
@@ -53,7 +54,7 @@ TEST(ScriptingM4Bindings, TypesHaveTheirKinds)
     EXPECT_EQ(type_named("uint64_t"), BINDING_TYPE_UINT64);
     // userdata carrying M7 pointers or state, and the manual-only ap_objects, wait for
     // IO and Manual Bindings (none of these is renamed: the C++ name is the Lua name)
-    for (const char *name : { "Parameter", "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter",
+    for (const char *name : { "AP_Scripting_SerialAccess", "CRSFMenu", "CRSFParameter",
                               "DroneCAN_Handle", "SocketAPM", "ScriptingCANBuffer", "AP_HAL::I2CDevice",
                               "AP_HAL::PWMSource" }) {
         EXPECT_EQ(type_named(name), 0) << name;
@@ -129,6 +130,11 @@ TEST(ScriptingM4Bindings, KnownBindings)
     EXPECT_NE(row_named(global, "micros"), nullptr);
     EXPECT_EQ(row_named(global, "dirlist"), nullptr);           // manual: IO and Manual Bindings
     EXPECT_EQ(row_named(global, "PWMSource"), nullptr);         // manual-only ap_object
+
+    // an owned type's constructor is its ported creation function, called as the global Parameter
+    const BindingRow *parameter_new = row_named(type_named("Parameter"), "new");
+    ASSERT_NE(parameter_new, nullptr);
+    EXPECT_EQ(parameter_new->flags, ROW_CREATION);
 
     const BindingType &gps = binding_types[type_named("gps") - 1];
     bool found = false;

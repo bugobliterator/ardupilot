@@ -490,6 +490,7 @@ enum class MethodKind : uint8_t {
   binding for print.
   m4:fs_* are the M4's file calls (Lua io, require, dirlist, remove), served
   by AP_ScriptingM4_FileServer with the reach of in-process scripting.
+  m4:release names the M4's collected owned objects (AP_ScriptingM4_Objects.h).
  */
 #define SCRIPTING_M4_SYSTEM_METHODS(X) \
     X(1, Config, "m4:config", Call) \
@@ -513,7 +514,8 @@ enum class MethodKind : uint8_t {
     X(19, FsFlush, "m4:fs_flush", Call) \
     X(20, FsClose, "m4:fs_close", Call) \
     X(21, FsRemove, "m4:fs_remove", Call) \
-    X(22, FsDir, "m4:fs_dir", Call)
+    X(22, FsDir, "m4:fs_dir", Call) \
+    X(23, Release, "m4:release", Notify)
 
 #define SCRIPTING_M4_METHOD_ENUM(id, symbol, name, kind) symbol = id,
 enum class SystemMethod : uint16_t { SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_METHOD_ENUM) };

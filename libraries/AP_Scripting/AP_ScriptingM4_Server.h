@@ -10,6 +10,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include "AP_ScriptingM4_FileServer.h"
 #include "AP_ScriptingM4_Handles.h"
+#include "AP_ScriptingM4_Objects.h"
 #include "AP_ScriptingM4_Quota.h"
 #include "AP_ScriptingM4_Remote.h"
 #include "AP_ScriptingM4_Rpc.h"
@@ -19,9 +20,9 @@
   M7 side of the M4's system methods: configuration, the script list and
   script reads (SD card and ROMFS), script lifecycle reports (loaded,
   stopped, errors, run statistics), print, the m4:bindings image, and the
-  generated binding calls (ids from FIRST_BINDING_METHOD) with their quotas
-  and handles. Arguments come from the untrusted M4 and are checked as
-  luaL_check* does in-process, with the same texts.
+  generated binding calls (ids from FIRST_BINDING_METHOD) with their quotas,
+  handles and owned objects. Arguments come from the untrusted M4 and are
+  checked as luaL_check* does in-process, with the same texts.
   Runs on the scripting host thread; arming_checks() and the checksums are
   also read from other threads. handle() and reset() are host thread only:
   the generated dispatch keeps per-call state that no other thread may touch.
@@ -88,6 +89,7 @@ private:
     uint32_t _last_error_print_ms;
     bool _started;   // m4:started of this session received; under _error_sem
     ScriptingM4::HandleTable _handles;
+    ScriptingM4::ObjectPool _objects;   // the M4 scripts' owned objects (Parameter, ports, menus)
     ScriptingM4::Quota _quota;
     AP_ScriptingM4_FileServer _files;        // the M4's open files (m4:fs_*)
     ScriptingM4Remote::RemoteCall _call;   // the generated dispatch's call state (about 2.8 KB)

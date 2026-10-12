@@ -49,6 +49,7 @@ AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
     _fd_index(-1)
 {
     _call.handles = &_handles;
+    _call.objects = &_objects;
     _call.warn = remote_warning;
     _call.warn_context = this;
 }
@@ -64,6 +65,9 @@ void AP_ScriptingM4_Server::reset(uint32_t session)
     }
     _listed = false;
     _next_read_index = 0;
+    // the previous session's owned objects: destroyed, as in-process their userdata are
+    // collected when the Lua state closes
+    _objects.clear();
     // handles of the previous session are stale from here on, even if the M4 repeats
     // its session number: the table is emptied unconditionally
     _handles.reset(session);
@@ -115,6 +119,8 @@ ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *value
     case SystemMethod::FsRemove:
     case SystemMethod::FsDir:
         return _files.handle(SystemMethod(method), args, results, error_arg, _quota);
+    case SystemMethod::Release:
+        return release_objects(values, argc, _handles, _objects);
     case SystemMethod::Other:
     case SystemMethod::SystemOther:
         return ReplyStatus::Malformed;   // a stats row name, never a call

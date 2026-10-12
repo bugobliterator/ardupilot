@@ -71,7 +71,7 @@ class GenBindingsRemote(unittest.TestCase):
                             'remote: FooBackend is in no remote list')
 
     def test_blob_field_the_wire_cannot_carry(self):
-        # Parameter is deferred (it carries M7 state): a blob cannot hold it
+        # Parameter is owned (an M7 object): a blob cannot hold it
         self.assert_refused('blob_field', ['userdata Vector2f field param Parameter read write'],
                             'remote: blob Vector2f.param has a type the wire cannot carry')
 
@@ -152,6 +152,7 @@ class GenBindingsRemote(unittest.TestCase):
             'GCS_send_named_int': 1,
             'GCS_send_named_string': 1,
             'AP_Param_set_and_save_by_name': 2,
+            'Parameter_set_and_save': 2,
             'AP_Mission_set_item': 2,
             'AP_Mission_clear': 2,
             'AP_SerialLED_send': 3,
@@ -222,6 +223,53 @@ class GenBindingsRemote(unittest.TestCase):
     def test_local_type_with_enum(self):
         self.assert_refused('local_enum', ['userdata Vector3f enum ZERO ONE'],
                             'remote: local type Vector3f has enums')
+
+    def outputs(self, name):
+        work = os.path.join(self.tmp, name)
+        with open(os.path.join(work, 'remote_tables.cpp')) as f:
+            tables = f.read()
+        with open(os.path.join(work, 'remote_dispatch.cpp')) as f:
+            dispatch = f.read()
+        local = os.path.join(work, 'remote_local.cpp')
+        with open(local) as f:
+            local_text = f.read()
+        return tables, dispatch, local_text
+
+    @staticmethod
+    def type_ids(tables):
+        names = re.findall(r'^    \{ "([^"]+)", (\d+), \d+, \d+, \d+, \d+ \},$', tables, re.M)
+        return {name: (index + 1, int(kind)) for index, (name, kind) in enumerate(names)}
+
+    @staticmethod
+    def row_flags(tables, type_id, name):
+        match = re.search(r'^    \{ "%s", (\d+), (0x[0-9a-f]{2}), %d \},$' % (re.escape(name), type_id), tables, re.M)
+        return (int(match.group(1)), int(match.group(2), 16)) if match else None
+
+    def test_owned_types(self):
+        code, output, _ = self.generate('owned', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, _ = self.outputs('owned')
+        types = self.type_ids(tables)
+        parameter, kind = types['Parameter']
+        self.assertEqual(kind, 6)                            # ScriptingM4::BindingKind::Owned
+        # the constructor is the ported creation function, a creation row
+        _, flags = self.row_flags(tables, parameter, 'new')
+        self.assertEqual(flags, 0x08)
+        self.assertIn('    lua_new_Parameter,\n', dispatch)
+        self.assertIn('remote_check_owned(L, arg, %d)' % parameter, dispatch)
+        self.assertIn('remote_new_owned(L, %d, ScriptingM4::destroy_object<Parameter>)' % parameter, dispatch)
+        self.assertIn('static_assert(sizeof(Parameter) <= ScriptingM4::ObjectPool::SLOT_SIZE', dispatch)
+        # the methods are the in-process ones, on the object itself
+        self.assertIn('Parameter * ud = check_Parameter(L, 1);', dispatch)
+        # set_and_save is a Storage write: over its quota it returns false
+        method, _ = self.row_flags(tables, parameter, 'set_and_save')
+        start = dispatch.index('remote_method_flags[ScriptingM4::BINDING_METHOD_COUNT] = {')
+        flags_table = re.findall(r'0x[0-9a-f]{2}', dispatch[start:dispatch.index('};', start)])
+        self.assertEqual(flags_table[method - 64], '0x22')
+        # init_by_info allocates M7 memory nothing frees: its row runs a refusing port, and the
+        # generated body, which would make the allocation, is not in the dispatch
+        self.assertIn('    lua_m4_Parameter_init_by_info,\n', dispatch)
+        self.assertNotIn('static int Parameter_init_by_info(', dispatch)
 
 
 if __name__ == '__main__':

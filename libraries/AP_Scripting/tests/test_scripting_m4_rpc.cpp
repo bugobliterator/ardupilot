@@ -396,4 +396,12 @@ TEST(ScriptingM4Rpc, FileMethods)
     }
 }
 
+TEST(ScriptingM4Rpc, ReleaseMethod)
+{
+    EXPECT_EQ(uint16_t(SystemMethod::Release), 23);
+    EXPECT_STREQ(method_name(23), "m4:release");
+    EXPECT_EQ(method_kind(23), MethodKind::Notify);   // a collected object needs no reply
+    EXPECT_LT(23, FIRST_BINDING_METHOD);
+}
+
 AP_GTEST_MAIN()

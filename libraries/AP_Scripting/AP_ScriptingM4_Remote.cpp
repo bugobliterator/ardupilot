@@ -348,7 +348,9 @@ void *remote_new_blob(lua_State *L, uint8_t type_id, size_t size)
     return result.object;
 }
 
-void **remote_check_handle(lua_State *L, int arg, uint8_t type_id)
+// the object of a handle argument of type_id: a type error for any other value, "M4: stale
+// <type>" for a handle of an earlier session or of a released object
+static void *handle_object(lua_State *L, int arg, uint8_t type_id)
 {
     const BlobCodec *codec = codec_of(L, type_id);
     const char *name = codec != nullptr ? codec->name : "userdata";
@@ -363,9 +365,35 @@ void **remote_check_handle(lua_State *L, int arg, uint8_t type_id)
         snprintf(text, sizeof(text), "M4: stale %s", name);
         raise_error(L, ReplyStatus::Error, 0, text);
     }
+    return object;
+}
+
+void **remote_check_handle(lua_State *L, int arg, uint8_t type_id)
+{
+    void *object = handle_object(L, arg, type_id);
     void **slot = static_cast<void **>(arena_alloc(L, sizeof(void *)));
     *slot = object;
     return slot;
+}
+
+// the object itself: its methods change it in the pool, as in-process they change the userdata
+void *remote_check_owned(lua_State *L, int arg, uint8_t type_id)
+{
+    return handle_object(L, arg, type_id);
+}
+
+void *remote_new_owned(lua_State *L, uint8_t type_id, ScriptingM4::ObjectPool::Destroy destroy)
+{
+    RemoteCall::Result &result = push_result(L);
+    void *object = L->objects != nullptr ? L->objects->allocate(destroy) : nullptr;
+    if (object == nullptr) {
+        // the result stays a nil value: nothing to destroy
+        raise_error(L, ReplyStatus::Error, 0, ScriptingM4::TOO_MANY_OBJECTS);
+    }
+    result.kind = RemoteCall::Result::Owned;
+    result.type_id = type_id;
+    result.object = object;
+    return object;
 }
 
 void **remote_new_handle(lua_State *L, uint8_t type_id)
@@ -384,6 +412,31 @@ static ReplyStatus fail(RpcWriter &results, const char *text)
     results.restart();
     results.string(text, strlen(text));
     return ReplyStatus::Error;
+}
+
+// the owned objects of results [first, end): their entries are retired and their objects destroyed
+static void abandon_owned(RemoteCall &call, uint8_t first, uint8_t end)
+{
+    for (uint8_t i = first; i < end; i++) {
+        RemoteCall::Result &result = call.results[i];
+        if (result.kind != RemoteCall::Result::Owned || result.object == nullptr) {
+            continue;
+        }
+        if (call.handles != nullptr) {
+            (void)call.handles->forget(result.object);
+        }
+        if (call.objects != nullptr) {
+            (void)call.objects->destroy(result.object);
+        }
+        result.object = nullptr;
+    }
+}
+
+// a failed reply: the objects the call made go with it
+static ReplyStatus fail_call(RemoteCall &call, RpcWriter &results, const char *text)
+{
+    abandon_owned(call, 0, call.result_count);
+    return fail(results, text);
 }
 
 static bool encode_object(const RemoteCall &call, uint8_t type_id, const void *object, RpcWriter &results)
@@ -422,6 +475,8 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
     current = &call;
     if (ap_setjmp(call.jump) != 0) {
         current = nullptr;
+        // an error after new_<type>(): in-process its userdata would be collected
+        abandon_owned(call, 0, call.result_count);
         results.restart();
         results.string(call.message, strlen(call.message));
         error_arg = call.error_arg;
@@ -430,10 +485,13 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
     const int returned = function(&call);
     current = nullptr;
     if (returned < 0 || returned > call.result_count) {
-        return fail(results, "M4: malformed binding");
+        return fail_call(call, results, "M4: malformed binding");
     }
-    // a binding returns the last values it pushed, as a lua_CFunction does
-    for (uint8_t i = uint8_t(call.result_count - returned); i < call.result_count; i++) {
+    // a binding returns the last values it pushed, as a lua_CFunction does; an owned object
+    // pushed before them is no result and goes
+    const uint8_t first = uint8_t(call.result_count - returned);
+    abandon_owned(call, 0, first);
+    for (uint8_t i = first; i < call.result_count; i++) {
         const RemoteCall::Result &result = call.results[i];
         switch (result.kind) {
         case RemoteCall::Result::Value:
@@ -461,7 +519,7 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
             break;
         case RemoteCall::Result::Object:
             if (!encode_object(call, result.type_id, result.object, results)) {
-                return fail(results, "M4: results too large");
+                return fail_call(call, results, "M4: results too large");
             }
             break;
         case RemoteCall::Result::Handle: {
@@ -472,7 +530,16 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
             }
             const int16_t index = call.handles != nullptr ? call.handles->insert(result.type_id, object) : -1;
             if (index < 0) {
-                return fail(results, "M4: too many objects");
+                return fail_call(call, results, ScriptingM4::TOO_MANY_OBJECTS);
+            }
+            results.handle(result.type_id, uint16_t(index), call.handles->generation(uint16_t(index)));
+            break;
+        }
+        case RemoteCall::Result::Owned: {
+            const int16_t index = call.handles != nullptr ?
+                call.handles->insert_owned(result.type_id, result.object) : -1;
+            if (index < 0) {
+                return fail_call(call, results, ScriptingM4::TOO_MANY_OBJECTS);
             }
             results.handle(result.type_id, uint16_t(index), call.handles->generation(uint16_t(index)));
             break;
@@ -481,10 +548,10 @@ ReplyStatus run(RemoteCall &call, const RpcValue *args, uint8_t argc, lua_CFunct
     }
     if ((flags & METHOD_WRITES_SELF) != 0 && call.self != nullptr &&
         !encode_object(call, call.self_type, call.self, results)) {
-        return fail(results, "M4: results too large");
+        return fail_call(call, results, "M4: results too large");
     }
     if (!results.ok()) {
-        return fail(results, "M4: results too large");
+        return fail_call(call, results, "M4: results too large");
     }
     return ReplyStatus::Ok;
 }

@@ -25,6 +25,8 @@ enum class BindingKind : uint8_t {
     Global = 4,      // the global functions (millis, micros)
     LocalBlob = 5,   // implemented on the M4 (AP_Math, Location): blobs on the wire; rows only for
                      // the methods that read vehicle state, which write the self back
+    Owned = 6,       // an M7 object in the object pool (AP_ScriptingM4_Objects.h) that the M4 userdata
+                     // owns: one handle per userdata, released by its __gc (m4:release)
 };
 
 // BindingRow::flags
