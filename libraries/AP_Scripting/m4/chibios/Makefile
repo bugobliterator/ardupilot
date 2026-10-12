@@ -64,6 +64,7 @@ CPPSRC = $(ALLCPPSRC) \
          $(M4DIR)/m4_bindings.cpp \
          $(M4DIR)/m4_boxed_numerics.cpp \
          $(M4DIR)/m4_binding_local.cpp \
+         $(M4DIR)/m4_file_proxy.cpp \
          $(addprefix $(M4DIR)/local/,$(M4_LOCAL_SOURCES)) \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
@@ -91,16 +92,19 @@ UINCDIR =
 # scripting_m4.ld includes the Lua RAM lists written below
 ULIBDIR = $(BUILDDIR)
 # newlib-nano: printf without float unless _printf_float is pulled in (Lua's tostring
-# and string.format need it); nosys stubs the file calls, which fail on the M4
+# and string.format need it). The Lua core's file calls go to m4_file_proxy.cpp
+# (m4/shim/AP_Filesystem/posix_compat.h), never to newlib's nosys stubs
 ULIBS = --specs=nano.specs --specs=nosys.specs -u _printf_float -lm
 
 # RAM privilege per object file (scripting_m4.ld): statics are privileged unless
 # their object is listed here. These run on the unprivileged Lua thread and go to
 # Lua RAM: the Lua core, the M4 Lua runtime (lua_alloc, its heap, the RPC client, the
-# binding loader, the local userdata and the local pure-data types (AP_Math, Location))
+# binding loader, the file proxy and its stream pool, the local userdata and the local
+# pure-data types (AP_Math, Location))
 # and newlib (the malloc behind lua_alloc, errno and the reent state of printf and strtod).
 LUA_RAM_OBJECTS = $(M4_LUA_SOURCES:.c=.o) ap_setjmp.o m4_lua.o lua_heap.o m4_rpc_client.o \
-                  m4_bindings.o m4_boxed_numerics.o m4_binding_local.o $(M4_LOCAL_SOURCES:.cpp=.o)
+                  m4_bindings.o m4_boxed_numerics.o m4_binding_local.o m4_file_proxy.o \
+                  $(M4_LOCAL_SOURCES:.cpp=.o)
 LUA_RAM_ARCHIVES = libc_nano.a libg_nano.a libm.a libnosys.a
 lua_ram_input = $(foreach object,$(LUA_RAM_OBJECTS),'*/obj/$(object)($(1))') \
                 $(foreach archive,$(LUA_RAM_ARCHIVES),'*/$(archive):*($(1))')
