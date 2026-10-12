@@ -22833,7 +22833,13 @@ RTL_ALT_M 111
                 raise NotAchievedException("%u m4_hold files open, expected 8" % held)
             self.set_parameter("SCR_M4_INJECT", 1)
             self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=30)
-            held = self.m4_files_held_open()
+            # the text is sent before the files are closed
+            tstart = time.time()
+            while True:
+                held = self.m4_files_held_open()
+                if held == 0 or time.time() - tstart > 5:
+                    break
+                self.delay_sim_time(0.5)
             self.progress("m4_hold files open after the M4 went off: %u" % held)
             if held != 0:
                 raise NotAchievedException("%u m4_hold files open after the M4 went off" % held)
