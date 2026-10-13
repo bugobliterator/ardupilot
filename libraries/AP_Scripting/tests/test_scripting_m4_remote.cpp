@@ -2267,6 +2267,18 @@ TEST(ScriptingM4Remote, PathInDirectoryReadsAsFatFs)
     }
 }
 
+// any byte of 0x80 or above: FatFs (CP850) folds accented letters to ASCII capitals in its
+// short-name lookup, so "/\x83PM/LOGS" opens /APM/LOGS; macOS SITL opens "log\xC5\xBF" (logſ) as "logs"
+TEST(ScriptingM4Remote, PathInDirectoryRefusesNonAscii)
+{
+    for (const char *path : { "/\x83PM/LOGS/1.BIN", "/APM/L\x93GS/1.BIN", "/\xB5PM/LOGS/1.BIN", "/APM/LO\223S/x",
+                              "/APM/scripts/\xE9t\xE9.lua" }) {
+        EXPECT_TRUE(path_in_directory(path, "/APM/LOGS")) << path;
+    }
+    EXPECT_TRUE(path_in_directory("log\xC5\xBF/00000001.BIN", "logs"));
+    EXPECT_TRUE(path_in_log_directory("/\x83PM/LOGS/1.BIN", "/APM/LOGS"));
+}
+
 // "@MAV_LOG" is AP_Filesystem's alias of the logger's directory: "@MAV_LOG/00000001.BIN" opens
 // the log being written
 TEST(ScriptingM4Remote, PathInLogDirectoryTakesTheAlias)
@@ -2533,14 +2545,15 @@ TEST(ScriptingM4LoggerWrite, FileContentIsCheckedAndBounded)
         ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
     }
     EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 0);
-    // a device, a directory, a missing file, and a file in the logger's directory (SITL: "logs"),
+    // a device ("//dev/zero": SITL's AP_Filesystem drops one leading '/'), a directory, a missing
+    // file, and a file in the logger's directory (SITL: "logs"),
     // also by AP_Filesystem's alias of it
     mkdir("logs", 0755);
     FILE *in_logs = fopen("logs/LWTEST.BIN", "w");
     ASSERT_NE(in_logs, nullptr);
     fclose(in_logs);
-    for (const char *path : { "/dev/zero", "/", "no_such_file.txt", "logs/LWTEST.BIN", "./logs/../logs/LWTEST.BIN",
-                              "@MAV_LOG/LWTEST.BIN" }) {
+    for (const char *path : { "//dev/zero", "/", "no_such_file.txt", "logs/LWTEST.BIN", "./logs/../logs/LWTEST.BIN",
+                              "@MAV_LOG/LWTEST.BIN", "log\xC5\xBF/LWTEST.BIN" }) {
         c.args.nil();
         c.args.string(path, strlen(path));
         ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);

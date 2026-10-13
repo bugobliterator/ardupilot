@@ -553,7 +553,7 @@ inline bool file_content_allowed(const char *path, size_t length, uint8_t queued
 static const uint8_t LOGGER_SCRIPT_TYPES_MAX = 32;
 
 // a path component as FatFs looks it up: its trailing spaces and dots dropped ("." and ".."
-// excepted), letters compared without case
+// excepted), ASCII letters compared without case (path_in_directory() takes no other byte)
 inline size_t path_component_length(const char *start, size_t length)
 {
     if ((length == 1 && start[0] == '.') || (length == 2 && start[0] == '.' && start[1] == '.')) {
@@ -582,14 +582,15 @@ inline bool path_components_equal(const char *a, size_t a_length, const char *b,
 
 // true if path names something inside directory, both read as FatFs reads them below the
 // filesystem root: '/' and '\' separate, leading ones optional, "." skipped, ".." taken back,
-// path_component_length() names. A path FatFs reads otherwise (a ':' drive prefix, or a control
-// character, which ends it there) counts as inside. The logger's directory holds the log it is
-// writing, which grows faster than FILE logging reads it: queued, it would hold the queue's head
-// for the rest of the boot
+// path_component_length() names. A path FatFs reads otherwise counts as inside: a ':' drive
+// prefix, a control character (which ends it there), or a byte of 0x80 or above (a CP850
+// character, which its short-name lookup folds, 0x83 to 'A', 0x93 to 'O', ...). The logger's
+// directory holds the log it is writing, which grows faster than FILE logging reads it: queued,
+// it would hold the queue's head for the rest of the boot
 inline bool path_in_directory(const char *path, const char *directory)
 {
     for (const char *c = path; *c != 0; c++) {
-        if ((unsigned char)*c < ' ' || *c == ':') {
+        if ((unsigned char)*c < ' ' || (unsigned char)*c >= 0x80 || *c == ':') {
             return true;
         }
     }
