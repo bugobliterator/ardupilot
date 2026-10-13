@@ -360,11 +360,12 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
     if (status == PeerHeader::Status::Compatible && view.restarts == _restart_grants &&
         (_state == State::Starting || view.session != _m4_session)) {
         _m4_session = view.session;
-        if (_state == State::Starting) {
+        // a fault restart has been charged: a fault the M4 recorded on its way down is the same
+        // incident. After a requested restart the count stays: a fault recorded around the request
+        // is still a fault, which check_running() charges to SCR_M4_RST_MAX
+        if (_state == State::Starting || !_restart_requested) {
             _m4_fault_count = view.faultCount;
         }
-        // restarting, the count stays: a fault the M4 recorded around a requested restart is
-        // still a fault, which check_running() charges to SCR_M4_RST_MAX
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
         _m4_heartbeat_ms = now_ms;
         // re-handshake: drop whatever either side queued before this start
@@ -458,7 +459,6 @@ void AP_ScriptingM4::failure(const char *reason)
     _restarts_used++;
     GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 restarting (%u/%u)",
                   unsigned(_restarts_used), unsigned(restart_limit()));
-    _protocol_errors = 0;
     _restart_requested = false;   // a fault during a requested restart is a fault
     grant_restart();
 }
@@ -468,6 +468,8 @@ void AP_ScriptingM4::failure(const char *reason)
 void AP_ScriptingM4::grant_restart()
 {
     _restart_grants++;
+    // the new session starts without the old one's protocol errors
+    _protocol_errors = 0;
     // the M4 acts on a restart doorbell only once the grant has changed: store it first
     ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restart_grants);
     platform_request_restart();

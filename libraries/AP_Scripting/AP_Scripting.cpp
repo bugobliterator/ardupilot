@@ -293,10 +293,16 @@ MAV_RESULT AP_Scripting::handle_command_int_packet(const mavlink_command_int_t &
         case SCRIPTING_CMD_STOP:
             _restart = false;
             _stop = true;
+#if AP_SCRIPTING_M4_ENABLED
+            _m4_requests.stop();
+#endif
             return MAV_RESULT_ACCEPTED;
         case SCRIPTING_CMD_STOP_AND_RESTART:
             _restart = true;
             _stop = true;
+#if AP_SCRIPTING_M4_ENABLED
+            _m4_requests.restart();
+#endif
             return MAV_RESULT_ACCEPTED;
         case SCRIPTING_CMD_ENUM_END: // cope with MAVLink generator appending to our enum
             break;
@@ -508,20 +514,10 @@ void AP_Scripting::restart_all()
 {
     _restart = true;
     _stop = true;
-}
-
 #if AP_SCRIPTING_M4_ENABLED
-bool AP_Scripting::take_stop_request(bool &restart)
-{
-    if (!_stop) {
-        return false;
-    }
-    restart = _restart;
-    _stop = false;
-    _restart = false;
-    return true;
-}
+    _m4_requests.restart();
 #endif
+}
 
 #if HAL_GCS_ENABLED
 void AP_Scripting::handle_message(const mavlink_message_t &msg, const mavlink_channel_t chan) {

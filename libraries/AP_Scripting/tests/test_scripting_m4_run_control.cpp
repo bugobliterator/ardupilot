@@ -52,13 +52,90 @@ TEST(ScriptingM4RunControl, StoppedSessionsWaitToo)
     EXPECT_EQ(control.update(true, false, false, RUNNING), RunAction::Restart);
 }
 
-// the later of two requests before they are acted on wins, as AP_Scripting's flags are
-// overwritten: STOP after STOP_AND_RESTART stops
-TEST(ScriptingM4RunControl, TheLaterRequestWins)
+// a STOP acts at once, in a session's first second too, as the in-process run loop stops at its
+// next check. Without it the stop waits a second, and a restart asked meanwhile replaces it
+TEST(ScriptingM4RunControl, StopActsAtOnce)
+{
+    RunControl control;
+    EXPECT_EQ(control.update(true, true, false, 0), RunAction::Stop);
+    EXPECT_TRUE(control.stopped());
+    RunControl disabled;
+    EXPECT_EQ(disabled.update(false, false, false, 0), RunAction::Stop);
+}
+
+// a STOP after a restart not yet acted on stops at once: the restart is dropped, and a stop is
+// never replaced by a later restart
+TEST(ScriptingM4RunControl, AStopIsNeverCancelledByARestart)
 {
     RunControl control;
     EXPECT_EQ(control.update(true, true, true, 10), RunAction::None);
-    EXPECT_EQ(control.update(true, true, false, RUNNING), RunAction::Stop);
+    EXPECT_EQ(control.update(true, true, false, 20), RunAction::Stop);
+    EXPECT_EQ(control.update(true, false, false, RUNNING), RunAction::None);
+    EXPECT_TRUE(control.stopped());
+}
+
+// the requests as the host takes them: a stop asked without a restart wins over a restart asked
+// before or after it (a script's restart_all() racing a GCS STOP). Without the stop bit kept, the
+// restart after the stop takes it as a restart
+TEST(ScriptingM4RunControl, TakenRequestsKeepAStop)
+{
+    RunRequests requests;
+    bool restart = true;
+    EXPECT_FALSE(requests.take(restart));
+    requests.restart();
+    requests.stop();
+    requests.restart();
+    EXPECT_TRUE(requests.take(restart));
+    EXPECT_FALSE(restart);
+    EXPECT_FALSE(requests.take(restart));   // taken once
+    requests.restart();
+    EXPECT_TRUE(requests.take(restart));
+    EXPECT_TRUE(restart);
+}
+
+// a script that calls restart_all() every 100 ms restarts scripting once a second; a GCS STOP stops
+// it at the next pass, and it stays stopped. Without the at-once stop the STOP waits for the
+// second, and the script's next restart_all() turns it into a restart
+TEST(ScriptingM4RunControl, ARestartingScriptIsStoppedAndStaysStopped)
+{
+    RunRequests requests;
+    RunControl control;
+    uint32_t session_ms = 0;
+    uint32_t last_restart_ms = 0;
+    uint32_t now_ms = 0;
+    unsigned restarts = 0;
+    bool restart = false;
+    // the host passes every 100 ms; the script runs while the session is not stopped
+    for (int pass = 0; pass < 100; pass++, now_ms += 100, session_ms += 100) {
+        if (!control.stopped()) {
+            requests.restart();   // the script's restart_all()
+        }
+        if (pass == 35) {
+            requests.stop();      // MAV_CMD_SCRIPTING STOP, between two of the script's calls
+            requests.restart();
+        }
+        const bool stop = requests.take(restart);
+        const RunAction action = control.update(true, stop, restart, session_ms);
+        if (pass < 35) {
+            EXPECT_NE(action, RunAction::Stop);
+        } else if (pass == 35) {
+            EXPECT_EQ(action, RunAction::Stop);
+        } else {
+            EXPECT_EQ(action, RunAction::None);
+        }
+        if (action == RunAction::Restart) {
+            if (restarts > 0) {
+                EXPECT_GE(now_ms - last_restart_ms, RUN_CONTROL_MIN_SESSION_MS);
+            }
+            restarts++;
+            last_restart_ms = now_ms;
+        }
+        if (action != RunAction::None) {
+            session_ms = 0;   // the M4 restarts into a new session
+        }
+    }
+    EXPECT_GE(restarts, 3U);
+    EXPECT_TRUE(control.stopped());
 }
 
 // SCR_ENABLE 0 stops the scripts; back to 1 starts them again (in-process: cleared). Without the

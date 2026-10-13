@@ -85,12 +85,17 @@ public:
     bool arming_checks(size_t buflen, char *buffer) const;
     
     void restart_all(void);
-    void stop(void) { _stop = true; }
+    void stop(void) {
+        _stop = true;
 #if AP_SCRIPTING_M4_ENABLED
-    // a stop asked of scripting since the last call (MAV_CMD_SCRIPTING, restart_all()), and in
-    // restart whether a restart was asked with it. Taken once: the in-process thread clears both
-    // flags when it starts the scripts again. M4 host thread
-    bool take_stop_request(bool &restart);
+        _m4_requests.stop();
+#endif
+    }
+#if AP_SCRIPTING_M4_ENABLED
+    // a stop asked of scripting since the last call (MAV_CMD_SCRIPTING, the RC switch,
+    // restart_all()), and in restart whether it is a restart: a stop asked without one wins.
+    // Taken once. M4 host thread
+    bool take_stop_request(bool &restart) { return _m4_requests.take(restart); }
 #endif
 
    // User parameters for inputs into scripts 
@@ -224,6 +229,9 @@ private:
     bool _init_failed;  // true if memory allocation failed
     bool _restart; // true if scripts should be restarted
     bool _stop; // true if scripts should be stopped
+#if AP_SCRIPTING_M4_ENABLED
+    ScriptingM4::RunRequests _m4_requests;   // the requests above, as the M4 host takes them
+#endif
 
     static AP_Scripting *_singleton;
     int current_env_ref;
