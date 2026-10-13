@@ -443,6 +443,33 @@ private:
     uint8_t _blocked = 0;
 };
 
+// a received mavlink_message_t (mavlink:receive_chan) holds bytes of earlier messages on its
+// channel past its payload: the parser zero-fills only up to the message's own length, and the
+// signature block stays from the last signed message (a SETUP_SIGNING key, for one). Zeroes the
+// payload from len and an unsigned message's signature, so the M4 gets this message only. Zeros
+// past len are what MAVLink 2 trimming means, so decoding is unchanged
+static const uint8_t MAVLINK_SIGNED_FLAG = 0x01;   // MAVLINK_IFLAG_SIGNED
+template <typename Message> void mavlink_clear_stale(Message &msg)
+{
+    uint8_t *bytes = reinterpret_cast<uint8_t *>(&msg);
+    const size_t payload_size = sizeof(msg.payload64);
+    if (msg.len < payload_size) {
+        memset(bytes + offsetof(Message, payload64) + msg.len, 0, payload_size - msg.len);
+    }
+    if ((msg.incompat_flags & MAVLINK_SIGNED_FLAG) == 0) {
+        memset(bytes + offsetof(Message, signature), 0, sizeof(msg.signature));
+    }
+}
+
+// mavlink:send_chan sends only while the channel keeps room for one more full MAVLink 2 frame
+// after it, so the vehicle's own streams are never left without txspace by a script (recorded
+// deviation: in-process sends while the message alone fits)
+static const uint16_t MAVLINK_TX_RESERVE = 280;   // 12 framing + 255 payload + 13 signature bytes
+inline bool mavlink_send_has_room(uint32_t txspace, uint32_t packet_length)
+{
+    return txspace >= packet_length + MAVLINK_TX_RESERVE;
+}
+
 // empties a queue another thread fills, from its consumer side: pops at most the items it held
 // when the drain started, so a producer that keeps pushing cannot hold the host thread. The items
 // dropped; a null queue holds none

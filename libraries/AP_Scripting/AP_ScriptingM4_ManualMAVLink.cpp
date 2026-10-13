@@ -25,6 +25,9 @@ static CommandBlocks command_blocks;
 
 #if HAL_GCS_ENABLED
 static_assert(MAVLINK_SCRIPTING_COMMAND == MAV_CMD_SCRIPTING, "the command the GCS stops scripting with");
+static_assert(MAVLINK_SIGNED_FLAG == MAVLINK_IFLAG_SIGNED, "the signed-message flag");
+static_assert(MAVLINK_TX_RESERVE == MAVLINK_NUM_NON_PAYLOAD_BYTES + MAVLINK_MAX_PAYLOAD_LEN + MAVLINK_SIGNATURE_BLOCK_LEN,
+              "one full signed MAVLink 2 frame");
 
 // mavlink:init(queue_size, num_msgs): lua_mavlink_init(). The queue and the filter table are made
 // once per boot and kept across sessions, as in-process: at most 25 messages and 25 ids
@@ -82,6 +85,8 @@ int lua_mavlink_receive_chan(lua_State *L)
     }
 
     if (rx_buffer->pop(msg)) {
+        // M4: only this message's bytes cross (mavlink_clear_stale())
+        mavlink_clear_stale(msg.msg);
         lua_pushlstring(L, (char *)&msg.msg, sizeof(msg.msg));
         lua_pushinteger(L, msg.chan);
         *new_uint32_t(L) = msg.timestamp_ms;
@@ -181,7 +186,8 @@ int lua_mavlink_send_chan(lua_State *L)
         lua_pushboolean(L, false);
         return 1;
     }
-    if (comm_get_txspace(chan) >= (GCS_MAVLINK::packet_overhead_chan(chan) + entry->max_msg_len)) {
+    // M4: the channel keeps a frame's room for the vehicle's own streams (mavlink_send_has_room())
+    if (mavlink_send_has_room(comm_get_txspace(chan), GCS_MAVLINK::packet_overhead_chan(chan) + entry->max_msg_len)) {
         _mav_finalize_message_chan_send_target(chan,
                                         entry->msgid,
                                         payload,

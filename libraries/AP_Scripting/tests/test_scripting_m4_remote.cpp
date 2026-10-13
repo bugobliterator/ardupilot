@@ -1851,9 +1851,8 @@ TEST(ScriptingM4Remote, BlockingTheScriptingCommandIsRefused)
     EXPECT_TRUE(blocks.allow(31000));
 }
 
-// the mission items a session left unread go with it, and only those: the drain pops what the
-// queue held when it started, so a producer that keeps pushing cannot hold the host thread. A null
-// queue (no mission item ever received) holds none. Without the drain the next session reads them
+// the mission items a session left unread go with it. A null queue (no mission item ever
+// received) holds none. Without the drain the next session reads them
 TEST(ScriptingM4Remote, MissionQueueIsDrained)
 {
     ObjectBuffer<int> queue(5);
@@ -1867,6 +1866,81 @@ TEST(ScriptingM4Remote, MissionQueueIsDrained)
     EXPECT_TRUE(queue.pop(item));
     EXPECT_EQ(item, 7);
     EXPECT_EQ(drain_queue(static_cast<ObjectBuffer<int> *>(nullptr)), 0U);
+}
+
+// a queue whose producer refills it as fast as it is popped: never empty, up to 1000 pops
+struct RefillingQueue {
+    uint32_t pops;
+    uint32_t available() const { return 5; }
+    bool pop() { return ++pops <= 1000; }
+};
+
+// the drain pops what the queue held when it started, so a producer that keeps pushing cannot
+// hold the host thread. A drain that pops until empty takes all 1000 here (forever on the M7)
+TEST(ScriptingM4Remote, MissionQueueDrainIgnoresNewItems)
+{
+    RefillingQueue queue {};
+    EXPECT_EQ(drain_queue(&queue), 5U);
+    EXPECT_EQ(queue.pops, 5U);
+}
+
+// mavlink_message_t's layout around the fields mavlink_clear_stale() uses (wide sysid)
+struct __attribute__((packed)) TestMavlinkMessage {
+    uint16_t checksum;
+    uint8_t magic;
+    uint8_t len;
+    uint8_t incompat_flags;
+    uint8_t compat_flags;
+    uint8_t seq;
+    uint32_t sysid;
+    uint8_t compid;
+    uint8_t msgid[3];
+    uint64_t payload64[33];
+    uint8_t ck[2];
+    uint8_t signature[13];
+    uint32_t target_sysid;
+};
+
+// receive_chan sends this message's bytes only: without the clear, the payload past len and the
+// signature hold what earlier messages on the channel left (a SETUP_SIGNING key, for one)
+TEST(ScriptingM4Remote, ReceivedMessageCarriesNoStaleBytes)
+{
+    TestMavlinkMessage msg;
+    memset(&msg, 0xAA, sizeof(msg));
+    msg.len = 9;
+    msg.incompat_flags = 0;
+    msg.target_sysid = 7;
+    mavlink_clear_stale(msg);
+    const uint8_t *payload = reinterpret_cast<const uint8_t *>(&msg) + offsetof(TestMavlinkMessage, payload64);
+    for (size_t i = 0; i < sizeof(msg.payload64); i++) {
+        ASSERT_EQ(payload[i], i < 9 ? 0xAA : 0) << i;
+    }
+    for (size_t i = 0; i < sizeof(msg.signature); i++) {
+        ASSERT_EQ(msg.signature[i], 0) << i;
+    }
+    EXPECT_EQ(msg.ck[0], 0xAA);            // this message's own fields stay
+    EXPECT_EQ(msg.target_sysid, 7U);
+    EXPECT_EQ(msg.sysid, 0xAAAAAAAAU);
+
+    // a signed message keeps its own signature; a full payload has no tail
+    memset(&msg, 0xBB, sizeof(msg));
+    msg.len = 255;
+    msg.incompat_flags = MAVLINK_SIGNED_FLAG;
+    mavlink_clear_stale(msg);
+    EXPECT_EQ(payload[254], 0xBB);
+    EXPECT_EQ(payload[255], 0);
+    EXPECT_EQ(msg.signature[12], 0xBB);
+}
+
+// send_chan leaves a full signed frame of txspace to the vehicle: without the reserve a script
+// sending as fast as the link drains takes every byte the vehicle's streams would use
+TEST(ScriptingM4Remote, SendKeepsAFrameForTheVehicle)
+{
+    EXPECT_EQ(MAVLINK_TX_RESERVE, 280);
+    EXPECT_TRUE(mavlink_send_has_room(100 + 280, 100));
+    EXPECT_FALSE(mavlink_send_has_room(100 + 279, 100));
+    EXPECT_FALSE(mavlink_send_has_room(100, 100));        // the message alone fits: in-process sends
+    EXPECT_FALSE(mavlink_send_has_room(0, 0));
 }
 
 AP_GTEST_MAIN()
