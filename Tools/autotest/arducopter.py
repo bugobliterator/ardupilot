@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import tty
@@ -19612,6 +19613,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4Files,
             self.ScriptingM4Objects,
             self.ScriptingM4Devices,
+            self.ScriptingM4MAVLink,
+            self.ScriptingM4Commands,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -23123,6 +23126,443 @@ RTL_ALT_M 111
             for peer in peers:
                 peer.close()
 
+    def m4_log_rows(self, name):
+        '''the rows of a DataFlash message in the current onboard log'''
+        dfreader = self.dfreader_for_current_onboard_log()
+        rows = []
+        while True:
+            m = dfreader.recv_match(type=name)
+            if m is None:
+                return rows
+            rows.append(m)
+
+    def m4_assert_command_unanswered(self, command, seconds=3):
+        '''a COMMAND_LONG the vehicle leaves unanswered: a script has blocked it'''
+        self.drain_mav()
+        self.send_cmd(command)
+        tstart = self.get_sim_time()
+        while self.get_sim_time_cached() - tstart < seconds:
+            m = self.mav.recv_match(type='COMMAND_ACK', blocking=True, timeout=0.5)
+            if m is not None and m.command == command:
+                raise NotAchievedException("command %u answered (%u) while a script blocks it" % (command, m.result))
+
+    def m4_assert_no_text(self, pattern):
+        '''no STATUSTEXT collected since the last clear matches pattern'''
+        for m in self.context_collection("STATUSTEXT"):
+            if re.search(pattern, m.text):
+                raise NotAchievedException("unexpected '%s'" % m.text)
+
+    def ScriptingM4MAVLink(self):
+        '''mavlink, logger and the singleton manual bindings on the SITL M4; Rover's internal and MAVLink script sets'''
+        self.m4_mavlink_internal_set()
+        self.m4_mavlink_stages()
+        self.m4_mavlink_module_scripts()
+
+    def m4_install_tree_mavlink_module_context(self):
+        '''the generated "mavlink" module, from this tree's pymavlink: its mavlink_message_t layout is the
+        firmware's (a 32-bit sysid), which an older installed pymavlink does not decode'''
+        tree = os.path.join(self.rootdir(), "modules", "mavlink")
+        xml = os.path.join(tree, "message_definitions", "v1.0", "ardupilotmega.xml")
+        generate = ("import sys; sys.path.insert(0, sys.argv[1]); from pymavlink.generator import mavgen; "
+                    "mavgen.mavgen(mavgen.Opts(output=sys.argv[2], wire_protocol='2.0', language='Lua', "
+                    "validate=False), [sys.argv[3]])")
+        subprocess.run([sys.executable, "-c", generate, tree, os.path.join("scripts", "modules", "mavlink"), xml],
+                       check=True, capture_output=True)
+        self.context_get().installed_modules.append("mavlink")
+
+    def m4_mavlink_internal_set(self):
+        '''Rover's test_scripting_internal_test on the M4, together, at the CubeOrangePlus-M4Lua heap'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_HEAP_SIZE": 188416,   # the CubeOrangePlus-M4Lua default; Rover's test sets 1024000
+            "SCR_VM_I_COUNT": 1000000,
+        })
+        self.install_test_modules_context()
+        self.m4_install_tree_mavlink_module_context()
+        self.install_test_scripts_context([
+            "scripting_test.lua",
+            "scripting_require_test_2.lua",
+            "math.lua",
+            "strings.lua",
+            "mavlink_test.lua",
+        ])
+        self.context_collect('STATUSTEXT')
+        self.context_collect('NAMED_VALUE_FLOAT')
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(5 scripts, heap \d+KB\)", regex=True,
+                             check_context=True, timeout=30)
+        for text in ["Internal tests passed", "Require test 2 passed", "Math tests passed", "String tests passed",
+                     "Received heartbeat from"]:
+            self.wait_m4_script_text(text, timeout=120)
+        self.assert_received_message_field_values("NAMED_VALUE_FLOAT", {"name": "test"}, check_context=True)
+        self.context_pop()
+        self.reboot_sitl()
+
+    # m4_mavlink.lua's quota stages: (stage, gate value, done text, burst, refill per second). The
+    # least hits a stage must give is its flood less the burst and what refilled while it ran
+    M4_MAVLINK_QUOTA_STAGES = [
+        ("logger_quota", 1, "log", 500, 500),   # Log
+        ("osd_write", 2, "osdw", 300, 300),     # Osd
+        ("osd_frame", 3, "osdf", 40, 40),       # OsdFrame
+        ("send_quota", 4, "tx", 200, 200),      # MavTx
+    ]
+    M4_MAVLINK_STAGES = ["wide_calls", "logger_formats", "send_lengths", "receive_setup", "receive",
+                         "block_cap", "singletons", "refuse_calibration", "refuse_storage_erase",
+                         "refuse_storage_format", "refuse_crash_trigger", "refuse_flash_bootloader",
+                         "refuse_debug_trap", "file_content", "file_paths", "file_bound"]
+    M4_MAVLINK_BOUND_FILES = 45   # m4_mavlink.lua's file_bound stage: 40 queued at most, the head among them
+
+    # SITL serves an M4 call in about 2.6 ms (about 380 calls a second, send_chan half that), under
+    # the Log and MavTx refills and near the Osd one. With SIM_SPEEDUP below 1 its scheduler serves
+    # the M4 several times faster. Each stage times itself on the vehicle's clock, which the quotas
+    # refill by
+    M4_MAVLINK_QUOTA_SPEEDUP = 0.25
+
+    def m4_mavlink_quota_stage(self, stage, gate, label, burst, rate):
+        '''one quota stage of m4_mavlink.lua: the hits it must give, from its flood and its time'''
+        self.delay_sim_time(2, reason="M4ST is written once a second; the bucket refills")
+        before = self.m4_quota_hits()
+        self.set_parameter("SIM_SPEEDUP", self.M4_MAVLINK_QUOTA_SPEEDUP)
+        self.set_parameter("SCR_USER4", gate)
+        self.wait_m4_script_text("M4 mavlink stage %s" % stage, timeout=30)
+        done = self.wait_m4_script_text(r"M4 mavlink %s n \d+ ms \d+ vms \d+" % label, timeout=120)
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.delay_sim_time(2, reason="M4ST is written once a second")
+        hits = self.m4_quota_hits() - before
+        flood, elapsed_ms, vehicle_ms = [int(x) for x in re.search(r"n (\d+) ms (\d+) vms (\d+)", done.text).groups()]
+        # the bucket starts full: the burst passes, and the refill over the run on the vehicle's clock,
+        # read to within a GPS message period (250 ms); 5 % slack
+        passes_most = burst + rate * (vehicle_ms + 250) / 1000.0 + 0.05 * flood
+        least = flood - passes_most
+        self.progress("%s: %u quota hits of %u calls in %u ms (vehicle %u ms); at least %.0f, at most %u expected" %
+                      (stage, hits, flood, elapsed_ms, vehicle_ms, least, flood - burst))
+        if least < 0.1 * flood:
+            # a stage whose flood the refill keeps up with cannot tell the quota from none
+            raise NotAchievedException("%s: %u calls in %u vehicle ms is too slow to show the quota" %
+                                       (stage, flood, vehicle_ms))
+        if not least <= hits <= flood - burst:
+            raise NotAchievedException("%s: %u quota hits, expected %.0f to %u" % (stage, hits, least, flood - burst))
+        return done, flood, elapsed_ms, passes_most
+
+    def m4_mavlink_file_names(self):
+        '''the FileName of every FILE row in the current onboard log'''
+        return set(m.FileName for m in self.m4_log_rows("FILE"))
+
+    def m4_mavlink_stages(self):
+        '''m4_mavlink.lua: the ports, their bounds and their quotas'''
+        try:
+            self.context_push()
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_collect("STATUSTEXT")
+            self.context_collect("NAMED_VALUE_FLOAT")
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_VM_I_COUNT": 1000000,
+                "SCR_HEAP_SIZE": 188416,
+                "SCR_USER4": 0,
+                "OSD_TYPE": 3,         # MSP: an OSD backend without SFML
+                "RNGFND1_TYPE": 36,    # Lua
+                "LOG_DISARMED": 1,
+                "LOG_DARM_RATEMAX": 0,
+                "LOG_FILE_RATEMAX": 0,
+            })
+            self.install_test_script_context("m4_mavlink.lua")
+            # the file_paths stage climbs out of the SITL working directory and back in by its name
+            with open(self.installed_script_path("m4_cwd.txt"), "w") as f:
+                f.write(os.path.basename(os.getcwd()) + "\n")
+            self.reboot_sitl()
+            self.wait_statustext(r"Scripting: started on M4 \(1 scripts, heap \d+KB\)", regex=True,
+                                 check_context=True, timeout=30)
+            # a stage that stalls names itself: its text is the one missing
+            for name in self.M4_MAVLINK_STAGES:
+                self.wait_m4_script_text("M4 mavlink stage %s" % name, timeout=180)
+            # block_cap ran: the vehicle leaves a blocked command unanswered
+            self.m4_assert_command_unanswered(31000)
+            # the files file_paths refuses exist: the M7 would log them without the checks
+            climbing = os.path.join("..", os.path.basename(os.getcwd()), "scripts", "m4_pc.txt")
+            for path in [os.path.join("logs", "LASTLOG.TXT"), climbing]:
+                if not os.path.isfile(path):
+                    raise NotAchievedException("%s is not a file: the path stage shows nothing" % path)
+            self.wait_m4_script_text("M4 mavlink file bound queued %u" % self.M4_MAVLINK_BOUND_FILES, timeout=180)
+            for stage, gate, label, burst, rate in self.M4_MAVLINK_QUOTA_STAGES:
+                done, flood, elapsed_ms, passes_most = self.m4_mavlink_quota_stage(stage, gate, label, burst, rate)
+                if stage == "logger_quota":
+                    rows_most = passes_most
+                if stage == "send_quota":
+                    sent = int(re.search(r"sent (\d+)", done.text).group(1))
+                    if not burst <= sent <= passes_most:
+                        raise NotAchievedException("%u of %u sent, expected %u to %.0f" % (sent, flood, burst, passes_most))
+            # the last stage's warning is a "Lua:" text, as in-process: plain waits from here
+            self.wait_statustext("Lua: ahrs:wind_estimate Use get_wind", check_context=True, timeout=30)
+            done = self.wait_statustext(r"M4 mavlink (passed|failed \d+)", regex=True, check_context=True, timeout=30)
+            failed = [m.text for m in self.context_collection("STATUSTEXT")
+                      if m.text.startswith("M4 mavlink FAIL") or
+                      (m.text.startswith("Lua: ") and "wind_estimate" not in m.text)]
+            if failed or "passed" not in done.text:
+                raise NotAchievedException("m4_mavlink.lua: %s" % (failed or done.text))
+            # the 300-byte packet went out cut to its message, the 1-byte one padded with zeros
+            for fields in [{"name": "m4long", "value": 1.5}, {"time_boot_ms": 77, "value": 0, "name": ""}]:
+                if not any(all(getattr(m, k) == v for k, v in fields.items())
+                           for m in self.context_collection("NAMED_VALUE_FLOAT")):
+                    raise NotAchievedException("no NAMED_VALUE_FLOAT with %s" % fields)
+            # 15-field rows with units, as a method and as a dot call
+            wide = self.m4_log_rows("M4LW")
+            if len(wide) != 2 or any(m.A != 1 or m.O != 15 for m in wide):
+                raise NotAchievedException("M4LW rows: %s" % [str(m) for m in wide])
+            # the Log quota: 500 at once and what refilled during the run
+            rows = len(self.m4_log_rows("M4LQ"))
+            self.progress("M4LQ rows: %u of 3000, at most %.0f expected" % (rows, rows_most))
+            if not 500 <= rows <= rows_most:
+                raise NotAchievedException("%u M4LQ rows, expected 500 to %.0f" % (rows, rows_most))
+            # log_file_content() through the replacement queued the script's file and refused the log
+            # directory and the climbing path. The file queue held the head and 39 more: the logger
+            # writes the head first (about 6 KB a second in SITL), then the rest
+            tstart = self.get_sim_time()
+            while True:
+                names = self.m4_mavlink_file_names()
+                if "m4_q35.txt" in names:
+                    break
+                if self.get_sim_time_cached() - tstart > 300:
+                    raise NotAchievedException("the queued files were not logged: %s" % sorted(names))
+                self.delay_sim_time(10, reason="the logger writes the head file")
+            self.delay_sim_time(5, reason="the logger writes the rest")
+            names = self.m4_mavlink_file_names()
+            if "m4_fc.txt" not in names or "m4_fh.txt" not in names:
+                raise NotAchievedException("no FILE rows for m4_fc.txt or m4_fh.txt: %s" % sorted(names))
+            refused = names & {"LASTLOG.TXT", "m4_pc.txt"}
+            if refused:
+                raise NotAchievedException("FILE rows for refused paths: %s" % sorted(refused))
+            logged = sorted(int(name[4:6]) for name in names if re.match(r"m4_q\d\d\.txt$", name))
+            self.progress("file queue: %u of %u logged" % (len(logged), self.M4_MAVLINK_BOUND_FILES))
+            # 39 beside the head; up to 4 fewer if the logger still held others
+            if logged != list(range(1, len(logged) + 1)) or not 35 <= len(logged) <= 39:
+                raise NotAchievedException("files logged: %s, expected 1 to 35..39" % logged)
+            errors = self.m4_protocol_errors()
+            if errors != 0:
+                raise NotAchievedException("%u M4 protocol errors" % errors)
+            self.context_pop()
+            self.reboot_sitl()
+        finally:
+            for pattern in ["m4_fc.txt", "m4_pc.txt", "m4_fh.txt", "m4_q*.txt", "m4_cwd.txt"]:
+                self.remove_m4_files_leftovers(pattern)
+
+    def m4_mavlink_module_scripts(self):
+        '''Rover's ScriptingMAVLink scripts on the M4, one per session: together they need more Lua heap
+        than the M4 has (about 184 KB; SCR_HEAP_SIZE above it is clamped), Rover's test sets 1024000'''
+        for script, text in [("mavlink_layout.lua", "MAVLink layout and target tests passed"),
+                             ("mavlink_replies.lua", "MAVLink script reply tests passed")]:
+            self.context_push()
+            self.set_parameter("SIM_SPEEDUP", 1)
+            self.set_parameters({
+                "SCR_ENABLE": 1,
+                "SCR_HEAP_SIZE": 188416,
+                "SCR_VM_I_COUNT": 1000000,
+            })
+            # the checked-in module, as Rover's test; the previous context removed the generated
+            # "mavlink" module, which on a case-insensitive file system is the same directory
+            self.context_get().installed_modules.append("MAVLink")
+            shutil.copytree(self.script_modules_source_path("MAVLink"),
+                            self.installed_script_module_path("MAVLink"))
+            for source in [
+                    self.script_example_source_path("MAVLink_Commands.lua"),
+                    self.script_example_source_path("BQ40Z_bms_shutdown.lua"),
+                    self.script_applet_source_path("param-lockdown.lua"),
+            ]:
+                self.install_script_module_context(source, os.path.basename(source))
+            self.install_test_script_context(script)
+            self.context_collect('STATUSTEXT')
+            self.reboot_sitl()
+            self.wait_m4_script_text(text, timeout=120)
+            self.context_pop()
+            self.reboot_sitl()
+
+    def m4_commands_scripting(self, p1):
+        '''MAV_CMD_SCRIPTING from the GCS'''
+        self.run_cmd(mavutil.mavlink.MAV_CMD_SCRIPTING, p1=p1)
+
+    def m4_commands_session(self, timeout=30):
+        '''the number of the next session of m4_commands.lua to run its first loop'''
+        m = self.wait_m4_script_text(r"M4 commands session \d+ loop 1$", timeout=timeout)
+        return int(m.text.split()[3])
+
+    def ScriptingM4Commands(self):
+        '''MAV_CMD_SCRIPTING, restart_all() and SCR_ENABLE stop and restart SITL M4 scripts, leaving the fault budget'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "SCR_HEAP_SIZE": 188416,
+            "SCR_M4_RST_MAX": 1,   # one fault restart: requested restarts must leave it
+            "SCR_USER2": 0,
+            "SCR_USER3": 0,
+            "SCR_USER5": 0,
+            "SCR_USER6": 1,        # the sessions block MAV_CMD_USER_1
+            "AUTO_OPTIONS": 3,     # arm and take off in AUTO
+            "LOG_DISARMED": 1,
+        })
+        STOP = mavutil.mavlink.SCRIPTING_CMD_STOP
+        STOP_AND_RESTART = mavutil.mavlink.SCRIPTING_CMD_STOP_AND_RESTART
+        USER_1 = mavutil.mavlink.MAV_CMD_USER_1
+        self.install_test_script_context("m4_commands.lua")
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(1 scripts, heap \d+KB\)", regex=True,
+                             check_context=True, timeout=30)
+        self.wait_m4_script_text("M4 commands session 1 registered true", timeout=30)
+        self.wait_m4_script_text("M4 commands session 1 loop 2", timeout=30)
+        self.m4_assert_command_unanswered(USER_1)
+
+        # STOP alone: the scripts stop, and the session's blocks go with it (end_session()); without
+        # the session end USER_1 stays unanswered
+        self.context_clear_collection("STATUSTEXT")
+        self.m4_commands_scripting(STOP)
+        self.wait_statustext("Scripting: stopped", check_context=True, timeout=10)
+        self.delay_sim_time(2, reason="the stopped session starts")
+        self.run_cmd(USER_1, want_result=mavutil.mavlink.MAV_RESULT_UNSUPPORTED)
+        # a second STOP changes nothing: no script text, no start text, and no fault restart text
+        self.context_clear_collection("STATUSTEXT")
+        self.m4_commands_scripting(STOP)
+        self.delay_sim_time(4, reason="a stopped session runs no script")
+        self.m4_assert_no_text(r"M4 commands session|Scripting: (started on M4|restarted|stopped|M4 )")
+
+        # STOP_AND_RESTART: a new session runs the script, which finds the first session's filter
+        self.m4_commands_scripting(STOP_AND_RESTART)
+        self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
+        self.wait_m4_script_text("M4 commands session 2 registered false", timeout=30)
+        self.wait_m4_script_text("M4 commands session 2 loop 1", timeout=30)
+        self.m4_assert_command_unanswered(USER_1)
+
+        # SCR_ENABLE 0 stops the scripts and ends the session; STOP_AND_RESTART while disabled
+        # starts nothing; 1 starts them again
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_ENABLE", 0)
+        self.wait_statustext("Scripting: stopped", check_context=True, timeout=10)
+        self.delay_sim_time(2, reason="the stopped session starts")
+        self.run_cmd(USER_1, want_result=mavutil.mavlink.MAV_RESULT_UNSUPPORTED)
+        self.context_clear_collection("STATUSTEXT")
+        self.m4_commands_scripting(STOP_AND_RESTART)
+        self.delay_sim_time(3, reason="disabled: no restart")
+        self.m4_assert_no_text(r"M4 commands session|Scripting: (started on M4|restarted|M4 )")
+        self.set_parameter("SCR_USER6", 0)
+        self.set_parameter("SCR_ENABLE", 1)
+        self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
+        self.wait_m4_script_text("M4 commands session 3 loop 1", timeout=30)
+
+        # restart_all() from the script
+        self.set_parameter("SCR_USER5", 1)
+        self.wait_m4_script_text("M4 commands session 4 loop 1", timeout=30)
+
+        # 20 requested restarts in a row, each at the start of a session: each at least a second
+        # after the last (the M7 acts once a session has run a second, as the in-process thread
+        # looks once a second), and scripting stays on. Timed by the texts' receive times, with 0.1 s
+        # of receive jitter: without the wait they follow the M4's restart, well under a second
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_USER3", 20)
+        self.set_parameter("SCR_USER5", 3)
+        self.wait_m4_script_text(r"M4 commands restart loop 0$", timeout=120)
+        self.set_parameter("SCR_USER5", 0)
+        # sessions 4 to 23 asked; 24 runs on
+        session = 24
+        self.wait_m4_script_text("M4 commands session %u loop 2" % session, timeout=30)
+        restarted = [m._timestamp for m in self.context_collection("STATUSTEXT") if m.text == "Scripting: restarted"]
+        gaps = [b - a for a, b in zip(restarted, restarted[1:])]
+        self.progress("restart loop: %u restarts, gaps %.2f to %.2f s" % (len(restarted), min(gaps), max(gaps)))
+        if len(restarted) != 20:
+            raise NotAchievedException("%u requested restarts, expected 20" % len(restarted))
+        if min(gaps) < 0.9:
+            raise NotAchievedException("a requested restart %.2f s after the last" % min(gaps))
+        self.m4_assert_no_text(r"Scripting: M4 ")
+
+        # a script calling restart_all() every 100 ms is stopped by STOP at once and stays stopped
+        self.set_parameter("SCR_USER5", 4)
+        self.wait_m4_script_text("M4 commands session %u loop 1" % (session + 2), timeout=30)
+        self.context_clear_collection("STATUSTEXT")
+        self.m4_commands_scripting(STOP)
+        self.wait_statustext("Scripting: stopped", check_context=True, timeout=10)
+        self.delay_sim_time(1, reason="the stop is acted on")
+        self.context_clear_collection("STATUSTEXT")
+        self.delay_sim_time(5, reason="stopped: no restart")
+        self.m4_assert_no_text(r"M4 commands session|Scripting: (started on M4|restarted|stopped|M4 )")
+        self.set_parameter("SCR_USER5", 0)
+        self.m4_commands_scripting(STOP_AND_RESTART)
+        self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
+        session = self.m4_commands_session()
+
+        # the script stops scripting through run_command_int(MAV_CMD_SCRIPTING); MAVLink restarts it.
+        # The stop acts at once, ending the script's update at that call: its "stop result" text never
+        # comes (recorded deviation: in-process the update runs to its end)
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_USER5", 2)
+        self.wait_statustext("Scripting: stopped", check_context=True, timeout=30)
+        self.delay_sim_time(3, reason="nothing from the stopped script follows")
+        stopped = [m.text for m in self.context_collection("STATUSTEXT")].index("Scripting: stopped")
+        after = [m.text for m in self.context_collection("STATUSTEXT")][stopped + 1:]
+        for text in after:
+            if re.match(r"M4 commands|Scripting: (started on M4|restarted|M4 )", text):
+                raise NotAchievedException("'%s' after the script's own STOP" % text)
+        self.m4_commands_scripting(STOP_AND_RESTART)
+        session += 1   # a stopped session runs no script
+        self.wait_m4_script_text("M4 commands session %u loop 1" % session, timeout=30)
+
+        # armed in AUTO: a requested restart drops the mission items the old session left unread,
+        # and the vehicle flies on in its mode
+        try:
+            self.set_parameter("SCR_USER6", 2)
+            GLOBAL = mavutil.mavlink.MAV_FRAME_GLOBAL   # the frame ArduPilot gives a stored DO_SEND_SCRIPT_MESSAGE
+            self.start_flying_simple_relhome_mission([
+                (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 10),
+                (mavutil.mavlink.MAV_CMD_DO_SEND_SCRIPT_MESSAGE, 0, 0, 0, {"p1": 101, "frame": GLOBAL}),
+                (mavutil.mavlink.MAV_CMD_DO_SEND_SCRIPT_MESSAGE, 0, 0, 0, {"p1": 102, "frame": GLOBAL}),
+                (mavutil.mavlink.MAV_CMD_DO_SEND_SCRIPT_MESSAGE, 0, 0, 0, {"p1": 103, "frame": GLOBAL}),
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 20, 0, 10),
+                (mavutil.mavlink.MAV_CMD_DO_SEND_SCRIPT_MESSAGE, 0, 0, 0, {"p1": 104, "frame": GLOBAL}),
+                (mavutil.mavlink.MAV_CMD_DO_SEND_SCRIPT_MESSAGE, 0, 0, 0, {"p1": 105, "frame": GLOBAL}),
+                (mavutil.mavlink.MAV_CMD_DO_SEND_SCRIPT_MESSAGE, 0, 0, 0, {"p1": 106, "frame": GLOBAL}),
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 40, 0, 10),
+                (mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0),
+            ])
+            for p1 in (101, 102, 103):
+                self.wait_m4_script_text("M4 commands mission %u" % p1, timeout=120)
+            self.set_parameter("SCR_USER6", 3)   # the next items stay queued
+            self.wait_current_waypoint(9, timeout=120)   # 104..106 ran when waypoint 5 was reached
+            self.delay_sim_time(2, reason="the last items reach the queue")
+            self.context_clear_collection("STATUSTEXT")
+            self.m4_commands_scripting(STOP_AND_RESTART)
+            self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
+            self.wait_m4_script_text("M4 commands session %u loop 1" % (session + 1), timeout=30)
+            self.assert_mode("AUTO")
+            if not self.armed():
+                raise NotAchievedException("disarmed by a requested restart")
+            self.set_parameter("SCR_USER6", 2)
+            m = self.wait_m4_script_text(r"M4 commands mission (none|\d+)", timeout=10)
+            # without the drain at the session end the new session reads 104
+            if m.text != "M4 commands mission none":
+                raise NotAchievedException("the restarted session read '%s'" % m.text)
+            self.wait_disarmed(timeout=300)   # RTL lands and disarms
+        except Exception:
+            # a failure in flight: the context pop reboots, which needs the vehicle disarmed
+            self.disarm_vehicle(force=True)
+            raise
+
+        # the fault budget is untouched: a fault still restarts, as the first of one
+        self.set_parameter("SCR_M4_INJECT", 1)
+        self.wait_statustext(r"Scripting: M4 restarted \(1/1\)", regex=True, check_context=True, timeout=30)
+        self.delay_sim_time(2, reason="M4ST is written once a second")
+        rows = self.m4_log_rows("M4ST")
+        restarts = max(m.Rst for m in rows)
+        sessions = len(set(m.Ses for m in rows if m.St == 2))
+        self.progress("M4ST: Rst at most %u, %u running sessions" % (restarts, sessions))
+        # requested restarts spend nothing: Rst is the one fault's
+        if restarts != 1:
+            raise NotAchievedException("M4ST Rst reached %u, expected 1 (the fault)" % restarts)
+        errors = sum(m.PErr for m in rows)
+        if errors != 0:
+            raise NotAchievedException("%u M4 protocol errors" % errors)
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -25251,6 +25691,8 @@ return update, 1000
             "ScriptingM4Files": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Objects": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Devices": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4MAVLink": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4Commands": "Requires --enable-scripting-m4 SITL build",
         }
 
 
