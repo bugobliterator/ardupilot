@@ -11,16 +11,20 @@
   Waits on the host thread (the 900 ms rule): log_write_fmts_sem in msg_fmt_for_name(), and the
   backend's write semaphore in WriteBlock(), each held by the main loop and the logging thread for
   one block, the wait of every vehicle log write; FileContent::sem in log_file_content() and
-  file_content_queued(), held by the logger thread for one 64-byte step.
+  file_content_queued(), held by the logger thread for one 64-byte step; and log_file_content()'s
+  stat() of the path, one lookup on the filesystem, as the M4's file calls make.
  */
 #include "AP_Scripting_config.h"
 
 #if AP_SCRIPTING_M4_ENABLED
 
+#include <AP_Filesystem/AP_Filesystem.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Logger/AP_Logger.h>
 #include "AP_ScriptingM4_Quota.h"
 #include "AP_ScriptingM4_Remote.h"
+
+extern const AP_HAL::HAL& hal;
 
 namespace ScriptingM4Remote {
 
@@ -33,21 +37,28 @@ static bool same_string(const char *a, const char *b)
     return (a == nullptr) == (b == nullptr) && (a == nullptr || strcmp(a, b) == 0);
 }
 
-// M4: true if the logger has a format of this name other than the one asked for. The list is
-// walked as the logger's own readers walk it (log_write_fmt_for_msg_type()), without its
-// semaphore: formats are only ever added, complete, and this thread is the only one that adds at
-// the head. msg_fmt_for_name() returns the first of the name, which this finds too
-static bool logger_format_differs(const AP_Logger &logger, const char *name, const char *labels,
-                                  const char *units, const char *mults, const char *fmt)
+// M4: whether the logger has a format of this name, and whether it is the one asked for. The
+// list is walked as the logger's own readers walk it (log_write_fmt_for_msg_type(),
+// AP_Logger_Backend::Write()), without its semaphore: entries are published complete by one
+// pointer store and never freed. msg_fmt_for_name() returns the first of the name, which this
+// finds too
+enum class LoggerFormat : uint8_t { Absent, Same, Differs };
+static LoggerFormat logger_format_of(const AP_Logger &logger, const char *name, const char *labels,
+                                     const char *units, const char *mults, const char *fmt)
 {
     for (const AP_Logger::log_write_fmt *f = logger.log_write_fmts; f != nullptr; f = f->next) {
         if (strcmp(f->name, name) == 0) {
-            return !same_string(f->labels, labels) || !same_string(f->fmt, fmt) ||
-                   !same_string(f->units, units) || !same_string(f->mults, mults);
+            const bool same = same_string(f->labels, labels) && same_string(f->fmt, fmt) &&
+                              same_string(f->units, units) && same_string(f->mults, mults);
+            return same ? LoggerFormat::Same : LoggerFormat::Differs;
         }
     }
-    return false;
+    return LoggerFormat::Absent;
 }
+
+// message types logger:write has taken this boot (LOGGER_SCRIPT_TYPES_MAX); kept across sessions,
+// as the types are
+static uint8_t script_log_types;
 
 // logger:write(name, labels, format, [units, multipliers,] values...): AP_Logger_Write()
 int AP_Logger_Write(lua_State *L) {
@@ -162,10 +173,15 @@ int AP_Logger_Write(lua_State *L) {
         snprintf(multipliers_cat, sizeof(multipliers_cat), "F%s", multipliers);
     }
 
-    // M4: a name keeps the format of its first row
-    if (logger_format_differs(*AP_logger, name, label_cat, have_units ? units_cat : nullptr,
-                              have_units ? multipliers_cat : nullptr, fmt_cat)) {
+    // M4: a name keeps the format of its first row, and a new name needs one of the script's
+    // message types
+    const LoggerFormat existing = logger_format_of(*AP_logger, name, label_cat, have_units ? units_cat : nullptr,
+                                                   have_units ? multipliers_cat : nullptr, fmt_cat);
+    if (existing == LoggerFormat::Differs) {
         return luaL_argerror(L, int(args), "format differs from an earlier write");
+    }
+    if (existing == LoggerFormat::Absent && script_log_types >= LOGGER_SCRIPT_TYPES_MAX) {
+        return luaL_argerror(L, int(args), "too many log message types");
     }
 
     // M4: no luaL_Buffer static_assert (the adapter has none). The writes below stay in the
@@ -302,6 +318,9 @@ int AP_Logger_Write(lua_State *L) {
         // msgtypes, could be out of slots, ...
         return luaL_argerror(L, int(args), "could not map message type");
     }
+    if (existing == LoggerFormat::Absent) {
+        script_log_types++;
+    }
     buffer[2] = f->msg_type;
 
     AP_logger->Safe_Write_Emit_FMT(f);
@@ -316,6 +335,13 @@ int AP_Logger_Write(lua_State *L) {
 // generated (lua_remote_dispatch.cpp)
 AP_Logger *check_AP_Logger(lua_State *L);
 
+// AP_Logger_File's directory: the board's, or the one the HAL was given
+static const char *logger_directory()
+{
+    const char *custom = hal.util->get_custom_log_directory();
+    return custom != nullptr ? custom : HAL_BOARD_LOG_DIRECTORY;
+}
+
 // logger:log_file_content(path): the generated method, with the path checked as the M4's file
 // calls check it and the logger's queue bounded (file_content_allowed()). A refused call is
 // dropped, as the void method has no result. The FileLog quota is the server's (remote_quotas[])
@@ -325,9 +351,19 @@ int lua_m4_AP_Logger_log_file_content(lua_State *L)
     AP_Logger *ud = check_AP_Logger(L);
     size_t length = 0;
     const char *path = luaL_checklstring(L, 2, &length);
-    if (file_content_allowed(path, length, ud->file_content_queued(FILE_CONTENT_QUEUE_MAX))) {
-        ud->log_file_content(path);
+    if (!file_content_allowed(path, length, ud->file_content_queued(FILE_CONTENT_QUEUE_MAX))) {
+        return 0;
     }
+    // M4: never the logger's own directory (the log being written does not end), and only a
+    // regular file or an "@" file (which stat() gives no type): a device does not end either
+    if (path_in_directory(path, logger_directory())) {
+        return 0;
+    }
+    struct stat st;
+    if (AP::FS().stat(path, &st) != 0 || ((st.st_mode & S_IFMT) != 0 && !S_ISREG(st.st_mode))) {
+        return 0;
+    }
+    ud->log_file_content(path);
     return 0;
 }
 #endif  // HAL_LOGGER_FILE_CONTENTS_ENABLED

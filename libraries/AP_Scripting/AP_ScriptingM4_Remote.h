@@ -547,6 +547,67 @@ inline bool file_content_allowed(const char *path, size_t length, uint8_t queued
            ScriptingM4::check_script_path(path, length, ScriptingM4::PathUse::Read) == 0;
 }
 
+// M4 scripts may take this many of the logger's message types per boot (one per new logger:write
+// name; a type is never freed). The vehicle registers its own lazily (AP::logger().Write("NAME", ...))
+// and raises an internal error, which blocks arming, when none is left (recorded deviation)
+static const uint8_t LOGGER_SCRIPT_TYPES_MAX = 32;
+
+// true if path names something inside directory, both read as components below the filesystem
+// root (leading '/' optional, "." skipped, ".." taken back, letters compared without case as on
+// FAT). The logger's directory holds the log it is writing, which grows faster than FILE logging
+// reads it: queued, it would hold the queue's head for the rest of the boot
+inline bool path_in_directory(const char *path, const char *directory)
+{
+    struct Components {
+        const char *start[64];
+        uint8_t length[64];
+        uint8_t count;
+        bool read(const char *text)
+        {
+            count = 0;
+            while (*text != 0) {
+                const char *end = strchr(text, '/');
+                if (end == nullptr) {
+                    end = text + strlen(text);
+                }
+                const size_t length_here = size_t(end - text);
+                if (length_here == 2 && text[0] == '.' && text[1] == '.') {
+                    if (count > 0) {
+                        count--;
+                    }
+                } else if (length_here != 0 && !(length_here == 1 && text[0] == '.')) {
+                    if (count >= 64 || length_here > UINT8_MAX) {
+                        return false;
+                    }
+                    start[count] = text;
+                    length[count] = uint8_t(length_here);
+                    count++;
+                }
+                text = *end == 0 ? end : end + 1;
+            }
+            return true;
+        }
+    };
+    Components file, dir;
+    if (!file.read(path) || !dir.read(directory) || file.count <= dir.count) {
+        return false;
+    }
+    for (uint8_t i = 0; i < dir.count; i++) {
+        if (file.length[i] != dir.length[i]) {
+            return false;
+        }
+        for (uint8_t c = 0; c < dir.length[i]; c++) {
+            char a = file.start[i][c], b = dir.start[i][c];
+            a = (a >= 'a' && a <= 'z') ? char(a - 'a' + 'A') : a;
+            b = (b >= 'a' && b <= 'z') ? char(b - 'a' + 'A') : b;
+            if (a != b) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // coerce_to_uint64_t() of lua_boxed_numerics.cpp: a boxed uint64_t or uint32_t, a non-negative
 // integer or number below 2^64; else "Unable to coerce to uint64_t"
 uint64_t coerce_to_uint64_t(lua_State *L, int arg);

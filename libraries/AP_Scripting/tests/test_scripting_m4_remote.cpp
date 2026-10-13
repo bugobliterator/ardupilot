@@ -8,6 +8,9 @@
 #include <AP_Scripting/AP_ScriptingM4_Remote.h>
 #include <AP_Scripting/AP_Scripting_config.h>
 #if AP_SCRIPTING_M4_ENABLED
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Logger/AP_Logger.h>
 #endif
@@ -2231,6 +2234,23 @@ TEST(ScriptingM4Remote, FileContentNeedsAReadablePathAndRoom)
     EXPECT_FALSE(file_content_allowed(long_path.c_str(), long_path.size(), 0));
 }
 
+// the logger's directory, however the path names it. Without the check the log being written can
+// be queued, and as it grows faster than FILE logging reads it, it holds the queue for the boot
+TEST(ScriptingM4Remote, PathInDirectory)
+{
+    for (const char *path : { "/APM/LOGS/00000001.BIN", "APM/LOGS/1.BIN", "//APM/./logs/x", "/APM/X/../LOGS/x",
+                              "/apm/Logs/sub/x" }) {
+        EXPECT_TRUE(path_in_directory(path, "/APM/LOGS")) << path;
+    }
+    for (const char *path : { "/APM/LOGS", "/APM/LOGS/", "/APM/LOGSX/1.BIN", "/APM/1.BIN", "/APM/LOGS/../1.BIN",
+                              "/LOGS/1.BIN", "" }) {
+        EXPECT_FALSE(path_in_directory(path, "/APM/LOGS")) << path;
+    }
+    EXPECT_TRUE(path_in_directory("logs/00000001.BIN", "logs"));
+    EXPECT_TRUE(path_in_directory("./logs/1.BIN", "logs"));
+    EXPECT_FALSE(path_in_directory("scripts/x.lua", "logs"));
+}
+
 // 'Q' values of logger:write take what coerce_to_uint64_t() takes in-process: a boxed uint64_t or
 // uint32_t, a non-negative integer, a non-negative number below 2^64. Anything else is its
 // in-process error. In-process 2^64 itself passes, and its conversion is undefined
@@ -2484,7 +2504,27 @@ TEST(ScriptingM4LoggerWrite, FileContentIsCheckedAndBounded)
         ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
     }
     EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 0);
-    static const char path[] = "/APM/scripts/test.lua";
+    // a device, a directory, a missing file, and a file in the logger's directory (SITL: "logs")
+    mkdir("logs", 0755);
+    FILE *in_logs = fopen("logs/LWTEST.BIN", "w");
+    ASSERT_NE(in_logs, nullptr);
+    fclose(in_logs);
+    for (const char *path : { "/dev/zero", "/", "no_such_file.txt", "logs/LWTEST.BIN", "./logs/../logs/LWTEST.BIN" }) {
+        c.args.nil();
+        c.args.string(path, strlen(path));
+        ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
+        EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 0) << path;
+    }
+    unlink("logs/LWTEST.BIN");
+    // a regular file elsewhere is queued
+    FILE *regular = fopen("LWTEST.TXT", "w");
+    ASSERT_NE(regular, nullptr);
+    fclose(regular);
+    c.args.nil();
+    c.args.string("LWTEST.TXT", 10);
+    ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
+    EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 1);
+    static const char path[] = "LWTEST.TXT";
     for (int i = 0; i < FILE_CONTENT_QUEUE_MAX + 5; i++) {
         c.args.nil();
         c.args.string(path, strlen(path));
@@ -2492,8 +2532,50 @@ TEST(ScriptingM4LoggerWrite, FileContentIsCheckedAndBounded)
     }
     EXPECT_EQ(logger.file_content_queued(UINT8_MAX), FILE_CONTENT_QUEUE_MAX);
     EXPECT_EQ(logger.file_content_queued(3), 3);
+    unlink("LWTEST.TXT");
 }
 #endif  // HAL_LOGGER_FILE_CONTENTS_ENABLED
+
+// M4 scripts take at most 32 of the logger's message types per boot; a name they have keeps
+// working. Without the cap a script takes every free type in one burst, and the vehicle's next
+// first Write() of a name raises an internal error (logger_mapfailure), which blocks arming.
+// Runs last: the types taken here stay taken, as on the vehicle
+TEST(ScriptingM4LoggerWrite, ScriptTypesAreCapped)
+{
+    test_logger();
+    Call c;
+    auto entries = []() {
+        int count = 0;
+        for (const AP_Logger::log_write_fmt *f = test_logger().log_write_fmts; f != nullptr; f = f->next) {
+            count++;
+        }
+        return count;
+    };
+    char name[5];
+    int i = 0;
+    while (entries() < LOGGER_SCRIPT_TYPES_MAX) {
+        snprintf(name, sizeof(name), "C%03d", i++);
+        logger_strings(c, { name, "a", "f" });
+        c.args.number(1);
+        ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << name << " " << c.text(0);
+        ASSERT_LT(i, 100);
+    }
+    EXPECT_EQ(LOGGER_SCRIPT_TYPES_MAX, 32);
+    logger_strings(c, { "CNEW", "a", "f" });
+    c.args.number(1);
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "too many log message types");
+    EXPECT_EQ(entries(), LOGGER_SCRIPT_TYPES_MAX);
+    EXPECT_EQ(logger_format("CNEW"), nullptr);
+    // a name already taken still writes, and its other formats are still refused as such
+    logger_strings(c, { name, "a", "f" });
+    c.args.number(2);
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << c.text(0);
+    logger_strings(c, { name, "a", "i" });
+    c.args.integer(2);
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "format differs from an earlier write");
+}
 #endif  // AP_SCRIPTING_M4_ENABLED && HAL_LOGGING_ENABLED
 
 AP_GTEST_MAIN()
