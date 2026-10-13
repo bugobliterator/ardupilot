@@ -278,4 +278,22 @@ TEST(ScriptingM4Quota, FileIoBurstThenRate)
     EXPECT_EQ(quota.take_hits(), 2U);
 }
 
+// mavlink:send_chan: 200 sends at once, then 200 a second. Without the class the 201st send of one
+// run goes out, and a script can take the channel lock as often as the host thread serves it
+TEST(ScriptingM4Quota, MavTxBurstThenRate)
+{
+    Quota quota;
+    quota.reset(0);
+    const QuotaLimit &tx = QUOTA_LIMITS[uint8_t(QuotaClass::MavTx)];
+    EXPECT_EQ(tx.per_second, 200);
+    EXPECT_EQ(tx.burst, 200);
+    for (int i = 0; i < 200; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::MavTx, 0)) << i;
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::MavTx, 0));
+    EXPECT_FALSE(quota.allow(QuotaClass::MavTx, 4));     // 0.8 of a send refilled
+    EXPECT_TRUE(quota.allow(QuotaClass::MavTx, 5));      // one send per 5 ms
+    EXPECT_EQ(quota.take_hits(), 2U);
+}
+
 AP_GTEST_MAIN()

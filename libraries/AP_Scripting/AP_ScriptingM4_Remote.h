@@ -314,6 +314,16 @@ int lua_CRSF_peek_menu_event(lua_State *L);
 int lua_CRSF_send_response(lua_State *L);
 // the session's scripted CRSF menus go, if it made any (AP_ScriptingM4_Server::end_session())
 void crsf_end_session();
+// AP_ScriptingM4_ManualMAVLink.cpp
+int lua_mavlink_init(lua_State *L);
+int lua_mavlink_register_rx_msgid(lua_State *L);
+int lua_mavlink_send_chan(lua_State *L);
+int lua_mavlink_receive_chan(lua_State *L);
+int lua_mavlink_block_command(lua_State *L);
+int lua_mission_receive(lua_State *L);
+// the session's command blocks are counted afresh and its unread mission items dropped
+// (AP_ScriptingM4_Server::end_session())
+void mavlink_end_session();
 // an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
 void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])
@@ -408,6 +418,45 @@ inline uint16_t dronecan_transfer_frames(size_t length)
 bool can_transfer_allowed(lua_State *L, size_t length);
 // request()'s node: an integer 0..127, else an argument error (in-process a float conversion)
 uint8_t dronecan_target_node(lua_State *L, int arg);
+
+// a port's charge to its quota class (send_chan, logger:write) at the call's time: false over it.
+// Generated methods are charged by the server (remote_quotas[]); manual rows carry no class
+bool remote_quota_allow(lua_State *L, ScriptingM4::QuotaClass quota, uint16_t cost = 1);
+
+// commands one M4 session may block (mavlink:block_command): each is an M7 allocation the session
+// holds, and every COMMAND_LONG and COMMAND_INT the vehicle receives walks the list under its
+// semaphore. MAV_CMD_SCRIPTING is never blocked, so the GCS keeps its stop and restart (recorded
+// deviations: in-process has no cap and blocks any command). Past either the call returns false
+static const uint8_t MAVLINK_BLOCKED_COMMANDS_PER_SESSION = 32;
+static const uint16_t MAVLINK_SCRIPTING_COMMAND = 42701;   // MAV_CMD_SCRIPTING
+class CommandBlocks {
+public:
+    bool allow(uint16_t id) const
+    {
+        return id != MAVLINK_SCRIPTING_COMMAND && _blocked < MAVLINK_BLOCKED_COMMANDS_PER_SESSION;
+    }
+    void take() { _blocked++; }
+    void new_session() { _blocked = 0; }
+    uint8_t blocked() const { return _blocked; }
+
+private:
+    uint8_t _blocked = 0;
+};
+
+// empties a queue another thread fills, from its consumer side: pops at most the items it held
+// when the drain started, so a producer that keeps pushing cannot hold the host thread. The items
+// dropped; a null queue holds none
+template <typename Queue> uint32_t drain_queue(Queue *queue)
+{
+    if (queue == nullptr) {
+        return 0;
+    }
+    uint32_t dropped = 0;
+    for (uint32_t left = queue->available(); left > 0 && queue->pop(); left--) {
+        dropped++;
+    }
+    return dropped;
+}
 
 // the priority of every M4 DroneCAN transfer: CANARD_TRANSFER_PRIORITY_MEDIUM, below ESC and
 // actuator traffic (recorded deviation: in-process sends at CANARD_TRANSFER_PRIORITY_HIGHEST)

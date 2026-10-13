@@ -128,6 +128,8 @@ void AP_ScriptingM4_Server::end_session()
             scripting->mavlink_command_block_list = next_item;
         }
     }
+    // the block count starts again with the emptied list; unread mission items go
+    ScriptingM4Remote::mavlink_end_session();
 }
 
 ReplyStatus AP_ScriptingM4_Server::handle(uint16_t method, const RpcValue *values, uint8_t argc,

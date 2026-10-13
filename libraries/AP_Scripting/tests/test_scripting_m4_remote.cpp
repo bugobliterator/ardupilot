@@ -434,6 +434,12 @@ static int thing_count_args(lua_State *L) {
     return 2;
 }
 
+// a port's own quota charge (send_chan, logger:write): true while the class allows the call
+static int thing_mavtx(lua_State *L) {
+    lua_pushboolean(L, remote_quota_allow(L, ScriptingM4::QuotaClass::MavTx));
+    return 1;
+}
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -1799,6 +1805,68 @@ TEST(ScriptingM4Remote, CRSFTelemetryMustExist)
     c.args.boolean(false);
     ASSERT_EQ(c.run(thing_crsf_required), ReplyStatus::Error);
     EXPECT_EQ(c.text(0), "internal error: crsf is null");
+}
+
+// remote_quota_allow() charges the class it names at the call's time: without it a port's quota
+// is never taken and the 201st send in one run is allowed
+TEST(ScriptingM4Remote, PortsChargeTheirQuota)
+{
+    Call c;
+    Quota quota;
+    quota.reset(0);
+    c.call.quota = &quota;
+    c.call.now_ms = 0;
+    for (int i = 0; i < 200; i++) {
+        c.args.nil();
+        ASSERT_EQ(c.run(thing_mavtx), ReplyStatus::Ok);
+        ASSERT_EQ(c.values[0].tag, ValueTag::True) << i;
+    }
+    c.args.nil();
+    ASSERT_EQ(c.run(thing_mavtx), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);
+    EXPECT_EQ(quota.take_hits(), 1U);
+}
+
+// a session blocks at most 32 commands; a refused one spends none of them. Without the cap a
+// script can put 65536 entries, each an M7 allocation, on the list every received command walks
+TEST(ScriptingM4Remote, CommandBlocksAreCappedPerSession)
+{
+    CommandBlocks blocks;
+    for (uint16_t id = 1; id <= MAVLINK_BLOCKED_COMMANDS_PER_SESSION; id++) {
+        ASSERT_TRUE(blocks.allow(id)) << id;
+        blocks.take();
+    }
+    EXPECT_FALSE(blocks.allow(1000));
+    EXPECT_EQ(blocks.blocked(), MAVLINK_BLOCKED_COMMANDS_PER_SESSION);
+    blocks.new_session();
+    EXPECT_TRUE(blocks.allow(1000));
+}
+
+// MAV_CMD_SCRIPTING stays the GCS's: a script that blocked it would keep the GCS from stopping it
+TEST(ScriptingM4Remote, BlockingTheScriptingCommandIsRefused)
+{
+    CommandBlocks blocks;
+    EXPECT_EQ(MAVLINK_SCRIPTING_COMMAND, 42701);
+    EXPECT_FALSE(blocks.allow(MAVLINK_SCRIPTING_COMMAND));
+    EXPECT_TRUE(blocks.allow(31000));
+}
+
+// the mission items a session left unread go with it, and only those: the drain pops what the
+// queue held when it started, so a producer that keeps pushing cannot hold the host thread. A null
+// queue (no mission item ever received) holds none. Without the drain the next session reads them
+TEST(ScriptingM4Remote, MissionQueueIsDrained)
+{
+    ObjectBuffer<int> queue(5);
+    for (int i = 0; i < 6; i++) {
+        (void)queue.push(i);   // the sixth does not fit, as the M7's queue drops it
+    }
+    EXPECT_EQ(drain_queue(&queue), 5U);
+    EXPECT_EQ(queue.available(), 0U);
+    EXPECT_TRUE(queue.push(7));
+    int item = 0;
+    EXPECT_TRUE(queue.pop(item));
+    EXPECT_EQ(item, 7);
+    EXPECT_EQ(drain_queue(static_cast<ObjectBuffer<int> *>(nullptr)), 0U);
 }
 
 AP_GTEST_MAIN()

@@ -3071,6 +3071,8 @@ static const char *remote_ready_manual[] = {
   "SocketAPM_ipv4_addr_to_string", "SocketAPM_string_to_ipv4_addr",
   "lua_CRSF_new_menu", "lua_CRSF_add_parameter", "lua_CRSF_add_menu", "lua_CRSF_param_data",
   "lua_CRSF_add_root_menu", "lua_CRSF_get_menu_event", "lua_CRSF_peek_menu_event", "lua_CRSF_send_response",
+  "lua_mavlink_init", "lua_mavlink_register_rx_msgid", "lua_mavlink_send_chan", "lua_mavlink_receive_chan",
+  "lua_mavlink_block_command", "lua_mission_receive",
   NULL };
 // manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
 // a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)

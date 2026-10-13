@@ -304,6 +304,19 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIn('    lua_serial_find_serial,\n', dispatch)
         self.assertIn('AP_Scripting_SerialAccess * ud = check_AP_Scripting_SerialAccess(L, 1);', dispatch)
 
+    def test_mavlink_rows(self):
+        code, output, _ = self.generate('mavlink', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, _ = self.outputs('mavlink')
+        types = self.type_ids(tables)
+        mavlink, _ = types['mavlink']
+        # mavlink.init(10, 1) is a dot call: the M7 gets a nil self and both arguments
+        for name in ('init', 'register_rx_msgid', 'send_chan', 'receive_chan', 'block_command'):
+            self.assertEqual(self.row_flags(tables, mavlink, name)[1], 0x11, name)
+        for function in ('lua_mavlink_init', 'lua_mavlink_register_rx_msgid', 'lua_mavlink_send_chan',
+                         'lua_mavlink_receive_chan', 'lua_mavlink_block_command', 'lua_mission_receive'):
+            self.assertIn('    %s,\n' % function, dispatch)
+
     def test_dot_access_names_a_singleton_manual(self):
         # every remote_dot_access entry is checked against the description: without the check a
         # renamed manual function would lose its dot-call fix silently
