@@ -354,9 +354,10 @@ int lua_m4_AP_Logger_log_file_content(lua_State *L)
     if (!file_content_allowed(path, length, ud->file_content_queued(FILE_CONTENT_QUEUE_MAX))) {
         return 0;
     }
-    // M4: never the logger's own directory (the log being written does not end), and only a
-    // regular file or an "@" file (which stat() gives no type): a device does not end either
-    if (path_in_directory(path, logger_directory())) {
+    // M4: never the logger's own directory, by any name AP_Filesystem opens it under (the log
+    // being written does not end), and only a regular file or an "@" file (which stat() gives no
+    // type): a device does not end either
+    if (path_in_log_directory(path, logger_directory())) {
         return 0;
     }
     struct stat st;

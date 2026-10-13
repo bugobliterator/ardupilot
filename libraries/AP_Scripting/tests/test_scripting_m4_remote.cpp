@@ -2251,6 +2251,35 @@ TEST(ScriptingM4Remote, PathInDirectory)
     EXPECT_FALSE(path_in_directory("scripts/x.lua", "logs"));
 }
 
+// the paths FatFs opens in the logger's directory, read as FatFs reads them: '\' separates, a
+// name's trailing spaces and dots are dropped, "0:" names the drive, a control character ends
+// the path. Read as plain text, each looked like another directory, and the log being written
+// could be queued
+TEST(ScriptingM4Remote, PathInDirectoryReadsAsFatFs)
+{
+    for (const char *path : { "\\APM\\LOGS\\00000001.BIN", "/APM\\LOGS/1.BIN", "/APM/LOGS./1.BIN",
+                              "/APM/LOGS /1.BIN", "/APM./LOGS. ./1.BIN", "0:/APM/LOGS/1.BIN", "0:APM/LOGS/1.BIN",
+                              "/APM/LOGS/1.BIN\x01/../../x", "/APM/X\\..\\LOGS/1.BIN" }) {
+        EXPECT_TRUE(path_in_directory(path, "/APM/LOGS")) << path;
+    }
+    for (const char *path : { "/APM/ LOGS/1.BIN", "/APM/LO GS/1.BIN", "/APM/LOGS\\..\\1.BIN", "/APM/LOGS.X/1.BIN" }) {
+        EXPECT_FALSE(path_in_directory(path, "/APM/LOGS")) << path;
+    }
+}
+
+// "@MAV_LOG" is AP_Filesystem's alias of the logger's directory: "@MAV_LOG/00000001.BIN" opens
+// the log being written
+TEST(ScriptingM4Remote, PathInLogDirectoryTakesTheAlias)
+{
+    for (const char *path : { "@MAV_LOG/00000001.BIN", "/@MAV_LOG/1.BIN", "@MAV_LOG", "@MAV_LOG/", "@mav_log/1.BIN",
+                              "@MAV_LOG\\1.BIN", "@MAV_LOG./1.BIN", "@MAV_LOG/../x", "/APM/LOGS/1.BIN" }) {
+        EXPECT_TRUE(path_in_log_directory(path, "/APM/LOGS")) << path;
+    }
+    for (const char *path : { "@MAV_LOGS/1.BIN", "@SYS/x", "/APM/scripts/x.lua", "x/@MAV_LOG/1.BIN" }) {
+        EXPECT_FALSE(path_in_log_directory(path, "/APM/LOGS")) << path;
+    }
+}
+
 // 'Q' values of logger:write take what coerce_to_uint64_t() takes in-process: a boxed uint64_t or
 // uint32_t, a non-negative integer, a non-negative number below 2^64. Anything else is its
 // in-process error. In-process 2^64 itself passes, and its conversion is undefined
@@ -2504,12 +2533,14 @@ TEST(ScriptingM4LoggerWrite, FileContentIsCheckedAndBounded)
         ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
     }
     EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 0);
-    // a device, a directory, a missing file, and a file in the logger's directory (SITL: "logs")
+    // a device, a directory, a missing file, and a file in the logger's directory (SITL: "logs"),
+    // also by AP_Filesystem's alias of it
     mkdir("logs", 0755);
     FILE *in_logs = fopen("logs/LWTEST.BIN", "w");
     ASSERT_NE(in_logs, nullptr);
     fclose(in_logs);
-    for (const char *path : { "/dev/zero", "/", "no_such_file.txt", "logs/LWTEST.BIN", "./logs/../logs/LWTEST.BIN" }) {
+    for (const char *path : { "/dev/zero", "/", "no_such_file.txt", "logs/LWTEST.BIN", "./logs/../logs/LWTEST.BIN",
+                              "@MAV_LOG/LWTEST.BIN" }) {
         c.args.nil();
         c.args.string(path, strlen(path));
         ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
@@ -2561,6 +2592,14 @@ TEST(ScriptingM4LoggerWrite, ScriptTypesAreCapped)
         ASSERT_LT(i, 100);
     }
     EXPECT_EQ(LOGGER_SCRIPT_TYPES_MAX, 32);
+    // one Log row left: the refused name must not take it
+    Quota quota;
+    quota.reset(0);
+    c.call.quota = &quota;
+    c.call.now_ms = 0;
+    for (int n = 0; n < 499; n++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::Log, 0));
+    }
     logger_strings(c, { "CNEW", "a", "f" });
     c.args.number(1);
     EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
@@ -2571,6 +2610,7 @@ TEST(ScriptingM4LoggerWrite, ScriptTypesAreCapped)
     logger_strings(c, { name, "a", "f" });
     c.args.number(2);
     EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << c.text(0);
+    EXPECT_EQ(quota.take_hits(), 0U);
     logger_strings(c, { name, "a", "i" });
     c.args.integer(2);
     EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);

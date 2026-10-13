@@ -552,12 +552,47 @@ inline bool file_content_allowed(const char *path, size_t length, uint8_t queued
 // and raises an internal error, which blocks arming, when none is left (recorded deviation)
 static const uint8_t LOGGER_SCRIPT_TYPES_MAX = 32;
 
-// true if path names something inside directory, both read as components below the filesystem
-// root (leading '/' optional, "." skipped, ".." taken back, letters compared without case as on
-// FAT). The logger's directory holds the log it is writing, which grows faster than FILE logging
-// reads it: queued, it would hold the queue's head for the rest of the boot
+// a path component as FatFs looks it up: its trailing spaces and dots dropped ("." and ".."
+// excepted), letters compared without case
+inline size_t path_component_length(const char *start, size_t length)
+{
+    if ((length == 1 && start[0] == '.') || (length == 2 && start[0] == '.' && start[1] == '.')) {
+        return length;
+    }
+    while (length > 0 && (start[length - 1] == ' ' || start[length - 1] == '.')) {
+        length--;
+    }
+    return length;
+}
+
+inline bool path_components_equal(const char *a, size_t a_length, const char *b, size_t b_length)
+{
+    if (a_length != b_length) {
+        return false;
+    }
+    for (size_t i = 0; i < a_length; i++) {
+        const char upper_a = (a[i] >= 'a' && a[i] <= 'z') ? char(a[i] - 'a' + 'A') : a[i];
+        const char upper_b = (b[i] >= 'a' && b[i] <= 'z') ? char(b[i] - 'a' + 'A') : b[i];
+        if (upper_a != upper_b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// true if path names something inside directory, both read as FatFs reads them below the
+// filesystem root: '/' and '\' separate, leading ones optional, "." skipped, ".." taken back,
+// path_component_length() names. A path FatFs reads otherwise (a ':' drive prefix, or a control
+// character, which ends it there) counts as inside. The logger's directory holds the log it is
+// writing, which grows faster than FILE logging reads it: queued, it would hold the queue's head
+// for the rest of the boot
 inline bool path_in_directory(const char *path, const char *directory)
 {
+    for (const char *c = path; *c != 0; c++) {
+        if ((unsigned char)*c < ' ' || *c == ':') {
+            return true;
+        }
+    }
     struct Components {
         const char *start[64];
         uint8_t length[64];
@@ -566,16 +601,14 @@ inline bool path_in_directory(const char *path, const char *directory)
         {
             count = 0;
             while (*text != 0) {
-                const char *end = strchr(text, '/');
-                if (end == nullptr) {
-                    end = text + strlen(text);
-                }
-                const size_t length_here = size_t(end - text);
-                if (length_here == 2 && text[0] == '.' && text[1] == '.') {
+                const size_t raw_length = strcspn(text, "/\\");
+                const char *end = text + raw_length;
+                if (raw_length == 2 && text[0] == '.' && text[1] == '.') {
                     if (count > 0) {
                         count--;
                     }
-                } else if (length_here != 0 && !(length_here == 1 && text[0] == '.')) {
+                } else if (raw_length != 0 && !(raw_length == 1 && text[0] == '.')) {
+                    const size_t length_here = path_component_length(text, raw_length);
                     if (count >= 64 || length_here > UINT8_MAX) {
                         return false;
                     }
@@ -589,23 +622,34 @@ inline bool path_in_directory(const char *path, const char *directory)
         }
     };
     Components file, dir;
-    if (!file.read(path) || !dir.read(directory) || file.count <= dir.count) {
+    if (!file.read(path) || !dir.read(directory)) {
+        return true;
+    }
+    if (file.count <= dir.count) {
         return false;
     }
     for (uint8_t i = 0; i < dir.count; i++) {
-        if (file.length[i] != dir.length[i]) {
+        if (!path_components_equal(file.start[i], file.length[i], dir.start[i], dir.length[i])) {
             return false;
-        }
-        for (uint8_t c = 0; c < dir.length[i]; c++) {
-            char a = file.start[i][c], b = dir.start[i][c];
-            a = (a >= 'a' && a <= 'z') ? char(a - 'a' + 'A') : a;
-            b = (b >= 'a' && b <= 'z') ? char(b - 'a' + 'A') : b;
-            if (a != b) {
-                return false;
-            }
         }
     }
     return true;
+}
+
+// AP_Filesystem's alias of the logger's directory (AP_FILESYSTEM_MAVLOG_ENABLED)
+static const char LOGGER_DIRECTORY_ALIAS[] = "@MAV_LOG";
+
+// path_in_directory(), or a path AP_Filesystem gives to its alias of the directory: one whose
+// first component is "@MAV_LOG" (as AP_Filesystem selects it, and also with '\', other case or
+// trailing dots, as other filesystems would read it)
+inline bool path_in_log_directory(const char *path, const char *log_directory)
+{
+    const char *first = path + strspn(path, "/\\");
+    const size_t first_length = path_component_length(first, strcspn(first, "/\\"));
+    if (path_components_equal(first, first_length, LOGGER_DIRECTORY_ALIAS, strlen(LOGGER_DIRECTORY_ALIAS))) {
+        return true;
+    }
+    return path_in_directory(path, log_directory);
 }
 
 // coerce_to_uint64_t() of lua_boxed_numerics.cpp: a boxed uint64_t or uint32_t, a non-negative
