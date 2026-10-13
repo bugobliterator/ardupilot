@@ -351,7 +351,11 @@ ReplyStatus AP_ScriptingM4_Server::script_loaded(RpcArgs &args)
         }
     }
 #if HAL_LOGGER_FILE_CONTENTS_ENABLED
-    if (!option_set(AP_Scripting::DebugOption::SUPPRESS_SCRIPT_LOG)) {
+    // the logger's queue is bounded for the M4's sessions: requested restarts in a loop queue
+    // every script again each time (FILE_CONTENT_QUEUE_MAX)
+    if (!option_set(AP_Scripting::DebugOption::SUPPRESS_SCRIPT_LOG) &&
+        AP::logger().file_content_queued(ScriptingM4Remote::FILE_CONTENT_QUEUE_MAX) <
+            ScriptingM4Remote::FILE_CONTENT_QUEUE_MAX) {
         AP::logger().log_file_content(_table.path(index));
     }
 #endif

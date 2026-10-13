@@ -296,4 +296,47 @@ TEST(ScriptingM4Quota, MavTxBurstThenRate)
     EXPECT_EQ(quota.take_hits(), 2U);
 }
 
+// logger:write: 500 rows at once, then 500 a second; the in-tree actuator_chirp.lua writes 400 a
+// second and passes untouched. Without the class a script writes as fast as the host serves it
+TEST(ScriptingM4Quota, LogBurstThenRate)
+{
+    Quota quota;
+    quota.reset(0);
+    const QuotaLimit &log = QUOTA_LIMITS[uint8_t(QuotaClass::Log)];
+    EXPECT_EQ(log.per_second, 500);
+    EXPECT_EQ(log.burst, 500);
+    for (int i = 0; i < 500; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::Log, 0)) << i;
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::Log, 0));
+    EXPECT_TRUE(quota.allow(QuotaClass::Log, 2));        // one row per 2 ms
+    // 400 a second for 10 s never touches the quota
+    quota.reset(1000);
+    for (uint32_t ms = 1000; ms < 11000; ms += 5) {
+        ASSERT_TRUE(quota.allow(QuotaClass::Log, ms)) << ms;
+        ASSERT_TRUE(quota.allow(QuotaClass::Log, ms)) << ms;
+    }
+}
+
+// osd: writes and clears share Osd (300/s); flush and draw_screen, each a whole-screen render,
+// share OsdFrame (40/s). Spending one leaves the other whole
+TEST(ScriptingM4Quota, OsdClassesAreSeparate)
+{
+    Quota quota;
+    quota.reset(0);
+    EXPECT_EQ(QUOTA_LIMITS[uint8_t(QuotaClass::Osd)].per_second, 300);
+    EXPECT_EQ(QUOTA_LIMITS[uint8_t(QuotaClass::Osd)].burst, 300);
+    EXPECT_EQ(QUOTA_LIMITS[uint8_t(QuotaClass::OsdFrame)].per_second, 40);
+    EXPECT_EQ(QUOTA_LIMITS[uint8_t(QuotaClass::OsdFrame)].burst, 40);
+    for (int i = 0; i < 40; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::OsdFrame, 0)) << i;
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::OsdFrame, 0));
+    for (int i = 0; i < 300; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::Osd, 0)) << i;
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::Osd, 0));
+    EXPECT_EQ(QUOTA_CLASSES, 11);
+}
+
 AP_GTEST_MAIN()

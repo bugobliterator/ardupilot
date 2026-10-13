@@ -6,6 +6,11 @@
 #include <stdlib.h>
 #include <AP_HAL/utility/RingBuffer.h>
 #include <AP_Scripting/AP_ScriptingM4_Remote.h>
+#include <AP_Scripting/AP_Scripting_config.h>
+#if AP_SCRIPTING_M4_ENABLED
+#include <AP_HAL/AP_HAL.h>
+#include <AP_Logger/AP_Logger.h>
+#endif
 
 using namespace ScriptingM4;
 
@@ -452,6 +457,11 @@ static TestCommandInt test_command;
 static int thing_command_int(lua_State *L) {
     test_command = TestCommandInt();
     lua_pushboolean(L, command_int_packet(L, test_command));
+    return 1;
+}
+
+static int thing_uint64(lua_State *L) {
+    *new_uint64_t(L) = coerce_to_uint64_t(L, 1);
     return 1;
 }
 
@@ -2164,5 +2174,326 @@ TEST(ScriptingM4Remote, BoundedTakeRunsUnderTheSemaphoreOrRefuses)
     EXPECT_EQ(runs, 1);
     EXPECT_EQ(sem.gives, 1);
 }
+
+// every character AP_Logger_Write() writes passes; any other is named before the logger is asked
+// for a message type. Without the check 'd' reaches msg_fmt_for_name(), which takes a type and
+// M7 memory for the name before the value fails (and SITL's Write_calc_msg_len() panics on 'x')
+TEST(ScriptingM4Remote, LoggerFormatIsCheckedFirst)
+{
+    EXPECT_EQ(logger_format_unsupported("bhcHCiLefnMBIEQNZ"), nullptr);
+    const char *mixed = "ffdx";
+    EXPECT_EQ(logger_format_unsupported(mixed), mixed + 2);
+    for (const char *format : { "a", "q", "g", "x", " " }) {
+        EXPECT_NE(logger_format_unsupported(format), nullptr) << format;
+    }
+    EXPECT_EQ(logger_format_unsupported(""), nullptr);
+}
+
+// names, labels, units and multipliers the logger takes. Without these checks SITL's logger stops
+// the host thread (validate_structure(): config_error()) on a repeated, empty or "TimeUS" label
+// and on a unit or multiplier it has no entry for; a name is any bytes in-process
+TEST(ScriptingM4Remote, LoggerNamesLabelsAndIdsAreChecked)
+{
+    for (const char *name : { "A", "AB_1", "zZ9" }) {
+        EXPECT_TRUE(logger_name_valid(name)) << name;
+    }
+    for (const char *name : { "", "A-B", "A B", "\x01", "\xC3\xA9" }) {
+        EXPECT_FALSE(logger_name_valid(name)) << name;
+    }
+    EXPECT_TRUE(logger_labels_valid("TimeUS,a,b,Ab"));
+    EXPECT_TRUE(logger_labels_valid("TimeUS"));
+    for (const char *labels : { "TimeUS,a,a", "TimeUS,TimeUS", "TimeUS,a,", "TimeUS,,a", ",TimeUS",
+                                "TimeUS,ab,a,ab" }) {
+        EXPECT_FALSE(logger_labels_valid(labels)) << labels;
+    }
+    EXPECT_EQ(logger_ids_unsupported("s-?mA", LOGGER_UNIT_IDS), nullptr);
+    const char *units = "smx";
+    EXPECT_EQ(logger_ids_unsupported(units, LOGGER_UNIT_IDS), units + 2);
+    EXPECT_EQ(logger_ids_unsupported("F0-?!/", LOGGER_MULTIPLIER_IDS), nullptr);
+    const char *mults = "F0H";
+    EXPECT_EQ(logger_ids_unsupported(mults, LOGGER_MULTIPLIER_IDS), mults + 2);
+}
+
+// log_file_content(): a path the M4's file calls may read, while fewer than 40 files wait. Without
+// the bound every call is a new M7 allocation the logger frees at about 640 bytes a second
+TEST(ScriptingM4Remote, FileContentNeedsAReadablePathAndRoom)
+{
+    static const char path[] = "/APM/scripts/test.lua";
+    EXPECT_TRUE(file_content_allowed(path, strlen(path), 0));
+    EXPECT_TRUE(file_content_allowed(path, strlen(path), FILE_CONTENT_QUEUE_MAX - 1));
+    EXPECT_FALSE(file_content_allowed(path, strlen(path), FILE_CONTENT_QUEUE_MAX));
+    EXPECT_EQ(FILE_CONTENT_QUEUE_MAX, 40);
+    EXPECT_TRUE(file_content_allowed("@SYS/threads.txt", 16, 0));   // reads of @ files are allowed
+    EXPECT_FALSE(file_content_allowed("../../x", 7, 0));           // above the root
+    static const char nul[] = { 'a', 0, 'b' };
+    EXPECT_FALSE(file_content_allowed(nul, sizeof(nul), 0));
+    std::string long_path(300, 'a');
+    EXPECT_FALSE(file_content_allowed(long_path.c_str(), long_path.size(), 0));
+}
+
+// 'Q' values of logger:write take what coerce_to_uint64_t() takes in-process: a boxed uint64_t or
+// uint32_t, a non-negative integer, a non-negative number below 2^64. Anything else is its
+// in-process error. In-process 2^64 itself passes, and its conversion is undefined
+TEST(ScriptingM4Remote, Uint64Coercion)
+{
+    Call c;
+    c.call.uint32_type = UINT32;
+    c.call.uint64_type = 13;
+    const uint64_t big = 0x123456789ULL;
+    c.args.blob(13, &big, sizeof(big));
+    ASSERT_EQ(c.run(thing_uint64), ReplyStatus::Ok);
+    uint64_t got = 0;
+    memcpy(&got, c.values[0].blob, sizeof(got));
+    EXPECT_EQ(got, big);
+    const uint32_t small = 0xFFFFFFF0U;
+    c.args.blob(UINT32, &small, sizeof(small));
+    ASSERT_EQ(c.run(thing_uint64), ReplyStatus::Ok);
+    memcpy(&got, c.values[0].blob, sizeof(got));
+    EXPECT_EQ(got, 0xFFFFFFF0ULL);
+    c.args.integer(42);
+    ASSERT_EQ(c.run(thing_uint64), ReplyStatus::Ok);
+    memcpy(&got, c.values[0].blob, sizeof(got));
+    EXPECT_EQ(got, 42U);
+    c.args.number(1.0e19f);
+    ASSERT_EQ(c.run(thing_uint64), ReplyStatus::Ok);
+    memcpy(&got, c.values[0].blob, sizeof(got));
+    EXPECT_EQ(got, uint64_t(1.0e19f));
+    c.args.number(float(UINT64_MAX));   // 2^64
+    EXPECT_EQ(c.run(thing_uint64), ReplyStatus::ArgError);
+    c.args.integer(-1);
+    EXPECT_EQ(c.run(thing_uint64), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "Unable to coerce to uint64_t");
+    c.args.string("x", 1);
+    EXPECT_EQ(c.run(thing_uint64), ReplyStatus::ArgError);
+}
+
+#if AP_SCRIPTING_M4_ENABLED && HAL_LOGGING_ENABLED
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+
+// the vehicle's logger, without backends: formats are taken, rows go nowhere
+static AP_Logger &test_logger()
+{
+    static AP_Logger logger;
+    return logger;
+}
+
+static const AP_Logger::log_write_fmt *logger_format(const char *name)
+{
+    for (const AP_Logger::log_write_fmt *f = test_logger().log_write_fmts; f != nullptr; f = f->next) {
+        if (strcmp(f->name, name) == 0) {
+            return f;
+        }
+    }
+    return nullptr;
+}
+
+// logger:write(name, labels, format, ...) as the M4 sends it: a nil self, then the strings
+static void logger_strings(Call &c, std::initializer_list<const char *> strings)
+{
+    c.args.nil();
+    for (const char *text : strings) {
+        c.args.string(text, strlen(text));
+    }
+}
+
+// the identifiers LOGGER_UNIT_IDS and LOGGER_MULTIPLIER_IDS name are the logger's own: a unit
+// the logger added and the list lacks would be refused, one it lacks would stop SITL
+TEST(ScriptingM4LoggerWrite, IdsAreTheLoggersTables)
+{
+    std::string units, mults;
+    for (const UnitStructure &unit : log_Units) {
+        units += unit.ID;
+    }
+    for (const MultiplierStructure &mult : log_Multipliers) {
+        mults += mult.ID;
+    }
+    EXPECT_EQ(units, LOGGER_UNIT_IDS);
+    EXPECT_EQ(mults, LOGGER_MULTIPLIER_IDS);
+}
+
+// a row takes its format once; the same call again finds it
+TEST(ScriptingM4LoggerWrite, ARowTakesOneFormat)
+{
+    test_logger();
+    Call c;
+    for (int i = 0; i < 2; i++) {
+        logger_strings(c, { "LWA", "a,b,c", "fiQ", "m-s", "0-F" });
+        c.args.number(1.5f);
+        c.args.integer(7);
+        c.args.integer(9);
+        ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << c.text(0);
+        EXPECT_EQ(c.count, 0);
+    }
+    const AP_Logger::log_write_fmt *f = logger_format("LWA");
+    ASSERT_NE(f, nullptr);
+    EXPECT_STREQ(f->fmt, "QfiQ");
+    EXPECT_STREQ(f->labels, "TimeUS,a,b,c");
+    EXPECT_STREQ(f->units, "sm-s");
+    EXPECT_STREQ(f->mults, "F0-F");
+    EXPECT_EQ(f->msg_len, 3 + 8 + 4 + 4 + 8);
+    int named = 0;
+    for (const AP_Logger::log_write_fmt *g = test_logger().log_write_fmts; g != nullptr; g = g->next) {
+        named += strcmp(g->name, "LWA") == 0;
+    }
+    EXPECT_EQ(named, 1);
+}
+
+// a row longer than 255 bytes is refused before the logger is asked for a message type. Without
+// the check msg_fmt_for_name() takes it: it copies the strings (about 121 B), finds the row too
+// long, and returns nullptr without freeing the copy, "could not map message type": an M4 loop of
+// these calls empties the M7 heap
+TEST(ScriptingM4LoggerWrite, TheRowIsMeasuredFirst)
+{
+    test_logger();
+    Call c;
+    logger_strings(c, { "LWZ", "a,b,c,d", "ZZZZ", "", "", "", "" });
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "unknown format");
+    EXPECT_EQ(logger_format("LWZ"), nullptr);
+    // 3 + 8 + 3 x 64 + 52 = 255 fits
+    logger_strings(c, { "LWY", "a,b,c,d", "ZZZN", "", "", "", "" });
+    ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << c.text(0);
+    ASSERT_NE(logger_format("LWY"), nullptr);
+    EXPECT_EQ(logger_format("LWY")->msg_len, 3 + 8 + 3 * 64 + 16);
+}
+
+// what SITL's logger stops the host thread on (config_error()) is refused before it is asked, and
+// takes no format. Without each check this test hangs or aborts in msg_fmt_for_name()
+TEST(ScriptingM4LoggerWrite, WhatTheLoggerStopsOnIsRefused)
+{
+    test_logger();
+    Call c;
+    struct Case {
+        std::initializer_list<const char *> strings;
+        uint8_t values;
+        const char *text;
+    };
+    const Case cases[] = {
+        { { "LWB", "a,a", "ff" }, 2, "labels must be unique and not empty" },
+        { { "LWB", "a,", "ff" }, 2, "labels must be unique and not empty" },
+        { { "LWB", "TimeUS", "f" }, 1, "labels must be unique and not empty" },
+        { { "LWB", "a", "f", "x", "0" }, 1, "x unsupported unit" },
+        { { "LWB", "a", "f", "m", "H" }, 1, "H unsupported multiplier" },
+        { { "LW-", "a", "f" }, 1, "Name must be letters, digits or _" },
+        { { "", "a", "f" }, 1, "Name must be letters, digits or _" },
+        { { "LWB", "a,b", "fd" }, 2, "d unsupported format" },
+    };
+    for (const Case &k : cases) {
+        logger_strings(c, k.strings);
+        for (uint8_t i = 0; i < k.values; i++) {
+            c.args.number(1);
+        }
+        EXPECT_NE(c.run(AP_Logger_Write), ReplyStatus::Ok) << k.text;
+        EXPECT_EQ(c.text(0), k.text);
+    }
+    EXPECT_EQ(logger_format("LWB"), nullptr);
+    EXPECT_EQ(logger_format("LW-"), nullptr);
+    EXPECT_EQ(logger_format(""), nullptr);
+}
+
+// a name keeps the format of its first row. SITL's logger stops on another
+// (assert_same_fmt_for_name()); elsewhere the row would be written under the first one's layout
+TEST(ScriptingM4LoggerWrite, ANameKeepsItsFormat)
+{
+    test_logger();
+    Call c;
+    logger_strings(c, { "LWR", "a", "f" });
+    c.args.number(1);
+    ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << c.text(0);
+    const std::initializer_list<const char *> others[] = {
+        { "LWR", "a", "i" },
+        { "LWR", "b", "f" },
+        { "LWR", "a", "f", "m", "0" },
+    };
+    for (const std::initializer_list<const char *> &other : others) {
+        logger_strings(c, other);
+        c.args.integer(1);
+        EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
+        EXPECT_EQ(c.text(0), "format differs from an earlier write");
+    }
+    const AP_Logger::log_write_fmt *f = logger_format("LWR");
+    ASSERT_NE(f, nullptr);
+    EXPECT_STREQ(f->fmt, "Qf");
+    EXPECT_EQ(f->units, nullptr);
+}
+
+// every value is read before the logger is asked for a message type. In-process a bad value
+// fails after msg_fmt_for_name(), which has taken a type and M7 memory for good
+TEST(ScriptingM4LoggerWrite, ValuesAreReadFirst)
+{
+    test_logger();
+    Call c;
+    logger_strings(c, { "LWV", "a,b", "fN", "x", "y" });
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "number expected, got string");
+    logger_strings(c, { "LWV", "a,b", "fN" });
+    c.args.number(1);
+    c.args.string("seventeen chars!!", 17);
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::Error);
+    EXPECT_EQ(c.text(0), "arg 6 too long for N format");
+    logger_strings(c, { "LWV", "a,b", "fN" });
+    c.args.number(1);
+    c.args.boolean(true);
+    EXPECT_EQ(c.run(AP_Logger_Write), ReplyStatus::ArgError);
+    EXPECT_EQ(logger_format("LWV"), nullptr);
+    logger_strings(c, { "LWV", "a,b", "fN" });
+    c.args.number(1);
+    c.args.string("sixteen chars!!!", 16);
+    ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok) << c.text(0);
+    EXPECT_NE(logger_format("LWV"), nullptr);
+}
+
+// the Log quota is charged before the logger is asked for a message type: over it the row is
+// dropped and takes nothing. Without the charge a script writes rows as fast as the host serves it
+TEST(ScriptingM4LoggerWrite, LogQuotaComesBeforeTheFormat)
+{
+    test_logger();
+    Call c;
+    Quota quota;
+    quota.reset(0);
+    c.call.quota = &quota;
+    c.call.now_ms = 0;
+    for (int i = 0; i < 500; i++) {
+        ASSERT_TRUE(quota.allow(QuotaClass::Log, 0));
+    }
+    logger_strings(c, { "LWQ", "a", "f" });
+    c.args.number(1);
+    ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok);
+    EXPECT_EQ(c.count, 0);
+    EXPECT_EQ(quota.take_hits(), 1U);
+    EXPECT_EQ(logger_format("LWQ"), nullptr);
+    c.call.now_ms = 2;   // one row per 2 ms
+    logger_strings(c, { "LWQ", "a", "f" });
+    c.args.number(1);
+    ASSERT_EQ(c.run(AP_Logger_Write), ReplyStatus::Ok);
+    EXPECT_EQ(quota.take_hits(), 0U);
+    EXPECT_NE(logger_format("LWQ"), nullptr);
+}
+
+#if HAL_LOGGER_FILE_CONTENTS_ENABLED
+// logger:log_file_content() of the M4 queues a readable path while fewer than 40 files wait.
+// Without the replacement every call queues any path; without its queue count the 41st queues
+TEST(ScriptingM4LoggerWrite, FileContentIsCheckedAndBounded)
+{
+    AP_Logger &logger = test_logger();
+    Call c;
+    EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 0);
+    for (const char *path : { "../../x", "/APM/../../x" }) {
+        c.args.nil();
+        c.args.string(path, strlen(path));
+        ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
+    }
+    EXPECT_EQ(logger.file_content_queued(UINT8_MAX), 0);
+    static const char path[] = "/APM/scripts/test.lua";
+    for (int i = 0; i < FILE_CONTENT_QUEUE_MAX + 5; i++) {
+        c.args.nil();
+        c.args.string(path, strlen(path));
+        ASSERT_EQ(c.run(lua_m4_AP_Logger_log_file_content), ReplyStatus::Ok);
+    }
+    EXPECT_EQ(logger.file_content_queued(UINT8_MAX), FILE_CONTENT_QUEUE_MAX);
+    EXPECT_EQ(logger.file_content_queued(3), 3);
+}
+#endif  // HAL_LOGGER_FILE_CONTENTS_ENABLED
+#endif  // AP_SCRIPTING_M4_ENABLED && HAL_LOGGING_ENABLED
 
 AP_GTEST_MAIN()

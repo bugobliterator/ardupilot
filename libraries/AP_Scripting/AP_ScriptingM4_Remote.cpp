@@ -267,6 +267,35 @@ uint32_t coerce_to_uint32_t(lua_State *L, int arg)
     luaL_argerror(L, arg, "Unable to coerce to uint32_t");
 }
 
+// lua_boxed_numerics.cpp: a boxed uint64_t or uint32_t, then a non-negative integer, then a
+// non-negative number below 2^64 (in-process takes 2^64 too, whose conversion is undefined)
+uint64_t coerce_to_uint64_t(lua_State *L, int arg)
+{
+    const RpcValue *value = arg_value(L, arg);
+    if (value != nullptr && value->tag == ValueTag::Blob) {
+        if (L->uint64_type != 0 && value->type_id == L->uint64_type && value->length == sizeof(uint64_t)) {
+            uint64_t boxed;
+            memcpy(&boxed, value->blob, sizeof(boxed));
+            return boxed;
+        }
+        if (L->uint32_type != 0 && value->type_id == L->uint32_type && value->length == sizeof(uint32_t)) {
+            uint32_t boxed;
+            memcpy(&boxed, value->blob, sizeof(boxed));
+            return boxed;
+        }
+    }
+    RpcArgs args = checks(L);
+    int32_t as_integer = 0;
+    if (args.integer(uint8_t(arg), as_integer) && as_integer >= 0) {
+        return static_cast<uint64_t>(as_integer);
+    }
+    float as_number = 0;
+    if (args.number(uint8_t(arg), as_number) && as_number >= 0 && as_number < float(UINT64_MAX)) {
+        return static_cast<uint64_t>(as_number);
+    }
+    luaL_argerror(L, arg, "Unable to coerce to uint64_t");
+}
+
 uint32_t get_uint32(lua_State *L, int arg, uint32_t min_value, uint32_t max_value)
 {
     const uint32_t value = coerce_to_uint32_t(L, arg);

@@ -301,7 +301,7 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: PErr: protocol errors in the last second
 // @Field: Drop: replies dropped because the M4's ring was full
 // @Field: Lost: M4 calls without a reply since the previous row
-// @Field: QHit: M4 calls refused by their quota since the previous row: binding calls, print, the M4's statustexts and script error texts, and its file writes, write opens and removes (FileIo) (over quota, texts and void calls are dropped, boolean calls return false)
+// @Field: QHit: M4 calls refused by their quota since the previous row: binding calls, print, the M4's statustexts and script error texts, its file writes, write opens and removes (FileIo), MAVLink sends (MavTx), log rows (Log) and OSD calls (Osd, OsdFrame) (over quota, texts and void calls are dropped, boolean calls return false)
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED

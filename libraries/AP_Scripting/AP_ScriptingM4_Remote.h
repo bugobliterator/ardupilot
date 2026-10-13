@@ -462,6 +462,98 @@ int lua_AP_Vehicle_set_target_velocity_NED(lua_State *L);
 int SRV_Channels_get_safety_state(lua_State *L);
 int lua_range_finder_handle_script_msg(lua_State *L);
 int lua_DroneCAN_get_FlexDebug(lua_State *L);
+
+// logger:write() (AP_ScriptingM4_ManualLogger.cpp) checks what it is given before it asks the
+// logger for a message type, which takes a type and M7 memory for good; SITL's logger stops the
+// host thread on what these refuse (Write_calc_msg_len(): panic; validate_structure(): config_error)
+
+// the first character of text that allowed does not list, or nullptr
+inline const char *logger_ids_unsupported(const char *text, const char *allowed)
+{
+    for (const char *c = text; *c != 0; c++) {
+        if (strchr(allowed, *c) == nullptr) {
+            return c;
+        }
+    }
+    return nullptr;
+}
+
+// the format characters AP_Logger_Write() writes (its switch): the first other one, or nullptr
+inline const char *logger_format_unsupported(const char *format)
+{
+    return logger_ids_unsupported(format, "bhcHCiLefnMBIEQNZ");
+}
+
+// the IDs of LogStructure.h's log_Units[] and log_Multipliers[], in their order
+static const char LOGGER_UNIT_IDS[] = "-?AadbBkDeEGhiJlLmnoO%SstqrRUuvPwWXyYz#";
+static const char LOGGER_MULTIPLIER_IDS[] = "-?210ABCDEFGI!/";
+
+// a message name of letters, digits and '_' (recorded deviation: in-process takes any bytes)
+inline bool logger_name_valid(const char *name)
+{
+    if (*name == 0) {
+        return false;
+    }
+    for (const char *c = name; *c != 0; c++) {
+        if (!((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// the end of the label at label: its comma or the terminator
+inline const char *logger_label_end(const char *label)
+{
+    const char *end = strchr(label, ',');
+    return end != nullptr ? end : label + strlen(label);
+}
+
+// labels as the logger takes them ("TimeUS," prepended): none empty, none twice
+inline bool logger_labels_valid(const char *labels)
+{
+    for (const char *label = labels; ; ) {
+        const char *end = logger_label_end(label);
+        if (end == label) {
+            return false;
+        }
+        if (*end == 0) {
+            return true;
+        }
+        for (const char *other = end + 1; ; ) {
+            const char *other_end = logger_label_end(other);
+            if (other_end - other == end - label && memcmp(other, label, size_t(end - label)) == 0) {
+                return false;
+            }
+            if (*other_end == 0) {
+                break;
+            }
+            other = other_end + 1;
+        }
+        label = end + 1;
+    }
+}
+
+// logger:log_file_content(path) queues a file while fewer than this many wait: each is an M7
+// allocation the logger frees once it has logged the whole file, at about 640 bytes a second.
+// The M7 server's own script logging (m4:script_loaded) takes the same bound
+static const uint8_t FILE_CONTENT_QUEUE_MAX = ScriptingM4::MAX_SCRIPTS + 8;
+
+// a path the M4's file calls may read (check_script_path(), PathUse::Read) and room in the
+// logger's queue (recorded deviation: in-process queues any path, any number)
+inline bool file_content_allowed(const char *path, size_t length, uint8_t queued)
+{
+    return queued < FILE_CONTENT_QUEUE_MAX &&
+           ScriptingM4::check_script_path(path, length, ScriptingM4::PathUse::Read) == 0;
+}
+
+// coerce_to_uint64_t() of lua_boxed_numerics.cpp: a boxed uint64_t or uint32_t, a non-negative
+// integer or number below 2^64; else "Unable to coerce to uint64_t"
+uint64_t coerce_to_uint64_t(lua_State *L, int arg);
+
+// AP_ScriptingM4_ManualLogger.cpp
+int AP_Logger_Write(lua_State *L);
+int lua_m4_AP_Logger_log_file_content(lua_State *L);
 // an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
 void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])

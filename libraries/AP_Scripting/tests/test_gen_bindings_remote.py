@@ -154,7 +154,7 @@ class GenBindingsRemote(unittest.TestCase):
         flags = table('remote_method_flags')
         self.assertEqual(len(functions), len(flags))
         # the high nibble is the quota class (AP_ScriptingM4_Quota.h): 1 Text, 2 Storage, 3 Led, 4 FileLog,
-        # 6 Can
+        # 6 Can, 9 Osd, 10 OsdFrame
         quota_classes = {function: int(flag, 16) >> 4 for function, flag in zip(functions, flags) if int(flag, 16) >> 4}
         self.assertEqual(quota_classes, {
             'GCS_send_text': 1,
@@ -166,10 +166,14 @@ class GenBindingsRemote(unittest.TestCase):
             'AP_Mission_set_item': 2,
             'AP_Mission_clear': 2,
             'AP_SerialLED_send': 3,
-            'AP_Logger_log_file_content': 4,
+            'lua_m4_AP_Logger_log_file_content': 4,
+            'AP_OSD_Backend_write': 9,
+            'AP_OSD_Backend_clear': 9,
+            'AP_OSD_Backend_flush': 10,
+            'AP_OSD_Backend_draw_screen': 10,
             'lua_m4_ScriptingCANBuffer_write_frame': 6,
         })
-        self.assertIn('static_assert(6 < ScriptingM4::QUOTA_CLASSES', dispatch)
+        self.assertIn('static_assert(10 < ScriptingM4::QUOTA_CLASSES', dispatch)
         # write_frame returns false over its quota; DroneCAN broadcast and request charge their
         # frames in their ports, so the dispatch charges them nothing more
         self.assertEqual(flags[functions.index('lua_m4_ScriptingCANBuffer_write_frame')], '0x62')
@@ -333,6 +337,19 @@ class GenBindingsRemote(unittest.TestCase):
                          'lua_AP_Vehicle_set_target_velocity_NED', 'SRV_Channels_get_safety_state',
                          'lua_range_finder_handle_script_msg', 'lua_DroneCAN_get_FlexDebug'):
             self.assertIn('    %s,\n' % function, dispatch)
+
+    def test_logger_rows(self):
+        code, output, _ = self.generate('logger', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, _ = self.outputs('logger')
+        types = self.type_ids(tables)
+        logger, _ = types['logger']
+        # logger.write(...) is a dot call as well as a method call
+        self.assertEqual(self.row_flags(tables, logger, 'write')[1], 0x11)
+        self.assertIn('    AP_Logger_Write,\n', dispatch)
+        # log_file_content runs the M7 replacement; the generated body, which queues any path, is gone
+        self.assertIn('    lua_m4_AP_Logger_log_file_content,\n', dispatch)
+        self.assertNotIn('static int AP_Logger_log_file_content(', dispatch)
 
     def test_dot_access_names_a_singleton_manual(self):
         # every remote_dot_access entry is checked against the description: without the check a

@@ -22,8 +22,11 @@ enum class QuotaClass : uint8_t {
     FileIo = 5,    // m4:fs_open for writing, m4:fs_write, m4:fs_remove: SD card writes
     Can = 6,       // CAN frames of write_frame, DroneCAN broadcast and request: the bus flight traffic uses
     MavTx = 7,     // mavlink:send_chan: messages on the vehicle's links, under their channel locks
+    Log = 8,       // logger:write: rows in the vehicle's log
+    Osd = 9,       // osd:write, osd:clear: characters on the OSD screen
+    OsdFrame = 10, // osd:flush, osd:draw_screen: a whole-screen render each
 };
-static const uint8_t QUOTA_CLASSES = 8;
+static const uint8_t QUOTA_CLASSES = 11;
 
 struct QuotaLimit {
     uint16_t per_second;
@@ -38,6 +41,9 @@ static const QuotaLimit QUOTA_LIMITS[QUOTA_CLASSES] = {
     { 50, 100 },     // FileIo: at most about 25 KB/s of SD writes at FILE_CHUNK per write
     { 800, 800 },    // Can: frames, about 10 % of a 1 Mbit/s bus
     { 200, 200 },    // MavTx: in-tree scripts send under 50 messages a second
+    { 500, 500 },    // Log: actuator_chirp.lua writes 400 rows a second, plane_aerobatics.lua 280
+    { 300, 300 },    // Osd: a 30-row screen redrawn at 10 Hz
+    { 40, 40 },      // OsdFrame: twice osd.lua's flush and draw at 10 Hz; the OSD thread draws at 10 Hz
 };
 
 class Quota {

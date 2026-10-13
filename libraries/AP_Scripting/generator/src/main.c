@@ -3007,6 +3007,8 @@ enum remote_quota {                   // ScriptingM4::QuotaClass
   QUOTA_LED     = 3,
   QUOTA_FILE_LOG = 4,
   QUOTA_CAN     = 6,
+  QUOTA_OSD     = 9,              // MavTx (7) and Log (8) are charged in their ports
+  QUOTA_OSD_FRAME = 10,
 };
 
 // userdata the M4 holds as wire bytes: plain data, no pointers, every member that
@@ -3076,6 +3078,7 @@ static const char *remote_ready_manual[] = {
   "lua_GCS_command_int", "lua_AP_AHRS_wind_estimate", "lua_gps_inject_data",
   "lua_AP_Vehicle_set_target_velocity_NED", "SRV_Channels_get_safety_state",
   "lua_range_finder_handle_script_msg", "lua_DroneCAN_get_FlexDebug",
+  "AP_Logger_Write",
   NULL };
 // manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
 // a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)
@@ -3103,6 +3106,7 @@ static const struct remote_replacement remote_replaced_methods[] = {
   { "SocketAPM", "pollin", "lua_m4_SocketAPM_pollin" },    // the wait is bounded, and the socket
   { "SocketAPM", "pollout", "lua_m4_SocketAPM_pollout" },  // stays non-blocking: the host thread
   { "SocketAPM", "set_blocking", "lua_m4_SocketAPM_set_blocking" },   // never waits on the network
+  { "AP_Logger", "log_file_content", "lua_m4_AP_Logger_log_file_content" },   // path checked, queue bounded
   { NULL, NULL, NULL } };
 static int remote_replacement_matched[sizeof(remote_replaced_methods) / sizeof(remote_replaced_methods[0])];
 
@@ -3191,6 +3195,11 @@ static const struct remote_quota_entry remote_quotas[] = {
   // the CAN bus is shared with flight traffic: one frame per call. DroneCAN broadcast and request
   // charge their frames in their ports (can_transfer_allowed())
   { "ScriptingCANBuffer", "write_frame", QUOTA_CAN },
+  // the OSD screen: writes and clears are cheap, flush and draw_screen render the whole screen
+  { "AP_OSD_Backend", "write", QUOTA_OSD },
+  { "AP_OSD_Backend", "clear", QUOTA_OSD },
+  { "AP_OSD_Backend", "flush", QUOTA_OSD_FRAME },
+  { "AP_OSD_Backend", "draw_screen", QUOTA_OSD_FRAME },
   { NULL, NULL, QUOTA_NONE } };
 static int remote_quota_matched[sizeof(remote_quotas) / sizeof(remote_quotas[0])];
 
