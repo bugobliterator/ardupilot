@@ -440,6 +440,33 @@ static int thing_mavtx(lua_State *L) {
     return 1;
 }
 
+// mavlink_command_int_t's fields that gcs:run_command_int fills, in the generated header's types
+struct TestCommandInt {
+    float param1 = 0, param2 = 0, param3 = 0, param4 = 0;
+    int32_t x = 0, y = 0;
+    float z = 0;
+    uint16_t command = 0;
+    uint8_t frame = 0;
+};
+static TestCommandInt test_command;
+static int thing_command_int(lua_State *L) {
+    test_command = TestCommandInt();
+    lua_pushboolean(L, command_int_packet(L, test_command));
+    return 1;
+}
+
+// a semaphore that is taken only when it is free (a GPS driver's update holds the real one)
+struct TestGpsSemaphore {
+    bool free = true;
+    uint32_t waited_ms = 0;
+    uint8_t gives = 0;
+    bool take(uint32_t wait_ms) {
+        waited_ms = wait_ms;
+        return free;
+    }
+    void give() { gives++; }
+};
+
 }  // namespace ScriptingM4Remote
 
 using namespace ScriptingM4Remote;
@@ -1941,6 +1968,142 @@ TEST(ScriptingM4Remote, SendKeepsAFrameForTheVehicle)
     EXPECT_FALSE(mavlink_send_has_room(100 + 279, 100));
     EXPECT_FALSE(mavlink_send_has_room(100, 100));        // the message alone fits: in-process sends
     EXPECT_FALSE(mavlink_send_has_room(0, 0));
+}
+
+// the table's fields arrive as values 3..10 (m4_wrappers.cpp); nil leaves a field 0, as in-process
+// a missing or mistyped field does. frame is cut to its uint8_t, as lua_tointeger() into it is
+TEST(ScriptingM4Remote, CommandIntPacketTakesTheTablesValues)
+{
+    Call c;
+    c.args.nil();            // the GCS self
+    c.args.integer(179);     // MAV_CMD_DO_SET_HOME
+    c.args.number(1.5f);     // p1
+    c.args.nil();            // p2
+    c.args.integer(3);       // p3: an integer is a number
+    c.args.nil();            // p4
+    c.args.integer(-353632621);
+    c.args.nil();            // y
+    c.args.number(584.5f);   // z
+    c.args.integer(262);     // frame
+    ASSERT_EQ(c.run(thing_command_int), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(test_command.command, 179);
+    EXPECT_FLOAT_EQ(test_command.param1, 1.5f);
+    EXPECT_FLOAT_EQ(test_command.param2, 0.0f);
+    EXPECT_FLOAT_EQ(test_command.param3, 3.0f);
+    EXPECT_EQ(test_command.x, -353632621);
+    EXPECT_EQ(test_command.y, 0);
+    EXPECT_FLOAT_EQ(test_command.z, 584.5f);
+    EXPECT_EQ(test_command.frame, 6);
+}
+
+// no table: the command is still checked, then nothing is run (in-process returns no result).
+// Without the two-value case the call is malformed and the script gets an error
+TEST(ScriptingM4Remote, CommandIntWithoutATable)
+{
+    Call c;
+    c.args.nil();
+    c.args.integer(179);
+    ASSERT_EQ(c.run(thing_command_int), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);
+    EXPECT_EQ(test_command.command, 179);
+    c.args.nil();
+    c.args.integer(70000);   // past uint16_t: get_uint16_t()'s in-process text
+    EXPECT_EQ(c.run(thing_command_int), ReplyStatus::ArgError);
+    EXPECT_EQ(c.text(0), "out of range");
+}
+
+// any other count is a hostile M4 (the wrapper sends 2 or 10): an argument error, never a read
+// past the values
+TEST(ScriptingM4Remote, CommandIntIsMalformedOtherwise)
+{
+    for (uint8_t count : { 1, 3, 9, 11 }) {
+        Call c;
+        for (uint8_t i = 0; i < count; i++) {
+            c.args.integer(1);
+        }
+        EXPECT_EQ(c.run(thing_command_int), ReplyStatus::ArgError) << int(count);
+        EXPECT_EQ(c.text(0), "M4: malformed run_command_int") << int(count);
+    }
+}
+
+// commands whose handler holds the host thread past 900 ms, or crashes the vehicle, are refused.
+// Without the refusals command_int_runs_on_the_host() is true for each of these packets
+TEST(ScriptingM4Remote, CommandIntRefusesLongAndCrashingCommands)
+{
+    EXPECT_EQ(COMMAND_INT_DENIED, 2);
+
+    TestCommandInt calibration;
+    calibration.command = COMMAND_INT_PREFLIGHT_CALIBRATION;
+    EXPECT_EQ(COMMAND_INT_PREFLIGHT_CALIBRATION, 241);
+    EXPECT_FALSE(command_int_runs_on_the_host(calibration));
+
+    // the bootloader flash, with its magic x only (without it the handler returns FAILED at once)
+    TestCommandInt flash;
+    flash.command = COMMAND_INT_FLASH_BOOTLOADER;
+    EXPECT_TRUE(command_int_runs_on_the_host(flash));
+    flash.x = 290876;
+    EXPECT_FALSE(command_int_runs_on_the_host(flash));
+
+    // the trap, with its magic p1 (the handler casts it to uint32_t)
+    TestCommandInt trap;
+    trap.command = COMMAND_INT_DEBUG_TRAP;
+    EXPECT_TRUE(command_int_runs_on_the_host(trap));
+    trap.param1 = 32451;
+    EXPECT_FALSE(command_int_runs_on_the_host(trap));
+    trap.param1 = 32451.9f;
+    EXPECT_FALSE(command_int_runs_on_the_host(trap));
+    trap.param1 = 32450;
+    EXPECT_TRUE(command_int_runs_on_the_host(trap));
+
+    // the crash triggers and DFU: p1/p2/p3 42/24/71, any p4 (93 lockup, 96 parameter wipe, 99 DFU)
+    for (float p4 : { 0.0f, 93.0f, 96.0f, 97.0f, 99.0f, 100.0f, 101.0f, 102.0f }) {
+        TestCommandInt crash;
+        crash.command = COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN;
+        crash.param1 = 42;
+        crash.param2 = 24;
+        crash.param3 = 71;
+        crash.param4 = p4;
+        EXPECT_FALSE(command_int_runs_on_the_host(crash)) << p4;
+    }
+    // a plain reboot, and a triple that is not the triple, run as in-process
+    TestCommandInt reboot;
+    reboot.command = COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN;
+    reboot.param1 = 1;
+    EXPECT_TRUE(command_int_runs_on_the_host(reboot));
+    reboot.param1 = 42;
+    reboot.param2 = 24;
+    reboot.param3 = 70;
+    reboot.param4 = 93;
+    EXPECT_TRUE(command_int_runs_on_the_host(reboot));
+    EXPECT_EQ(COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN, 246);
+    EXPECT_EQ(COMMAND_INT_FLASH_BOOTLOADER, 42650);
+    EXPECT_EQ(COMMAND_INT_DEBUG_TRAP, 42700);
+
+    TestCommandInt set_home;
+    set_home.command = 179;   // MAV_CMD_DO_SET_HOME
+    EXPECT_TRUE(command_int_runs_on_the_host(set_home));
+    set_home.command = 42701;   // MAV_CMD_SCRIPTING: it only sets flags
+    EXPECT_TRUE(command_int_runs_on_the_host(set_home));
+}
+
+// gps:inject_data() takes the GPS semaphore for at most GPS_INJECT_WAIT_MS and runs the driver
+// call under it. Without the take the action runs on a busy semaphore (the main loop may be
+// deleting the driver); without the give the main loop's GPS update would wait for ever
+TEST(ScriptingM4Remote, BoundedTakeRunsUnderTheSemaphoreOrRefuses)
+{
+    TestGpsSemaphore sem;
+    int runs = 0;
+    EXPECT_TRUE(run_with_bounded_take(sem, GPS_INJECT_WAIT_MS, [&]() { runs++; }));
+    EXPECT_EQ(runs, 1);
+    EXPECT_EQ(sem.gives, 1);
+    EXPECT_EQ(sem.waited_ms, 30U);
+    EXPECT_EQ(GPS_INJECT_WAIT_MS, 30U);
+
+    sem.free = false;
+    EXPECT_FALSE(run_with_bounded_take(sem, GPS_INJECT_WAIT_MS, [&]() { runs++; }));
+    EXPECT_EQ(runs, 1);
+    EXPECT_EQ(sem.gives, 1);
 }
 
 AP_GTEST_MAIN()

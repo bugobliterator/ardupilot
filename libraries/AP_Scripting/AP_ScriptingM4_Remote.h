@@ -14,6 +14,8 @@
  */
 
 #include <errno.h>
+#include <float.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -324,6 +326,107 @@ int lua_mission_receive(lua_State *L);
 // the session's command blocks are counted afresh and its unread mission items dropped
 // (AP_ScriptingM4_Server::end_session())
 void mavlink_end_session();
+
+// gcs:run_command_int() refuses with MAV_RESULT_DENIED the commands whose handler holds the
+// calling thread for longer than the host thread's 900 ms (the scheduler semaphore is held too, so
+// the main loop stalls with it), or never returns, or takes the M7 down. In-process the scripting
+// thread and the main loop wait, or the vehicle crashes (recorded deviation):
+// - MAV_CMD_PREFLIGHT_CALIBRATION: a gyro/accel/baro calibration of seconds
+//   (GCS_MAVLINK::_handle_command_preflight_calibration, EXPECT_DELAY_MS(30000));
+// - MAV_CMD_FLASH_BOOTLOADER with its magic x: hal.util->flash_bootloader(), EXPECT_DELAY_MS(11000);
+// - MAV_CMD_DEBUG_TRAP with its magic p1: hal.util->trap();
+// - MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN with p1/p2/p3 42/24/71, whatever p4: the crash triggers
+//   (lockups, a deadlock, faults, a parameter-header wipe; AP_MAVLINK_FAILURE_CREATION_ENABLED) and
+//   DFU boot (p4 99). A plain reboot stays allowed
+static const uint16_t COMMAND_INT_PREFLIGHT_CALIBRATION = 241;   // MAV_CMD_PREFLIGHT_CALIBRATION
+static const uint16_t COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN = 246;   // MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN
+static const uint16_t COMMAND_INT_FLASH_BOOTLOADER = 42650;      // MAV_CMD_FLASH_BOOTLOADER
+static const int32_t COMMAND_INT_FLASH_BOOTLOADER_MAGIC = 290876;   // its x
+static const uint16_t COMMAND_INT_DEBUG_TRAP = 42700;            // MAV_CMD_DEBUG_TRAP
+static const uint32_t COMMAND_INT_DEBUG_TRAP_MAGIC = 32451;      // its p1
+static const uint8_t COMMAND_INT_DENIED = 2;                      // MAV_RESULT_DENIED
+inline bool command_int_param_is(float param, float value)
+{
+    return fabsf(param - value) <= FLT_EPSILON;   // AP_Math's is_equal() for floats
+}
+// Packet is mavlink_command_int_t
+template <typename Packet> bool command_int_runs_on_the_host(const Packet &packet)
+{
+    switch (packet.command) {
+    case COMMAND_INT_PREFLIGHT_CALIBRATION:
+        return false;
+    case COMMAND_INT_FLASH_BOOTLOADER:
+        return packet.x != COMMAND_INT_FLASH_BOOTLOADER_MAGIC;
+    case COMMAND_INT_DEBUG_TRAP:
+        // the handler casts p1 to uint32_t: every value in [32451, 32452) is the magic
+        return !(packet.param1 >= float(COMMAND_INT_DEBUG_TRAP_MAGIC) &&
+                 packet.param1 < float(COMMAND_INT_DEBUG_TRAP_MAGIC + 1));
+    case COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN:
+        return !(command_int_param_is(packet.param1, 42.0f) && command_int_param_is(packet.param2, 24.0f) &&
+                 command_int_param_is(packet.param3, 71.0f));
+    default:
+        return true;
+    }
+}
+
+// the packet of gcs:run_command_int(command, table): values 3..10 are p1..p4, x, y, z and frame,
+// each nil where the in-process code leaves the field 0 (the M4 wrapper, m4_wrappers.cpp). False
+// for a call without a table (2 values), for which in-process returns nothing. Any other count is
+// an argument error: the wrapper never sends it. Packet is mavlink_command_int_t
+template <typename Packet> bool command_int_packet(lua_State *L, Packet &packet)
+{
+    const int args = lua_gettop(L);
+    if (args != 2 && args != 10) {
+        luaL_argerror(L, args, "M4: malformed run_command_int");
+    }
+    packet.command = get_uint16_t(L, 2);
+    if (args == 2) {
+        return false;
+    }
+    float *const params[] = { &packet.param1, &packet.param2, &packet.param3, &packet.param4 };
+    for (uint8_t i = 0; i < 4; i++) {
+        if (lua_type(L, 3 + i) > 0) {
+            *params[i] = luaL_checknumber(L, 3 + i);
+        }
+    }
+    if (lua_type(L, 7) > 0) {
+        packet.x = luaL_checkinteger(L, 7);
+    }
+    if (lua_type(L, 8) > 0) {
+        packet.y = luaL_checkinteger(L, 8);
+    }
+    if (lua_type(L, 9) > 0) {
+        packet.z = luaL_checknumber(L, 9);
+    }
+    if (lua_type(L, 10) > 0) {
+        packet.frame = uint8_t(luaL_checkinteger(L, 10));
+    }
+    return true;
+}
+
+// gps:inject_data() holds the GPS semaphore, which AP_GPS::update() holds while it deletes a
+// driver, for the driver call; it waits at most this long for it
+static const uint32_t GPS_INJECT_WAIT_MS = 30;
+// runs action with sem held: false, action not run, if sem is not taken within wait_ms. The
+// action must not leave the binding function (no luaL_* under the semaphore)
+template <typename Semaphore, typename Action> bool run_with_bounded_take(Semaphore &sem, uint32_t wait_ms, Action action)
+{
+    if (!sem.take(wait_ms)) {
+        return false;
+    }
+    action();
+    sem.give();
+    return true;
+}
+
+// AP_ScriptingM4_ManualVehicle.cpp
+int lua_GCS_command_int(lua_State *L);
+int lua_AP_AHRS_wind_estimate(lua_State *L);
+int lua_gps_inject_data(lua_State *L);
+int lua_AP_Vehicle_set_target_velocity_NED(lua_State *L);
+int SRV_Channels_get_safety_state(lua_State *L);
+int lua_range_finder_handle_script_msg(lua_State *L);
+int lua_DroneCAN_get_FlexDebug(lua_State *L);
 // an owned DroneCAN_Handle's release (the in-process __gc): its subscriber goes
 void DroneCAN_Handle__release(void *object);
 // M7 replacements of generated methods (gen-bindings -r remote_replaced_methods[])

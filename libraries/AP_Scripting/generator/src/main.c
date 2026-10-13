@@ -3073,6 +3073,9 @@ static const char *remote_ready_manual[] = {
   "lua_CRSF_add_root_menu", "lua_CRSF_get_menu_event", "lua_CRSF_peek_menu_event", "lua_CRSF_send_response",
   "lua_mavlink_init", "lua_mavlink_register_rx_msgid", "lua_mavlink_send_chan", "lua_mavlink_receive_chan",
   "lua_mavlink_block_command", "lua_mission_receive",
+  "lua_GCS_command_int", "lua_AP_AHRS_wind_estimate", "lua_gps_inject_data",
+  "lua_AP_Vehicle_set_target_velocity_NED", "SRV_Channels_get_safety_state",
+  "lua_range_finder_handle_script_msg", "lua_DroneCAN_get_FlexDebug",
   NULL };
 // manual functions that call fix_dot_access_never_add_another_call() in-process: their rows take
 // a dot call (serial.find_serial(0)) as well as a method call (ScriptingM4::ROW_DOT_ACCESS)
@@ -3115,6 +3118,7 @@ static const struct remote_wrapper remote_m4_wrappers[] = {
   { "AP_HAL__I2CDevice_read_registers", "wrap_I2CDevice_read_registers" },   // a table of bytes
   { "SocketAPM_sendfile", "wrap_SocketAPM_sendfile" },                       // a Lua file
   { "lua_get_SocketAPM", "wrap_SocketAPM_new" },         // the M4 keeps whether it is a datagram socket
+  { "lua_GCS_command_int", "wrap_GCS_run_command_int" },   // a table of command fields
   { "SocketAPM_connect", "wrap_SocketAPM_connect" },     // a blocking socket: the M4 waits
   { "SocketAPM_send_checked", "wrap_SocketAPM_send" },
   { "SocketAPM_sendto_checked", "wrap_SocketAPM_sendto" },

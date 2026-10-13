@@ -317,6 +317,23 @@ class GenBindingsRemote(unittest.TestCase):
                          'lua_mavlink_receive_chan', 'lua_mavlink_block_command', 'lua_mission_receive'):
             self.assertIn('    %s,\n' % function, dispatch)
 
+    def test_singleton_manual_rows(self):
+        code, output, _ = self.generate('singleton_manuals', [])
+        self.assertEqual(code, 0, output)
+        tables, dispatch, local = self.outputs('singleton_manuals')
+        types = self.type_ids(tables)
+        # run_command_int takes a table: its M4 end is the wrapper, which flattens it
+        method, flags = self.row_flags(tables, types['gcs'][0], 'run_command_int')
+        self.assertEqual(flags, 0x21)
+        self.assertIn('    case %d:\n        return wrap_GCS_run_command_int;\n' % method, local)
+        # the others are plain rows of their singleton, ap_object or the globals
+        self.assertEqual(self.row_flags(tables, types['ahrs'][0], 'wind_estimate')[1], 0x01)
+        self.assertEqual(self.row_flags(tables, types['AP_RangeFinder_Backend'][0], 'handle_script_msg')[1], 0x00)
+        for function in ('lua_GCS_command_int', 'lua_AP_AHRS_wind_estimate', 'lua_gps_inject_data',
+                         'lua_AP_Vehicle_set_target_velocity_NED', 'SRV_Channels_get_safety_state',
+                         'lua_range_finder_handle_script_msg', 'lua_DroneCAN_get_FlexDebug'):
+            self.assertIn('    %s,\n' % function, dispatch)
+
     def test_dot_access_names_a_singleton_manual(self):
         # every remote_dot_access entry is checked against the description: without the check a
         # renamed manual function would lose its dot-call fix silently

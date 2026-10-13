@@ -45,6 +45,51 @@ int wrap_SocketAPM_sendfile(lua_State *L)
     return remote_call(L);
 }
 
+// a table field as the in-process lua_GCS_command_int() reads it (lua_gettable, so __index runs):
+// pushed as a value if it is a number (numeric strings included: lua_isnumber) or, with
+// integers_only, an integer (lua_isinteger); else nil, which leaves the packet field 0
+static void push_command_field(lua_State *L, const char *name, bool integers_only)
+{
+    lua_pushstring(L, name);
+    lua_gettable(L, 3);
+    if (integers_only ? lua_isinteger(L, -1) : lua_isnumber(L, -1)) {
+        if (integers_only) {
+            lua_pushinteger(L, lua_tointeger(L, -1));
+        } else {
+            lua_pushnumber(L, lua_tonumber(L, -1));
+        }
+    } else {
+        lua_pushnil(L);
+    }
+    lua_remove(L, -2);
+}
+
+// gcs:run_command_int(command, table): a Lua table cannot cross to the M7, so its fields go as
+// values 3..10 (p1, p2, p3, p4, x, y, z, frame; command_int_packet() on the M7). Without a table
+// the command goes alone, and the M7 checks it and returns nothing, as in-process
+int wrap_GCS_run_command_int(lua_State *L)
+{
+    const int top = lua_gettop(L);
+    if (top != 3) {
+        // binding_argcheck(L, 3)'s in-process texts
+        return luaL_argerror(L, top, top > 3 ? "too many arguments" : "too few arguments");
+    }
+    if (!lua_istable(L, 3)) {
+        lua_settop(L, 2);
+        return remote_call(L);
+    }
+    static const char *const params[] = { "p1", "p2", "p3", "p4" };
+    for (const char *name : params) {
+        push_command_field(L, name, false);
+    }
+    push_command_field(L, "x", true);
+    push_command_field(L, "y", true);
+    push_command_field(L, "z", false);
+    push_command_field(L, "frame", true);
+    lua_remove(L, 3);   // the table: the values follow the command
+    return remote_call(L);
+}
+
 // a socket handle's state bits: set_blocking(false) succeeded, so its calls return at once; it
 // was made with Socket(1), so its sends are datagrams
 static const uint8_t SOCKET_NONBLOCKING = 0x01;
