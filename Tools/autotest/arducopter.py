@@ -23197,6 +23197,15 @@ RTL_ALT_M 111
                      "Received heartbeat from"]:
             self.wait_m4_script_text(text, timeout=120)
         self.assert_received_message_field_values("NAMED_VALUE_FLOAT", {"name": "test"}, check_context=True)
+        # stopped as a context pop stops it, with SIM_SPEEDUP 100 in the same batch: SITL counts the
+        # requested restart's 500 ms timeout on wall-clock time, which the M4 process runs on. On the
+        # vehicle's clock it ends within milliseconds and scripting goes off ("Scripting: M4 not
+        # responding, off until reboot")
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameters({"SIM_SPEEDUP": 100, "SCR_ENABLE": 0, "SCR_HEAP_SIZE": 204800, "SCR_VM_I_COUNT": 10000})
+        self.wait_statustext("Scripting: stopped", check_context=True, timeout=30)
+        self.delay_sim_time(10, reason="the stopped session starts")
+        self.m4_assert_no_text(r"^Scripting: M4 ")
         self.context_pop()
         self.reboot_sitl()
 
@@ -23425,7 +23434,7 @@ RTL_ALT_M 111
         self.context_clear_collection("STATUSTEXT")
         self.m4_commands_scripting(STOP)
         self.delay_sim_time(4, reason="a stopped session runs no script")
-        self.m4_assert_no_text(r"M4 commands session|Scripting: (started on M4|restarted|stopped|M4 )")
+        self.m4_assert_no_text(r"^(?:M4 commands session|Scripting: (started on M4|restarted|stopped|M4 ))")
 
         # STOP_AND_RESTART: a new session runs the script, which finds the first session's filter
         self.m4_commands_scripting(STOP_AND_RESTART)
@@ -23444,7 +23453,7 @@ RTL_ALT_M 111
         self.context_clear_collection("STATUSTEXT")
         self.m4_commands_scripting(STOP_AND_RESTART)
         self.delay_sim_time(3, reason="disabled: no restart")
-        self.m4_assert_no_text(r"M4 commands session|Scripting: (started on M4|restarted|M4 )")
+        self.m4_assert_no_text(r"^(?:M4 commands session|Scripting: (started on M4|restarted|M4 ))")
         self.set_parameter("SCR_USER6", 0)
         self.set_parameter("SCR_ENABLE", 1)
         self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
@@ -23473,7 +23482,7 @@ RTL_ALT_M 111
             raise NotAchievedException("%u requested restarts, expected 20" % len(restarted))
         if min(gaps) < 0.9:
             raise NotAchievedException("a requested restart %.2f s after the last" % min(gaps))
-        self.m4_assert_no_text(r"Scripting: M4 ")
+        self.m4_assert_no_text(r"^(?:Scripting: M4 )")
 
         # a script calling restart_all() every 100 ms is stopped by STOP at once and stays stopped
         self.set_parameter("SCR_USER5", 4)
@@ -23484,7 +23493,7 @@ RTL_ALT_M 111
         self.delay_sim_time(1, reason="the stop is acted on")
         self.context_clear_collection("STATUSTEXT")
         self.delay_sim_time(5, reason="stopped: no restart")
-        self.m4_assert_no_text(r"M4 commands session|Scripting: (started on M4|restarted|stopped|M4 )")
+        self.m4_assert_no_text(r"^(?:M4 commands session|Scripting: (started on M4|restarted|stopped|M4 ))")
         self.set_parameter("SCR_USER5", 0)
         self.m4_commands_scripting(STOP_AND_RESTART)
         self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
