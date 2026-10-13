@@ -87,6 +87,9 @@ private:
     bool platform_m4_exited();
     void platform_stop();
     uint32_t platform_wait_us() const;
+    // the clock the start and restart timeouts count: the vehicle's on ChibiOS, wall-clock time in
+    // SITL, where the M4 process runs on wall-clock time whatever SIM_SPEEDUP is
+    uint32_t platform_timeout_ms() const;
 
     static void doorbell_isr(uint8_t group);
 
@@ -96,6 +99,7 @@ private:
     volatile uint32_t _doorbell_us;   // when the last doorbell interrupt arrived, 0 once consumed
     State _state;
     uint32_t _state_start_ms;
+    uint32_t _state_start_timeout_ms; // platform_timeout_ms() when the state was entered
     uint8_t _restarts_used;
     uint32_t _restart_grants;         // restarts granted the M4: fault restarts and requested ones
     bool _restart_requested;          // the restart under way is a request, not a fault

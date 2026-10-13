@@ -103,4 +103,9 @@ uint32_t AP_ScriptingM4::platform_wait_us() const
     return 10000;
 }
 
+uint32_t AP_ScriptingM4::platform_timeout_ms() const
+{
+    return AP_HAL::millis();
+}
+
 #endif  // AP_SCRIPTING_M4_ENABLED && CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS

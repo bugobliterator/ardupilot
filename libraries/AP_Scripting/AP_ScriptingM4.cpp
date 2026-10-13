@@ -387,7 +387,7 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
     }
     const uint32_t timeout_ms = _state == State::Starting ? ScriptingM4::START_TIMEOUT_MS
                                                           : ScriptingM4::RESTART_TIMEOUT_MS;
-    if (now_ms - _state_start_ms > timeout_ms) {
+    if (platform_timeout_ms() - _state_start_timeout_ms > timeout_ms) {
         go_off("not responding");
     }
 }
@@ -529,6 +529,7 @@ void AP_ScriptingM4::enter(State state, uint32_t now_ms)
 {
     _state = state;
     _state_start_ms = now_ms;
+    _state_start_timeout_ms = platform_timeout_ms();
 }
 
 bool AP_ScriptingM4::arming_checks(size_t buflen, char *buffer) const

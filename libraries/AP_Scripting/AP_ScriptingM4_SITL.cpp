@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -159,6 +160,15 @@ void AP_ScriptingM4::platform_stop()
 uint32_t AP_ScriptingM4::platform_wait_us() const
 {
     return 1000;   // POSIX HSEM raises no interrupt: poll
+}
+
+// the M4 process starts on wall-clock time: at SIM_SPEEDUP 100 a 500 ms timeout on the
+// vehicle's clock would be 5 ms
+uint32_t AP_ScriptingM4::platform_timeout_ms() const
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return uint32_t(uint64_t(ts.tv_sec) * 1000U + uint64_t(ts.tv_nsec) / 1000000U);
 }
 
 #endif  // AP_SCRIPTING_M4_ENABLED && CONFIG_HAL_BOARD == HAL_BOARD_SITL
