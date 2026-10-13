@@ -31,7 +31,9 @@ enum class ValueTag : uint8_t {
     Opaque = 8,    // a value that cannot cross (table, function, ...): uint8 Lua type, for error texts
 };
 
-static const uint8_t MAX_VALUES = 16;
+// the most values one call or reply carries: logger:write with units, multipliers and 15 fields is
+// the self, five strings and 15 values (AP_Logger: LS_FORMAT_SIZE 17 leaves 15 format characters)
+static const uint8_t MAX_VALUES = 21;
 // a string value fills a reply frame at most: header, tag and length
 static const uint16_t MAX_STRING = MAX_FRAME - sizeof(ReplyHeader) - 3;
 // the largest blob: AP_MotorsMatrix_Scripting_Dynamic::factor_table, 512 bytes
@@ -565,8 +567,8 @@ constexpr uint32_t fnv1a_string(const char *text, uint32_t hash)
 #define SCRIPTING_M4_HASH_CLOSE(id, symbol, name, kind) ))
 static constexpr uint32_t SYSTEM_CONTRACT_HASH =
     SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_HASH_OPEN)
-    fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION, fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader),
-               fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET)))))
+    fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
+               fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET))))))
     SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_HASH_CLOSE);
 #undef SCRIPTING_M4_HASH_OPEN
 #undef SCRIPTING_M4_HASH_CLOSE

@@ -148,10 +148,10 @@ static int thing_deprecated(lua_State *L) {
 }
 static int thing_many(lua_State *L) {
     binding_argcheck(L, 1);
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i <= ScriptingM4::MAX_VALUES; i++) {
         lua_pushinteger(L, i);
     }
-    return 20;
+    return ScriptingM4::MAX_VALUES + 1;
 }
 
 static int thing_echo_many(lua_State *L) {
@@ -424,6 +424,14 @@ static int thing_crsf_required(lua_State *L) {
     int *given = crsf_required(lua_toboolean(L, 1) ? &telem : nullptr, L);
     lua_pushinteger(L, *given);
     return 1;
+}
+
+// the argument count and the last argument, as a port of a wide call sees them
+static int thing_count_args(lua_State *L) {
+    const int top = lua_gettop(L);
+    lua_pushinteger(L, top);
+    lua_pushinteger(L, luaL_checkinteger(L, top));
+    return 2;
 }
 
 }  // namespace ScriptingM4Remote
@@ -699,6 +707,20 @@ TEST(ScriptingM4Remote, WarningsAndLimits)
     c.args.nil();
     EXPECT_EQ(c.run(thing_many), ReplyStatus::Error);
     EXPECT_EQ(c.text(0), "M4: results too large");
+}
+
+// a port gets all 21 values of a call: with MAX_VALUES 16 decode_values() refuses the frame and
+// the server answers Malformed
+TEST(ScriptingM4Remote, TwentyOneArgumentsReachAPort)
+{
+    Call c;
+    for (int32_t i = 1; i <= 21; i++) {
+        c.args.integer(i);
+    }
+    ASSERT_EQ(c.run(thing_count_args), ReplyStatus::Ok);
+    ASSERT_EQ(c.count, 2);
+    EXPECT_EQ(c.values[0].integer, 21);
+    EXPECT_EQ(c.values[1].integer, 21);
 }
 
 TEST(ScriptingM4Remote, WrongHandleType)

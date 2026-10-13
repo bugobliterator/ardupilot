@@ -123,9 +123,13 @@ local steps = {
     expect_error(function() gcs:send_text(9, "y") end, "bad argument #1 to 'send_text' (out of range)")
     expect_error(function() gcs:send_text(6) end, "bad argument #1 to 'send_text' (too few arguments)")
     count("gcs:send_text", 3)
-    -- more values than a call frame holds: refused on the M4, with the in-process text
-    expect_error(function() gcs:send_text(6, "a", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15) end,
-                 "bad argument #17 to 'send_text' (too many arguments)")
+    -- 21 values cross (MAX_VALUES) and the M7 refuses the count; 22 are refused on the M4. The
+    -- in-process text either way
+    expect_error(function() gcs:send_text(6, "a", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18) end,
+                 "bad argument #20 to 'send_text' (too many arguments)")
+    count("gcs:send_text", 1)   -- the 21-value call reached the M7
+    expect_error(function() gcs:send_text(6, "a", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19) end,
+                 "bad argument #21 to 'send_text' (too many arguments)")
     expect_error(function() ahrs:set_home(Vector3f()) end, "bad argument #1 to 'set_home' (Location expected, got Vector3f)")
     count("ahrs:set_home", 1)
     check(quadplane == nil and sub == nil, "bindings of other vehicles")

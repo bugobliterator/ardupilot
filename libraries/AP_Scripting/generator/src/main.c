@@ -2972,7 +2972,7 @@ void emit_docs(struct userdata *node, int is_userdata, int emit_creation) {
 // ---------------------------------------------------------------------------
 
 #define REMOTE_FIRST_METHOD 64        // ScriptingM4::FIRST_BINDING_METHOD
-#define REMOTE_MAX_VALUES 16          // ScriptingM4::MAX_VALUES
+#define REMOTE_MAX_VALUES 21          // ScriptingM4::MAX_VALUES: logger:write's widest call
 #define REMOTE_MAX_LABEL 63           // ScriptingM4::StatsMsg::name holds 64 bytes
 #define REMOTE_MAX_TYPES 255
 #define REMOTE_MAX_ROWS 4096

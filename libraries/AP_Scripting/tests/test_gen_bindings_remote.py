@@ -83,6 +83,15 @@ class GenBindingsRemote(unittest.TestCase):
         self.assert_refused('label', ['singleton AP_AHRS method ' + 'a' * 60 + ' boolean'],
                             'is longer than an SRPC name')
 
+    def test_widest_method(self):
+        # 20 arguments and the self are 21 values, the widest call (logger:write with units and 15
+        # fields); one argument more is refused. With REMOTE_MAX_VALUES 16 the first line is refused
+        twenty = ' '.join(["float'skip_check"] * 20)
+        code, output, _ = self.generate('widest', ['singleton AP_AHRS method wide_call void ' + twenty])
+        self.assertEqual(code, 0, output)
+        self.assert_refused('too_wide', ['singleton AP_AHRS method wide_call void ' + twenty + " float'skip_check"],
+                            'remote: wide_call carries more values than a frame holds')
+
     def test_dispatch_codecs(self):
         code, output, _ = self.generate('dispatch', [])
         self.assertEqual(code, 0, output)

@@ -87,6 +87,25 @@ TEST(ScriptingM4Rpc, WriterRefusesOverflow)
     EXPECT_FALSE(writer.ok());               // longer than MAX_STRING
 }
 
+// logger:write with units, multipliers and 15 fields: the self, five strings and 15 values. With
+// MAX_VALUES 16 the writer refuses the 17th value and the call never leaves the M4
+TEST(ScriptingM4Rpc, TwentyOneValuesCross)
+{
+    static_assert(MAX_VALUES == 21, "logger:write's widest call is 21 values");
+    uint8_t frame[MAX_FRAME];
+    RpcWriter writer;
+    writer.begin(frame, sizeof(frame), 0);
+    for (int32_t i = 0; i < 21; i++) {
+        writer.integer(i);
+    }
+    ASSERT_TRUE(writer.ok());
+    RpcValue values[MAX_VALUES];
+    ASSERT_TRUE(decode_values(frame, writer.length(), 21, values));
+    EXPECT_EQ(values[20].integer, 20);
+    writer.nil();
+    EXPECT_FALSE(writer.ok());   // the 22nd
+}
+
 TEST(ScriptingM4Rpc, ArgsGiveLauxlibTexts)
 {
     uint8_t buf[64];
@@ -194,8 +213,9 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
 #undef TEST_METHOD_INFO
     };
     // the constexpr chain folds from the last method to the first
-    uint32_t hash = fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION, fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader),
-                    fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET)))));
+    // the value limit is part of the contract: an M4 image built with another limit is refused
+    uint32_t hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
+                    fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET))))));
     for (int i = int(sizeof(table) / sizeof(table[0])) - 1; i >= 0; i--) {
         hash = fnv1a_string(table[i].name, fnv1a_word((uint32_t(table[i].id) << 1) | uint32_t(table[i].kind), hash));
     }
