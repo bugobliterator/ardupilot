@@ -2087,6 +2087,65 @@ TEST(ScriptingM4Remote, CommandIntRefusesLongAndCrashingCommands)
     EXPECT_TRUE(command_int_runs_on_the_host(set_home));
 }
 
+// PREFLIGHT_STORAGE refuses the parameter erase (p1 2 and 4: uint8_t(p1) in the handler, so also
+// 2.9 and, where the conversion wraps, 258), STORAGE_FORMAT its p1 = p2 = 1. Other p1 values are
+// the handler's own (0 and 1 read and write the parameters, 3 is unsupported); a format with
+// other params is UNSUPPORTED there. Without the cases each of these returns true
+TEST(ScriptingM4Remote, CommandIntRefusesDestructiveStorageCommands)
+{
+    EXPECT_EQ(COMMAND_INT_PREFLIGHT_STORAGE, 245);
+    EXPECT_EQ(COMMAND_INT_STORAGE_FORMAT, 526);
+    TestCommandInt storage;
+    storage.command = COMMAND_INT_PREFLIGHT_STORAGE;
+    for (float p1 : { 2.0f, 2.9f, 4.0f, 4.5f, 258.0f }) {
+        storage.param1 = p1;
+        EXPECT_FALSE(command_int_runs_on_the_host(storage)) << p1;
+    }
+    for (float p1 : { 0.0f, 1.0f, 3.0f, 5.0f, 1.99f, -1.0f, 1e20f }) {
+        storage.param1 = p1;
+        EXPECT_TRUE(command_int_runs_on_the_host(storage)) << p1;
+    }
+    TestCommandInt format;
+    format.command = COMMAND_INT_STORAGE_FORMAT;
+    format.param1 = 1;
+    format.param2 = 1;
+    EXPECT_FALSE(command_int_runs_on_the_host(format));
+    format.param1 = 1.0f + FLT_EPSILON;   // the handler's is_equal() takes it for 1
+    EXPECT_FALSE(command_int_runs_on_the_host(format));
+    format.param2 = 0;
+    EXPECT_TRUE(command_int_runs_on_the_host(format));
+}
+
+// the refusals at the 42/24/71 boundary: values the handler's is_equal() takes for the triple are
+// refused too; one float step further is not the triple
+TEST(ScriptingM4Remote, CommandIntTripleBoundary)
+{
+    TestCommandInt crash;
+    crash.command = COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN;
+    crash.param1 = 42.0f + FLT_EPSILON;
+    crash.param2 = 24;
+    crash.param3 = 71;
+    EXPECT_FALSE(command_int_runs_on_the_host(crash));
+    crash.param1 = 42.0001f;
+    EXPECT_TRUE(command_int_runs_on_the_host(crash));
+    crash.param1 = NAN;
+    EXPECT_TRUE(command_int_runs_on_the_host(crash));
+}
+
+// the helper the port calls: a refused command returns DENIED and never runs; any other runs once
+// and returns its own result. Without the check the refused command runs
+TEST(ScriptingM4Remote, CommandIntResultRunsOnlyWhatIsAllowed)
+{
+    int runs = 0;
+    TestCommandInt packet;
+    packet.command = COMMAND_INT_PREFLIGHT_CALIBRATION;
+    EXPECT_EQ(command_int_result(packet, [&]() { runs++; return 0; }), COMMAND_INT_DENIED);
+    EXPECT_EQ(runs, 0);
+    packet.command = 179;   // MAV_CMD_DO_SET_HOME
+    EXPECT_EQ(command_int_result(packet, [&]() { runs++; return 5; }), 5);
+    EXPECT_EQ(runs, 1);
+}
+
 // gps:inject_data() takes the GPS semaphore for at most GPS_INJECT_WAIT_MS and runs the driver
 // call under it. Without the take the action runs on a busy semaphore (the main loop may be
 // deleting the driver); without the give the main loop's GPS update would wait for ever

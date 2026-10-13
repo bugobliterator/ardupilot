@@ -337,17 +337,35 @@ void mavlink_end_session();
 // - MAV_CMD_DEBUG_TRAP with its magic p1: hal.util->trap();
 // - MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN with p1/p2/p3 42/24/71, whatever p4: the crash triggers
 //   (lockups, a deadlock, faults, a parameter-header wipe; AP_MAVLINK_FAILURE_CREATION_ENABLED) and
-//   DFU boot (p4 99). A plain reboot stays allowed
+//   DFU boot (p4 99). A plain reboot stays allowed;
+// - MAV_CMD_PREFLIGHT_STORAGE with p1 2 or 4 (erase all parameters) and MAV_CMD_STORAGE_FORMAT with
+//   p1 = p2 = 1 (format the SD card): destructive, and long on the host thread. The ground
+//   station keeps both
 static const uint16_t COMMAND_INT_PREFLIGHT_CALIBRATION = 241;   // MAV_CMD_PREFLIGHT_CALIBRATION
 static const uint16_t COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN = 246;   // MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN
 static const uint16_t COMMAND_INT_FLASH_BOOTLOADER = 42650;      // MAV_CMD_FLASH_BOOTLOADER
 static const int32_t COMMAND_INT_FLASH_BOOTLOADER_MAGIC = 290876;   // its x
 static const uint16_t COMMAND_INT_DEBUG_TRAP = 42700;            // MAV_CMD_DEBUG_TRAP
 static const uint32_t COMMAND_INT_DEBUG_TRAP_MAGIC = 32451;      // its p1
+static const uint16_t COMMAND_INT_PREFLIGHT_STORAGE = 245;       // MAV_CMD_PREFLIGHT_STORAGE
+static const uint16_t COMMAND_INT_STORAGE_FORMAT = 526;          // MAV_CMD_STORAGE_FORMAT
+static const uint8_t COMMAND_INT_PARAM_RESET_FACTORY_DEFAULT = 2;   // PARAM_RESET_FACTORY_DEFAULT
+static const uint8_t COMMAND_INT_PARAM_RESET_ALL_DEFAULT = 4;       // PARAM_RESET_ALL_DEFAULT
 static const uint8_t COMMAND_INT_DENIED = 2;                      // MAV_RESULT_DENIED
+// equal as AP_Math's is_equal() for floats, but within <= FLT_EPSILON: a superset, so a refusal
+// never misses a value the handler takes for the match
 inline bool command_int_param_is(float param, float value)
 {
-    return fabsf(param - value) <= FLT_EPSILON;   // AP_Math's is_equal() for floats
+    return fabsf(param - value) <= FLT_EPSILON;
+}
+// the handler's uint8_t(param1), without the undefined float-to-integer conversion: its low byte
+// for a value in int32_t's range (where a conversion that wraps would land), else 0xFFFF
+inline uint16_t command_int_param_byte(float param)
+{
+    if (!(param > -2147483648.0f && param < 2147483648.0f)) {   // also NaN
+        return 0xFFFF;
+    }
+    return uint16_t(uint32_t(int32_t(param)) & 0xFF);
 }
 // Packet is mavlink_command_int_t
 template <typename Packet> bool command_int_runs_on_the_host(const Packet &packet)
@@ -361,12 +379,29 @@ template <typename Packet> bool command_int_runs_on_the_host(const Packet &packe
         // the handler casts p1 to uint32_t: every value in [32451, 32452) is the magic
         return !(packet.param1 >= float(COMMAND_INT_DEBUG_TRAP_MAGIC) &&
                  packet.param1 < float(COMMAND_INT_DEBUG_TRAP_MAGIC + 1));
+    case COMMAND_INT_PREFLIGHT_STORAGE: {
+        const uint16_t action = command_int_param_byte(packet.param1);
+        return action != COMMAND_INT_PARAM_RESET_FACTORY_DEFAULT && action != COMMAND_INT_PARAM_RESET_ALL_DEFAULT;
+    }
+    case COMMAND_INT_STORAGE_FORMAT:
+        return !(command_int_param_is(packet.param1, 1.0f) && command_int_param_is(packet.param2, 1.0f));
     case COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN:
         return !(command_int_param_is(packet.param1, 42.0f) && command_int_param_is(packet.param2, 24.0f) &&
                  command_int_param_is(packet.param3, 71.0f));
     default:
         return true;
     }
+}
+
+// the result of gcs:run_command_int(): COMMAND_INT_DENIED, with run not called, for a command that
+// must not run on the host thread, else run()'s MAV_RESULT. The port calls this, so a test sees
+// the refusal and the call it guards
+template <typename Packet, typename Run> int command_int_result(const Packet &packet, Run run)
+{
+    if (!command_int_runs_on_the_host(packet)) {
+        return COMMAND_INT_DENIED;
+    }
+    return run();
 }
 
 // the packet of gcs:run_command_int(command, table): values 3..10 are p1..p4, x, y, z and frame,

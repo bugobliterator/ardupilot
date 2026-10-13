@@ -38,6 +38,10 @@ GCS *check_GCS(lua_State *L);
 static_assert(COMMAND_INT_PREFLIGHT_CALIBRATION == MAV_CMD_PREFLIGHT_CALIBRATION, "the refused command");
 static_assert(COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN == MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, "the refused command");
 static_assert(COMMAND_INT_FLASH_BOOTLOADER == MAV_CMD_FLASH_BOOTLOADER, "the refused command");
+static_assert(COMMAND_INT_PREFLIGHT_STORAGE == MAV_CMD_PREFLIGHT_STORAGE, "the refused command");
+static_assert(COMMAND_INT_STORAGE_FORMAT == MAV_CMD_STORAGE_FORMAT, "the refused command");
+static_assert(COMMAND_INT_PARAM_RESET_FACTORY_DEFAULT == PARAM_RESET_FACTORY_DEFAULT, "the refused action");
+static_assert(COMMAND_INT_PARAM_RESET_ALL_DEFAULT == PARAM_RESET_ALL_DEFAULT, "the refused action");
 static_assert(COMMAND_INT_DEBUG_TRAP == MAV_CMD_DEBUG_TRAP, "the refused command");
 static_assert(COMMAND_INT_DENIED == MAV_RESULT_DENIED, "the refusal's result");
 
@@ -53,16 +57,12 @@ int lua_GCS_command_int(lua_State *L)
         // must have parameter table
         return 0;
     }
-    // M4: a command whose handler holds the calling thread for seconds or crashes the vehicle is refused
-    if (!command_int_runs_on_the_host(pkt)) {
-        lua_pushinteger(L, COMMAND_INT_DENIED);
-        return 1;
-    }
-
-    // call the interface with scheduler lock
-    WITH_SEMAPHORE(AP::scheduler().get_semaphore());
-
-    auto result = _gcs->lua_command_int_packet(pkt);
+    // M4: a command whose handler holds the calling thread for seconds, crashes the vehicle or
+    // destroys its storage is refused (command_int_result()); the others run with the scheduler lock
+    const int result = command_int_result(pkt, [&]() {
+        WITH_SEMAPHORE(AP::scheduler().get_semaphore());
+        return int(_gcs->lua_command_int_packet(pkt));
+    });
 
     // Return the resulting MAV_RESULT
     lua_pushinteger(L, result);
