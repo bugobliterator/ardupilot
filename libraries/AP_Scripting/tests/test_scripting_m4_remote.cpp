@@ -1058,6 +1058,75 @@ TEST(ScriptingM4Remote, I2CBusClockArgument)
     }
 }
 
+// an I2C device's semaphore and the clock as i2c_bus_call() uses them: each run() takes busy_us
+struct I2CBus {
+    bool free = true;
+    int held = 0;
+    int runs = 0;
+    uint64_t now_us = 5000000;
+    uint32_t busy_us = 0;
+    bool take(uint32_t timeout_ms) { EXPECT_EQ(timeout_ms, I2C_SEMAPHORE_WAIT_MS); if (free) { held++; } return free; }
+    void give() { held--; }
+    bool call(I2CBusBudget &budget)
+    {
+        return i2c_bus_call(budget, *this, [this]() { return now_us; }, [this]() {
+            EXPECT_EQ(held, 1);
+            runs++;
+            now_us += busy_us;
+            return true;
+        });
+    }
+};
+
+// calls are charged the time they held the bus; past 100 ms in a second they are refused until the
+// window rolls. Without the budget a script's back-to-back transfers keep a shared bus busy
+TEST(ScriptingM4Remote, I2CBusTimeIsBudgeted)
+{
+    I2CBusBudget budget;
+    I2CBus bus;
+    bus.busy_us = 20000;
+    for (int i = 0; i < 5; i++) {
+        EXPECT_TRUE(bus.call(budget)) << i;   // 100 ms used: not more than the budget
+    }
+    EXPECT_EQ(budget.used_us(), 100000U);
+    bus.busy_us = 1;
+    EXPECT_TRUE(bus.call(budget));
+    EXPECT_FALSE(bus.call(budget));          // more than 100 ms: refused without the bus
+    EXPECT_EQ(bus.runs, 6);
+    EXPECT_EQ(bus.held, 0);
+    bus.now_us = 5999999;
+    EXPECT_FALSE(bus.call(budget));          // the window that started at 5 s still runs
+    bus.now_us = 6000000;
+    EXPECT_TRUE(bus.call(budget));           // the next one starts with the budget
+    EXPECT_EQ(bus.runs, 7);
+    // a busy semaphore: refused, nothing run or charged
+    const uint64_t used = budget.used_us();
+    bus.free = false;
+    EXPECT_FALSE(bus.call(budget));
+    EXPECT_EQ(budget.used_us(), used);
+    EXPECT_EQ(bus.runs, 7);
+}
+
+// one long call is paid for in the windows after it: a script of 798 ms transfers gets about one
+// in eight seconds, not one a second. A new session starts unused
+TEST(ScriptingM4Remote, I2CBusTimePastTheBudgetCarriesOver)
+{
+    I2CBusBudget budget;
+    I2CBus bus;
+    bus.busy_us = 798000;
+    EXPECT_TRUE(bus.call(budget));
+    bus.now_us = 6000000;
+    EXPECT_FALSE(bus.call(budget));          // 698 ms still owed
+    bus.now_us = 11000000;
+    EXPECT_FALSE(bus.call(budget));          // 198 ms
+    bus.now_us = 12000000;
+    EXPECT_TRUE(bus.call(budget));           // 98 ms
+    EXPECT_EQ(bus.runs, 2);
+    budget.new_session();
+    EXPECT_EQ(budget.used_us(), 0U);
+    EXPECT_TRUE(bus.call(budget));
+}
+
 TEST(ScriptingM4Remote, Uint64Arguments)
 {
     Call c;

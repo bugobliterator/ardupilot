@@ -24,6 +24,21 @@ AP_HAL::I2CDevice **check_AP_HAL__I2CDevice(lua_State *L, int arg);
 AP_HAL::I2CDevice **new_AP_HAL__I2CDevice(lua_State *L);
 AP_HAL::PWMSource **new_AP_HAL__PWMSource(lua_State *L);
 
+// the session's I2C bus time (I2CBusBudget)
+static I2CBusBudget bus_budget;
+
+void i2c_new_session()
+{
+    bus_budget.new_session();
+}
+
+// run() on dev's bus: within the session's bus time, the semaphore taken for at most
+// I2C_SEMAPHORE_WAIT_MS (i2c_bus_call())
+template <typename Run> static bool bus_call(AP_HAL::I2CDevice &dev, Run run)
+{
+    return i2c_bus_call(bus_budget, *dev.get_semaphore(), []() { return AP_HAL::micros64(); }, run);
+}
+
 // i2c:get_device(bus, address [, clock [, smbus]]): lua_get_i2c_device()
 int lua_get_i2c_device(lua_State *L)
 {
@@ -101,12 +116,11 @@ int AP_HAL__I2CDevice_read_registers(lua_State *L)
 
     uint8_t data[UINT8_MAX];   // in-process a variable-length array of recv_length
 
-    // bounded take and byte cap: the host thread never waits past 900 ms (I2C_* in Remote.h)
-    if (!i2c_transfer_fits(1, recv_length) || !ud->get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)) {
+    // byte cap, bus time and bounded take: the host thread never waits past 900 ms (I2C_* in Remote.h)
+    if (!i2c_transfer_fits(1, recv_length)) {
         return 0;
     }
-    const bool success = static_cast<bool>(ud->read_registers(first_reg, data, recv_length));
-    ud->get_semaphore()->give();
+    const bool success = bus_call(*ud, [&]() { return ud->read_registers(first_reg, data, recv_length); });
 
     if (success) {
         if (!multi_register) {
@@ -133,15 +147,11 @@ int AP_HAL__I2CDevice_transfer(lua_State *L)
     uint32_t rx_len = get_uint8_t(L, 3);
     uint8_t rx_data[UINT8_MAX];   // in-process a variable-length array of rx_len
 
-    // Transfer; refused beyond the byte cap and a busy bus (I2C_* in Remote.h)
+    // Transfer; refused beyond the byte cap, the session's bus time and a busy bus (I2C_* in Remote.h)
     if (!i2c_transfer_fits(send_len, rx_len)) {
         return luaL_argerror(L, 2, "transfer longer than 256 bytes");
     }
-    if (!ud->get_semaphore()->take(I2C_SEMAPHORE_WAIT_MS)) {
-        return 0;
-    }
-    const bool success = ud->transfer(send_data, send_len, rx_data, rx_len);
-    ud->get_semaphore()->give();
+    const bool success = bus_call(*ud, [&]() { return ud->transfer(send_data, send_len, rx_data, rx_len); });
 
     if (!success) {
         return 0;
@@ -166,6 +176,18 @@ int lua_m4_I2CDevice_set_retries(lua_State *L)
     ud->set_retries(retries);
     ud->get_semaphore()->give();
     return 0;
+}
+
+// dev:write_register(register, value): the generated method within the session's bus time
+// (bus_call()); false when refused, as when the semaphore is busy
+int lua_m4_I2CDevice_write_register(lua_State *L)
+{
+    binding_argcheck(L, 3);
+    AP_HAL::I2CDevice *ud = *check_AP_HAL__I2CDevice(L, 1);
+    const uint8_t reg = get_uint8_t(L, 2);
+    const uint8_t value = get_uint8_t(L, 3);
+    lua_pushboolean(L, bus_call(*ud, [&]() { return ud->write_register(reg, value); }));
+    return 1;
 }
 
 // PWMSource(): lua_get_PWMSource()

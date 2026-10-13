@@ -75,6 +75,7 @@ void AP_ScriptingM4_Server::reset(uint32_t session)
     _handles.reset(session);
     ScriptingM4Remote::analog_new_session();
     ScriptingM4Remote::can_new_session();
+    ScriptingM4Remote::i2c_new_session();
 #if AP_ARMING_ENABLED && AP_ARMING_AUX_AUTH_ENABLED
     // Clear any dangling pre-arms from previous script loads (in-process at every start)
     AP_Arming::get_singleton()->reset_all_aux_auths();

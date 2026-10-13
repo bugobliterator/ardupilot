@@ -3090,6 +3090,7 @@ static const struct remote_replacement remote_replaced_methods[] = {
   { "Parameter", "init_by_info", "lua_m4_Parameter_init_by_info" },   // an M7 allocation per call, never freed
   { "hal.analogin", "channel", "lua_m4_analog_channel" },   // a new HAL slot per M4 session
   { "AP_HAL::I2CDevice", "set_retries", "lua_m4_I2CDevice_set_retries" },   // retries bound the host thread's wait
+  { "AP_HAL::I2CDevice", "write_register", "lua_m4_I2CDevice_write_register" },   // charged its bus time
   { "ScriptingCANBuffer", "write_frame", "lua_m4_ScriptingCANBuffer_write_frame" },   // the timeout bounds it too
   { "DroneCAN_Handle", "subscribe", "lua_m4_DroneCAN_Handle_subscribe" },   // M7 heap per subscriber: capped
   { "SocketAPM", "send", "SocketAPM_send_checked" },       // the length the script gives is read

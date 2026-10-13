@@ -87,6 +87,68 @@ inline bool i2c_transfer_fits(size_t send_bytes, size_t receive_bytes)
            send_bytes + receive_bytes <= I2C_TRANSFER_BYTES_MAX;
 }
 
+// M7 I2C bus time an M4 session may use. Each call that uses the bus (transfer, read_registers,
+// write_register) is charged the time it held the bus's semaphore; while more than
+// I2C_BUS_BUDGET_US were used in the current window the call is refused with its failure value.
+// Back-to-back calls of up to 798 ms each would otherwise keep a compass or barometer on a shared
+// bus waiting for most of every second. Time used past the budget carries into the next windows,
+// so a long call is paid for before the next one runs (recorded deviation: in-process has no bound)
+static const uint32_t I2C_BUS_WINDOW_US = 1000000;
+static const uint32_t I2C_BUS_BUDGET_US = 100000;
+class I2CBusBudget {
+public:
+    // true if a call may use the bus at now_us
+    bool allow(uint64_t now_us)
+    {
+        roll(now_us);
+        return _used_us <= I2C_BUS_BUDGET_US;
+    }
+    // a call that held the bus for elapsed_us, until now_us
+    void charge(uint64_t now_us, uint32_t elapsed_us)
+    {
+        roll(now_us);
+        _used_us += elapsed_us;
+    }
+    void new_session()
+    {
+        _window_start_us = 0;
+        _used_us = 0;
+    }
+    uint64_t used_us() const { return _used_us; }
+
+private:
+    // each window that ended pays the budget off what was used
+    void roll(uint64_t now_us)
+    {
+        if (now_us < _window_start_us + I2C_BUS_WINDOW_US) {
+            return;
+        }
+        const uint64_t windows = (now_us - _window_start_us) / I2C_BUS_WINDOW_US;
+        _window_start_us += windows * I2C_BUS_WINDOW_US;
+        const uint64_t paid = windows * I2C_BUS_BUDGET_US;
+        _used_us = _used_us > paid ? _used_us - paid : 0;
+    }
+    uint64_t _window_start_us = 0;
+    uint64_t _used_us = 0;
+};
+
+// one call of an M4 I2C device that uses the bus: run() with the bus semaphore taken for at most
+// I2C_SEMAPHORE_WAIT_MS, its time charged to budget. False without run() when the budget is spent
+// or the semaphore is busy, else what run() returns
+template <typename Semaphore, typename Clock, typename Run>
+bool i2c_bus_call(I2CBusBudget &budget, Semaphore &sem, Clock now_us, Run run)
+{
+    if (!budget.allow(now_us()) || !sem.take(I2C_SEMAPHORE_WAIT_MS)) {
+        return false;
+    }
+    const uint64_t start_us = now_us();
+    const bool done = run();
+    const uint64_t end_us = now_us();
+    sem.give();
+    budget.charge(end_us, uint32_t(end_us - start_us));
+    return done;
+}
+
 // CAN limits on the M7 host thread (AP_ScriptingM4_ManualCAN.cpp). write_frame() waits in
 // CANSensor::write_frame()'s select() for as long as the script asks; the port clamps the wait
 // (recorded deviation: in-process passes any timeout through)
@@ -213,6 +275,9 @@ int AP_HAL__I2CDevice_read_registers(lua_State *L);
 int AP_HAL__I2CDevice_transfer(lua_State *L);
 int lua_get_PWMSource(lua_State *L);
 int lua_m4_I2CDevice_set_retries(lua_State *L);
+int lua_m4_I2CDevice_write_register(lua_State *L);
+// the session's I2C bus time starts unused (AP_ScriptingM4_Server::reset())
+void i2c_new_session();
 // AP_ScriptingM4_ManualCAN.cpp
 int lua_get_CAN_device(lua_State *L);
 int lua_get_CAN_device2(lua_State *L);
