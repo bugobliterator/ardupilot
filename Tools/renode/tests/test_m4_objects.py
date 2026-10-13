@@ -26,10 +26,11 @@ from test_m4_scripts import (SCRIPT_TIMEOUT, host_thread_stack, m4_symbols, star
 SERIAL_DEVICE = {'SCR_VM_I_COUNT': 1000000, 'SCR_SDEV_EN': 1, 'SCR_SDEV1_PROTO': 28}
 
 
-# I2C devices, PWM sources and CRSF menus on the board's own drivers. Renode models no I2C
+# I2C devices, PWM sources, sockets and CRSF menus on the board's own drivers. Renode models no I2C
 # device at 0x50: the read finds nothing and returns nil, as in-process on such a bus. The
 # script keeps its objects in the update closure, so a restart must free them for the next
-# session to get the same again (4 devices, 4 sources, 10 menus)
+# session to get the same again (4 devices, 4 sources, 10 menus). With networking off (NET_ENABLE 0)
+# Socket() gives nil, and the M7 keeps running with no protocol error
 DEVICES_SCRIPT = '''
 local failures = 0
 local function check(ok, name)
@@ -51,7 +52,11 @@ for i = 1, 4 do
   held.sources[i] = PWMSource()
   check(held.sources[i] ~= nil, "PWMSource " .. i)
 end
-check(not pcall(PWMSource), "fifth PWMSource")
+ok, err = pcall(PWMSource)
+check(not ok and string.find(tostring(err), "no PWMSources available", 1, true) ~= nil, "fifth PWMSource")
+-- NET_ENABLE 0: lwIP was never initialised, and a socket call would lock its null core mutex
+check(Socket(0) == nil, "stream socket without networking")
+check(Socket(1) == nil, "datagram socket without networking")
 -- menus are built by the M7: names are cut to 15 characters, 20 parameters per menu, 10 menus
 local menu = crsf:add_menu("M4 menu")
 check(menu ~= nil and menu:name() == "M4 menu", "crsf menu")
@@ -193,10 +198,11 @@ def test_m4_dropped_objects_do_not_cross_a_restart(start_m4lua, tmp_path):  # no
 
 def test_m4_devices(start_m4lua, tmp_path):  # noqa: F811
     '''I2C, PWM sources and CRSF menus on the real drivers, again after a restart: the M7 freed
-    the first session's devices, sources and menus, or the second would find the tables full.'''
+    the first session's devices, sources and menus, or the second would find the tables full.
+    Socket() with networking off is refused before lwIP is called.'''
     script = tmp_path / 'm4_devices_renode.lua'
     script.write_text(DEVICES_SCRIPT)
-    run = start_with_scripts(start_m4lua, [], dict({'SCR_VM_I_COUNT': 1000000}, **LOG_ROWS),
+    run = start_with_scripts(start_m4lua, [], dict({'SCR_VM_I_COUNT': 1000000, 'NET_ENABLE': 0}, **LOG_ROWS),
                              files=[(script, 'APM/scripts')])
     run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
     outcome = r'^M4 devices (passed|failed \d+)$'
