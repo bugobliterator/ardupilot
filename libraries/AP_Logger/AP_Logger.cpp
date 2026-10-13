@@ -1703,6 +1703,16 @@ void AP_Logger::log_file_content(FileContent &file_content, const char *filename
     }
 }
 
+uint8_t AP_Logger::file_content_queued(uint8_t limit)
+{
+    WITH_SEMAPHORE(normal_file_content.sem);
+    uint8_t queued = 0;
+    for (const file_list *file = normal_file_content.head; file != nullptr && queued < limit; file = file->next) {
+        queued++;
+    }
+    return queued;
+}
+
 /*
   periodic call to log file content
  */

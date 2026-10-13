@@ -428,6 +428,10 @@ public:
     // add a filename to list of files to log. The name is copied internally so
     // the pointer passed can be freed after return.
     void log_file_content(const char *name);
+#if HAL_LOGGER_FILE_CONTENTS_ENABLED
+    // files log_file_content() has queued and not yet logged, counted up to limit
+    uint8_t file_content_queued(uint8_t limit);
+#endif
 
 protected:
 
