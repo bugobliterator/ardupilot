@@ -1482,6 +1482,17 @@ TEST(ScriptingM4Remote, SocketsStayNonBlocking)
     EXPECT_EQ(socket_nonblocking(static_cast<TestSocket *>(nullptr)), nullptr);
 }
 
+// Socket() makes a socket only while networking runs and its stack's core exists. With NET_ENABLE
+// 0 (the default) lwIP is never initialised and its first call locks a null mutex: without the
+// check an M4 script's Socket(0) faults the M7
+TEST(ScriptingM4Remote, SocketsNeedARunningNetworkStack)
+{
+    EXPECT_TRUE(socket_stack_ready(true, true));
+    EXPECT_FALSE(socket_stack_ready(false, true));    // NET_ENABLE 0, or no backend
+    EXPECT_FALSE(socket_stack_ready(true, false));    // healthy before tcpip_init() ran
+    EXPECT_FALSE(socket_stack_ready(false, false));
+}
+
 // AP_Networking's semaphore as socket_sendfile() takes it
 struct TestSemaphore {
     bool free = true;

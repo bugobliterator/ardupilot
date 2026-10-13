@@ -408,6 +408,15 @@ uint32_t socket_poll_timeout_argument(lua_State *L, int arg);
 // AP_Networking until the file is sent, past the session's end (recorded deviation)
 static const uint8_t SOCKET_SENDFILES_PER_SESSION = 2;
 
+// whether Socket() may make a socket: AP_Networking runs (NET_ENABLE, and a backend that
+// initialised) and its stack's core is made (lwIP: tcpip_init() ran on the networking thread, which
+// AP_Networking reports healthy before). Without a stack lwIP's first call locks a null mutex: a
+// fault of the M7. Socket() gives nil while it is not (recorded deviation: in-process faults)
+inline bool socket_stack_ready(bool networking_healthy, bool stack_core_made)
+{
+    return networking_healthy && stack_core_made;
+}
+
 // a socket the M7 hands out (Socket(), sock:accept()), made non-blocking; nullptr stays nullptr
 template <typename Socket> Socket *socket_nonblocking(Socket *sock)
 {
@@ -511,7 +520,7 @@ enum class SocketKind : uint8_t {
     Other,       // a datagram socket, or one whose kind could not be read
 };
 
-// only a non-listening stream socket is reset at the session end. lWIP closes a listening socket
+// only a non-listening stream socket is reset at the session end. lwIP closes a listening socket
 // without waiting, and its close path reads unsent/unacked from the smaller listen PCB, so a
 // linger of 0 there would abort a listen PCB; a datagram socket has nothing to linger for
 inline bool socket_end_resets(SocketKind kind)

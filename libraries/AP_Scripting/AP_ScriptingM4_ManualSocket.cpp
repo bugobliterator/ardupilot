@@ -20,6 +20,7 @@
 #include <AP_Networking/AP_Networking.h>
 #if AP_NETWORKING_BACKEND_CHIBIOS || AP_NETWORKING_BACKEND_PPP
 #include <lwip/sockets.h>
+#include <lwip/tcpip.h>
 #define SOCKET_CALL(x) ::lwip_##x
 #else
 #include <sys/socket.h>
@@ -36,7 +37,18 @@ SocketAPM **new_SocketAPM(lua_State *L);
 
 static SocketSendfiles sendfiles;
 
-// Socket(datagram): lua_get_SocketAPM(). A handle refused at encoding (handle table full) is
+// whether the network stack's core is made: lwIP's core lock exists once tcpip_init() ran
+static bool stack_core_made()
+{
+#if AP_NETWORKING_BACKEND_CHIBIOS || AP_NETWORKING_BACKEND_PPP
+    return lock_tcpip_core != nullptr;
+#else
+    return true;
+#endif
+}
+
+// Socket(datagram): lua_get_SocketAPM(), nil while the network stack does not run
+// (socket_stack_ready()). A handle refused at encoding (handle table full) is
 // retried once by the M4, which makes a second socket; the first stays in its slot until the
 // session ends (recorded)
 int lua_get_SocketAPM(lua_State *L)
@@ -44,6 +56,10 @@ int lua_get_SocketAPM(lua_State *L)
     binding_argcheck(L, 1);
     const uint8_t datagram = get_uint8_t(L, 1);
     auto *scripting = AP::scripting();
+
+    if (!socket_stack_ready(AP::network().is_healthy(), stack_core_made())) {
+        return 0;
+    }
 
     auto *sock = socket_nonblocking(NEW_NOTHROW SocketAPM(datagram));
     if (sock == nullptr) {
