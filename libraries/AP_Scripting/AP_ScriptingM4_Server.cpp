@@ -47,7 +47,8 @@ static bool option_set(AP_Scripting::DebugOption option)
 
 AP_ScriptingM4_Server::AP_ScriptingM4_Server() :
     _fd(-1),
-    _fd_index(-1)
+    _fd_index(-1),
+    _stopped(false)
 {
     _call.handles = &_handles;
     _call.objects = &_objects;
@@ -221,6 +222,9 @@ ReplyStatus AP_ScriptingM4_Server::list_script(RpcArgs &args, RpcWriter &results
 void AP_ScriptingM4_Server::build_list()
 {
     _listed = true;
+    if (_stopped) {
+        return;   // stopped: the M4 lists no script, as the stopped in-process thread runs none
+    }
     const uint16_t dir_disable = AP_Scripting::get_singleton()->get_disabled_dir();
     bool listed = false;
     if ((dir_disable & uint16_t(AP_Scripting::SCR_DIR::SCRIPTS)) == 0) {
@@ -447,8 +451,10 @@ ReplyStatus AP_ScriptingM4_Server::started(RpcArgs &args)
         }
         _started = true;
     }
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: started on M4 (%u scripts, heap %uKB)",
-                  unsigned(scripts), unsigned(heap / 1024));
+    if (!_stopped) {   // a stopped session printed "Scripting: stopped" instead
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: started on M4 (%u scripts, heap %uKB)",
+                      unsigned(scripts), unsigned(heap / 1024));
+    }
     return ReplyStatus::Ok;
 }
 

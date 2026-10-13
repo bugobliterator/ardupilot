@@ -11,6 +11,7 @@
 #include <CubePilotFW/PeerHeader.h>
 #include "AP_ScriptingM4_Layout.h"
 #include "AP_ScriptingM4_Rpc.h"
+#include "AP_Scripting.h"
 
 static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
               "the M4 computes Location math in double (m4/shim/AP_HAL/AP_HAL_Boards.h)");
@@ -135,6 +136,8 @@ void AP_ScriptingM4::host_thread()
         supervise(now_ms);
         if (_state == State::Running) {
             _server.update(now_ms);
+            // after this pass's calls: a stop or restart never makes the host thread wait
+            run_control(now_ms);
         }
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
         send_fault_inject();
@@ -354,10 +357,14 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         go_off("image mismatch");
         return;
     }
-    if (status == PeerHeader::Status::Compatible && view.restarts == _restarts_used &&
+    if (status == PeerHeader::Status::Compatible && view.restarts == _restart_grants &&
         (_state == State::Starting || view.session != _m4_session)) {
         _m4_session = view.session;
-        _m4_fault_count = view.faultCount;
+        if (_state == State::Starting) {
+            _m4_fault_count = view.faultCount;
+        }
+        // restarting, the count stays: a fault the M4 recorded around a requested restart is
+        // still a fault, which check_running() charges to SCR_M4_RST_MAX
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
         _m4_heartbeat_ms = now_ms;
         // re-handshake: drop whatever either side queued before this start
@@ -367,10 +374,11 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
         if (_state == State::Starting) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: M4 started");
-        } else {
+        } else if (!_restart_requested) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: M4 restarted (%u/%u)",
                           unsigned(_restarts_used), unsigned(restart_limit()));
         }
+        _restart_requested = false;
         enter(State::Running, now_ms);
         // the M4 forwards Lua calls only after this
         send_ready(now_ms);
@@ -451,10 +459,54 @@ void AP_ScriptingM4::failure(const char *reason)
     GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 restarting (%u/%u)",
                   unsigned(_restarts_used), unsigned(restart_limit()));
     _protocol_errors = 0;
+    _restart_requested = false;   // a fault during a requested restart is a fault
+    grant_restart();
+}
+
+// a restart for the M4, a fault's or a request's: the grant count is its own, so requested restarts
+// spend none of SCR_M4_RST_MAX (_restarts_used)
+void AP_ScriptingM4::grant_restart()
+{
+    _restart_grants++;
     // the M4 acts on a restart doorbell only once the grant has changed: store it first
-    ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restarts_used);
+    ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restart_grants);
     platform_request_restart();
     enter(State::Restarting, AP_HAL::millis());
+}
+
+// MAV_CMD_SCRIPTING, scripting:restart_all() and SCR_ENABLE, as AP_Scripting::thread() acts on
+// them in-process (RunControl), with its texts. Running sessions only: a request made while the
+// M4 starts or restarts waits in AP_Scripting's flags, and an M4 that is off is never restarted
+void AP_ScriptingM4::run_control(uint32_t now_ms)
+{
+    AP_Scripting *scripting = AP_Scripting::get_singleton();
+    bool restart = false;
+    const bool stop = scripting->take_stop_request(restart);
+    const bool was_stopped = _run_control.stopped();
+    switch (_run_control.update(scripting->enabled(), stop, restart, now_ms - _state_start_ms)) {
+    case ScriptingM4::RunAction::None:
+        return;
+    case ScriptingM4::RunAction::Stop:
+        GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "stopped");
+        request_restart(true);
+        return;
+    case ScriptingM4::RunAction::Restart:
+        if (!was_stopped) {
+            GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "stopped");
+        }
+        GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "restarted");
+        request_restart(false);
+        return;
+    }
+}
+
+// a restart the M7 asks for: the session ends as after a fault (end_session() at the new
+// session's reset()), and the new one lists the scripts or, stopped, none
+void AP_ScriptingM4::request_restart(bool stopped)
+{
+    _server.set_stopped(stopped);
+    _restart_requested = true;
+    grant_restart();
 }
 
 void AP_ScriptingM4::go_off(const char *reason)

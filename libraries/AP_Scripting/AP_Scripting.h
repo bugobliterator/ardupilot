@@ -86,6 +86,12 @@ public:
     
     void restart_all(void);
     void stop(void) { _stop = true; }
+#if AP_SCRIPTING_M4_ENABLED
+    // a stop asked of scripting since the last call (MAV_CMD_SCRIPTING, restart_all()), and in
+    // restart whether a restart was asked with it. Taken once: the in-process thread clears both
+    // flags when it starts the scripts again. M4 host thread
+    bool take_stop_request(bool &restart);
+#endif
 
    // User parameters for inputs into scripts 
    AP_Float _user[6];

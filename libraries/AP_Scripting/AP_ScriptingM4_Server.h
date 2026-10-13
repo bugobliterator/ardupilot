@@ -47,6 +47,10 @@ public:
                                     ScriptingM4::RpcWriter &results, uint8_t &error_arg);
     // re-print the last script error, as the in-process engine does
     void update(uint32_t now_ms);
+    // a stopped session lists no script (MAV_CMD_SCRIPTING STOP); kept across M4 restarts until a
+    // restart asks for the scripts again. Host thread
+    void set_stopped(bool stopped) { _stopped = stopped; }
+    bool stopped() const { return _stopped; }
     bool arming_checks(size_t buflen, char *buffer) const;
     uint32_t loaded_checksum() const;
     uint32_t running_checksum() const;
@@ -90,6 +94,7 @@ private:
     uint8_t _error_prints;
     uint32_t _last_error_print_ms;
     bool _started;   // m4:started of this session received; under _error_sem
+    bool _stopped;   // the session lists no script (set_stopped())
     ScriptingM4::HandleTable _handles;
     ScriptingM4::ObjectPool _objects;   // the M4 scripts' owned objects (Parameter, ports, menus)
     ScriptingM4::Quota _quota;

@@ -9,6 +9,7 @@
 #include <AP_Param/AP_Param.h>
 #include "AP_ScriptingM4_Protocol.h"
 #include "AP_ScriptingM4_Server.h"
+#include "AP_ScriptingM4_RunControl.h"
 
 namespace CubePilotFW {
 class Channel;
@@ -71,6 +72,9 @@ private:
     void check_running(uint32_t now_ms);
     void failure(const char *reason);
     void go_off(const char *reason);
+    void grant_restart();
+    void run_control(uint32_t now_ms);
+    void request_restart(bool stopped);
     void enter(State state, uint32_t now_ms);
     uint8_t restart_limit() const;
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
@@ -93,6 +97,9 @@ private:
     State _state;
     uint32_t _state_start_ms;
     uint8_t _restarts_used;
+    uint32_t _restart_grants;         // restarts granted the M4: fault restarts and requested ones
+    bool _restart_requested;          // the restart under way is a request, not a fault
+    ScriptingM4::RunControl _run_control;
     uint32_t _m4_session;             // M4 peer header session being served
     uint32_t _m4_fault_count;         // M4 fault count already handled
     uint32_t _m4_fault_pc;

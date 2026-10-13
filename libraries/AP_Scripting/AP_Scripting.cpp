@@ -510,6 +510,19 @@ void AP_Scripting::restart_all()
     _stop = true;
 }
 
+#if AP_SCRIPTING_M4_ENABLED
+bool AP_Scripting::take_stop_request(bool &restart)
+{
+    if (!_stop) {
+        return false;
+    }
+    restart = _restart;
+    _stop = false;
+    _restart = false;
+    return true;
+}
+#endif
+
 #if HAL_GCS_ENABLED
 void AP_Scripting::handle_message(const mavlink_message_t &msg, const mavlink_channel_t chan) {
     if (mavlink_data.rx_buffer == nullptr) {
