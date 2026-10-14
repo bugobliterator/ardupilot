@@ -213,15 +213,32 @@ TEST(ScriptingM4Quota, CanFramesAreLimited)
     EXPECT_TRUE(quota.allow(QuotaClass::Can, 3, 2));       // 2.4 frames
 }
 
-TEST(ScriptingM4Quota, HitsSurviveReset)
+TEST(ScriptingM4Quota, HitsSurviveNewSession)
 {
     Quota quota;
-    quota.reset(0);
+    quota.new_session(0);
     while (quota.allow(QuotaClass::Text, 0)) {
     }
-    quota.reset(10);                                             // the M4 restarted
+    quota.new_session(0);                                        // the M4 restarted
     EXPECT_EQ(quota.take_hits(), 1U);
-    EXPECT_TRUE(quota.allow(QuotaClass::Text, 10));              // buckets full again
+}
+
+// a requested restart (scripting:restart_all(), once a second) must not refill the buckets
+TEST(ScriptingM4Quota, NewSessionKeepsBucketLevels)
+{
+    Quota quota;
+    quota.new_session(0);
+    const QuotaLimit &storage = QUOTA_LIMITS[uint8_t(QuotaClass::Storage)];
+    for (uint16_t i = 0; i < storage.burst; i++) {
+        EXPECT_TRUE(quota.allow(QuotaClass::Storage, 0)) << i;
+    }
+    quota.new_session(0);
+    EXPECT_FALSE(quota.allow(QuotaClass::Storage, 0));
+    quota.new_session(1000);
+    for (uint16_t i = 0; i < storage.per_second; i++) {
+        EXPECT_TRUE(quota.allow(QuotaClass::Storage, 1000)) << i;   // one second's refill only
+    }
+    EXPECT_FALSE(quota.allow(QuotaClass::Storage, 1000));
 }
 
 TEST(ScriptingM4Quota, RefillAcrossMillisWrap)

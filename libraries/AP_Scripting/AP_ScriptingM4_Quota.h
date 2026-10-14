@@ -48,13 +48,23 @@ static const QuotaLimit QUOTA_LIMITS[QUOTA_CLASSES] = {
 
 class Quota {
 public:
-    // full buckets; the hits not yet taken are kept, so a session's last refusals
-    // still reach M4ST after a restart
+    // full buckets
     void reset(uint32_t now_ms)
     {
         for (uint8_t i = 0; i < QUOTA_CLASSES; i++) {
             _buckets[i].millicalls = uint32_t(QUOTA_LIMITS[i].burst) * 1000;
             _buckets[i].last_ms = now_ms;
+        }
+    }
+
+    // a new M4 session: the buckets are filled once per boot and keep their levels across
+    // sessions, so a requested restart is not a refill. The hits not yet taken are kept, so
+    // a session's last refusals still reach M4ST after a restart
+    void new_session(uint32_t now_ms)
+    {
+        if (!_filled) {
+            reset(now_ms);
+            _filled = true;
         }
     }
 
@@ -97,6 +107,7 @@ private:
     };
     Bucket _buckets[QUOTA_CLASSES] {};
     uint32_t _hits = 0;
+    bool _filled = false;
 };
 
 }  // namespace ScriptingM4

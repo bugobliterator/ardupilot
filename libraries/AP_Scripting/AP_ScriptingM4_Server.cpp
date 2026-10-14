@@ -81,7 +81,7 @@ void AP_ScriptingM4_Server::reset(uint32_t session)
     // Clear any dangling pre-arms from previous script loads (in-process at every start)
     AP_Arming::get_singleton()->reset_all_aux_auths();
 #endif
-    _quota.reset(AP_HAL::millis());
+    _quota.new_session(AP_HAL::millis());
     WITH_SEMAPHORE(_error_sem);
     _last_error[0] = 0;
     _error_prints = ERROR_REPRINTS;
