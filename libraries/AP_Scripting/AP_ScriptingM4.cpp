@@ -30,6 +30,12 @@ static const uint32_t SERVE_BACKOFF_US = 500;
 static const uint16_t PROTOCOL_ERROR_LIMIT = 3;
 // Ready is repeated this often until the first call of a session
 static const uint32_t READY_REPEAT_MS = 1000;
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+// a SITL restart waits on host process scheduling (kill, execv, dynamic loading), not on M4 boot time
+static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = ScriptingM4::START_TIMEOUT_MS;
+#else
+static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = ScriptingM4::RESTART_TIMEOUT_MS;
+#endif
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
 // SCR_M4_INJECT value handled on the M7, past the M4's FaultKind values
 static const int8_t INJECT_REFUSE_BINDINGS = 10;
@@ -386,7 +392,7 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         return;
     }
     const uint32_t timeout_ms = _state == State::Starting ? ScriptingM4::START_TIMEOUT_MS
-                                                          : ScriptingM4::RESTART_TIMEOUT_MS;
+                                                          : PLATFORM_RESTART_TIMEOUT_MS;
     if (platform_timeout_ms() - _state_start_timeout_ms > timeout_ms) {
         go_off("not responding");
     }
