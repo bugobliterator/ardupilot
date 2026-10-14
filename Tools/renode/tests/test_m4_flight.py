@@ -46,14 +46,27 @@ ARM_SCRIPTING = 4            # AP_Arming::Method::SCRIPTING: arming:arm() from t
 DISARM_LANDED = 13           # AP_Arming::Method::LANDED: the land detector, not a crash or a failsafe
 MAX_LEAN_DEG = 30            # Copter's default ANGLE_MAX: the controller never asks for more
 LANDING_RADIUS_M = 1         # as SITL: the LAND item is at home
-FLIGHT_FAILURE_TEXT = re.compile(r'Crash|[Ff]ailsafe|^Lua: |^Scripting: (stopped|restarted)')
-CRASH_TEXT = re.compile(r'Crash|[Ff]ailsafe|^Lua: ')
+CRASH_PATTERN = r'Crash|[Ff]ailsafe|^Lua: '
+CRASH_TEXT = re.compile(CRASH_PATTERN)
+FLIGHT_FAILURE_TEXT = re.compile(CRASH_PATTERN + r'|^Scripting: (stopped|restarted)')
+M4_PC = r'PC=0x081[C-F][0-9A-F]{4}$'
+FAULT_STEPS = (
+    (1, r'^Scripting: M4 HardFault ' + M4_PC),   # the service: an undefined instruction
+    (9, r'^Scripting: M4 MemManage ' + M4_PC),   # the Lua thread: a stray RCC_GCR write
+    (5, r'^Scripting: M4 protocol errors$'),     # ring corruption
+)
+FAULT_LIMIT_TEXT = 'Scripting: M4 fault limit, off until reboot'
+HOLD_CHECK_SECONDS = 5       # emulated seconds of the hold check after each reload
+# binding_bench.lua: each update calls every case BENCH_CALLS times; a report every 10 s
+BENCH_CASES = ('ahrs:get_location', 'vehicle:get_mode', 'param:get', 'millis', 'gps:status',
+               'battery:voltage', 'SRV_Channels:get_output_pwm', 'mount:get_mode')
+BENCH_CALLS = 50
 
 # set over MAVLink on a first launch (never built in): Renode supplies the flight state and the
 # sensors, not RC, the safety switch, the power monitor or calibration. As the QuadPlane flight,
 # with the KakuteF4 Copter flight's tune
 FLIGHT_PARAMETERS = {
-    'ARMING_SKIPCHK': -1,          # forced arm from the GCS: the mandatory checks and arming only
+    'ARMING_SKIPCHK': -1,          # forced arm from the GCS: the always-on checks and arming only
     'BATT_MONITOR': 0,
     'BRD_SAFETY_DEFLT': 0,
     'BRD_HEAT_TARG': -1,           # emulated IMUs never warm up
@@ -231,6 +244,7 @@ class FlightTrack:
         self.position = None      # (lat, lon) in degrees
         self.touchdown_item = None   # the mission item when the height first fell below 1 m after the climb
         self.disarm = None        # (mode, height, index into run.texts) at the first disarm after arming
+        self.item_heights = {}    # mission item: [lowest, highest] height while armed on it, m
         self._run = run
         self._printed_altitude = 0.0
         run.mav.message_hooks.append(self._record)
@@ -256,6 +270,9 @@ class FlightTrack:
             self.altitude = message.relative_alt * 0.001
             self.max_altitude = max(self.max_altitude, self.altitude)
             self.position = (message.lat * 1.0e-7, message.lon * 1.0e-7)
+            if self.armed and self.current is not None:
+                heights = self.item_heights.setdefault(self.current, [self.altitude, self.altitude])
+                heights[0], heights[1] = min(heights[0], self.altitude), max(heights[1], self.altitude)
             if self.armed and self.max_altitude >= 8 and self.altitude < 1 and self.touchdown_item is None:
                 self.touchdown_item = self.current
             if abs(self.altitude - self._printed_altitude) >= 2:
@@ -407,10 +424,17 @@ def check_mission_counts(counts, total, totals):
                  if name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print'))
     print('SRPC binding calls logged %u, script made %u' % (logged, total), flush=True)
     assert logged == total, 'SRPC binding calls: %u logged, the script made %u (%s)' % (logged, total, totals)
+    check_per_update(counts)
+    assert counts.get('arming:arm', 0) == 1, counts
+
+
+def check_per_update(counts):
+    '''m4_mission_flight.lua's per-update identities: one get_mode, get_current_nav_index and
+    param:get an update, two param:get at load, one release.'''
     updates = counts['vehicle:get_mode']
     assert counts['mission:get_current_nav_index'] == updates, counts
     assert counts['param:get'] == updates + 2, counts
-    assert counts['mission:set_current_cmd'] == 1 and counts.get('arming:arm', 0) == 1, counts
+    assert counts['mission:set_current_cmd'] == 1, counts
 
 
 def request_message_rate(run, message_id, rate_hz):
@@ -486,10 +510,10 @@ def test_m4_mission_flight(start_m4_flight, tmp_path):
     for _ in range(2):
         run.wait_text(r'^Scripting RPC \d+/s p50<\d+ p99<\d+ max \d+us$', timeout=STEP_TIMEOUT)
     # arming:arm() and set_current_cmd() ran on the host thread: it keeps 2 KB of its stack. With
-    # ARMING_SKIPCHK -1 the arm runs the mandatory checks and arming only: AP_Arming::arm_checks,
+    # ARMING_SKIPCHK -1 the arm runs the always-on checks and arming only: AP_Arming::arm_checks,
     # and with it PrepForArming's log-open wait, is skipped
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
-    print('ScriptingM4 host thread stack after a successful arm (mandatory checks and arming, '
+    print('ScriptingM4 host thread stack after a successful arm (always-on checks and arming, '
           'no log-open wait): %u of %u bytes free' % (free, size), flush=True)
     assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
     run.wait_alive(10)
@@ -529,20 +553,6 @@ def test_m4_mission_flight(start_m4_flight, tmp_path):
     assert disarms == [DISARM_LANDED], 'disarm methods %s, not the land detector (%u)' % (disarms, DISARM_LANDED)
     arms = [row.Method for row in log_rows(logs, 'ARM') if row.ArmState]
     assert arms == [ARM_SCRIPTING], 'arm methods %s, not the script (%u)' % (arms, ARM_SCRIPTING)
-
-
-M4_PC = r'PC=0x081[C-F][0-9A-F]{4}$'
-FAULT_STEPS = (
-    (1, r'^Scripting: M4 HardFault ' + M4_PC),   # the service: an undefined instruction
-    (9, r'^Scripting: M4 MemManage ' + M4_PC),   # the Lua thread: a stray RCC_GCR write
-    (5, r'^Scripting: M4 protocol errors$'),     # ring corruption
-)
-FAULT_LIMIT_TEXT = 'Scripting: M4 fault limit, off until reboot'
-HOLD_CHECK_SECONDS = 5       # emulated seconds of the hold check after each reload
-# binding_bench.lua: each update calls every case BENCH_CALLS times; a report every 10 s
-BENCH_CASES = ('ahrs:get_location', 'vehicle:get_mode', 'param:get', 'millis', 'gps:status',
-               'battery:voltage', 'SRV_Channels:get_output_pwm', 'mount:get_mode')
-BENCH_CALLS = 50
 
 
 def bench_reports(texts):
@@ -586,17 +596,18 @@ def wait_bench_report(run):
 
 
 def check_update_counts(counts, total):
-    '''The per-update rules of an m4_mission_flight.lua session started in flight: one get_mode,
-    get_current_nav_index and param:get a update, two param:get at load, the vehicle found armed
-    (arming:is_armed once, no arming:arm), one release.'''
+    '''The per-update rules of an m4_mission_flight.lua session started in flight, and the vehicle
+    found armed (arming:is_armed once, no arming:arm).
+    Accepted limit: these are the script's own tallies, so only the is_armed result depends on the
+    M7. With binding_bench.lua in the flight its methods hold the SRPC top-8 rows and the mission
+    script's own methods fold into m4:other, so no per-method SRPC bound for the restarted session
+    holds. On the M7 side the release is pinned here by MISE (served once) and the arm by ARM;
+    per-update serving is pinned by test_m4_mission_flight, without faults.'''
     missing = [name for name in ('vehicle:get_mode', 'mission:get_current_nav_index', 'param:get',
                                  'arming:is_armed', 'mission:set_current_cmd') if name not in counts]
     assert not missing and total is not None, 'script count lines missing: %s, total %s' % (missing, total)
-    updates = counts['vehicle:get_mode']
-    assert counts['mission:get_current_nav_index'] == updates, counts
-    assert counts['param:get'] == updates + 2, counts
+    check_per_update(counts)
     assert counts['arming:is_armed'] == 1 and 'arming:arm' not in counts, counts
-    assert counts['mission:set_current_cmd'] == 1, counts
 
 
 def check_flown_in_auto(flight_logs):
@@ -647,10 +658,14 @@ def test_m4_faults_mid_auto(start_m4_flight, tmp_path):
         run.wait_text(re.escape('Scripting: M4 restarted (%u/3)' % used))
         run.wait_text(r'^M4 loop 1$', timeout=SCRIPT_TIMEOUT)
         run.wait_text(r'^M4 loop 2$', timeout=SCRIPT_TIMEOUT)
-        wait_bench_report(run)   # the benchmark reloaded
         check_holding(run, track, HOLD_ITEM, HOLD_CHECK_SECONDS)
+        wait_bench_report(run)   # the benchmark reloaded
     released = [text for text in run.texts if text.startswith('M4 mission release')]
     assert not released, released
+    # every height sample on the hold item, the fault windows included, not only the checked ones
+    lowest, highest = track.item_heights[HOLD_ITEM]
+    print('hold item %u: %.1f to %.1f m through the faults' % (HOLD_ITEM, lowest, highest), flush=True)
+    assert 8 <= lowest and highest <= 12, 'hold item %u: %.1f to %.1f m' % (HOLD_ITEM, lowest, highest)
     set_parameter(run.mav, run.process, run.log_path, 'SCR_USER2', RELEASE_ITEM, timeout=STEP_TIMEOUT)
     assert run.wait_text(r'^M4 mission release ', timeout=SCRIPT_TIMEOUT) == 'M4 mission release 3 to 4 true'
     wait_until(run, lambda: track.current == RELEASE_ITEM, STEP_TIMEOUT, 'the release')
@@ -659,14 +674,15 @@ def test_m4_faults_mid_auto(start_m4_flight, tmp_path):
     print('script counts %s, total %s' % (counts, total), flush=True)
     check_update_counts(counts, total)
     # the fourth fault: the budget is spent, scripting stays off, the mission flies on
-    set_parameter(run.mav, run.process, run.log_path, 'SCR_M4_INJECT', 0, timeout=STEP_TIMEOUT)
-    set_parameter(run.mav, run.process, run.log_path, 'SCR_M4_INJECT', 1, timeout=STEP_TIMEOUT)
+    set_parameter(run.mav, run.process, run.log_path, 'SCR_M4_INJECT', 1, timeout=STEP_TIMEOUT)   # 5 to 1
     run.wait_text(FAULT_STEPS[0][1])
     run.wait_text(re.escape(FAULT_LIMIT_TEXT))
     off_at = run.next_text   # texts after the fault limit text
     assert track.armed and track.mode == COPTER_AUTO and track.touchdown_item is None, \
         'at the fault limit: armed %s, mode %s, down at item %s' % (track.armed, track.mode, track.touchdown_item)
     print('fault limit at mission item %s, %.1f m up' % (track.current, track.altitude), flush=True)
+    assert track.current in (RELEASE_ITEM, 5) and 8 <= track.altitude <= 12, \
+        'at the fault limit: item %s, %.1f m up' % (track.current, track.altitude)
     wait_until(run, lambda: track.was_armed and not track.armed, LEG_TIMEOUT, 'the landing')
     landing = distance_metres(home_lat, home_lon, *track.position)
     disarm_mode, disarm_altitude, _ = track.disarm
@@ -706,13 +722,19 @@ def test_m4_faults_mid_auto(start_m4_flight, tmp_path):
     logs = read_logs(run, tmp_path / 'logs')
     flight_logs = [log for log in logs if any(row.ArmState for row in log_rows([log], 'ARM'))]
     assert len(flight_logs) == 1, 'logs with an arm: %s' % [log.name for log in flight_logs]
+    # the MODE and MISE rows are the only check of a brief exit from AUTO: none may be lost
+    dropped = max(row.Dp for row in log_rows(flight_logs, 'DSF'))
+    print('logger buffer drops (DSF.Dp) %u' % dropped, flush=True)
+    assert dropped == 0, 'rows dropped: the logger dropped %u rows (DSF.Dp)' % dropped
     check_flown_in_auto(flight_logs)
     # the M7 sends texts in bursts, so the reload time comes from the log's MSG rows
     messages = [(row.TimeUS, row.Message) for row in log_rows(flight_logs, 'MSG')]
     for used in range(1, len(FAULT_STEPS) + 1):
-        restarting = next(time_us for time_us, text in messages
-                          if text == 'Scripting: M4 restarting (%u/3)' % used)
-        loop = next(time_us for time_us, text in messages if time_us >= restarting and text == 'M4 loop 1')
+        restarting = next((time_us for time_us, text in messages
+                           if text == 'Scripting: M4 restarting (%u/3)' % used), None)
+        assert restarting is not None, 'no MSG row "restarting (%u/3)"' % used
+        loop = next((time_us for time_us, text in messages if time_us >= restarting and text == 'M4 loop 1'), None)
+        assert loop is not None, 'no MSG row "M4 loop 1" after "restarting (%u/3)"' % used
         print('fault step %u: "restarting" to "M4 loop 1" in %.0f ms emulated' % (
             used, (loop - restarting) / 1000.0), flush=True)
     m4st = log_rows(flight_logs, 'M4ST')
