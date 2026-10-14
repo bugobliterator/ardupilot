@@ -1,8 +1,8 @@
 # AP_FLAKE8_CLEAN
 """Renode flights of the CubeOrangePlus-M4Lua Copter with Lua on the M4: the real M7 and M4
-images fly AUTO missions against the physics sidecar (Tools/renode/renode_physics.cpp), as the
-CubeOrangePlus QuadPlane flight of test_physics_flight.py does, with scripts on the M4 and M4
-faults injected mid-mission. Functional only: Renode is not cycle-accurate.
+images fly an AUTO mission against the physics sidecar (Tools/renode/renode_physics.cpp), as the
+CubeOrangePlus QuadPlane flight of test_physics_flight.py does, with a script running on the M4.
+Functional only: Renode is not cycle-accurate.
 
 Needs RENODE, a CubeOrangePlus-M4Lua build and the physics sidecar:
   ./waf configure --board CubeOrangePlus-M4Lua && ./waf copter
@@ -12,7 +12,6 @@ Needs RENODE, a CubeOrangePlus-M4Lua build and the physics sidecar:
 import math
 import os
 import re
-import signal
 import subprocess
 import sys
 import time
@@ -31,7 +30,8 @@ from test_m4_scripts import START_TIMEOUT, upload_files, upload_scripts  # noqa:
 from test_mission import (FORCE_ARM_MAGIC, distance_metres, offset_location, send_command,  # noqa: E402
                           set_mode, stop_process_group, unused_tcp_port, upload_mission)
 from test_physics_flight import (CANBERRA, CUBEORANGEPLUS_SENSOR_IDS, PHYSICS_RATE_HZ,  # noqa: E402
-                                 check_sensor_ids, check_sidecar, wait_for_sidecar, wait_ready)
+                                 check_sensor_ids, check_sidecar, ordered_subsequence, wait_for_sidecar,
+                                 wait_ready)
 
 PHYSICS = Path(os.environ.get('M4LUA_PHYSICS', ROOT / 'build' / 'sitl' / 'tool' / 'renode-physics'))
 PHYSICS_MODEL = 'x'          # SITL quad X: FRAME_CLASS 1, FRAME_TYPE 1
@@ -39,12 +39,15 @@ FLIGHT_DEADLINE = 14400      # wall seconds for a flight test (start_m4lua's 270
 FLIGHT_TIMEOUT = 7200        # wall seconds for a flight leg, such as arming to landing
 COPTER_AUTO = 3
 HOLD_ITEM, RELEASE_ITEM, LAND_ITEM = 3, 4, 6
+DISARM_LANDED = 13           # AP_Arming::Method::LANDED: the land detector, not a crash or a failsafe
+MAX_LEAN_DEG = 30            # Copter's default ANGLE_MAX: the controller never asks for more
+FLIGHT_FAILURE_TEXT = re.compile(r'Crash|[Ff]ailsafe|^Lua: |^Scripting: (stopped|restarted)')
 
 # set over MAVLink on a first launch (never built in): Renode supplies the flight state and the
 # sensors, not RC, the safety switch, the power monitor or calibration. As the QuadPlane flight,
 # with the KakuteF4 Copter flight's tune
 FLIGHT_PARAMETERS = {
-    'ARMING_SKIPCHK': -1,          # the scripting check is set back to on after landing
+    'ARMING_SKIPCHK': -1,          # forced arm from the GCS: the mandatory checks and arming only
     'BATT_MONITOR': 0,
     'BRD_SAFETY_DEFLT': 0,
     'BRD_HEAT_TARG': -1,           # emulated IMUs never warm up
@@ -104,7 +107,7 @@ def start_m4_flight(start_m4lua, tmp_path):  # noqa: F811
     '''start() launches the board with a physics sidecar of its own; both stop at the end.'''
     if not PHYSICS.is_file():
         pytest.skip('build the physics sidecar: %s' % PHYSICS)
-    signal.alarm(FLIGHT_DEADLINE)   # replaces start_m4lua's ground-test deadline
+    start_m4lua.set_deadline(FLIGHT_DEADLINE)   # replaces start_m4lua's ground-test deadline
     sidecars = []
     runs = []
 
@@ -128,10 +131,16 @@ def start_m4_flight(start_m4lua, tmp_path):  # noqa: F811
     try:
         yield start
     finally:
-        for run in runs:   # Renode before its sidecar
-            run.stop()
-        for process in sidecars:
-            stop_process_group(process)
+        # stop every Renode, then every sidecar, even if one stop fails; report the first failure
+        errors = []
+        for stop in [run.stop for run in runs] + [lambda process=process: stop_process_group(process)
+                                                  for process in sidecars]:
+            try:
+                stop()
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
 
 
 def set_flight_parameter(run, name, value, attempts=3):
@@ -201,7 +210,8 @@ def harness_mission(home_lat, home_lon):
 
 
 class FlightTrack:
-    '''What the vehicle reports while a test waits: armed, mode, mission item, height, position.'''
+    '''What the vehicle reports while a test waits: armed, mode, mission item, height, position,
+    the item it was on when it came down below 1 m, and the mode and height at the disarm.'''
 
     def __init__(self, run):
         self.armed = False
@@ -213,6 +223,9 @@ class FlightTrack:
         self.altitude = 0.0       # relative, m
         self.max_altitude = 0.0
         self.position = None      # (lat, lon) in degrees
+        self.touchdown_item = None   # the mission item when the height first fell below 1 m after the climb
+        self.disarm = None        # (mode, height, index into run.texts) at the first disarm after arming
+        self._run = run
         self._printed_altitude = 0.0
         run.mav.message_hooks.append(self._record)
 
@@ -222,6 +235,8 @@ class FlightTrack:
             armed = bool(message.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
             if armed != self.armed:
                 print('armed' if armed else 'disarmed', flush=True)
+            if self.armed and not armed and self.disarm is None:
+                self.disarm = (message.custom_mode, self.altitude, len(self._run.texts))
             self.armed = armed
             self.was_armed |= armed
             self.mode = message.custom_mode
@@ -235,6 +250,8 @@ class FlightTrack:
             self.altitude = message.relative_alt * 0.001
             self.max_altitude = max(self.max_altitude, self.altitude)
             self.position = (message.lat * 1.0e-7, message.lon * 1.0e-7)
+            if self.armed and self.max_altitude >= 8 and self.altitude < 1 and self.touchdown_item is None:
+                self.touchdown_item = self.current
             if abs(self.altitude - self._printed_altitude) >= 2:
                 self._printed_altitude = self.altitude
                 print('altitude %.1f m' % self.altitude, flush=True)
@@ -276,6 +293,38 @@ def supervisor_texts(run, start=0):
             if text.startswith('Scripting: M4') and text != 'Scripting: M4 started']
 
 
+def armed_rows(logs, name):
+    '''Rows of the named message logged while armed, and each disarm's ARM.Method.'''
+    rows, methods = [], []
+    for log in logs:
+        reader = DFReader.DFReader_binary(str(log), zero_time_base=True)
+        armed = False
+        while True:
+            row = reader.recv_match(type=[name, 'ARM'])
+            if row is None:
+                break
+            if row.get_type() == 'ARM':
+                if armed and not row.ArmState:
+                    methods.append(row.Method)
+                armed = bool(row.ArmState)
+            elif armed:
+                rows.append(row)
+    return rows, methods
+
+
+def check_m4_kept_running(logs):
+    '''In each log, once M4ST shows the M4 running (St 2) it stays running with no new fault
+    and no restart.'''
+    for log in logs:
+        rows = log_rows([log], 'M4ST')
+        running = [index for index, row in enumerate(rows) if row.St == 2]
+        assert running, 'M4ST never shows the M4 running in %s' % log.name
+        first = rows[running[0]]
+        changed = [(row.TimeUS, row.St, row.Flt, row.Rst) for row in rows[running[0]:]
+                   if row.St != 2 or row.Flt != first.Flt or row.Rst != 0]
+        assert not changed, 'M4ST (TimeUS, St, Flt, Rst) after the start in %s: %s' % (log.name, changed[:5])
+
+
 def test_m4_flight_harness(start_m4_flight, tmp_path):
     '''The M4Lua Copter arms (forced, from the GCS) and flies a short AUTO mission with the M4 running
     a script; the M4 neither faults nor stops.'''
@@ -295,16 +344,32 @@ def test_m4_flight_harness(start_m4_flight, tmp_path):
     print('flight: %.0f s emulated in %.0f s of wall time (%.1fx)' % (
         seconds, time.monotonic() - wall, (time.monotonic() - wall) / max(seconds, 1)), flush=True)
     landing = distance_metres(home_lat, home_lon, *track.position)
-    print('flight: %.1f m high, items reached %s, landed %.1f m from home' % (
-        track.max_altitude, sorted(track.reached), landing), flush=True)
+    disarm_mode, disarm_altitude, texts_at_disarm = track.disarm
+    print('flight: %.1f m high, items %s, reached %s, down at item %s, disarmed in mode %u at %.1f m, '
+          '%.1f m from home' % (track.max_altitude, track.currents, sorted(track.reached), track.touchdown_item,
+                                disarm_mode, disarm_altitude, landing), flush=True)
     assert track.max_altitude >= 8, 'reached only %.1f m' % track.max_altitude
     assert 2 in track.reached, 'mission items reached: %s' % sorted(track.reached)
+    assert ordered_subsequence(track.currents, [1, 2, 3]), 'mission items %s' % track.currents
+    assert track.touchdown_item == 3, 'came down below 1 m at item %s, not the LAND' % track.touchdown_item
+    assert disarm_mode == COPTER_AUTO, 'disarmed in mode %u, not AUTO' % disarm_mode
+    assert disarm_altitude < 1, 'disarmed %.1f m up' % disarm_altitude
     assert landing <= 3, 'landed %.1f m from home' % landing
-    loops = [text for text in run.texts[texts_at_arm:] if re.match(r'^M4 loop \d+$', text)]
-    assert len(loops) >= 5, 'the M4 script printed %u times in flight' % len(loops)
+    failures = [text for text in run.texts[started:] if FLIGHT_FAILURE_TEXT.search(text)]
+    assert not failures, failures
     assert not supervisor_texts(run, started), supervisor_texts(run, started)
+    # m4_loop.lua prints once a second: it ran through the flight and still runs after the landing
+    loops = [text for text in run.texts[texts_at_arm:texts_at_disarm] if re.match(r'^M4 loop \d+$', text)]
+    assert len(loops) >= max(5, 0.5 * seconds), \
+        'the M4 script printed %u times in %.0f s of flight' % (len(loops), seconds)
+    wait_until(run, lambda: any(re.match(r'^M4 loop \d+$', text) for text in run.texts[texts_at_disarm:]),
+               STEP_TIMEOUT, 'an M4 loop text after the landing')
     run.wait_alive(10)
     logs = read_logs(run, tmp_path / 'logs')
-    m4st = log_rows(logs, 'M4ST')
-    assert m4st and max(row.Rst for row in m4st) == 0, 'M4ST.Rst %s' % sorted(set(row.Rst for row in m4st))
-    assert log_rows(logs, 'ATT'), 'no ATT rows: the flight was not logged'
+    check_m4_kept_running(logs)
+    attitudes, disarms = armed_rows(logs, 'ATT')
+    assert attitudes, 'no ATT rows while armed: the flight was not logged'
+    lean = max(max(abs(row.Roll), abs(row.Pitch)) for row in attitudes)
+    print('flight: largest roll or pitch %.1f deg over %u ATT rows' % (lean, len(attitudes)), flush=True)
+    assert lean < MAX_LEAN_DEG, 'leaned %.1f deg in flight' % lean
+    assert disarms == [DISARM_LANDED], 'disarm methods %s, not the land detector (%u)' % (disarms, DISARM_LANDED)

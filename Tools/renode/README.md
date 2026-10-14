@@ -465,10 +465,10 @@ injects faults on the M4 and checks that the M7 restarts it up to the
 `SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
 
 `tests/test_m4_flight.py` flies the CubeOrangePlus-M4Lua Copter against the physics sidecar, as
-the CubeOrangePlus QuadPlane flight does: the M4 runs scripts that arm the vehicle and move an
-AUTO mission on, and M4 faults are injected mid-mission. It needs the variant build and
+the CubeOrangePlus QuadPlane flight does: a forced arm from the GCS, a short AUTO mission (take off,
+one waypoint, land at home) and a script running on the M4 throughout. It needs the variant build and
 `build/sitl/tool/renode-physics` (`./waf --targets tool/renode-physics` on a SITL configuration,
-or `M4LUA_PHYSICS`), and takes hours of wall time per flight.
+or `M4LUA_PHYSICS`). Renode flies about 4x slower than real time, so a flight takes minutes.
 
 ### Graphical launcher
 

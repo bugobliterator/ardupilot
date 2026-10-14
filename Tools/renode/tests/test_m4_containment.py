@@ -214,9 +214,15 @@ def start_m4lua(tmp_path):
     state_dir = tmp_path / 'state'
     state_dir.mkdir()
     runs = []
+    deadline = [TEST_DEADLINE]
 
     def deadline_passed(signum, frame):
-        pytest.fail('test passed its %u s wall-clock deadline' % TEST_DEADLINE)
+        pytest.fail('test passed its %u s wall-clock deadline' % deadline[0])
+
+    def set_deadline(seconds):
+        '''Restarts the wall-clock deadline at seconds from now (a flight needs longer).'''
+        deadline[0] = seconds
+        signal.alarm(seconds)
 
     previous_handler = signal.signal(signal.SIGALRM, deadline_passed)
     signal.alarm(TEST_DEADLINE)
@@ -245,6 +251,7 @@ def start_m4lua(tmp_path):
         run.connect()
         return run
 
+    start.set_deadline = set_deadline
     try:
         yield start
     finally:
