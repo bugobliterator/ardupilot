@@ -1,7 +1,8 @@
 # AP_FLAKE8_CLEAN
 """Renode tests of how the M7 reports M4 faults that the containment tests do not reach: a fault of
 a restarted M4 right after it publishes its header, alone and with a STOP taken before its heartbeat
-times out. Functional only: Renode is not cycle-accurate.
+times out; and a fault inside an M4 interrupt handler, which parks the M4. Functional only: Renode is
+not cycle-accurate.
 
 Needs RENODE and a CubeOrangePlus-M4Lua build:
   ./waf configure --board CubeOrangePlus-M4Lua && ./waf copter
@@ -87,3 +88,27 @@ def test_m4_stop_in_the_early_fault_window(start_m4lua):  # noqa: F811
         'the STOP missed the start window: %s' % after
     loops = [text for text in after[after.index(texts[5]):] if re.match(r'^M4 loop \d+$', text)]
     assert not loops, 'the stopped session ran a script: %s' % loops
+
+
+def test_m4_fault_in_a_handler_parks(start_m4lua):  # noqa: F811
+    '''A fault inside an M4 interrupt handler (SCR_M4_INJECT 11): the fault is reported with a PC in
+    the handler and a restart granted, but m4_warm_restart() sees another exception active and parks;
+    the M7 turns scripting off after the restart timeout and keeps running.'''
+    symbols = m4_symbols(M4_ELF)
+    handler = symbol_range(symbols, 'Vector28C')
+    park = symbol_range(symbols, 'm4_park_forever')
+    run = start_m4lua()
+    run.wait_m4_started()
+    start = len(run.texts)
+    run.set('SCR_M4_INJECT', 11)
+    run.wait_text(re.escape('Scripting: M4 not responding, off until reboot'))
+    texts = expect_supervisor_texts(run, start, [
+        r'^Scripting: M4 HardFault ' + FAULT_PC, r'^Scripting: M4 restarting \(1/3\)$',
+        r'^Scripting: M4 not responding, off until reboot$'])
+    pc = int(re.search(FAULT_PC, texts[0]).group(1), 16)
+    assert handler[0] <= pc < handler[1], 'fault PC=0x%08X is outside Vector28C' % pc
+    run.wait_alive(5)
+    for _ in range(3):
+        m4_pc = int(run.monitor_value('cpu2 PC', r'(0x[0-9A-Fa-f]+)'), 16)
+        assert park[0] <= m4_pc < park[1], 'M4 not parked: PC=0x%08X' % m4_pc
+        run.wait_alive(2)
