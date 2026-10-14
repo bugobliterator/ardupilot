@@ -23161,13 +23161,18 @@ RTL_ALT_M 111
     def m4_flight_mission(self):
         '''End-to-End Flights' mission: take off, a waypoint, a LOITER_UNLIM at item 3 that
         m4_mission_flight.lua moves on, two waypoints, LAND at home'''
+        # a relative-home LAND at 0 N 0 E has no location and lands where it starts: give it home's
+        home = self.home_position_as_location()
+        land = self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_LAND,
+                                            x=int(home.lat * 1e7), y=int(home.lng * 1e7),
+                                            frame=mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT)
         self.upload_simple_relhome_mission([
             (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 10),
             (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 10),
             (mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM, 10, 0, 10),
             (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 10, 10),
             (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 10, 10),
-            (mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 0, 0),
+            land,
         ])
 
     def m4_assert_holding(self, item, seconds=5):
@@ -23177,8 +23182,8 @@ RTL_ALT_M 111
             current = self.assert_receive_message("MISSION_CURRENT", timeout=2).seq
             altitude = self.assert_receive_message("GLOBAL_POSITION_INT", timeout=2).relative_alt * 0.001
             mode = self.mav.messages["HEARTBEAT"].custom_mode
-            if current != item or not self.armed() or mode != self.get_mode_from_mode_mapping("AUTO") or \
-                    not 8 <= altitude <= 12:
+            if (current != item or not self.armed() or mode != self.get_mode_from_mode_mapping("AUTO") or
+                    not 8 <= altitude <= 12):
                 raise NotAchievedException("not holding item %u: current %u, armed %s, mode %u, %.1f m" %
                                            (item, current, self.armed(), mode, altitude))
 
@@ -23198,6 +23203,14 @@ RTL_ALT_M 111
     def m4_check_mission_counts(self, counts, total, totals):
         '''SRPC holds every binding call m4_mission_flight.lua made, and the per-update identities
         that the Renode flight (test_m4_flight.py) checks hold'''
+        expected = ("vehicle:get_mode", "mission:get_current_nav_index", "param:get", "mission:set_current_cmd")
+        missing = [name for name in expected if name not in counts] + (["M4 total"] if total is None else [])
+        if missing:
+            raise NotAchievedException("script count lines missing: %s" % missing)
+        # the session's first window was logged: rows a logger still writing its header drops are not counted
+        for name in ("m4:config", "m4:bindings"):
+            if totals.get(name, 0) < 1:
+                raise NotAchievedException("no SRPC %s row: the session's first window was not logged" % name)
         for name, n in counts.items():
             if totals.get(name, 0) > n:
                 raise NotAchievedException("SRPC %s: %u calls logged, the script made %u" % (name, totals[name], n))
@@ -23767,7 +23780,9 @@ RTL_ALT_M 111
         self.m4_flight_mission()
         self.wait_ready_to_arm()
         self.change_mode("AUTO")
-        self.wait_m4_script_text("M4 mission armed true", timeout=60)
+        armed = self.wait_m4_script_text("M4 mission armed (true|false)", timeout=60)
+        if armed.text != "M4 mission armed true":
+            raise NotAchievedException("the script's arm was refused: '%s'" % armed.text)
         self.wait_armed()
         # with SCR_USER2 0 the script leaves the LOITER_UNLIM alone: the vehicle holds there
         self.context_set_message_rate_hz("MISSION_CURRENT", 10)
@@ -23779,7 +23794,14 @@ RTL_ALT_M 111
         self.wait_current_waypoint(4, timeout=10)
         self.wait_m4_script_text("M4 mission done", timeout=60)
         counts, total = self.m4_mission_counts()
+        # the disarm is the landing at home, not a crash or failsafe
+        self.wait_current_waypoint(6, timeout=120)
         self.wait_disarmed(timeout=240)
+        distance = self.distance_to_home()
+        altitude = self.get_altitude(relative=True)
+        if distance > 1 or altitude > 1:
+            raise NotAchievedException("disarmed %.1f m from home, %.1f m up" % (distance, altitude))
+        self.m4_assert_no_text(r"Crash|[Ff]ailsafe|^Lua: ")
         # the script's last window reaches the log: two summaries after its last call
         self.context_clear_collection("STATUSTEXT")
         for _ in range(2):
@@ -23787,12 +23809,25 @@ RTL_ALT_M 111
             self.context_clear_collection("STATUSTEXT")
         totals = self.m4_srpc_totals()
         self.progress("script counts %s, total %s; SRPC totals %s" % (counts, total, totals))
+        # a row the logger or the M4 link lost would show only as a count mismatch: name the cause first
+        dropped = max(row.Dp for row in self.m4_log_rows("DSF"))
+        if dropped != 0:
+            raise NotAchievedException("the logger dropped %u rows (DSF.Dp)" % dropped)
+        supervisor_rows = self.m4_log_rows("M4ST")
+        lost = sum(row.Lost for row in supervisor_rows)
+        quota_hits = sum(row.QHit for row in supervisor_rows)
+        if lost != 0 or quota_hits != 0:
+            raise NotAchievedException("M4 calls lost %u, refused by quota %u" % (lost, quota_hits))
         self.m4_check_mission_counts(counts, total, totals)
+        # the arm was the script's (AP_Arming::Method::SCRIPTING)
+        arms = [row.Method for row in self.m4_log_rows("ARM") if row.ArmState == 1]
+        if arms != [4]:
+            raise NotAchievedException("ARM methods %s, expected one scripting arm [4]" % arms)
         # SCR rows carry the script name cut to the log's 16 characters
         name = "m4_mission_flight.lua"[:16]
         if name not in set(row.Name for row in self.m4_log_rows("SCR")):
             raise NotAchievedException("no SCR row for %s" % name)
-        if max(row.Rst for row in self.m4_log_rows("M4ST")) != 0:
+        if max(row.Rst for row in supervisor_rows) != 0:
             raise NotAchievedException("an M4 fault in the mission flight")
         self.context_pop()
         self.reboot_sitl()
