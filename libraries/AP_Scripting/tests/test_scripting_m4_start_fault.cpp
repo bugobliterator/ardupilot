@@ -98,6 +98,39 @@ TEST(ScriptingM4StartFault, NoWaitWithoutAPendingFault)
     EXPECT_FALSE(start.holds_requests());
 }
 
+// a held session ended by a fault restart whatever its cause (here "heartbeat lost", the header
+// unreadable at the timeout): that fault restart carries the held requests, once
+TEST(ScriptingM4StartFault, AnyFaultRestartCarriesHeldRequests)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    EXPECT_FALSE(start.report_on_timeout(false));
+    EXPECT_TRUE(start.take_held());
+    EXPECT_FALSE(start.take_held());
+}
+
+// the reported start fault's restart carries them too
+TEST(ScriptingM4StartFault, ReportedFaultRestartCarriesHeldRequests)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    EXPECT_TRUE(start.report_on_timeout(true));
+    EXPECT_TRUE(start.take_held());
+}
+
+// after a beat, or with nothing pending, requests were taken as they came: nothing to carry
+TEST(ScriptingM4StartFault, NothingHeldNothingCarried)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    start.beat();
+    EXPECT_FALSE(start.take_held());
+    start.session_started(true, 1, 1);
+    EXPECT_FALSE(start.take_held());
+    start.session_started(false, 2, 1);
+    EXPECT_FALSE(start.take_held());
+}
+
 // a fault record cleared at publish() (count 0, below the handled one) is no fault: a stall is
 // "heartbeat lost", not a report with every field zero
 TEST(ScriptingM4StartFault, ClearedFaultRecordIsNoFault)

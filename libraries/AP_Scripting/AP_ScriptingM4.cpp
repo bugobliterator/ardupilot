@@ -456,11 +456,6 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
     } else if (now_ms - _m4_heartbeat_ms > ScriptingM4::HEARTBEAT_TIMEOUT_MS) {
         if (!report_start_fault()) {
             failure("heartbeat lost");
-        } else if (_state == State::Restarting) {
-            // the fault restart carries a stop asked while the fault was pending
-            if (take_run_request(0) == ScriptingM4::RunAction::Stop) {
-                _server.set_stopped(true);
-            }
         }
         return;
     }
@@ -498,6 +493,7 @@ uint8_t AP_ScriptingM4::restart_limit() const
 void AP_ScriptingM4::failure(const char *reason)
 {
     GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: M4 %s", reason);
+    const bool carry_request = _start_fault.take_held();
     if (_restarts_used >= restart_limit()) {
         go_off("fault limit");
         return;
@@ -507,6 +503,10 @@ void AP_ScriptingM4::failure(const char *reason)
                   unsigned(_restarts_used), unsigned(restart_limit()));
     _restart_requested = false;   // a fault during a requested restart is a fault
     grant_restart();
+    // requests held while a start fault was pending: this fault restart carries a stop asked meanwhile
+    if (carry_request && take_run_request(0) == ScriptingM4::RunAction::Stop) {
+        _server.set_stopped(true);
+    }
 }
 
 // a restart for the M4, a fault's or a request's: the grant count is its own, so requested restarts

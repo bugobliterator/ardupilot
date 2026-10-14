@@ -27,10 +27,15 @@ public:
     void session_started(bool fault_restart, uint32_t fault_count, uint32_t handled_count)
     {
         _pending = fault_restart && fault_count > handled_count;
+        _held = _pending;
     }
 
     // the session's heartbeat moved: the fault seen at its start was the old session's
-    void beat() { _pending = false; }
+    void beat()
+    {
+        _pending = false;
+        _held = false;
+    }
 
     // the heartbeat timed out; header_readable: the session's header reads as compatible. True:
     // report the recorded fault instead of "heartbeat lost"
@@ -42,11 +47,21 @@ public:
     }
 
     // stop and restart requests (RunControl) wait until the heartbeat or its timeout resolves the
-    // fault; the fault restart of a reported fault carries a stop asked meanwhile
+    // fault
     bool holds_requests() const { return _pending; }
+
+    // the session ends in a fault restart (any cause). True: requests were held and never taken,
+    // so that fault restart carries a stop asked meanwhile
+    bool take_held()
+    {
+        const bool held = _held;
+        _held = false;
+        return held;
+    }
 
 private:
     bool _pending = false;
+    bool _held = false;   // requests held this session and not yet released by a beat
 };
 
 }  // namespace ScriptingM4
