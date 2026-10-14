@@ -454,8 +454,13 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
         _m4_heartbeat_ms = now_ms;
         _start_fault.beat();
     } else if (now_ms - _m4_heartbeat_ms > ScriptingM4::HEARTBEAT_TIMEOUT_MS) {
-        if (!report_start_fault(false)) {
+        if (!report_start_fault()) {
             failure("heartbeat lost");
+        } else if (_state == State::Restarting) {
+            // the fault restart carries a stop asked while the fault was pending
+            if (take_run_request(0) == ScriptingM4::RunAction::Stop) {
+                _server.set_stopped(true);
+            }
         }
         return;
     }
@@ -469,14 +474,13 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
 }
 
 // a fault restart's session that faulted after its publish() and before its first beat: report and
-// charge that fault (name and PC) when its heartbeat times out (on_request false) or when a stop or
-// restart request interrupts it first (on_request true). False when no such fault is pending
-bool AP_ScriptingM4::report_start_fault(bool on_request)
+// charge that fault (name and PC) when its heartbeat times out. False when no such fault is pending
+bool AP_ScriptingM4::report_start_fault()
 {
     PeerHeader::View view {};
     const bool readable = PeerHeader::readPeer(_shared, PeerHeader::Core::M7, ScriptingM4::PROTOCOL_VERSION,
                                                ScriptingM4::CONTRACT_HASH, &view) == PeerHeader::Status::Compatible;
-    if (!(on_request ? _start_fault.report_before_request(readable) : _start_fault.report_on_timeout(readable))) {
+    if (!_start_fault.report_on_timeout(readable)) {
         return false;
     }
     _m4_fault_pc = view.faultPc;
@@ -523,20 +527,27 @@ void AP_ScriptingM4::grant_restart()
 // M4 starts or restarts waits in AP_Scripting's flags, and an M4 that is off is never restarted
 void AP_ScriptingM4::run_control(uint32_t now_ms)
 {
+    // a fault at the session's start is pending: until the heartbeat tells whose it is (at most
+    // HEARTBEAT_TIMEOUT_MS), a request waits, so it can never charge an absorbed fault again
+    if (_start_fault.holds_requests()) {
+        return;
+    }
+    const ScriptingM4::RunAction action = take_run_request(now_ms - _state_start_ms);
+    if (action != ScriptingM4::RunAction::None) {
+        request_restart(action == ScriptingM4::RunAction::Stop);
+    }
+}
+
+// take a stop or restart request and say what it does; running_ms: the session's age
+ScriptingM4::RunAction AP_ScriptingM4::take_run_request(uint32_t running_ms)
+{
     AP_Scripting *scripting = AP_Scripting::get_singleton();
     bool restart = false;
     const bool stop = scripting->take_stop_request(restart);
     const bool was_stopped = _run_control.stopped();
-    const ScriptingM4::RunAction action = _run_control.update(scripting->enabled(), stop, restart,
-                                                              now_ms - _state_start_ms);
+    const ScriptingM4::RunAction action = _run_control.update(scripting->enabled(), stop, restart, running_ms);
     if (action == ScriptingM4::RunAction::None) {
-        return;
-    }
-    // a session that faulted at its start, before its first beat: that fault is reported and
-    // charged first, and its fault restart carries the request (or the fault limit turns it off)
-    const bool faulted = report_start_fault(true);
-    if (_state == State::Off) {
-        return;
+        return action;
     }
     if (action == ScriptingM4::RunAction::Stop || !was_stopped) {
         GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "stopped");
@@ -544,12 +555,7 @@ void AP_ScriptingM4::run_control(uint32_t now_ms)
     if (action == ScriptingM4::RunAction::Restart) {
         GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "restarted");
     }
-    const bool stopped = action == ScriptingM4::RunAction::Stop;
-    if (faulted) {
-        _server.set_stopped(stopped);
-    } else {
-        request_restart(stopped);
-    }
+    return action;
 }
 
 // a restart the M7 asks for: the session ends as after a fault (end_session() at the new

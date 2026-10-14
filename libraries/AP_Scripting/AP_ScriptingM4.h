@@ -72,10 +72,11 @@ private:
     void check_started(uint32_t now_ms);
     void check_running(uint32_t now_ms);
     void failure(const char *reason);
-    bool report_start_fault(bool on_request);
+    bool report_start_fault();
     void go_off(const char *reason);
     void grant_restart();
     void run_control(uint32_t now_ms);
+    ScriptingM4::RunAction take_run_request(uint32_t running_ms);
     void request_restart(bool stopped);
     void enter(State state, uint32_t now_ms);
     uint8_t restart_limit() const;
@@ -112,8 +113,8 @@ private:
     uint32_t _m4_heartbeat;
     uint32_t _m4_heartbeat_ms;
     // a fault at a fault restart's start: the old session's on its way down, or the new session's
-    // own before this M7 read its header; reported if the session never beats, or before a stop
-    // or restart request that interrupts it (report_start_fault())
+    // own before this M7 read its header; reported if the session never beats (report_start_fault()).
+    // Stop and restart requests wait while it is pending
     ScriptingM4::StartFault _start_fault;
     uint32_t _woke_us;
     uint32_t _wake_latency_us;

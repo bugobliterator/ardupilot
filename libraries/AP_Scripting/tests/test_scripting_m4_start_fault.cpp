@@ -57,24 +57,45 @@ TEST(ScriptingM4StartFault, EachSessionStartsAfresh)
     EXPECT_FALSE(start.report_on_timeout(true));
 }
 
-// a stop or restart request taken before the session beats or times out: the pending fault is
-// reported and charged first, once (the timeout then has nothing to report)
-TEST(ScriptingM4StartFault, RequestInTheStartWindowReportsTheFault)
+// a stop or restart request waits while a fault is pending: taken before the heartbeat tells, it
+// could charge the old session's fault (absorbed) a second time
+TEST(ScriptingM4StartFault, RequestWaitsWhileAFaultIsPending)
 {
     StartFault start;
+    EXPECT_FALSE(start.holds_requests());
     start.session_started(true, 2, 1);
-    EXPECT_TRUE(start.report_before_request(true));
-    EXPECT_FALSE(start.report_on_timeout(true));
-    EXPECT_FALSE(start.report_before_request(true));
+    EXPECT_TRUE(start.holds_requests());
 }
 
-// a request after the session beat acts alone
-TEST(ScriptingM4StartFault, RequestAfterABeatActsAlone)
+// the session beats: the fault was the old session's, and a waiting request then acts alone
+TEST(ScriptingM4StartFault, RequestActsAloneAfterABeat)
 {
     StartFault start;
     start.session_started(true, 2, 1);
     start.beat();
-    EXPECT_FALSE(start.report_before_request(true));
+    EXPECT_FALSE(start.holds_requests());
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+// the heartbeat times out: the fault is reported once, and a waiting request no longer waits (the
+// fault restart carries a stop)
+TEST(ScriptingM4StartFault, RequestStopsWaitingAtTheTimeout)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    EXPECT_TRUE(start.report_on_timeout(true));
+    EXPECT_FALSE(start.holds_requests());
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+// no fault at the start, or not a fault restart: requests act at once
+TEST(ScriptingM4StartFault, NoWaitWithoutAPendingFault)
+{
+    StartFault start;
+    start.session_started(true, 1, 1);
+    EXPECT_FALSE(start.holds_requests());
+    start.session_started(false, 2, 1);
+    EXPECT_FALSE(start.holds_requests());
 }
 
 // a fault record cleared at publish() (count 0, below the handled one) is no fault: a stall is
