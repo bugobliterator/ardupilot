@@ -19615,6 +19615,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4Devices,
             self.ScriptingM4MAVLink,
             self.ScriptingM4Commands,
+            self.ScriptingM4EarlyFault,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -23152,6 +23153,10 @@ RTL_ALT_M 111
             if re.search(pattern, m.text):
                 raise NotAchievedException("unexpected '%s'" % m.text)
 
+    def m4_supervisor_texts(self):
+        '''the "Scripting: M4 ..." texts collected since the last clear, in order'''
+        return [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("Scripting: M4")]
+
     def ScriptingM4MAVLink(self):
         '''mavlink, logger and the singleton manual bindings on the SITL M4; Rover's internal and MAVLink script sets'''
         self.m4_mavlink_internal_set()
@@ -23662,6 +23667,34 @@ RTL_ALT_M 111
         # and the restarted, stopped session runs
         if not [m for m in self.m4_log_rows("M4ST") if m.Ses != stopped_session and m.St == 2]:
             raise NotAchievedException("no running session after the fault restart of session %u" % stopped_session)
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ScriptingM4EarlyFault(self):
+        '''a restarted SITL M4 that faults right after it publishes is reported as that fault, charged once'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({"SCR_ENABLE": 1, "SCR_M4_RST_MAX": 3, "LOG_DISARMED": 1})
+        self.install_test_script_context("m4_loop.lua")
+        self.reboot_sitl()
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+        self.context_clear_collection("STATUSTEXT")
+        # a fault now, and another right after the restarted M4's publish(), before the M7's read
+        self.set_parameter("SCR_M4_INJECT", 12)
+        self.wait_statustext("Scripting: M4 restarted (2/3)", check_context=True, timeout=30)
+        self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+        fault = r"Scripting: M4 signal \d+ addr=0x[0-9A-F]{8}$"
+        expected = [fault, r"Scripting: M4 restarting \(1/3\)$", r"Scripting: M4 restarted \(1/3\)$",
+                    fault, r"Scripting: M4 restarting \(2/3\)$", r"Scripting: M4 restarted \(2/3\)$"]
+        texts = self.m4_supervisor_texts()
+        self.progress("supervisor texts: %s" % texts)
+        if len(texts) != len(expected) or not all(re.match(p, t) for p, t in zip(expected, texts)):
+            raise NotAchievedException("supervisor texts %s, expected %s" % (texts, expected))
+        rows = self.m4_log_rows("M4ST")
+        if max(row.Rst for row in rows) != 2:
+            raise NotAchievedException("M4ST.Rst %u, expected 2" % max(row.Rst for row in rows))
         self.context_pop()
         self.reboot_sitl()
 
@@ -25795,6 +25828,7 @@ return update, 1000
             "ScriptingM4Devices": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4MAVLink": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Commands": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4EarlyFault": "Requires --enable-scripting-m4 SITL build",
         }
 
 
