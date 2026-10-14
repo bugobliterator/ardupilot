@@ -42,7 +42,9 @@ struct SupervisorBlock {
     std::atomic<uint32_t> magic;          // SUPERVISOR_MAGIC once the M7 has set the window up
     std::atomic<uint32_t> run_permit;     // 1: the M4 may run; 0: park
     std::atomic<uint32_t> restart_grant;  // restarts granted so far, published by the M4 as its restart count
-    std::atomic<uint32_t> reserved[5];
+    std::atomic<uint32_t> reserved[4];
+    // test only (SCR_M4_INJECT 12): the session started with this grant faults right after its publish()
+    std::atomic<uint32_t> fault_after_publish_grant;
 };
 static_assert(sizeof(SupervisorBlock) == SUPERVISOR_BLOCK_SIZE, "supervisor block layout is frozen");
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "shared words must be lock-free");

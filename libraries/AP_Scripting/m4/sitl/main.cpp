@@ -188,6 +188,10 @@ int main(int argc, char **argv)
     install_handlers();
     PeerHeader::publish(window, PeerHeader::Core::M4, PROTOCOL_VERSION, CONTRACT_HASH,
                         restart_grant_at_start);
+    // SCR_M4_INJECT 12: the session the M7 marked faults before the M7 reads its header
+    if (restart_grant_at_start != 0 && block->fault_after_publish_grant.load() == restart_grant_at_start) {
+        inject_fault(FaultKind::HardFault);
+    }
 
     static M4Service service;
     const M4Platform platform { millis_now, cycles_now, 1, inject_fault, lua_port_wake };

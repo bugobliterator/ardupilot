@@ -255,6 +255,10 @@ int main(void)
     }
     channel.resetAfterRestart();
     PeerHeader::publish(window, PeerHeader::Core::M4, PROTOCOL_VERSION, CONTRACT_HASH, restarts);
+    // SCR_M4_INJECT 12: the session the M7 marked faults before the M7 reads its header
+    if (restarts != 0 && block->fault_after_publish_grant.load() == restarts) {
+        inject_fault(FaultKind::HardFault);
+    }
 
     const M4Platform platform { millis_now, cycles_now, AP_SCRIPTING_M4_CORE_CLOCK_HZ / 1000000U,
                                 inject_fault, lua_port_wake };

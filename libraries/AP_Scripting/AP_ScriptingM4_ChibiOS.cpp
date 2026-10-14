@@ -54,6 +54,7 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     ScriptingM4::SupervisorBlock *block = ScriptingM4::supervisor_block(_shared);
     block->run_permit.store(1);
     block->restart_grant.store(0);
+    block->fault_after_publish_grant.store(0);
     block->magic.store(ScriptingM4::SUPERVISOR_MAGIC);
     // ruling order on the M7: enableClock() -> init() -> enableNvic()
     HwSemaphore::enableClock();

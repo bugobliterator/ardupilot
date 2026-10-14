@@ -88,6 +88,7 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     ScriptingM4::SupervisorBlock *block = ScriptingM4::supervisor_block(_shared);
     block->run_permit.store(1);
     block->restart_grant.store(0);
+    block->fault_after_publish_grant.store(0);
     block->magic.store(ScriptingM4::SUPERVISOR_MAGIC);
     const int ret = CubePilotFW::PosixChannel::start(*_channel, CubePilotFW::Channel::Core::M7,
                                                      ScriptingM4::DOORBELL_GROUP,
