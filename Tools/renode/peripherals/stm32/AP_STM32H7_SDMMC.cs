@@ -19,6 +19,15 @@
 // command for block I/O, but writes it before the command for short
 // card-register reads, so either write can complete the setup.
 //
+// The base model sizes a single-block transfer (CMD17, CMD24) from
+// DCTRL.DBLOCKSIZE when its deferred command data handling runs. For
+// block I/O ChibiOS writes DCTRL only after the command, so a sync point
+// between the two writes sizes the transfer from the previous DCTRL (0
+// after the last transfer: one byte); IDMA then moves nothing, DATAEND
+// never comes and the driver waits forever. Real hardware takes the
+// block size at DTEN; the driver writes DLEN before the command, so the
+// block size is set from DLEN when the command is written.
+//
 using System;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
@@ -44,10 +53,16 @@ namespace Antmicro.Renode.Peripherals.SD
                     dataTransferEnabled = (value & DataTransferEnable) != 0;
                     QueueIdmaPump();
                 });
+            this.AddAfterWriteHook<uint, DoubleWordRegisterCollection>(DataLength,
+                (offset, value) => dataLength = value & DataLengthMask);
             this.AddAfterWriteHook<uint, DoubleWordRegisterCollection>(Cmd,
                 (offset, value) =>
                 {
                     currentCommand = value & CommandIndexMask;
+                    if(currentCommand == ReadSingleBlockCommand || currentCommand == WriteSingleBlockCommand)
+                    {
+                        SetBlockSizeFromDataLength();
+                    }
                     QueueIdmaPump();
                 });
         }
@@ -64,6 +79,19 @@ namespace Antmicro.Renode.Peripherals.SD
             if(currentCommand == ReadSingleBlockCommand)
             {
                 sdCard.HandleCommand(StopTransmissionCommand, 0);
+            }
+        }
+
+        private void SetBlockSizeFromDataLength()
+        {
+            // DBLOCKSIZE n is a block of 2^n bytes, up to 2^14
+            for(var exponent = 0; exponent <= MaxBlockSizeExponent; exponent++)
+            {
+                if(dataLength == 1u << exponent)
+                {
+                    base.DataCtrl.Value = (base.DataCtrl.Value & ~BlockSizeMask) | ((uint)exponent << BlockSizeShift);
+                    return;
+                }
             }
         }
 
@@ -100,14 +128,21 @@ namespace Antmicro.Renode.Peripherals.SD
         private bool dataTransferEnabled;
         private uint idmaBase;
         private uint currentCommand;
+        private uint dataLength;
 
         private const long Cmd = 0x0C;
         private const long DataCtrl = 0x2C;
+        private const long DataLength = 0x28;
         private const long IDMACtrl = 0x50;
         private const long IDMABase0 = 0x58;
         private const uint CommandIndexMask = 0x3Fu;
         private const uint DataTransferEnable = 1u << 0;
+        private const uint DataLengthMask = 0x1FFFFFFu;
+        private const int BlockSizeShift = 4;
+        private const uint BlockSizeMask = 0xFu << BlockSizeShift;
+        private const int MaxBlockSizeExponent = 14;
         private const uint ReadSingleBlockCommand = 17;
+        private const uint WriteSingleBlockCommand = 24;
         private const uint StopTransmissionCommand = 12;
     }
 }
