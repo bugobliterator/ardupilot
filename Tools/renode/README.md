@@ -464,6 +464,12 @@ boots the CubeOrangePlus-M4Lua Copter firmware with its M4 scripting image,
 injects faults on the M4 and checks that the M7 restarts it up to the
 `SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
 
+`tests/test_m4_flight.py` flies the CubeOrangePlus-M4Lua Copter against the physics sidecar, as
+the CubeOrangePlus QuadPlane flight does: the M4 runs scripts that arm the vehicle and move an
+AUTO mission on, and M4 faults are injected mid-mission. It needs the variant build and
+`build/sitl/tool/renode-physics` (`./waf --targets tool/renode-physics` on a SITL configuration,
+or `M4LUA_PHYSICS`), and takes hours of wall time per flight.
+
 ### Graphical launcher
 
 `launch.py` provides a board and firmware chooser around `run.py`:

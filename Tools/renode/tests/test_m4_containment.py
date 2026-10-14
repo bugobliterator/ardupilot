@@ -57,6 +57,7 @@ class M4Run:
         self.next_text = 0
         self.boot_ms = 0
         self.reboot = None
+        self.extra_check = None   # a callable that raises if a helper process (the physics sidecar) stopped
 
     def connect(self):
         # every STATUSTEXT is kept from the first byte on: boot texts such as
@@ -115,8 +116,10 @@ class M4Run:
         raise RuntimeError('timed out waiting for %s\n%s' % (message_type, log_tail(self.log_path)))
 
     def check(self):
-        '''Renode still runs and the M7 has not rebooted (SYSTEM_TIME never goes back).'''
+        '''Renode (and any helper) still runs and the M7 has not rebooted (SYSTEM_TIME never goes back).'''
         check_process(self.process, self.log_path)
+        if self.extra_check is not None:
+            self.extra_check()
         if self.reboot is not None:
             raise RuntimeError(self.reboot)
 
@@ -218,7 +221,7 @@ def start_m4lua(tmp_path):
     previous_handler = signal.signal(signal.SIGALRM, deadline_passed)
     signal.alarm(TEST_DEADLINE)
 
-    def start():
+    def start(extra_args=(), extra_check=None):
         uart_port = unused_tcp_port()
         monitor_port = unused_tcp_port()
         while monitor_port == uart_port:
@@ -228,6 +231,7 @@ def start_m4lua(tmp_path):
                    '--vehicle', 'arducopter', '--elf', str(elf), '--m4-elf', str(m4_elf),
                    '--state-dir', str(state_dir), '--uart-port', str(uart_port),
                    '--port', str(monitor_port), '--unthrottled', '--renode', renode]
+        command += list(extra_args)
         env = os.environ.copy()
         env['XDG_CONFIG_HOME'] = str(state_dir)
         env['TMPDIR'] = str(state_dir)
@@ -237,6 +241,7 @@ def start_m4lua(tmp_path):
         run = M4Run(process, log_path, uart_port, monitor_port)
         run.sdcard_image = state_dir / 'sdcard.img'
         runs.append(run)
+        run.extra_check = extra_check
         run.connect()
         return run
 
