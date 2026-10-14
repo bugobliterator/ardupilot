@@ -26,9 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fat_image  # noqa: E402
 from test_m4_containment import ROOT, STEP_TIMEOUT, start_m4lua  # noqa: E402,F401
-from test_m4_scripts import START_TIMEOUT, upload_files, upload_scripts  # noqa: E402
+from test_m4_scripts import (SCRIPT_TIMEOUT, START_TIMEOUT, host_thread_stack, upload_files,  # noqa: E402
+                             upload_scripts)
 from test_mission import (FORCE_ARM_MAGIC, distance_metres, offset_location, send_command,  # noqa: E402
-                          set_mode, stop_process_group, unused_tcp_port, upload_mission)
+                          set_mode, set_parameter, stop_process_group, unused_tcp_port, upload_mission)
 from test_physics_flight import (CANBERRA, CUBEORANGEPLUS_SENSOR_IDS, PHYSICS_RATE_HZ,  # noqa: E402
                                  check_sensor_ids, check_sidecar, ordered_subsequence, wait_for_sidecar,
                                  wait_ready)
@@ -39,6 +40,8 @@ FLIGHT_DEADLINE = 14400      # wall seconds for a flight test (start_m4lua's 270
 FLIGHT_TIMEOUT = 7200        # wall seconds for a flight leg, such as arming to landing
 COPTER_AUTO = 3
 HOLD_ITEM, RELEASE_ITEM, LAND_ITEM = 3, 4, 6
+HOLD_SECONDS = 10            # emulated seconds the vehicle holds at the LOITER_UNLIM before the release
+ARM_SCRIPTING = 4            # AP_Arming::Method::SCRIPTING: arming:arm() from the script
 DISARM_LANDED = 13           # AP_Arming::Method::LANDED: the land detector, not a crash or a failsafe
 MAX_LEAN_DEG = 30            # Copter's default ANGLE_MAX: the controller never asks for more
 FLIGHT_FAILURE_TEXT = re.compile(r'Crash|[Ff]ailsafe|^Lua: |^Scripting: (stopped|restarted)')
@@ -355,9 +358,6 @@ def test_m4_flight_harness(start_m4_flight, tmp_path):
     assert disarm_mode == COPTER_AUTO, 'disarmed in mode %u, not AUTO' % disarm_mode
     assert disarm_altitude < 1, 'disarmed %.1f m up' % disarm_altitude
     assert landing <= 3, 'landed %.1f m from home' % landing
-    failures = [text for text in run.texts[started:] if FLIGHT_FAILURE_TEXT.search(text)]
-    assert not failures, failures
-    assert not supervisor_texts(run, started), supervisor_texts(run, started)
     # m4_loop.lua prints once a second: it ran through the flight and still runs after the landing
     loops = [text for text in run.texts[texts_at_arm:texts_at_disarm] if re.match(r'^M4 loop \d+$', text)]
     assert len(loops) >= max(5, 0.5 * seconds), \
@@ -365,6 +365,9 @@ def test_m4_flight_harness(start_m4_flight, tmp_path):
     wait_until(run, lambda: any(re.match(r'^M4 loop \d+$', text) for text in run.texts[texts_at_disarm:]),
                STEP_TIMEOUT, 'an M4 loop text after the landing')
     run.wait_alive(10)
+    failures = [text for text in run.texts[started:] if FLIGHT_FAILURE_TEXT.search(text)]
+    assert not failures, failures
+    assert not supervisor_texts(run, started), supervisor_texts(run, started)
     logs = read_logs(run, tmp_path / 'logs')
     check_m4_kept_running(logs)
     attitudes, disarms = armed_rows(logs, 'ATT')
@@ -373,3 +376,149 @@ def test_m4_flight_harness(start_m4_flight, tmp_path):
     print('flight: largest roll or pitch %.1f deg over %u ATT rows' % (lean, len(attitudes)), flush=True)
     assert lean < MAX_LEAN_DEG, 'leaned %.1f deg in flight' % lean
     assert disarms == [DISARM_LANDED], 'disarm methods %s, not the land detector (%u)' % (disarms, DISARM_LANDED)
+
+
+def script_counts(texts):
+    '''The "M4 count <name> <n>" lines and "M4 total <n>" of m4_mission_flight.lua.'''
+    counts = {}
+    total = None
+    for text in texts:
+        match = re.match(r'^M4 count (\S+) (\d+)$', text)
+        if match:
+            counts[match.group(1)] = int(match.group(2))
+        match = re.match(r'^M4 total (\d+)$', text)
+        if match:
+            total = int(match.group(1))
+    return counts, total
+
+
+def check_mission_counts(counts, total, totals):
+    '''The rules ScriptingM4MissionFlight applies in SITL: SRPC holds every binding call the script
+    made (rules 1 and 2), and the script's own per-update identities hold (rules 3 to 5).'''
+    missing = [name for name in ('vehicle:get_mode', 'mission:get_current_nav_index', 'param:get',
+                                 'mission:set_current_cmd') if name not in counts]
+    assert not missing and total is not None, 'script count lines missing: %s, total %s' % (missing, total)
+    for name, count in counts.items():
+        assert totals.get(name, 0) <= count, 'SRPC %s: %u logged, the script made %u' % (name, totals[name], count)
+    logged = sum(n for name, n in totals.items()
+                 if name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print'))
+    print('SRPC binding calls logged %u, script made %u' % (logged, total), flush=True)
+    assert logged == total, 'SRPC binding calls: %u logged, the script made %u (%s)' % (logged, total, totals)
+    updates = counts['vehicle:get_mode']
+    assert counts['mission:get_current_nav_index'] == updates, counts
+    assert counts['param:get'] == updates + 2, counts
+    assert counts['mission:set_current_cmd'] == 1 and counts.get('arming:arm', 0) == 1, counts
+
+
+def request_message_rate(run, message_id, rate_hz):
+    run.mav.mav.command_long_send(run.mav.target_system, run.mav.target_component,
+                                  mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+                                  message_id, 1.0e6 / rate_hz, 0, 0, 0, 0, 0)
+
+
+def check_holding(run, track, item, seconds):
+    '''The vehicle stays armed in AUTO at mission item item, 8-12 m up, for seconds of emulated
+    time, checked on every message received.'''
+    start = run.boot_ms
+    deadline = time.monotonic() + FLIGHT_TIMEOUT
+    samples = 0
+    while run.boot_ms - start < seconds * 1000:
+        run.check()
+        assert time.monotonic() < deadline, 'M7 time did not advance %u s from %u ms' % (seconds, start)
+        if run.mav.recv_match(type=['MISSION_CURRENT', 'GLOBAL_POSITION_INT', 'HEARTBEAT'],
+                              blocking=True, timeout=1) is None:
+            continue
+        samples += 1
+        assert (track.current == item and track.armed and track.mode == COPTER_AUTO and
+                8 <= track.altitude <= 12), 'not holding item %u: current %s, armed %s, mode %s, %.1f m' % (
+                    item, track.current, track.armed, track.mode, track.altitude)
+    print('held item %u for %u s: %u samples' % (item, seconds, samples), flush=True)
+
+
+def test_m4_mission_flight(start_m4_flight, tmp_path):
+    '''m4_mission_flight.lua on the M4 arms the vehicle in AUTO; the vehicle holds at its LOITER_UNLIM
+    until SCR_USER2 lets the script move the mission on; it lands at home; SRPC holds the script's
+    calls, as in SITL.'''
+    parameters = dict(FLIGHT_PARAMETERS, SCR_USER1=HOLD_ITEM, SCR_USER2=0, SCR_USER3=1)
+    run = start_flight(start_m4_flight, ['tests/m4_mission_flight.lua'], parameters)
+    started = len(run.texts)
+    run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
+    home = navigation_ready(run)
+    home_lat, home_lon = home.lat * 1.0e-7, home.lon * 1.0e-7
+    upload_mission(run.mav, run.process, run.log_path, flight_mission(home_lat, home_lon), timeout=STEP_TIMEOUT)
+    track = FlightTrack(run)
+    request_message_rate(run, mavutil.mavlink.MAVLINK_MSG_ID_MISSION_CURRENT, 10)
+    set_mode(run.mav, run.process, run.log_path, 'AUTO', timeout=STEP_TIMEOUT)
+    # the script, not the GCS, arms the vehicle
+    assert run.wait_text(r'^M4 mission armed ', timeout=STEP_TIMEOUT) == 'M4 mission armed true'
+    wait_until(run, lambda: track.current == HOLD_ITEM, FLIGHT_TIMEOUT, 'the hold item')
+    # with SCR_USER2 0 the script leaves the LOITER_UNLIM alone: the vehicle holds there
+    check_holding(run, track, HOLD_ITEM, HOLD_SECONDS)
+    released = [text for text in run.texts if text.startswith('M4 mission release')]
+    assert not released, released
+    set_parameter(run.mav, run.process, run.log_path, 'SCR_USER2', RELEASE_ITEM, timeout=STEP_TIMEOUT)
+    assert run.wait_text(r'^M4 mission release ', timeout=STEP_TIMEOUT) == 'M4 mission release 3 to 4 true'
+    wait_until(run, lambda: track.current == RELEASE_ITEM, STEP_TIMEOUT, 'the release')
+    run.wait_text(r'^M4 mission done$', timeout=STEP_TIMEOUT)
+    counts, total = script_counts(run.texts)
+    print('script counts %s, total %s' % (counts, total), flush=True)
+    wait_until(run, lambda: track.was_armed and not track.armed, FLIGHT_TIMEOUT, 'the landing')
+    landing = distance_metres(home_lat, home_lon, *track.position)
+    disarm_mode, disarm_altitude, _ = track.disarm
+    print('flight: %.1f m high, items %s, down at item %s, disarmed in mode %u at %.1f m, %.1f m from home' % (
+        track.max_altitude, track.currents, track.touchdown_item, disarm_mode, disarm_altitude, landing), flush=True)
+    assert track.max_altitude >= 8, 'reached only %.1f m' % track.max_altitude
+    # the mission goes back to item 1 at the disarm, so the landing item is the one at touchdown
+    assert ordered_subsequence(track.currents, [HOLD_ITEM, RELEASE_ITEM, 5, LAND_ITEM]), \
+        'mission items %s' % track.currents
+    assert track.touchdown_item == LAND_ITEM, 'came down below 1 m at item %s, not the LAND' % track.touchdown_item
+    assert disarm_mode == COPTER_AUTO, 'disarmed in mode %u, not AUTO' % disarm_mode
+    assert disarm_altitude < 1, 'disarmed %.1f m up' % disarm_altitude
+    assert landing <= 3, 'landed %.1f m from home' % landing
+    # the script's last window is logged within two summaries
+    for _ in range(2):
+        run.wait_text(r'^Scripting RPC \d+/s p50<\d+ p99<\d+ max \d+us$', timeout=STEP_TIMEOUT)
+    # arming:arm() and set_current_cmd() ran on the host thread: it keeps 2 KB of its stack. With
+    # ARMING_SKIPCHK -1 the arm runs the mandatory checks and arming itself; LOG_DISARMED 1 has the
+    # log open already, so PrepForArming's log-open wait is not covered
+    free, size = host_thread_stack(run, tmp_path / 'threads.txt')
+    print('ScriptingM4 host thread stack after a successful arm (mandatory checks and arming, '
+          'no log-open wait): %u of %u bytes free' % (free, size), flush=True)
+    assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
+    run.wait_alive(10)
+    failures = [text for text in run.texts[started:] if FLIGHT_FAILURE_TEXT.search(text)]
+    assert not failures, failures
+    assert not supervisor_texts(run, started), supervisor_texts(run, started)
+    logs = read_logs(run, tmp_path / 'logs')
+    # the count rules apply to the flight's log only: the first launch's log has its own
+    # 0-script session, whose m4:config and m4:bindings rows would hide a dropped first window
+    flight_logs = [log for log in logs if any(row.ArmState for row in log_rows([log], 'ARM'))]
+    assert len(flight_logs) == 1, 'logs with an arm: %s' % [log.name for log in flight_logs]
+    totals = {}
+    for row in log_rows(flight_logs, 'SRPC'):
+        totals[row.Name] = totals.get(row.Name, 0) + row.N
+    print('SRPC totals %s' % totals, flush=True)
+    # preconditions of the count rules, each naming its own cause: the logger drops rows from other
+    # threads until its startup header is written, so a lost window is reported as rows dropped
+    missing = [name for name in ('m4:config', 'm4:bindings') if totals.get(name, 0) < 1]
+    assert not missing, 'rows dropped: no SRPC %s rows, the session\'s first window was not logged' % missing
+    dropped = max(row.Dp for row in log_rows(flight_logs, 'DSF'))
+    print('logger buffer drops (DSF.Dp) %u' % dropped, flush=True)
+    assert dropped == 0, 'rows dropped: the logger dropped %u rows (DSF.Dp)' % dropped
+    m4st = log_rows(flight_logs, 'M4ST')
+    lost, refused = sum(row.Lost for row in m4st), sum(row.QHit for row in m4st)
+    assert lost == 0 and refused == 0, 'M4 calls lost %u, refused by quota %u' % (lost, refused)
+    check_mission_counts(counts, total, totals)
+    # SCR rows carry the script name cut to the log's 16 characters
+    name = 'm4_mission_flight.lua'[:16]
+    scripts = set(row.Name for row in log_rows(flight_logs, 'SCR'))
+    assert name in scripts, 'SCR rows for %s' % sorted(scripts)
+    check_m4_kept_running(logs)
+    assert sum(row.PErr for row in m4st) == 0, 'M4ST protocol errors'
+    attitudes, disarms = armed_rows(logs, 'ATT')
+    lean = max(max(abs(row.Roll), abs(row.Pitch)) for row in attitudes)
+    print('flight: largest roll or pitch %.1f deg over %u ATT rows' % (lean, len(attitudes)), flush=True)
+    assert lean < MAX_LEAN_DEG, 'leaned %.1f deg in flight' % lean
+    assert disarms == [DISARM_LANDED], 'disarm methods %s, not the land detector (%u)' % (disarms, DISARM_LANDED)
+    arms = [row.Method for row in log_rows(logs, 'ARM') if row.ArmState]
+    assert arms == [ARM_SCRIPTING], 'arm methods %s, not the script (%u)' % (arms, ARM_SCRIPTING)
