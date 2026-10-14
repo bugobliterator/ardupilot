@@ -23188,6 +23188,23 @@ RTL_ALT_M 111
                 raise NotAchievedException("not holding item %u: current %u, armed %s, mode %u, %.1f m" %
                                            (item, current, self.armed(), mode, altitude))
 
+    def m4_assert_landed_at_home(self):
+        '''disarmed within 1 m of home on the ground, with no crash, failsafe or Lua error text collected'''
+        distance = self.distance_to_home()
+        altitude = self.get_altitude(relative=True)
+        if distance > 1 or altitude > 1:
+            raise NotAchievedException("disarmed %.1f m from home, %.1f m up" % (distance, altitude))
+        self.m4_assert_no_text(r"Crash|[Ff]ailsafe|^Lua: ")
+
+    def m4_mission_text_items(self):
+        '''the item numbers of the "Mission: <n> ..." texts collected since the last clear, in order'''
+        items = []
+        for m in self.context_collection("STATUSTEXT"):
+            match = re.match(r"Mission: (\d+) ", m.text)
+            if match:
+                items.append(int(match.group(1)))
+        return items
+
     def m4_mission_counts(self):
         '''the "M4 count <name> <n>" lines and the "M4 total <n>" of m4_mission_flight.lua'''
         counts = {}
@@ -23798,11 +23815,7 @@ RTL_ALT_M 111
         # the disarm is the landing at home, not a crash or failsafe
         self.wait_current_waypoint(6, timeout=120)
         self.wait_disarmed(timeout=240)
-        distance = self.distance_to_home()
-        altitude = self.get_altitude(relative=True)
-        if distance > 1 or altitude > 1:
-            raise NotAchievedException("disarmed %.1f m from home, %.1f m up" % (distance, altitude))
-        self.m4_assert_no_text(r"Crash|[Ff]ailsafe|^Lua: ")
+        self.m4_assert_landed_at_home()
         # the script's last window reaches the log: two summaries after its last call
         self.context_clear_collection("STATUSTEXT")
         for _ in range(2):
@@ -23852,9 +23865,21 @@ RTL_ALT_M 111
         self.wait_m4_script_text("M4 mission armed true", timeout=60)
         self.wait_armed()
         self.context_set_message_rate_hz("MISSION_CURRENT", 10)
+        # the whole flight, not only the samples after each reload: mode and item from arm to disarm
+        self.context_collect("HEARTBEAT")
+        self.context_collect("MISSION_CURRENT")
         self.wait_current_waypoint(3, timeout=120)
         self.wait_m4_script_text(r"BENCH ahrs:get_location n=\d+", timeout=30)
         self.m4_assert_holding(3)
+
+        # every "Mission: <n>" text of the flight: an item visited for less than a MISSION_CURRENT interval shows here
+        mission_texts = []
+
+        def next_texts():
+            '''no crash, failsafe or Lua error text so far; start a new STATUSTEXT window'''
+            self.m4_assert_no_text(r"Crash|[Ff]ailsafe|^Lua: ")
+            mission_texts.extend(self.m4_mission_text_items())
+            self.context_clear_collection("STATUSTEXT")
 
         steps = (
             (1, r"Scripting: M4 signal \d+ addr=0x"),              # fault in the service
@@ -23862,7 +23887,7 @@ RTL_ALT_M 111
             (5, r"Scripting: M4 protocol errors"),                 # ring corruption
         )
         for used, (kind, reason) in enumerate(steps, start=1):
-            self.context_clear_collection("STATUSTEXT")
+            next_texts()
             self.set_parameter("SCR_M4_INJECT", kind)
             self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
             self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
@@ -23872,30 +23897,57 @@ RTL_ALT_M 111
             self.m4_assert_holding(3)
 
         # the benchmark reloaded and runs; the restarted script still moves the mission on
-        self.context_clear_collection("STATUSTEXT")
+        next_texts()
         self.wait_m4_script_text(r"BENCH ahrs:get_location n=\d+", timeout=30)
         self.set_parameter("SCR_USER2", 4)
         self.wait_m4_script_text("M4 mission release 3 to 4 true", timeout=10)
         self.wait_current_waypoint(4, timeout=10)
 
-        # the fourth fault spends the budget: scripting stays off and the mission flies on
-        self.context_clear_collection("STATUSTEXT")
-        self.set_parameter("SCR_M4_INJECT", 0)
-        self.set_parameter("SCR_M4_INJECT", 1)
-        self.wait_statustext(r"Scripting: M4 signal \d+ addr=0x", regex=True, check_context=True, timeout=10)
+        # the fourth fault, a service stall, spends the budget: scripting stays off and the mission flies on
+        next_texts()
+        self.set_parameter("SCR_M4_INJECT", 3)
+        self.wait_statustext("Scripting: M4 heartbeat lost", check_context=True, timeout=10)
         self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=10)
         # only texts after the fault limit: the scripts must not run once off
-        self.context_clear_collection("STATUSTEXT")
+        next_texts()
         self.assert_mode("AUTO")
         if not self.armed():
             raise NotAchievedException("disarmed when scripting turned off")
         self.wait_current_waypoint(6, timeout=120)
         self.wait_disarmed(timeout=120)
+        heartbeats = self.context_stop_collecting("HEARTBEAT")
+        items = [m.seq for m in self.context_stop_collecting("MISSION_CURRENT")]
+        mission_texts.extend(self.m4_mission_text_items())
+        self.m4_assert_landed_at_home()
         self.m4_assert_no_text(r"^M4 loop")
+        auto = self.get_mode_from_mode_mapping("AUTO")
+        armed_modes = [m.custom_mode for m in heartbeats if m.type != mavutil.mavlink.MAV_TYPE_GCS and
+                       m.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED]
+        if not armed_modes or set(armed_modes) != {auto}:
+            raise NotAchievedException("armed HEARTBEAT modes %s, expected AUTO only" % sorted(set(armed_modes)))
+        # the item never goes back up to the LAND (6); the landed mission then starts over
+        land_item = 6
+        if land_item not in items:
+            raise NotAchievedException("MISSION_CURRENT never %u: %s" % (land_item, sorted(set(items))))
+        items = items[:len(items) - items[::-1].index(land_item)]
+        backwards = [(a, b) for a, b in zip(items, items[1:]) if b < a]
+        if backwards:
+            raise NotAchievedException("MISSION_CURRENT went back: %s" % backwards)
+        if land_item in mission_texts:
+            mission_texts = mission_texts[:mission_texts.index(land_item) + 1]
+        if mission_texts != list(range(1, land_item + 1)):
+            raise NotAchievedException("Mission texts %s, expected 1 to %u once each" % (mission_texts, land_item))
+        # the logger writes a MODE row at boot and again at arming
+        modes = [row.Mode for row in self.m4_log_rows("MODE")]
+        if auto not in modes or set(modes[modes.index(auto):]) != {auto}:
+            raise NotAchievedException("left AUTO in flight: MODE rows %s" % modes)
         self.assert_prearm_failure("Scripting core not running", other_prearm_failures_fatal=False)
         rows = self.m4_log_rows("M4ST")
-        if max(row.Rst for row in rows) != restart_max or rows[-1].St != 4:
-            raise NotAchievedException("M4ST: Rst %u, last state %u" % (max(row.Rst for row in rows), rows[-1].St))
+        if not rows:
+            raise NotAchievedException("no M4ST rows")
+        restarts_used = max(row.Rst for row in rows)
+        if restarts_used != restart_max or rows[-1].St != 4:
+            raise NotAchievedException("M4ST: Rst %u, last state %u" % (restarts_used, rows[-1].St))
         self.context_pop()
         self.reboot_sitl()
 
