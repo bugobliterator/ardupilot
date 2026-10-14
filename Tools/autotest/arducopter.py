@@ -23551,6 +23551,7 @@ RTL_ALT_M 111
             "SCR_M4_RST_MAX": 2,   # two fault restarts: requested restarts must leave them
             "SCR_USER2": 0,
             "SCR_USER3": 0,
+            "SCR_USER4": 0,        # the restart loop's sessions save it: restored and saved at the end
             "SCR_USER5": 0,
             "SCR_USER6": 1,        # the sessions block MAV_CMD_USER_1
             "AUTO_OPTIONS": 3,     # arm and take off in AUTO
@@ -23631,15 +23632,22 @@ RTL_ALT_M 111
         # the quota buckets are filled once per boot (AP_ScriptingM4_Server::reset() calls
         # Quota::new_session()): the loop's first session finds Storage full, every later one only
         # the refill since the last session, about 10. Refilled at every session, each would save 100
-        saves = [int(m.text.rsplit(" ", 1)[1]) for m in self.context_collection("STATUSTEXT")
-                 if re.match(r"M4 commands session \d+ saves \d+$", m.text)]
+        saves = {}
+        for m in self.context_collection("STATUSTEXT"):
+            match = re.match(r"M4 commands session (\d+) saves (\d+)$", m.text)
+            if match:
+                saves.setdefault(int(match.group(1)), []).append(int(match.group(2)))
         self.progress("restart loop: saves per session %s" % saves)
-        if len(saves) < 20:
-            raise NotAchievedException("%u sessions saved, expected 20" % len(saves))
-        if saves[0] < 90:
-            raise NotAchievedException("the loop's first session saved %u, expected a full bucket" % saves[0])
-        if max(saves[1:]) > 50:
-            raise NotAchievedException("a later session saved %u: the bucket was refilled" % max(saves[1:]))
+        # sessions 5 to 24 started with SCR_USER6 4; each saves once
+        saving = list(range(5, session + 1))
+        missing = [n for n in saving if len(saves.get(n, [])) != 1]
+        if missing or sorted(saves) != saving:
+            raise NotAchievedException("saves texts of sessions %s missing or repeated (got %s)" % (missing, sorted(saves)))
+        if saves[5][0] < 90:
+            raise NotAchievedException("the loop's first session saved %u, expected a full bucket" % saves[5][0])
+        refilled = [(n, saves[n][0]) for n in saving[1:] if saves[n][0] > 50]
+        if refilled:
+            raise NotAchievedException("later sessions saved %s: the bucket was refilled" % refilled)
         self.set_parameter("SCR_USER6", 0)
 
         # a script calling restart_all() every 100 ms is stopped by STOP at once and stays stopped
