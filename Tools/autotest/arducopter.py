@@ -19616,6 +19616,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4MAVLink,
             self.ScriptingM4Commands,
             self.ScriptingM4EarlyFault,
+            self.ScriptingM4MissionFlight,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -23157,6 +23158,58 @@ RTL_ALT_M 111
         '''the "Scripting: M4 ..." texts collected since the last clear, in order'''
         return [m.text for m in self.context_collection("STATUSTEXT") if m.text.startswith("Scripting: M4")]
 
+    def m4_flight_mission(self):
+        '''End-to-End Flights' mission: take off, a waypoint, a LOITER_UNLIM at item 3 that
+        m4_mission_flight.lua moves on, two waypoints, LAND at home'''
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM, 10, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 10, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 10, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 0, 0),
+        ])
+
+    def m4_assert_holding(self, item, seconds=5):
+        '''the vehicle stays armed in AUTO at mission item item, 8-12 m up, for seconds'''
+        tstart = self.get_sim_time()
+        while self.get_sim_time_cached() - tstart < seconds:
+            current = self.assert_receive_message("MISSION_CURRENT", timeout=2).seq
+            altitude = self.assert_receive_message("GLOBAL_POSITION_INT", timeout=2).relative_alt * 0.001
+            mode = self.mav.messages["HEARTBEAT"].custom_mode
+            if current != item or not self.armed() or mode != self.get_mode_from_mode_mapping("AUTO") or \
+                    not 8 <= altitude <= 12:
+                raise NotAchievedException("not holding item %u: current %u, armed %s, mode %u, %.1f m" %
+                                           (item, current, self.armed(), mode, altitude))
+
+    def m4_mission_counts(self):
+        '''the "M4 count <name> <n>" lines and the "M4 total <n>" of m4_mission_flight.lua'''
+        counts = {}
+        total = None
+        for m in self.context_collection("STATUSTEXT"):
+            match = re.match(r"M4 count (\S+) (\d+)$", m.text)
+            if match:
+                counts[match.group(1)] = int(match.group(2))
+            match = re.match(r"M4 total (\d+)$", m.text)
+            if match:
+                total = int(match.group(1))
+        return counts, total
+
+    def m4_check_mission_counts(self, counts, total, totals):
+        '''SRPC holds every binding call m4_mission_flight.lua made, and the per-update identities
+        that the Renode flight (test_m4_flight.py) checks hold'''
+        for name, n in counts.items():
+            if totals.get(name, 0) > n:
+                raise NotAchievedException("SRPC %s: %u calls logged, the script made %u" % (name, totals[name], n))
+        logged = self.m4_binding_calls_logged(totals)
+        self.progress("SRPC binding calls logged %u, script made %u" % (logged, total))
+        if logged != total:
+            raise NotAchievedException("SRPC binding calls: %u logged, the script made %u" % (logged, total))
+        updates = counts["vehicle:get_mode"]
+        if (counts["mission:get_current_nav_index"] != updates or counts["param:get"] != updates + 2 or
+                counts["mission:set_current_cmd"] != 1 or counts.get("arming:arm", 0) != 1):
+            raise NotAchievedException("script counts %s" % counts)
+
     def ScriptingM4MAVLink(self):
         '''mavlink, logger and the singleton manual bindings on the SITL M4; Rover's internal and MAVLink script sets'''
         self.m4_mavlink_internal_set()
@@ -23695,6 +23748,52 @@ RTL_ALT_M 111
         rows = self.m4_log_rows("M4ST")
         if max(row.Rst for row in rows) != 2:
             raise NotAchievedException("M4ST.Rst %u, expected 2" % max(row.Rst for row in rows))
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ScriptingM4MissionFlight(self):
+        '''m4_mission_flight.lua on the SITL M4 arms the vehicle in AUTO and moves the mission on from its LOITER_UNLIM'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1, "SCR_DEBUG_OPTS": 8, "LOG_DISARMED": 1, "AUTO_OPTIONS": 3,
+            "LOG_DARM_RATEMAX": 0, "LOG_FILE_RATEMAX": 0,   # no SRPC row dropped by the rate limit
+            "SCR_USER1": 3, "SCR_USER2": 0, "SCR_USER3": 1,
+        })
+        self.install_test_script_context("m4_mission_flight.lua")
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(1 scripts", regex=True, check_context=True, timeout=30)
+        self.m4_flight_mission()
+        self.wait_ready_to_arm()
+        self.change_mode("AUTO")
+        self.wait_m4_script_text("M4 mission armed true", timeout=60)
+        self.wait_armed()
+        # with SCR_USER2 0 the script leaves the LOITER_UNLIM alone: the vehicle holds there
+        self.context_set_message_rate_hz("MISSION_CURRENT", 10)
+        self.wait_current_waypoint(3, timeout=120)
+        self.m4_assert_holding(3, seconds=10)
+        self.m4_assert_no_text(r"M4 mission release")
+        self.set_parameter("SCR_USER2", 4)
+        self.wait_m4_script_text("M4 mission release 3 to 4 true", timeout=30)
+        self.wait_current_waypoint(4, timeout=10)
+        self.wait_m4_script_text("M4 mission done", timeout=60)
+        counts, total = self.m4_mission_counts()
+        self.wait_disarmed(timeout=240)
+        # the script's last window reaches the log: two summaries after its last call
+        self.context_clear_collection("STATUSTEXT")
+        for _ in range(2):
+            self.wait_statustext(r"Scripting RPC \d+/s", regex=True, check_context=True, timeout=30)
+            self.context_clear_collection("STATUSTEXT")
+        totals = self.m4_srpc_totals()
+        self.progress("script counts %s, total %s; SRPC totals %s" % (counts, total, totals))
+        self.m4_check_mission_counts(counts, total, totals)
+        # SCR rows carry the script name cut to the log's 16 characters
+        name = "m4_mission_flight.lua"[:16]
+        if name not in set(row.Name for row in self.m4_log_rows("SCR")):
+            raise NotAchievedException("no SCR row for %s" % name)
+        if max(row.Rst for row in self.m4_log_rows("M4ST")) != 0:
+            raise NotAchievedException("an M4 fault in the mission flight")
         self.context_pop()
         self.reboot_sitl()
 
@@ -25829,6 +25928,7 @@ return update, 1000
             "ScriptingM4MAVLink": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Commands": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4EarlyFault": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4MissionFlight": "Requires --enable-scripting-m4 SITL build",
         }
 
 
