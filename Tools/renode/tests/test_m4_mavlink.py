@@ -193,18 +193,22 @@ def m7_elf():
     return str(Path(os.environ.get('M4LUA_ELF', BUILD / 'arducopter')))
 
 
-def requested_grant_branches():
-    '''Addresses of run_control()'s calls of grant_restart() (request_restart() is inlined, and the call
-    may be a tail branch, so a hook in grant_restart() cannot tell a request from a fault).'''
+def requested_restart_hooks():
+    '''Where the M7 grants a requested restart, before the grant: the entry of request_restart(), or,
+    if that is inlined, run_control()'s calls of grant_restart() (a hook in grant_restart() cannot tell
+    a request from a fault).'''
     elf = m7_elf()
     symbols = subprocess.check_output(['arm-none-eabi-nm', '-S', '-C', elf], text=True)
+    entry = re.search(r'(?m)^([0-9a-f]{8}) [0-9a-f]{8} [Tt] AP_ScriptingM4::request_restart\(bool\)$', symbols)
+    if entry:
+        return [int(entry.group(1), 16)]
     start, end = symbol_range(symbols, 'AP_ScriptingM4::run_control')
     grant_restart = symbol_range(symbols, 'AP_ScriptingM4::grant_restart')[0]
     listing = subprocess.check_output(['arm-none-eabi-objdump', '-d', '--start-address=0x%x' % start,
                                        '--stop-address=0x%x' % end, elf], text=True)
     branches = [int(address, 16) for address in
                 re.findall(r'(?m)^\s*([0-9a-f]+):\s.*\sb(?:l|\.w)?\s+%x <' % grant_restart, listing)]
-    assert branches, 'no call of grant_restart() in run_control()'
+    assert branches, 'no request_restart() and no call of grant_restart() in run_control()'
     return branches
 
 
@@ -296,7 +300,7 @@ def test_m4_fault_around_requested_restart(start_m4lua, tmp_path):  # noqa: F811
     '''A fault the M4 records after the M7 read its header, in the pass that grants a requested
     restart, is charged to SCR_M4_RST_MAX once the new session runs. If check_started() took the
     M4's fault count at a requested restart, the fault would be absorbed: no fault text, M4ST.Rst 0.'''
-    branches = requested_grant_branches()
+    branches = requested_restart_hooks()
     run = start_with_scripts(start_m4lua, ['tests/m4_loop.lua'], dict(LOG_ROWS, SCR_M4_RST_MAX=1))
     run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
     run.wait_text(r'^M4 loop 2$', timeout=SCRIPT_TIMEOUT)
