@@ -23523,6 +23523,7 @@ RTL_ALT_M 111
         # looks once a second), and scripting stays on. Timed by the texts' receive times, with 0.1 s
         # of receive jitter: without the wait they follow the M4's restart, well under a second
         self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_USER6", 4)   # each new session saves a parameter 120 times at its start
         self.set_parameter("SCR_USER3", 20)
         self.set_parameter("SCR_USER5", 3)
         self.wait_m4_script_text(r"M4 commands restart loop 0$", timeout=120)
@@ -23538,6 +23539,19 @@ RTL_ALT_M 111
         if min(gaps) < 0.9:
             raise NotAchievedException("a requested restart %.2f s after the last" % min(gaps))
         self.m4_assert_no_text(r"^(?:Scripting: M4 )")
+        # the quota buckets are filled once per boot (AP_ScriptingM4_Server::reset() calls
+        # Quota::new_session()): the loop's first session finds Storage full, every later one only
+        # the refill since the last session, about 10. Refilled at every session, each would save 100
+        saves = [int(m.text.rsplit(" ", 1)[1]) for m in self.context_collection("STATUSTEXT")
+                 if re.match(r"M4 commands session \d+ saves \d+$", m.text)]
+        self.progress("restart loop: saves per session %s" % saves)
+        if len(saves) < 20:
+            raise NotAchievedException("%u sessions saved, expected 20" % len(saves))
+        if saves[0] < 90:
+            raise NotAchievedException("the loop's first session saved %u, expected a full bucket" % saves[0])
+        if max(saves[1:]) > 50:
+            raise NotAchievedException("a later session saved %u: the bucket was refilled" % max(saves[1:]))
+        self.set_parameter("SCR_USER6", 0)
 
         # a script calling restart_all() every 100 ms is stopped by STOP at once and stays stopped
         self.set_parameter("SCR_USER5", 4)
