@@ -23232,6 +23232,12 @@ RTL_ALT_M 111
         for name, n in counts.items():
             if totals.get(name, 0) > n:
                 raise NotAchievedException("SRPC %s: %u calls logged, the script made %u" % (name, totals[name], n))
+        # every binding row is a method the script counts: a call logged under another name would keep the
+        # sum below and pass the bound above
+        uncounted = sorted(name for name in totals if name not in counts and
+                           not (name.startswith("m4:") or name == "global:print"))
+        if uncounted:
+            raise NotAchievedException("SRPC rows for methods the script did not count: %s" % uncounted)
         logged = self.m4_binding_calls_logged(totals)
         self.progress("SRPC binding calls logged %u, script made %u" % (logged, total))
         if logged != total:
