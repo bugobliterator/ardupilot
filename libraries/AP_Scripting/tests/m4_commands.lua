@@ -16,6 +16,9 @@ local mode = Parameter("SCR_USER6")
 
 local session = sessions:get() + 1
 sessions:set(session)
+-- a caught error each session: on the SITL M4 a caught error's longjmp once left the restart signal
+-- blocked, and every later restart of the session timed out ("not responding")
+pcall(error, "a caught error")
 if mode:get() == 1 then
   mavlink.block_command(MAV_CMD_USER_1)
 end
