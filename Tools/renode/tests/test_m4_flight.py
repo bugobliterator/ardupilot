@@ -4,6 +4,7 @@ images fly an AUTO mission against the physics sidecar (Tools/renode/renode_phys
 CubeOrangePlus QuadPlane flight of test_physics_flight.py does, with a script running on the M4.
 Functional only: Renode is not cycle-accurate.
 
+Opt-in, as each flight takes 8 to 15 minutes: run with M4_RENODE_FLIGHTS=1.
 Needs RENODE, a CubeOrangePlus-M4Lua build and the physics sidecar:
   ./waf configure --board CubeOrangePlus-M4Lua && ./waf copter
   ./waf configure --board sitl --enable-scripting-m4 && ./waf --targets tool/renode-physics
@@ -33,6 +34,9 @@ from test_mission import (FORCE_ARM_MAGIC, distance_metres, offset_location, sen
 from test_physics_flight import (CANBERRA, CUBEORANGEPLUS_SENSOR_IDS, PHYSICS_RATE_HZ,  # noqa: E402
                                  check_sensor_ids, check_sidecar, ordered_subsequence, wait_for_sidecar,
                                  wait_ready)
+
+pytestmark = pytest.mark.skipif(os.environ.get('M4_RENODE_FLIGHTS') != '1',
+                                reason='Renode flights are opt-in: set M4_RENODE_FLIGHTS=1')
 
 PHYSICS = Path(os.environ.get('M4LUA_PHYSICS', ROOT / 'build' / 'sitl' / 'tool' / 'renode-physics'))
 PHYSICS_MODEL = 'x'          # SITL quad X: FRAME_CLASS 1, FRAME_TYPE 1
@@ -414,14 +418,20 @@ def script_counts(texts):
 
 def check_mission_counts(counts, total, totals):
     '''The rules ScriptingM4MissionFlight applies in SITL: SRPC holds every binding call the script
-    made (rules 1 and 2), and the script's own per-update identities hold (rules 3 to 5).'''
+    made (rules 1 and 2), every binding row is a method the script counts (so a call logged under
+    another name cannot pass both), and the script's own per-update identities hold (rules 3 to 5).'''
     missing = [name for name in ('vehicle:get_mode', 'mission:get_current_nav_index', 'param:get',
                                  'mission:set_current_cmd') if name not in counts]
     assert not missing and total is not None, 'script count lines missing: %s, total %s' % (missing, total)
     for name, count in counts.items():
         assert totals.get(name, 0) <= count, 'SRPC %s: %u logged, the script made %u' % (name, totals[name], count)
-    logged = sum(n for name, n in totals.items()
-                 if name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print'))
+
+    def binding(name):
+        return name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print')
+
+    uncounted = sorted(name for name in totals if binding(name) and name != 'm4:other' and name not in counts)
+    assert not uncounted, 'SRPC rows for methods the script did not count: %s' % uncounted
+    logged = sum(n for name, n in totals.items() if binding(name))
     print('SRPC binding calls logged %u, script made %u' % (logged, total), flush=True)
     assert logged == total, 'SRPC binding calls: %u logged, the script made %u (%s)' % (logged, total, totals)
     check_per_update(counts)
@@ -599,10 +609,11 @@ def check_update_counts(counts, total):
     '''The per-update rules of an m4_mission_flight.lua session started in flight, and the vehicle
     found armed (arming:is_armed once, no arming:arm).
     Accepted limit: these are the script's own tallies, so only the is_armed result depends on the
-    M7. With binding_bench.lua in the flight its methods hold the SRPC top-8 rows and the mission
-    script's own methods fold into m4:other, so no per-method SRPC bound for the restarted session
-    holds. On the M7 side the release is pinned here by MISE (served once) and the arm by ARM;
-    per-update serving is pinned by test_m4_mission_flight, without faults.'''
+    M7. With binding_bench.lua in the flight, SRPC's 8 rows per window (most round-trip time) are
+    mostly its methods: the mission script's own methods usually fold into m4:other, and get_mode and
+    param:get rows mix both scripts, so no per-method SRPC bound for the restarted session is both
+    sound and non-vacuous. On the M7 side the release is pinned here by MISE (served once) and the
+    arm by ARM; one remote call per script call is pinned by test_m4_mission_flight, without faults.'''
     missing = [name for name in ('vehicle:get_mode', 'mission:get_current_nav_index', 'param:get',
                                  'arming:is_armed', 'mission:set_current_cmd') if name not in counts]
     assert not missing and total is not None, 'script count lines missing: %s, total %s' % (missing, total)
@@ -694,6 +705,11 @@ def test_m4_faults_mid_auto(start_m4_flight, tmp_path):
     assert disarm_mode == COPTER_AUTO, 'disarmed in mode %u, not AUTO' % disarm_mode
     assert disarm_altitude < 1, 'disarmed %.1f m up' % disarm_altitude
     assert landing <= LANDING_RADIUS_M, 'landed %.1f m from home' % landing
+    # with scripting off, the waypoints after the release are flown at their height too
+    for item in (RELEASE_ITEM, 5):
+        lowest, highest = track.item_heights[item]
+        print('item %u: %.1f to %.1f m' % (item, lowest, highest), flush=True)
+        assert 8 <= lowest and highest <= 12, 'item %u: %.1f to %.1f m' % (item, lowest, highest)
     # m4_loop.lua prints once a second: none of the scripts ran from the fault limit to the landing
     ran = [text for text in run.texts[off_at:] if re.match(r'^(M4 |BENCH )', text)]
     assert not ran, 'a script ran after scripting went off: %s' % ran

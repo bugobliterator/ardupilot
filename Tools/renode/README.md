@@ -464,11 +464,26 @@ boots the CubeOrangePlus-M4Lua Copter firmware with its M4 scripting image,
 injects faults on the M4 and checks that the M7 restarts it up to the
 `SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
 
+`tests/test_m4_fault_reports.py` covers the fault reports the containment tests do not reach: a
+restarted M4 that faults right after it publishes its header, alone (about 5 minutes) and with a STOP
+taken before its heartbeat times out (about 16 minutes), and a fault inside an M4 interrupt handler,
+which parks the M4.
+
 `tests/test_m4_flight.py` flies the CubeOrangePlus-M4Lua Copter against the physics sidecar, as
-the CubeOrangePlus QuadPlane flight does: a forced arm from the GCS, a short AUTO mission (take off,
-one waypoint, land at home) and a script running on the M4 throughout. It needs the variant build and
-`build/sitl/tool/renode-physics` (`./waf --targets tool/renode-physics` on a SITL configuration,
-or `M4LUA_PHYSICS`). Renode flies about 4x slower than real time, so a flight takes minutes.
+the CubeOrangePlus QuadPlane flight does. Its three flights are opt-in, as together they take about
+half an hour: set `M4_RENODE_FLIGHTS=1` to run them.
+
+- `test_m4_flight_harness`: a forced arm from the GCS, a short AUTO mission (take off, one waypoint,
+  land at home) and a script running on the M4 throughout (about 8 minutes).
+- `test_m4_mission_flight`: `m4_mission_flight.lua` arms the vehicle, holds a LOITER_UNLIM and moves
+  the mission on; its binding calls are checked against the SRPC log rows (about 10 minutes).
+- `test_m4_faults_mid_auto`: M4 faults while the vehicle holds in AUTO; the scripts reload, then
+  scripting turns off at the fault limit and the mission lands (about 12 to 15 minutes).
+
+They need the variant build and `build/sitl/tool/renode-physics` (`./waf --targets tool/renode-physics`
+on a SITL configuration, or `M4LUA_PHYSICS`). Renode flies about 4 to 5 times slower than real time.
+
+    M4_RENODE_FLIGHTS=1 python -m pytest Tools/renode/tests/test_m4_flight.py
 
 ### Graphical launcher
 
