@@ -37,9 +37,10 @@ static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = ScriptingM4::START_TIMEOUT_M
 static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = ScriptingM4::RESTART_TIMEOUT_MS;
 #endif
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
-// SCR_M4_INJECT value handled on the M7, past the M4's FaultKind values
+// SCR_M4_INJECT value handled on the M7, in a gap of the M4's FaultKind values
 static const int8_t INJECT_REFUSE_BINDINGS = 10;
-static_assert(INJECT_REFUSE_BINDINGS > ScriptingM4::FAULT_KIND_MAX, "not sent to the M4");
+static_assert(INJECT_REFUSE_BINDINGS > uint8_t(ScriptingM4::FaultKind::LuaRccWrite) &&
+              INJECT_REFUSE_BINDINGS < uint8_t(ScriptingM4::FaultKind::HandlerFault), "not a FaultKind");
 // SCR_M4_INJECT value handled on the M7: a HardFault now, and another right after the restarted
 // M4 publishes its header, before the M7 reads it (an early fault)
 static const int8_t INJECT_FAULT_AFTER_PUBLISH = 12;
@@ -60,7 +61,7 @@ const AP_Param::GroupInfo AP_ScriptingM4::var_info[] = {
     // @Param: INJECT
     // @DisplayName: Scripting M4 fault injection
     // @Description: Test only. Changing this to a non-zero value makes the M4 scripting core fault in that way
-    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write,10:Bindings image refused,12:Fault again after the restart
+    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write,10:Bindings image refused,11:Fault in an M4 interrupt handler,12:Fault again after the restart
     // @User: Advanced
     AP_GROUPINFO("INJECT", 2, AP_ScriptingM4, _inject, 0),
 #endif
@@ -615,7 +616,7 @@ void AP_ScriptingM4::send_fault_inject()
         // the fault restart this HardFault causes is grant _restart_grants + 1
         ScriptingM4::supervisor_block(_shared)->fault_after_publish_grant.store(_restart_grants + 1);
         sent = ScriptingM4::FaultKind::HardFault;
-    } else if (kind > ScriptingM4::FAULT_KIND_MAX) {
+    } else if (kind > ScriptingM4::FAULT_KIND_MAX || kind == INJECT_REFUSE_BINDINGS) {
         return;
     } else {
         sent = ScriptingM4::FaultKind(kind);

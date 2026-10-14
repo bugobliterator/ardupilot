@@ -60,4 +60,11 @@ TEST(ScriptingM4Protocol, FaultNames)
     EXPECT_FALSE(lua_thread_fault(FaultKind::Flood));
 }
 
+TEST(ScriptingM4Protocol, HandlerFaultIsAServiceFault)
+{
+    EXPECT_EQ(uint8_t(FaultKind::HandlerFault), 11);
+    EXPECT_EQ(FAULT_KIND_MAX, 11);
+    EXPECT_FALSE(lua_thread_fault(FaultKind::HandlerFault));   // the service pends it, not the Lua thread
+}
+
 AP_GTEST_MAIN()

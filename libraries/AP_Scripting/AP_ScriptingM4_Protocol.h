@@ -35,8 +35,10 @@ enum class FaultKind : uint8_t {
     LuaAircr = 7,         // Lua thread: SYSRESETREQ write to AIRCR (unprivileged: BusFault)
     LuaStackOverflow = 8, // Lua thread: recursion into its stack guard
     LuaRccWrite = 9,      // Lua thread: stray write to RCC_GCR
+    // 10 is SCR_M4_INJECT's refused bindings image, handled on the M7
+    HandlerFault = 11,    // service: pends IRQ 147, whose handler faults inside that exception
 };
-static const uint8_t FAULT_KIND_MAX = 9;
+static const uint8_t FAULT_KIND_MAX = 11;
 
 // the faults the Lua thread performs; the service performs the others
 inline bool lua_thread_fault(FaultKind kind)

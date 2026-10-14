@@ -34,6 +34,12 @@ static uint8_t *shared_window()
     return reinterpret_cast<uint8_t *>(AP_SCRIPTING_M4_WINDOW_BASE);
 }
 
+// SCR_M4_INJECT 11: IRQ 147 is reserved on the STM32H757, so only the service's pend raises it.
+// Its handler faults, so the fault handler runs inside another exception (ICSR.RETTOBASE 0),
+// where m4_warm_restart() cannot return to thread mode and parks
+static const uint32_t TEST_IRQ = 147;
+static_assert(0x40 + 4 * TEST_IRQ == 0x28C, "Vector28C is IRQ 147's vector");
+
 extern "C" {
 
 void *__dso_handle = nullptr;
@@ -53,6 +59,11 @@ CH_IRQ_HANDLER(Vector238)
     CH_IRQ_PROLOGUE();
     HwSemaphore::handleIrq();
     CH_IRQ_EPILOGUE();
+}
+
+CH_IRQ_HANDLER(Vector28C)
+{
+    __builtin_trap();   // UDF; UsageFault is not enabled, so it escalates to HardFault
 }
 
 // CubeFramework PAL for the bare-metal HSEM build
@@ -155,6 +166,11 @@ static void inject_fault(FaultKind kind)
         for (;;) {
             __NOP();
         }
+    case FaultKind::HandlerFault:
+        NVIC_SetPriority(IRQn_Type(TEST_IRQ), 2);
+        NVIC_EnableIRQ(IRQn_Type(TEST_IRQ));
+        NVIC_SetPendingIRQ(IRQn_Type(TEST_IRQ));
+        break;
     default:
         break;
     }
