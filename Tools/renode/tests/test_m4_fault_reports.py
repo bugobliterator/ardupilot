@@ -65,14 +65,16 @@ def test_m4_early_fault_is_reported(start_m4lua):  # noqa: F811
 
 
 def test_m4_stop_in_the_early_fault_window(start_m4lua):  # noqa: F811
-    '''A STOP taken by the early-faulting session before its heartbeat times out: the fault is still
-    reported and charged, and the stop then acts on its fault restart (no script runs after it).'''
+    '''A STOP that reaches the early-faulting session before its heartbeat times out: the M7 holds it
+    while the start fault is pending, reports and charges the fault at the timeout, and the fault
+    restart carries the stop (no script runs after it).'''
     run = start_with_scripts(start_m4lua, ['tests/m4_loop.lua'], {'SCR_M4_RST_MAX': 3})
     run.wait_text(r'^M4 loop 2$', timeout=SCRIPT_TIMEOUT)
     start = len(run.texts)
     run.set('SCR_M4_INJECT', 12)
     run.wait_text(re.escape('Scripting: M4 restarting (1/3)'), timeout=SCRIPT_TIMEOUT)
-    # held in AP_Scripting's flags while the M4 restarts; taken at the new session's first pass
+    # kept in AP_Scripting's flags while the M4 restarts, then held while the new session's start fault
+    # is pending; taken right after the heartbeat timeout reports the fault
     run.mav.mav.command_long_send(run.mav.target_system, run.mav.target_component,
                                   mavutil.mavlink.MAV_CMD_SCRIPTING, 0,
                                   mavutil.mavlink.SCRIPTING_CMD_STOP, 0, 0, 0, 0, 0, 0)
@@ -85,8 +87,8 @@ def test_m4_stop_in_the_early_fault_window(start_m4lua):  # noqa: F811
         r'^Scripting: M4 restarted \(2/3\)$'])
     after = run.texts[start:]
     assert 'Scripting: stopped' in after, 'no "Scripting: stopped" in %s' % after
-    # the stop came between the early fault's restart and its end: it reached the session in its
-    # start window, not after the heartbeat timeout reported the fault
+    # the stop came between the early fault's "restarting" and "restarted": the fault restart carried
+    # it. A STOP that missed the start window would act after "restarted (2/3)", in a requested restart
     assert after.index(texts[4]) < after.index('Scripting: stopped') < after.index(texts[5]), \
         'the STOP missed the start window: %s' % after
     loops = [text for text in after[after.index(texts[5]):] if re.match(r'^M4 loop \d+$', text)]
