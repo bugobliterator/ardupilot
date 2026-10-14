@@ -10,6 +10,7 @@
 #include "AP_ScriptingM4_Protocol.h"
 #include "AP_ScriptingM4_Server.h"
 #include "AP_ScriptingM4_RunControl.h"
+#include "AP_ScriptingM4_StartFault.h"
 
 namespace CubePilotFW {
 class Channel;
@@ -109,6 +110,9 @@ private:
     uint32_t _m4_fault_pc;
     uint32_t _m4_heartbeat;
     uint32_t _m4_heartbeat_ms;
+    // a fault at a fault restart's start: the old session's on its way down, or the new session's
+    // own before this M7 read its header; check_running() reports it if the session never beats
+    ScriptingM4::StartFault _start_fault;
     uint32_t _woke_us;
     uint32_t _wake_latency_us;
 

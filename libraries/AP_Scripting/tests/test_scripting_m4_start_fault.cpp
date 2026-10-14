@@ -1,0 +1,60 @@
+#include <AP_gtest.h>
+#include <AP_Scripting/AP_ScriptingM4_StartFault.h>
+
+using namespace ScriptingM4;
+
+// a fault restart's new session shows a new fault count and never beats: the fault is its own,
+// reported (with its PC) instead of "heartbeat lost", once
+TEST(ScriptingM4StartFault, EarlyFaultIsReported)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    EXPECT_TRUE(start.report_on_timeout(true));
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+// the new session beats: the new count was the old session's fault on its way down, absorbed; a
+// later stall is "heartbeat lost"
+TEST(ScriptingM4StartFault, FaultOnTheWayDownIsAbsorbed)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    start.beat();
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+// no new fault count at the start: a stall is "heartbeat lost"
+TEST(ScriptingM4StartFault, NoFaultAtTheStart)
+{
+    StartFault start;
+    start.session_started(true, 1, 1);
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+// the first start and a requested restart keep their rules: a fault count there is charged by the
+// fault-count check, not reported at the heartbeat timeout
+TEST(ScriptingM4StartFault, OnlyAfterAFaultRestart)
+{
+    StartFault start;
+    start.session_started(false, 2, 1);
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+// a header that does not read as compatible (Busy) has no fault record to report
+TEST(ScriptingM4StartFault, UnreadableHeaderIsHeartbeatLost)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    EXPECT_FALSE(start.report_on_timeout(false));
+}
+
+// each session starts afresh: a pending fault of one session does not carry into the next
+TEST(ScriptingM4StartFault, EachSessionStartsAfresh)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    start.session_started(true, 2, 2);
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
+AP_GTEST_MAIN()

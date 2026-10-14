@@ -357,6 +357,18 @@ void AP_ScriptingM4::supervise(uint32_t now_ms)
     }
 }
 
+// the GCS reason of the fault an M4 recorded: "HardFault PC=0x0810A3C4", in SITL the signal and address
+static void fault_reason(const PeerHeader::View &view, char *reason, size_t reason_len)
+{
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    hal.util->snprintf(reason, reason_len, "signal %u addr=0x%08X",
+                       unsigned(view.faultCfsr), unsigned(view.faultPc));
+#else
+    hal.util->snprintf(reason, reason_len, "%s PC=0x%08X",
+                       ScriptingM4::fault_name(view.faultCfsr, view.faultHfsr), unsigned(view.faultPc));
+#endif
+}
+
 void AP_ScriptingM4::check_started(uint32_t now_ms)
 {
     PeerHeader::View view {};
@@ -371,8 +383,12 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         (_state == State::Starting || view.session != _m4_session)) {
         _m4_session = view.session;
         // a fault restart has been charged: a fault the M4 recorded on its way down is the same
-        // incident. After a requested restart the count stays: a fault recorded around the request
-        // is still a fault, which check_running() charges to SCR_M4_RST_MAX
+        // incident. A fault the new session recorded after its publish() and before this read
+        // shows here too; check_running() reports it if the session never beats. After a requested
+        // restart the count stays: a fault recorded around the request is still a fault, which
+        // check_running() charges to SCR_M4_RST_MAX
+        _start_fault.session_started(_state == State::Restarting && !_restart_requested,
+                                     view.faultCount, _m4_fault_count);
         if (_state == State::Starting || !_restart_requested) {
             _m4_fault_count = view.faultCount;
         }
@@ -421,13 +437,7 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
             _m4_fault_count = view.faultCount;
             _m4_fault_pc = view.faultPc;
             char reason[40];
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
-            hal.util->snprintf(reason, sizeof(reason), "signal %u addr=0x%08X",
-                               unsigned(view.faultCfsr), unsigned(view.faultPc));
-#else
-            hal.util->snprintf(reason, sizeof(reason), "%s PC=0x%08X",
-                               ScriptingM4::fault_name(view.faultCfsr, view.faultHfsr), unsigned(view.faultPc));
-#endif
+            fault_reason(view, reason, sizeof(reason));
             failure(reason);
             return;
         }
@@ -441,7 +451,16 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
     if (heartbeat != _m4_heartbeat) {
         _m4_heartbeat = heartbeat;
         _m4_heartbeat_ms = now_ms;
+        _start_fault.beat();
     } else if (now_ms - _m4_heartbeat_ms > ScriptingM4::HEARTBEAT_TIMEOUT_MS) {
+        if (_start_fault.report_on_timeout(status == PeerHeader::Status::Compatible)) {
+            // the new session faulted after its publish(), before its first beat: report that fault
+            _m4_fault_pc = view.faultPc;
+            char reason[40];
+            fault_reason(view, reason, sizeof(reason));
+            failure(reason);
+            return;
+        }
         failure("heartbeat lost");
         return;
     }
