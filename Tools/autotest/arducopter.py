@@ -23847,11 +23847,11 @@ RTL_ALT_M 111
         self.reboot_sitl()
 
     def ScriptingM4MidAutoFaults(self):
-        '''M4 faults in an AUTO mission: the vehicle flies on, scripts reload within SCR_M4_RST_MAX, then stay off'''
+        '''M4 faults and a request flood in AUTO: the vehicle flies on, scripts reload within SCR_M4_RST_MAX, then stay off'''
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)   # the M4 heartbeat is wall-clock
         self.context_collect("STATUSTEXT")
-        restart_max = 3
+        restart_max = 4
         self.set_parameters({
             "SCR_ENABLE": 1, "SCR_M4_RST_MAX": restart_max, "SCR_DEBUG_OPTS": 8, "LOG_DISARMED": 1,
             "AUTO_OPTIONS": 3, "SCR_USER1": 3, "SCR_USER2": 0, "SCR_USER3": 1,
@@ -23881,11 +23881,24 @@ RTL_ALT_M 111
             mission_texts.extend(self.m4_mission_text_items())
             self.context_clear_collection("STATUSTEXT")
 
+        # a request flood (FLOOD_MS) loads the M7's host thread, which serves the M4's arm and mode
+        # calls: it is no fault, and the vehicle holds through it
+        next_texts()
+        flood_start = self.get_sim_time()
+        self.set_parameter("SCR_M4_INJECT", 6)
+        self.m4_assert_holding(3)
+        flood_end = self.get_sim_time()
+        self.wait_m4_script_text(r"M4 loop \d+$", timeout=10)
+        if self.m4_supervisor_texts():
+            raise NotAchievedException("M4 request flood gave %s" % self.m4_supervisor_texts())
+
         steps = (
             (1, r"Scripting: M4 signal \d+ addr=0x"),              # fault in the service
             (9, r"Scripting: M4 signal \d+ addr=0x00000008$"),     # stray write from the Lua thread
             (5, r"Scripting: M4 protocol errors"),                 # ring corruption
         )
+        if len(steps) != restart_max - 1:
+            raise NotAchievedException("fault steps do not leave one restart for the lockup")
         for used, (kind, reason) in enumerate(steps, start=1):
             next_texts()
             self.set_parameter("SCR_M4_INJECT", kind)
@@ -23903,12 +23916,13 @@ RTL_ALT_M 111
         self.wait_m4_script_text("M4 mission release 3 to 4 true", timeout=10)
         self.wait_current_waypoint(4, timeout=10)
 
-        # the fourth fault, a service stall, spends the budget: scripting stays off and the mission flies on
+        # the fourth fault, a lockup, ignores its restart: scripting turns off and the mission flies on
         next_texts()
-        self.set_parameter("SCR_M4_INJECT", 3)
+        self.set_parameter("SCR_M4_INJECT", 4)
         self.wait_statustext("Scripting: M4 heartbeat lost", check_context=True, timeout=10)
-        self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=10)
-        # only texts after the fault limit: the scripts must not run once off
+        self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (restart_max, restart_max), check_context=True, timeout=10)
+        self.wait_statustext("Scripting: M4 not responding, off until reboot", check_context=True, timeout=10)
+        # only texts after the go-off: the scripts must not run once off
         next_texts()
         self.assert_mode("AUTO")
         if not self.armed():
@@ -23934,7 +23948,7 @@ RTL_ALT_M 111
         if backwards:
             raise NotAchievedException("MISSION_CURRENT went back: %s" % backwards)
         if land_item in mission_texts:
-            mission_texts = mission_texts[:mission_texts.index(land_item) + 1]
+            mission_texts = mission_texts[:len(mission_texts) - mission_texts[::-1].index(land_item)]
         if mission_texts != list(range(1, land_item + 1)):
             raise NotAchievedException("Mission texts %s, expected 1 to %u once each" % (mission_texts, land_item))
         # the logger writes a MODE row at boot and again at arming
@@ -23948,6 +23962,13 @@ RTL_ALT_M 111
         restarts_used = max(row.Rst for row in rows)
         if restarts_used != restart_max or rows[-1].St != 4:
             raise NotAchievedException("M4ST: Rst %u, last state %u" % (restarts_used, rows[-1].St))
+        # the flood reached the M7: its window served more M4 messages a second than any second before it
+        before = [row.Req for row in rows if row.TimeUS * 1e-6 <= flood_start]
+        flood = [row.Req for row in rows if flood_start < row.TimeUS * 1e-6 <= flood_end + 1]
+        self.progress("M4ST Req: at most %u/s before the flood, %u/s in it" % (max(before), max(flood)))
+        if max(flood) <= 2 * max(before):
+            raise NotAchievedException("M4ST Req %u/s in the flood, %u/s before: no flood reached the M7" %
+                                       (max(flood), max(before)))
         self.context_pop()
         self.reboot_sitl()
 
