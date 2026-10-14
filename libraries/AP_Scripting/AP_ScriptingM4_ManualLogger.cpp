@@ -11,8 +11,9 @@
   Waits on the host thread (the 900 ms rule): log_write_fmts_sem in msg_fmt_for_name(), and the
   backend's write semaphore in WriteBlock(), each held by the main loop and the logging thread for
   one block, the wait of every vehicle log write; FileContent::sem in log_file_content() and
-  file_content_queued(), held by the logger thread for one 64-byte step; and log_file_content()'s
-  stat() of the path, one lookup on the filesystem, as the M4's file calls make.
+  file_content_queued(), held for one list operation (an allocation and copy, or an unlink): the
+  logger thread reads and seeks the files without it; and log_file_content()'s stat() of the
+  path, one lookup on the filesystem, as the M4's file calls make.
  */
 #include "AP_Scripting_config.h"
 
