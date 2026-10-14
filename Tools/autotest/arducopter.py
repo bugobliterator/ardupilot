@@ -19617,6 +19617,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4Commands,
             self.ScriptingM4EarlyFault,
             self.ScriptingM4MissionFlight,
+            self.ScriptingM4MidAutoFaults,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -23832,6 +23833,72 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+    def ScriptingM4MidAutoFaults(self):
+        '''M4 faults in an AUTO mission: the vehicle flies on, scripts reload within SCR_M4_RST_MAX, then stay off'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 heartbeat is wall-clock
+        self.context_collect("STATUSTEXT")
+        restart_max = 3
+        self.set_parameters({
+            "SCR_ENABLE": 1, "SCR_M4_RST_MAX": restart_max, "SCR_DEBUG_OPTS": 8, "LOG_DISARMED": 1,
+            "AUTO_OPTIONS": 3, "SCR_USER1": 3, "SCR_USER2": 0, "SCR_USER3": 1,
+        })
+        self.install_test_script_context(["m4_mission_flight.lua", "m4_loop.lua", "binding_bench.lua"])
+        self.reboot_sitl()
+        self.wait_statustext(r"Scripting: started on M4 \(3 scripts", regex=True, check_context=True, timeout=30)
+        self.m4_flight_mission()
+        self.wait_ready_to_arm()
+        self.change_mode("AUTO")
+        self.wait_m4_script_text("M4 mission armed true", timeout=60)
+        self.wait_armed()
+        self.context_set_message_rate_hz("MISSION_CURRENT", 10)
+        self.wait_current_waypoint(3, timeout=120)
+        self.wait_m4_script_text(r"BENCH ahrs:get_location n=\d+", timeout=30)
+        self.m4_assert_holding(3)
+
+        steps = (
+            (1, r"Scripting: M4 signal \d+ addr=0x"),              # fault in the service
+            (9, r"Scripting: M4 signal \d+ addr=0x00000008$"),     # stray write from the Lua thread
+            (5, r"Scripting: M4 protocol errors"),                 # ring corruption
+        )
+        for used, (kind, reason) in enumerate(steps, start=1):
+            self.context_clear_collection("STATUSTEXT")
+            self.set_parameter("SCR_M4_INJECT", kind)
+            self.wait_statustext(reason, regex=True, check_context=True, timeout=10)
+            self.wait_statustext("Scripting: M4 restarting (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
+            self.wait_statustext("Scripting: M4 restarted (%u/%u)" % (used, restart_max), check_context=True, timeout=10)
+            self.wait_m4_script_text(r"M4 loop 1$", timeout=15)
+            self.wait_m4_script_text(r"M4 loop 2$", timeout=15)
+            self.m4_assert_holding(3)
+
+        # the benchmark reloaded and runs; the restarted script still moves the mission on
+        self.context_clear_collection("STATUSTEXT")
+        self.wait_m4_script_text(r"BENCH ahrs:get_location n=\d+", timeout=30)
+        self.set_parameter("SCR_USER2", 4)
+        self.wait_m4_script_text("M4 mission release 3 to 4 true", timeout=10)
+        self.wait_current_waypoint(4, timeout=10)
+
+        # the fourth fault spends the budget: scripting stays off and the mission flies on
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_M4_INJECT", 0)
+        self.set_parameter("SCR_M4_INJECT", 1)
+        self.wait_statustext(r"Scripting: M4 signal \d+ addr=0x", regex=True, check_context=True, timeout=10)
+        self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=10)
+        # only texts after the fault limit: the scripts must not run once off
+        self.context_clear_collection("STATUSTEXT")
+        self.assert_mode("AUTO")
+        if not self.armed():
+            raise NotAchievedException("disarmed when scripting turned off")
+        self.wait_current_waypoint(6, timeout=120)
+        self.wait_disarmed(timeout=120)
+        self.m4_assert_no_text(r"^M4 loop")
+        self.assert_prearm_failure("Scripting core not running", other_prearm_failures_fatal=False)
+        rows = self.m4_log_rows("M4ST")
+        if max(row.Rst for row in rows) != restart_max or rows[-1].St != 4:
+            raise NotAchievedException("M4ST: Rst %u, last state %u" % (max(row.Rst for row in rows), rows[-1].St))
+        self.context_pop()
+        self.reboot_sitl()
+
     def ScriptingFlipMode(self):
         '''test adding custom mode from scripting'''
         # Really it would be nice to check for the AVAILABLE_MODES message, but pymavlink does not understand them yet.
@@ -25964,6 +26031,7 @@ return update, 1000
             "ScriptingM4Commands": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4EarlyFault": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4MissionFlight": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4MidAutoFaults": "Requires --enable-scripting-m4 SITL build",
         }
 
 
