@@ -23902,9 +23902,11 @@ RTL_ALT_M 111
         self.set_parameter("SCR_M4_INJECT", 6)
         self.m4_assert_holding(3)
         flood_end = self.get_sim_time()
-        self.wait_m4_script_text(r"M4 loop \d+$", timeout=10)
         if self.m4_supervisor_texts():
             raise NotAchievedException("M4 request flood gave %s" % self.m4_supervisor_texts())
+        # the scripts still run after the flood: a loop text printed after the hold
+        next_texts()
+        self.wait_m4_script_text(r"M4 loop \d+$", timeout=10)
 
         steps = (
             (1, r"Scripting: M4 signal \d+ addr=0x"),              # fault in the service
