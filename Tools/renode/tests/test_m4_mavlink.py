@@ -38,7 +38,8 @@ MODULE_FILES = ('mavlink_msgs.lua', 'mavlink_msg_HEARTBEAT.lua', 'mavlink_msg_NA
 # the largest host-thread paths an M4 call reaches: arming (its checks, then forced), disarming and
 # two mode changes through gcs:run_command_int, then logger:write with 15 fields, units and
 # multipliers, the widest call (the self, five strings and 15 values), and logger:log_file_content
-# of a script (queued) and of a file in the log directory (refused by path_in_log_directory()).
+# of a file outside the scripts directory (queued) and of a file in the log directory (refused by
+# path_in_log_directory()).
 # Then a NAMED_VALUE_FLOAT on channel 1, the test's link, once a second: the M7 builds and sends
 # the frame (mavlink_test.lua sends on channel 0, USB, which has no host here)
 CALLS_SCRIPT = '''
@@ -65,7 +66,7 @@ local fmt, units = string.rep("f", 15), string.rep("-", 15)
 local ok, err = pcall(logger.write, logger, "M4RL", labels, fmt, units, units,
                       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 gcs:send_text(ok and 6 or 3, ok and "M4 renode logger done" or ("M4 renode logger FAIL " .. tostring(err)))
-logger:log_file_content("/APM/scripts/m4_renode_calls.lua")
+logger:log_file_content("/APM/m4_content.txt")   -- not a script: only this call queues it
 logger:log_file_content("/APM/LOGS/LASTLOG.TXT")
 gcs:send_text(6, "M4 renode file content done")
 local MAVLINK_MSG_ID_NAMED_VALUE_FLOAT = 251
@@ -210,11 +211,15 @@ def requested_grant_branches():
 def test_m4_mavlink_test(start_m4lua, tmp_path):  # noqa: F811
     calls_script = tmp_path / 'm4_renode_calls.lua'
     calls_script.write_text(CALLS_SCRIPT)
+    # a file no script loading queues: its FILE row comes only from the script's log_file_content
+    content = tmp_path / 'm4_content.txt'
+    content.write_text('M4 log_file_content check\n')
     # a frame, so arming gets past the frame check (it is set up at boot: start_with_scripts starts
     # again); SCR_DEBUG_OPTS 8 (LOG_RUNTIME) logs an SRPC row per method the M4 calls
     run = start_with_scripts(start_m4lua, ['tests/mavlink_test.lua'],
                              dict(LOG_ROWS, SCR_VM_I_COUNT=1000000, SCR_DEBUG_OPTS=8, FRAME_CLASS=1, FRAME_TYPE=1),
-                             files=mavlink_module(tmp_path / 'mavgen') + [(calls_script, 'APM/scripts')])
+                             files=mavlink_module(tmp_path / 'mavgen') + [(calls_script, 'APM/scripts'),
+                                                                          (content, 'APM')])
     gcs_heartbeats(run)
     sent = named_values(run, 'M4RENODE')
     run.wait_text(r'^Scripting: started on M4 \(2 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
@@ -245,10 +250,10 @@ def test_m4_mavlink_test(start_m4lua, tmp_path):  # noqa: F811
     assert len(rows) == 1, 'M4RL rows: %s' % rows
     values = [getattr(rows[0], column) for column in 'ABCDEFGHIJKLMNO']
     assert values == list(range(1, 16)), 'M4RL values: %s' % values
-    # the script's file was queued and logged (FILE names are cut to 16 characters); the log
-    # directory's file was refused
+    # the file outside the scripts directory was queued and logged; the log directory's file was refused.
+    # m4_renode_calls.lua's own row comes from m4:script_loaded and proves nothing about the call
     files = set(row.FileName for row in log_rows(log, 'FILE'))
-    assert 'm4_renode_calls.' in files and 'LASTLOG.TXT' not in files, 'FILE rows of %s' % sorted(files)
+    assert 'm4_content.txt' in files and 'LASTLOG.TXT' not in files, 'FILE rows of %s' % sorted(files)
     # SRPC has rows for the 8 methods with the most round-trip time per window; logger:write and
     # log_file_content, made once in a busy window, may fold into m4:other: their log rows show them
     methods = set(row.Name for row in log_rows(log, 'SRPC'))
