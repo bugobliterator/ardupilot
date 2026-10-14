@@ -37,7 +37,10 @@ MODULE_FILES = ('mavlink_msgs.lua', 'mavlink_msg_HEARTBEAT.lua', 'mavlink_msg_NA
 
 # the largest host-thread paths an M4 call reaches: arming (its checks, then forced), disarming and
 # two mode changes through gcs:run_command_int, then logger:write with 15 fields, units and
-# multipliers, the widest call (the self, five strings and 15 values)
+# multipliers, the widest call (the self, five strings and 15 values), and logger:log_file_content
+# of a script (queued) and of a file in the log directory (refused by path_in_log_directory()).
+# Then a NAMED_VALUE_FLOAT on channel 1, the test's link, once a second: the M7 builds and sends
+# the frame (mavlink_test.lua sends on channel 0, USB, which has no host here)
 CALLS_SCRIPT = '''
 local MAV_CMD_COMPONENT_ARM_DISARM, MAV_CMD_DO_SET_MODE = 400, 176
 local ARM_FORCE, DISARM_FORCE, CUSTOM_MODE = 2989, 21196, 1
@@ -52,6 +55,9 @@ local results = {}
 for i, command in ipairs(commands) do
   results[i] = tostring(gcs:run_command_int(command[2], command[3]))
   gcs:send_text(6, "M4 renode " .. command[1] .. " " .. results[i])
+  if command[1] == "ALT_HOLD" then
+    gcs:send_text(6, "M4 renode mode " .. tostring(vehicle:get_mode()))
+  end
 end
 gcs:send_text(6, "M4 renode commands " .. table.concat(results, " "))
 local labels = "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O"
@@ -59,6 +65,16 @@ local fmt, units = string.rep("f", 15), string.rep("-", 15)
 local ok, err = pcall(logger.write, logger, "M4RL", labels, fmt, units, units,
                       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 gcs:send_text(ok and 6 or 3, ok and "M4 renode logger done" or ("M4 renode logger FAIL " .. tostring(err)))
+logger:log_file_content("/APM/scripts/m4_renode_calls.lua")
+logger:log_file_content("/APM/LOGS/LASTLOG.TXT")
+gcs:send_text(6, "M4 renode file content done")
+local MAVLINK_MSG_ID_NAMED_VALUE_FLOAT = 251
+local function send_named_value()
+  local payload = string.pack("<I4fc10", millis():toint(), 42.5, "M4RENODE")   -- c10 pads the name with zeros
+  gcs:send_text(6, "M4 renode send_chan " .. tostring(mavlink:send_chan(1, MAVLINK_MSG_ID_NAMED_VALUE_FLOAT, payload)))
+  return send_named_value, 1000
+end
+return send_named_value()
 '''
 
 # PeerHeader::Half of the M4 (CubeFramework PeerHeader.h)
@@ -97,8 +113,9 @@ def mavlink_module(directory):
     generate = ("import sys; sys.path.insert(0, sys.argv[1]); from pymavlink.generator import mavgen; "
                 "mavgen.mavgen(mavgen.Opts(output=sys.argv[2], wire_protocol='2.0', language='Lua', "
                 "validate=False), [sys.argv[3]])")
-    subprocess.run([sys.executable, '-c', generate, str(TREE_MAVLINK), str(output), str(DIALECT)],
-                   check=True, capture_output=True)
+    result = subprocess.run([sys.executable, '-c', generate, str(TREE_MAVLINK), str(output), str(DIALECT)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, 'mavgen failed (%d):\n%s%s' % (result.returncode, result.stdout, result.stderr)
     files = [output / name for name in MODULE_FILES]
     missing = [str(path) for path in files if not path.exists()]
     assert not missing, 'mavgen made no %s' % missing
@@ -117,8 +134,33 @@ def gcs_heartbeats(run):
     run.mav.message_hooks.append(hook)
 
 
+def named_values(run, name):
+    '''Collects the values of the NAMED_VALUE_FLOATs called name the board sends on the test's link.'''
+    values = []
+
+    def hook(connection, message):
+        if message.get_type() == 'NAMED_VALUE_FLOAT':
+            message_name = message.name
+            if isinstance(message_name, bytes):
+                message_name = message_name.decode(errors='replace')
+            if message_name.rstrip('\x00') == name:
+                values.append(message.value)
+    run.mav.message_hooks.append(hook)
+    return values
+
+
+def wait_boot_ms(run, start_ms, advance_ms, timeout):
+    '''The M7's time_boot_ms advanced advance_ms from start_ms (emulated time, not wall time).'''
+    deadline = time.monotonic() + timeout
+    while run.boot_ms - start_ms < advance_ms:
+        run.check()
+        assert time.monotonic() < deadline, 'M7 time advanced only %u of %u ms' % (run.boot_ms - start_ms, advance_ms)
+        run.mav.recv_match(blocking=True, timeout=1)
+
+
 def assert_host_stack(run, tmp_path):
-    '''The host thread ran run_command_int, logger:write and receive_chan and keeps 2 KB of its stack.'''
+    '''The host thread ran run_command_int, logger:write, log_file_content and receive_chan and keeps
+    2 KB of its stack.'''
     free, size = host_thread_stack(run, tmp_path / 'threads.txt')
     print('ScriptingM4 host thread stack: %u of %u bytes free' % (free, size), flush=True)
     assert free >= 2048, 'ScriptingM4 host thread stack: %u of %u bytes free' % (free, size)
@@ -174,9 +216,11 @@ def test_m4_mavlink_test(start_m4lua, tmp_path):  # noqa: F811
                              dict(LOG_ROWS, SCR_VM_I_COUNT=1000000, SCR_DEBUG_OPTS=8, FRAME_CLASS=1, FRAME_TYPE=1),
                              files=mavlink_module(tmp_path / 'mavgen') + [(calls_script, 'APM/scripts')])
     gcs_heartbeats(run)
+    sent = named_values(run, 'M4RENODE')
     run.wait_text(r'^Scripting: started on M4 \(2 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
-    wait_all(run, [r'^Received heartbeat from 255$', r'^M4 renode logger done$', r'^M4 renode commands '],
-             SCRIPT_TIMEOUT, failure=r'^(Lua: |M4 renode logger FAIL)')
+    wait_all(run, [r'^Received heartbeat from 255$', r'^M4 renode logger done$', r'^M4 renode commands ',
+                   r'^M4 renode file content done$', r'^M4 renode send_chan true$'],
+             SCRIPT_TIMEOUT, failure=r'^(Lua: |M4 renode logger FAIL|M4 renode send_chan false)')
     commands = [text for text in run.texts if text.startswith('M4 renode commands ')][0].split()[3:]
     print('run_command_int results (arm, forced arm, forced disarm, ALT_HOLD, STABILIZE): %s' % commands, flush=True)
     # each handler ran: arming stops at its checks (MAV_RESULT_FAILED) or arms (MAV_RESULT_ACCEPTED);
@@ -184,15 +228,31 @@ def test_m4_mavlink_test(start_m4lua, tmp_path):  # noqa: F811
     # mode changes run to the end (MAV_RESULT_ACCEPTED). nil would be a refused or malformed call
     assert commands[0] in ('0', '4') and commands[1] in ('0', '4'), 'run_command_int results %s' % commands
     assert commands[2:] == ['0', '0', '0'], 'run_command_int results %s' % commands
+    # the ALT_HOLD handler ran: a custom mode lost on the way would give STABILIZE (0), also accepted
+    modes = [text for text in run.texts if text.startswith('M4 renode mode ')]
+    assert modes == ['M4 renode mode 2'], 'mode after the ALT_HOLD command: %s' % modes
+    # the M7 built and sent the M4's frame on the test's link
+    deadline = time.monotonic() + STEP_TIMEOUT
+    while not sent:
+        run.check()
+        assert time.monotonic() < deadline, 'no NAMED_VALUE_FLOAT M4RENODE on the test link'
+        run.mav.recv_match(blocking=True, timeout=1)
+    assert sent[0] == 42.5, 'NAMED_VALUE_FLOAT M4RENODE values %s' % sent
     assert_host_stack(run, tmp_path)
     run.wait_alive(10)
     log = stop_and_read_log(run, tmp_path / 'logs')
     rows = log_rows(log, 'M4RL')
-    assert len(rows) == 1 and rows[0].A == 1 and rows[0].O == 15, 'M4RL rows: %s' % rows
-    # mavlink_test.lua sends its NAMED_VALUE_FLOAT on channel 0, USB on this board, where the test has
-    # no link (it talks on SERIAL1, channel 1): the M7 served the sends
+    assert len(rows) == 1, 'M4RL rows: %s' % rows
+    values = [getattr(rows[0], column) for column in 'ABCDEFGHIJKLMNO']
+    assert values == list(range(1, 16)), 'M4RL values: %s' % values
+    # the script's file was queued and logged (FILE names are cut to 16 characters); the log
+    # directory's file was refused
+    files = set(row.FileName for row in log_rows(log, 'FILE'))
+    assert 'm4_renode_calls.' in files and 'LASTLOG.TXT' not in files, 'FILE rows of %s' % sorted(files)
+    # SRPC has rows for the 8 methods with the most round-trip time per window; logger:write and
+    # log_file_content, made once in a busy window, may fold into m4:other: their log rows show them
     methods = set(row.Name for row in log_rows(log, 'SRPC'))
-    for name in ('mavlink:receive_chan', 'mavlink:send_chan', 'gcs:run_command_int', 'logger:write'):
+    for name in ('mavlink:receive_chan', 'mavlink:send_chan', 'gcs:run_command_int'):
         assert name in methods, 'no SRPC row for %s (got %s)' % (name, sorted(methods))
 
 
@@ -204,7 +264,11 @@ def test_m4_scripting_commands(start_m4lua, tmp_path):  # noqa: F811
     scripting_command(run, mavutil.mavlink.SCRIPTING_CMD_STOP)
     run.wait_text(r'^Scripting: stopped$', timeout=SCRIPT_TIMEOUT)
     stopped_at = len(run.texts)
-    run.wait_alive(20)
+    stopped_ms = run.boot_ms
+    # m4_loop.lua prints once a second of emulated time: a running session would print at least
+    # twice in 3 s of time_boot_ms, however slowly Renode runs
+    wait_boot_ms(run, stopped_ms, 3000, STEP_TIMEOUT)
+    print('stopped window: %u ms of time_boot_ms' % (run.boot_ms - stopped_ms), flush=True)
     # a stopped session runs no script and prints no start
     after = run.texts[stopped_at:]
     assert not [text for text in after if text.startswith('M4 loop') or 'started on M4' in text], after
