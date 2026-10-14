@@ -465,9 +465,9 @@ injects faults on the M4 and checks that the M7 restarts it up to the
 `SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
 
 `tests/test_m4_fault_reports.py` covers the fault reports the containment tests do not reach: a
-restarted M4 that faults right after it publishes its header, alone (about 5 minutes) and with a STOP
-taken before its heartbeat times out (about 16 minutes), and a fault inside an M4 interrupt handler,
-which parks the M4.
+restarted M4 that faults right after it publishes its header, alone and with a STOP taken before its
+heartbeat times out, and a fault inside an M4 interrupt handler, which parks the M4. The three take
+about 5 minutes together; a failing one may wait out its 15-minute script timeout.
 
 `tests/test_m4_flight.py` flies the CubeOrangePlus-M4Lua Copter against the physics sidecar, as
 the CubeOrangePlus QuadPlane flight does. Its three flights are opt-in, as together they take about
