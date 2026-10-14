@@ -6,6 +6,8 @@
 -- gcs:run_command_int(MAV_CMD_SCRIPTING); 3 restart at the start of each session while SCR_USER3,
 -- counted down, is above 0; 4 call scripting:restart_all() every 100 ms.
 -- SCR_USER6: 1 block MAV_CMD_USER_1; 2 read mission items; 3 leave them queued.
+-- SCR_USER6 4: at its start, 120 param:set_and_save calls (the Storage quota: 10/s, burst 100)
+-- and "M4 commands session <n> saves <k>", k the calls that returned true.
 
 local MAV_CMD_USER_1, MAV_CMD_SCRIPTING, SCRIPTING_CMD_STOP = 31000, 42701, 2
 local HEARTBEAT_ID = 0
@@ -37,6 +39,16 @@ local function restart_loop()
     gcs:send_text(6, string.format("M4 commands restart loop %d", left - 1))
     scripting:restart_all()
   end
+end
+-- the Storage bucket, filled once per boot: the first session finds it full, later ones the refill
+if mode:get() == 4 then
+  local saved = 0
+  for i = 1, 120 do
+    if param:set_and_save("SCR_USER4", i) then
+      saved = saved + 1
+    end
+  end
+  gcs:send_text(6, string.format("M4 commands session %d saves %d", session, saved))
 end
 if action:get() == 3 then
   restart_loop()
