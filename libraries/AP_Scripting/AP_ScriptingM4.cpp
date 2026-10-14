@@ -453,15 +453,9 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
         _m4_heartbeat_ms = now_ms;
         _start_fault.beat();
     } else if (now_ms - _m4_heartbeat_ms > ScriptingM4::HEARTBEAT_TIMEOUT_MS) {
-        if (_start_fault.report_on_timeout(status == PeerHeader::Status::Compatible)) {
-            // the new session faulted after its publish(), before its first beat: report that fault
-            _m4_fault_pc = view.faultPc;
-            char reason[40];
-            fault_reason(view, reason, sizeof(reason));
-            failure(reason);
-            return;
+        if (!report_start_fault(false)) {
+            failure("heartbeat lost");
         }
-        failure("heartbeat lost");
         return;
     }
     if (_protocol_errors >= PROTOCOL_ERROR_LIMIT) {
@@ -471,6 +465,24 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
     if (_session_calls == 0 && now_ms - _ready_sent_ms >= READY_REPEAT_MS) {
         send_ready(now_ms);
     }
+}
+
+// a fault restart's session that faulted after its publish() and before its first beat: report and
+// charge that fault (name and PC) when its heartbeat times out (on_request false) or when a stop or
+// restart request interrupts it first (on_request true). False when no such fault is pending
+bool AP_ScriptingM4::report_start_fault(bool on_request)
+{
+    PeerHeader::View view {};
+    const bool readable = PeerHeader::readPeer(_shared, PeerHeader::Core::M7, ScriptingM4::PROTOCOL_VERSION,
+                                               ScriptingM4::CONTRACT_HASH, &view) == PeerHeader::Status::Compatible;
+    if (!(on_request ? _start_fault.report_before_request(readable) : _start_fault.report_on_timeout(readable))) {
+        return false;
+    }
+    _m4_fault_pc = view.faultPc;
+    char reason[40];
+    fault_reason(view, reason, sizeof(reason));
+    failure(reason);
+    return true;
 }
 
 uint8_t AP_ScriptingM4::restart_limit() const
@@ -514,20 +526,28 @@ void AP_ScriptingM4::run_control(uint32_t now_ms)
     bool restart = false;
     const bool stop = scripting->take_stop_request(restart);
     const bool was_stopped = _run_control.stopped();
-    switch (_run_control.update(scripting->enabled(), stop, restart, now_ms - _state_start_ms)) {
-    case ScriptingM4::RunAction::None:
+    const ScriptingM4::RunAction action = _run_control.update(scripting->enabled(), stop, restart,
+                                                              now_ms - _state_start_ms);
+    if (action == ScriptingM4::RunAction::None) {
         return;
-    case ScriptingM4::RunAction::Stop:
+    }
+    // a session that faulted at its start, before its first beat: that fault is reported and
+    // charged first, and its fault restart carries the request (or the fault limit turns it off)
+    const bool faulted = report_start_fault(true);
+    if (_state == State::Off) {
+        return;
+    }
+    if (action == ScriptingM4::RunAction::Stop || !was_stopped) {
         GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "stopped");
-        request_restart(true);
-        return;
-    case ScriptingM4::RunAction::Restart:
-        if (!was_stopped) {
-            GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "stopped");
-        }
+    }
+    if (action == ScriptingM4::RunAction::Restart) {
         GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: %s", "restarted");
-        request_restart(false);
-        return;
+    }
+    const bool stopped = action == ScriptingM4::RunAction::Stop;
+    if (faulted) {
+        _server.set_stopped(stopped);
+    } else {
+        request_restart(stopped);
     }
 }
 
@@ -537,6 +557,10 @@ void AP_ScriptingM4::request_restart(bool stopped)
 {
     _server.set_stopped(stopped);
     _restart_requested = true;
+#if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
+    // SCR_M4_INJECT 12 marks the next grant for a fault restart only
+    ScriptingM4::supervisor_block(_shared)->fault_after_publish_grant.store(0);
+#endif
     grant_restart();
 }
 
@@ -601,6 +625,8 @@ void AP_ScriptingM4::send_fault_inject()
     inject.kind = uint32_t(sent);
     if (_channel->send(&inject, sizeof(inject)) != 0) {
         _dropped++;
+        // no HardFault, so no fault restart for the mark
+        ScriptingM4::supervisor_block(_shared)->fault_after_publish_grant.store(0);
     }
 }
 #endif

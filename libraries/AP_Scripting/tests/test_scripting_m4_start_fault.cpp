@@ -57,4 +57,33 @@ TEST(ScriptingM4StartFault, EachSessionStartsAfresh)
     EXPECT_FALSE(start.report_on_timeout(true));
 }
 
+// a stop or restart request taken before the session beats or times out: the pending fault is
+// reported and charged first, once (the timeout then has nothing to report)
+TEST(ScriptingM4StartFault, RequestInTheStartWindowReportsTheFault)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    EXPECT_TRUE(start.report_before_request(true));
+    EXPECT_FALSE(start.report_on_timeout(true));
+    EXPECT_FALSE(start.report_before_request(true));
+}
+
+// a request after the session beat acts alone
+TEST(ScriptingM4StartFault, RequestAfterABeatActsAlone)
+{
+    StartFault start;
+    start.session_started(true, 2, 1);
+    start.beat();
+    EXPECT_FALSE(start.report_before_request(true));
+}
+
+// a fault record cleared at publish() (count 0, below the handled one) is no fault: a stall is
+// "heartbeat lost", not a report with every field zero
+TEST(ScriptingM4StartFault, ClearedFaultRecordIsNoFault)
+{
+    StartFault start;
+    start.session_started(true, 0, 3);
+    EXPECT_FALSE(start.report_on_timeout(true));
+}
+
 AP_GTEST_MAIN()
