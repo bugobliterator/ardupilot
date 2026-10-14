@@ -23331,9 +23331,6 @@ RTL_ALT_M 111
             # the Log quota: 500 at once and what refilled during the run
             flood = [m.TimeUS for m in self.m4_log_rows("M4LQ")]
             rows = len(flood)
-            self.progress("M4LQ rows: %u of 3000, at most %.0f expected" % (rows, rows_most))
-            if not 500 <= rows <= rows_most:
-                raise NotAchievedException("%u M4LQ rows, expected 500 to %.0f" % (rows, rows_most))
             # the vehicle's own rows go on at their rate during the flood: ATT rows in the flood's span
             # against the same span just before it
             start, end = flood[0], flood[-1]
@@ -23345,6 +23342,9 @@ RTL_ALT_M 111
             # one row of slack at each edge of each span
             if before < 5 or during < before - 2:
                 raise NotAchievedException("ATT rows during the M4LQ flood %u, before it %u" % (during, before))
+            self.progress("M4LQ rows: %u of 3000, at most %.0f expected" % (rows, rows_most))
+            if not 500 <= rows <= rows_most:
+                raise NotAchievedException("%u M4LQ rows, expected 500 to %.0f" % (rows, rows_most))
             # log_file_content() through the replacement queued the script's file and refused the log
             # directory and the climbing path. The file queue held the head and 39 more: the logger
             # writes the head first (about 6 KB a second in SITL), then the rest
@@ -23634,11 +23634,20 @@ RTL_ALT_M 111
         self.m4_commands_scripting(STOP)
         self.wait_statustext("Scripting: stopped", check_context=True, timeout=10)
         self.delay_sim_time(2, reason="the stopped session starts")
+        stopped_session = self.m4_log_rows("M4ST")[-1].Ses
         self.context_clear_collection("STATUSTEXT")
         self.set_parameter("SCR_M4_INJECT", 1)
-        self.wait_statustext(r"Scripting: M4 restarted \(2/2\)", regex=True, check_context=True, timeout=30)
+        restarted = self.wait_statustext(r"Scripting: M4 restarted \(2/2\)", regex=True, check_context=True,
+                                         timeout=30)
         self.delay_sim_time(3, reason="a stopped session runs no script")
-        self.m4_assert_no_text(r"^(?:M4 commands session|Scripting: (started on M4|restarted))")
+        # after the fault restart: no script text, no start, and no further M4 text (a fault, an off)
+        texts = [m.text for m in self.context_collection("STATUSTEXT")]
+        for text in texts[texts.index(restarted.text) + 1:]:
+            if re.match(r"M4 commands session|Scripting: (started on M4|restarted|M4 )", text):
+                raise NotAchievedException("'%s' after the stopped session's fault restart" % text)
+        # and the restarted, stopped session runs
+        if not [m for m in self.m4_log_rows("M4ST") if m.Ses != stopped_session and m.St == 2]:
+            raise NotAchievedException("no running session after the fault restart of session %u" % stopped_session)
         self.context_pop()
         self.reboot_sitl()
 
