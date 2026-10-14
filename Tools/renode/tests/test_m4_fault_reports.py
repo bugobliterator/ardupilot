@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pymavlink import mavutil  # noqa: E402
 from test_m4_containment import BUILD, start_m4lua  # noqa: E402,F401
+from test_m4_mavlink import M4_HEADER_FAULT_COUNT  # noqa: E402
 from test_m4_scripts import SCRIPT_TIMEOUT, m4_symbols, start_with_scripts, symbol_range  # noqa: E402
 
 M4_ELF = Path(os.environ.get('M4LUA_M4_ELF', BUILD / 'scripting_m4.elf'))
@@ -54,8 +55,10 @@ def test_m4_early_fault_is_reported(start_m4lua):  # noqa: F811
         r'^Scripting: M4 HardFault ' + FAULT_PC, r'^Scripting: M4 restarting \(2/3\)$',
         r'^Scripting: M4 restarted \(2/3\)$'])
     pc = int(re.search(FAULT_PC, texts[3]).group(1), 16)
-    # not the first fault's record reported again: that one is the service's, in inject_fault()
-    assert texts[3] != texts[0], 'the early fault repeats the first fault: %s' % texts[3]
+    # the second report is the new session's own fault, not the first one's record reported again: the
+    # M4 recorded two faults (the PCs may be equal, when inject_fault() is not inlined into main())
+    fault_count = run.read_word(M4_HEADER_FAULT_COUNT)
+    assert fault_count == 2, 'the M4 header records %u faults, expected 2' % fault_count
     assert any(low <= pc < high for low, high in ranges), \
         'the early fault at PC=0x%08X is outside %s' % (pc, ['0x%08X-0x%08X' % r for r in ranges])
     run.wait_alive(10)
@@ -111,4 +114,8 @@ def test_m4_fault_in_a_handler_parks(start_m4lua):  # noqa: F811
     for _ in range(3):
         m4_pc = int(run.monitor_value('cpu2 PC', r'(0x[0-9A-Fa-f]+)'), 16)
         assert park[0] <= m4_pc < park[1], 'M4 not parked: PC=0x%08X' % m4_pc
+        # parked by m4_warm_restart() inside the HardFault handler (IPSR 3), not by a restarted
+        # session's main() in thread mode (IPSR 0)
+        ipsr = int(run.monitor_value('cpu2 CPSR', r'(0x[0-9A-Fa-f]+)'), 16) & 0x1FF
+        assert ipsr == 3, 'M4 parked with IPSR %u, not in HardFault (3)' % ipsr
         run.wait_alive(2)
