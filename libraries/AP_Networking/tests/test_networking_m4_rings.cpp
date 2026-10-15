@@ -5,14 +5,16 @@
 
 #include <AP_Networking/AP_Networking_M4_Layout.h>
 #include <AP_Networking/AP_Networking_M4_Config.h>
+#include <thread>
 
 using namespace NetM4;
 
 static Region region;
+static std::atomic<uint32_t> generation;
 
 static void attach_pair(ByteRing &producer, ByteRing &consumer)
 {
-    reset_region(region);
+    reset_region(region, generation);
     producer.attach(&region.ports[0].tx_control, region.ports[0].tx, PORT_RING_DATA);
     consumer.attach(&region.ports[0].tx_control, region.ports[0].tx, PORT_RING_DATA);
 }
@@ -143,6 +145,158 @@ TEST(NetM4Rings, ConfigIsChecked)
     config.ports[0].type = 1;
     config.can_mcast_mask = 0x04;    // only buses 1 and 2 bridge
     EXPECT_FALSE(config_valid(config));
+}
+
+// a ring's data area with guard bytes on both sides
+struct GuardedRing {
+    RingControl control;
+    uint8_t before[64];
+    uint8_t data[PORT_RING_DATA];
+    uint8_t after[64];
+};
+static const uint8_t GUARD = 0xA5;
+
+static bool guards_intact(const GuardedRing &ring)
+{
+    for (uint32_t i = 0; i < sizeof(ring.before); i++) {
+        if (ring.before[i] != GUARD || ring.after[i] != GUARD) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TEST(NetM4Rings, HostileIndicesNeverCopy)
+{
+    // over the index range, or claiming more than the ring holds
+    const uint32_t hostile[][2] = {
+        {2048, 0}, {0, 2048}, {0xFFFFFFFF, 0}, {0, 0xFFFFFFF0}, {1500, 0}, {0, 1023}, {1025, 0},
+    };
+    static GuardedRing ring;
+    for (const auto &indices : hostile) {
+        memset(&ring.before, GUARD, sizeof(ring.before));
+        memset(&ring.after, GUARD, sizeof(ring.after));
+        memset(ring.data, 0x5A, sizeof(ring.data));
+        ByteRing tx, rx;
+        tx.attach(&ring.control, ring.data, PORT_RING_DATA);
+        rx.attach(&ring.control, ring.data, PORT_RING_DATA);
+        ring.control.head.value.store(indices[0]);
+        ring.control.tail.value.store(indices[1]);
+        uint8_t big[2048];
+        memset(big, 0x11, sizeof(big));
+        EXPECT_EQ(tx.space(), 0U);
+        EXPECT_EQ(tx.write(big, sizeof(big)), 0U);
+        EXPECT_FALSE(tx.write_record(big, 10));
+        EXPECT_EQ(rx.available(), 0U);
+        EXPECT_EQ(rx.read(big, sizeof(big)), 0U);
+        EXPECT_EQ(rx.read_record(big, MAX_RECORD), RECORD_BAD);
+        EXPECT_TRUE(guards_intact(ring));
+        for (uint32_t i = 0; i < sizeof(ring.data); i++) {
+            ASSERT_EQ(ring.data[i], 0x5A);
+        }
+        // the indices are the peer's to fix: nothing was stored
+        EXPECT_EQ(ring.control.head.value.load(), indices[0]);
+        EXPECT_EQ(ring.control.tail.value.load(), indices[1]);
+    }
+}
+
+TEST(NetM4Rings, RacingPeerNeverOverflows)
+{
+    static GuardedRing ring;
+    memset(&ring.before, GUARD, sizeof(ring.before));
+    memset(&ring.after, GUARD, sizeof(ring.after));
+    ring.control.head.value.store(0);
+    ring.control.tail.value.store(0);
+    ByteRing tx, rx;
+    tx.attach(&ring.control, ring.data, PORT_RING_DATA);
+    rx.attach(&ring.control, ring.data, PORT_RING_DATA);
+    std::atomic<bool> stop {false};
+    // the peer rewrites both indices with anything, as fast as it can
+    std::thread peer([&]() {
+        uint32_t x = 0x12345678;
+        while (!stop.load()) {
+            x = x * 1664525U + 1013904223U;
+            ring.control.head.value.store((x >> 8) % 4100);
+            x = x * 1664525U + 1013904223U;
+            ring.control.tail.value.store((x & 1) ? (x >> 8) % 4100 : x);
+        }
+    });
+    uint8_t buf[2048];
+    memset(buf, 0x22, sizeof(buf));
+    for (uint32_t i = 0; i < 200000; i++) {
+        EXPECT_LE(tx.write(buf, sizeof(buf)), PORT_RING_DATA);
+        tx.write_record(buf, MAX_RECORD);
+        EXPECT_LE(rx.read(buf, sizeof(buf)), PORT_RING_DATA);
+        EXPECT_LE(rx.read_record(buf, MAX_RECORD), int32_t(MAX_RECORD));
+    }
+    stop.store(true);
+    peer.join();
+    EXPECT_TRUE(guards_intact(ring));
+}
+
+TEST(NetM4Rings, RecordHeaderOverLimitsIsBad)
+{
+    ByteRing tx, rx;
+    attach_pair(tx, rx);
+    // a header claiming MAX_RECORD + 1, with that many bytes behind it
+    uint8_t lie[2 + MAX_RECORD + 1] {};
+    lie[0] = uint8_t(MAX_RECORD + 1);
+    lie[1] = uint8_t((MAX_RECORD + 1) >> 8);
+    ASSERT_EQ(tx.write(lie, sizeof(lie)), sizeof(lie));
+    uint8_t out[1024];
+    EXPECT_EQ(rx.read_record(out, sizeof(out)), RECORD_BAD);
+    // a header claiming 200 bytes with 10 behind it
+    attach_pair(tx, rx);
+    uint8_t short_record[12] = {200, 0};
+    ASSERT_EQ(tx.write(short_record, sizeof(short_record)), sizeof(short_record));
+    EXPECT_EQ(rx.read_record(out, sizeof(out)), RECORD_BAD);
+    // a header within the limits but over the reader's capacity
+    attach_pair(tx, rx);
+    const uint8_t record[20] {};
+    ASSERT_TRUE(tx.write_record(record, sizeof(record)));
+    EXPECT_EQ(rx.read_record(out, 19), RECORD_BAD);
+}
+
+TEST(NetM4Rings, ResetBumpsTheGeneration)
+{
+    std::atomic<uint32_t> owner {7};
+    region.header.generation.store(1000);   // the M4's copy is never read back
+    EXPECT_EQ(reset_region(region, owner), 8U);
+    EXPECT_EQ(owner.load(), 8U);
+    EXPECT_EQ(region.header.generation.load(), 8U);
+    EXPECT_EQ(reset_region(region, owner), 9U);
+    EXPECT_EQ(region.header.generation.load(), 9U);
+}
+
+TEST(NetM4Rings, RingAttachedBeforeAResetIsStale)
+{
+    std::atomic<uint32_t> owner {0};
+    reset_region(region, owner);
+    ByteRing tx, rx;
+    tx.attach(&region.ports[1].rx_control, region.ports[1].rx, PORT_RING_DATA, &owner);
+    rx.attach(&region.ports[1].rx_control, region.ports[1].rx, PORT_RING_DATA, &owner);
+    const uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    ASSERT_EQ(tx.write(data, sizeof(data)), sizeof(data));
+    reset_region(region, owner);
+    // a new session's indices: the old attachment refuses them
+    region.ports[1].rx_control.head.value.store(4);
+    EXPECT_TRUE(tx.stale());
+    EXPECT_TRUE(rx.stale());
+    uint8_t out[16];
+    EXPECT_EQ(tx.space(), 0U);
+    EXPECT_EQ(tx.write(data, sizeof(data)), 0U);
+    EXPECT_FALSE(tx.write_record(data, sizeof(data)));
+    EXPECT_EQ(rx.available(), 0U);
+    EXPECT_EQ(rx.read(out, sizeof(out)), 0U);
+    EXPECT_EQ(rx.read_record(out, sizeof(out)), RECORD_BAD);
+    rx.consumer_resync();
+    tx.producer_reset();
+    EXPECT_EQ(region.ports[1].rx_control.head.value.load(), 4U);
+    EXPECT_EQ(region.ports[1].rx_control.tail.value.load(), 0U);
+    // attached again: the new session's data
+    rx.attach(&region.ports[1].rx_control, region.ports[1].rx, PORT_RING_DATA, &owner);
+    EXPECT_FALSE(rx.stale());
+    EXPECT_EQ(rx.available(), 4U);
 }
 
 #endif  // AP_NETWORKING_M4_ENABLED

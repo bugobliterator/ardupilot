@@ -34,10 +34,16 @@ struct RingControl {
 };
 static_assert(sizeof(RingControl) == sizeof(CubePilotFW::SpscRing::Control), "one control layout");
 
-// SPSC byte ring; indices count in [0, 2 * size) (mirrored), size a power of two
+// SPSC byte ring; indices count in [0, 2 * size) (mirrored), size a power of two. Every
+// operation loads head and tail once, checks them and uses only those copies: the peer can
+// rewrite either index at any time
 class ByteRing {
 public:
-    void attach(RingControl *control, uint8_t *data, uint32_t size);
+    // generation: on the M7, its own region generation (reset_region() bumps it); a ring attached
+    // under one generation refuses every operation after a reset until it is attached again.
+    // nullptr on the M4
+    void attach(RingControl *control, uint8_t *data, uint32_t size,
+                const std::atomic<uint32_t> *generation = nullptr);
     // producer
     uint32_t space() const;
     uint32_t write(const uint8_t *src, uint32_t len);
@@ -49,15 +55,25 @@ public:
     int32_t read_record(uint8_t *dst, uint16_t capacity);
     void consumer_resync();
     bool desynced() const;
+    // the region was reset after attach()
+    bool stale() const;
 
 private:
     uint32_t used(uint32_t head, uint32_t tail) const { return (head - tail) & _index_mask; }
+    bool valid(uint32_t head, uint32_t tail) const {
+        return head <= _index_mask && tail <= _index_mask && used(head, tail) <= _size;
+    }
+    // one load of each index (acquire on the peer's, relaxed on ours); false: stale or out of range
+    bool producer_snapshot(uint32_t &head, uint32_t &tail) const;
+    bool consumer_snapshot(uint32_t &head, uint32_t &tail) const;
     void copy_in(uint32_t index, const uint8_t *src, uint32_t len);
     void copy_out(uint32_t index, uint8_t *dst, uint32_t len) const;
     RingControl *_control;
     uint8_t *_data;
     uint32_t _size;
     uint32_t _index_mask;   // 2 * size - 1
+    const std::atomic<uint32_t> *_generation;
+    uint32_t _attached_generation;
 };
 
 static const uint32_t STATUS_MAGIC = 0x5453344E;   // "N4ST"
@@ -104,9 +120,14 @@ struct PortRings {
     RingControl rx_control;   // M4 -> M7
     uint8_t rx[PORT_RING_DATA];
 };
+struct RegionHeader {
+    // a copy of the M7's region generation, for the M4; the M7 never reads it back
+    std::atomic<uint32_t> generation;
+    uint8_t reserved[124];
+};
 struct Region {
     StatusBlock status;
-    uint8_t reserved[128];
+    RegionHeader header;
     PortRings ports[NUM_PORTS];
     RingArea<DDS_RING_DATA> dds_tx;   // SpscRing, M7 -> M4
     RingArea<DDS_RING_DATA> dds_rx;   // SpscRing, M4 -> M7
@@ -116,10 +137,25 @@ struct Region {
 };
 static_assert(sizeof(Region) == 16384, "the network region is 16 KB");
 
-// M7, while the M4 is held or parked: every ring empty, the status block zero
-inline void reset_region(Region &region)
+/*
+  M7 only, while the M4 is held or halted (AP_Networking::m4_region_reset()): every ring empty,
+  the status block zero, then the next generation published.
+
+  Session contract for the M7 users of the region (AP_Networking's proxy):
+  - generation is the M7's own counter, never the region's copy, which the M4 can write;
+  - each user holds the same lock as the reset (AP_Networking::_m4_sem) around every ring
+    operation, so a reset never runs during one;
+  - rings are attached with &generation; after a reset they return 0 / RECORD_BAD until
+    attached again, and the user drops what it cached for the old session (buffered bytes,
+    port state, the last status copy) when it attaches again.
+ */
+inline uint32_t reset_region(Region &region, std::atomic<uint32_t> &generation)
 {
     memset(static_cast<void *>(&region), 0, sizeof(region));
+    const uint32_t next = generation.load(std::memory_order_relaxed) + 1U;
+    generation.store(next, std::memory_order_release);
+    region.header.generation.store(next, std::memory_order_release);
+    return next;
 }
 
 }  // namespace NetM4
