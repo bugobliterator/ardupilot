@@ -5,6 +5,8 @@
 #include <hal.h>
 #include <string.h>
 #include <AP_HAL/AP_HAL.h>
+#include <AP_HAL_ChibiOS/AP_HAL_ChibiOS.h>
+#include <AP_HAL_ChibiOS/Scheduler.h>
 #include <AP_HAL_ChibiOS/hwdef/common/watchdog.h>
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
@@ -21,8 +23,11 @@ extern const AP_HAL::HAL& hal;
 using CubePilotFW::HwSemaphore;
 namespace PeerHeader = CubePilotFW::PeerHeader;
 
-// the host thread runs at PRIORITY_SCRIPTING, the interrupt only signals it
+// the host thread runs at UART priority + 1, the interrupt only signals it
 static const uint8_t HSEM_IRQ_PRIORITY = 12;
+static_assert(APM_UART_PRIORITY + 1 > APM_STORAGE_PRIORITY && APM_UART_PRIORITY + 1 > APM_IO_PRIORITY &&
+              APM_UART_PRIORITY + 1 > APM_NET_PRIORITY && APM_UART_PRIORITY + 1 < APM_I2C_PRIORITY,
+              "the M4 host thread sits above the I/O threads and below vehicle timing");
 
 bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
 {

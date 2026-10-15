@@ -94,9 +94,12 @@ void AP_ScriptingM4::init()
     }
     enter(State::Starting, now_ms);
     // binding calls run vehicle code (mode changes, set_target_location) on this thread,
-    // which the in-process scripting thread ran with 17 KB
+    // which the in-process scripting thread ran with 17 KB.
+    // above the I/O-class threads (io 58, storage/log_io 59, UART/net 60) so a call is not queued
+    // behind logging; below every vehicle-timing thread (I2C 176 and up). The serve budget and
+    // backoff bound what a flooding M4 can take from those threads
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ScriptingM4::host_thread, void),
-                                      "ScriptingM4", 8192, AP_HAL::Scheduler::PRIORITY_SCRIPTING, 0)) {
+                                      "ScriptingM4", 8192, AP_HAL::Scheduler::PRIORITY_UART, 1)) {
         go_off("no host thread");
     }
 }
