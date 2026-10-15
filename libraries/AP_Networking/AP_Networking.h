@@ -199,7 +199,7 @@ public:
     // fault or exit
     void m4_region_reset(uint8_t *region);
 
-    // NET_* for the M4 network stack; false: networking off or the parameters do not fit
+    // NET_* for the M4 network stack; false, with out zeroed: networking off or a NET_P port invalid
     bool m4_config(NetM4::Config &out) const;
 #endif
 
