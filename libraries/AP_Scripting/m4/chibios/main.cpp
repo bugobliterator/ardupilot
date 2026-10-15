@@ -18,6 +18,15 @@
 #include "../m4_service.h"
 #include "lua_port.h"
 #include "m4_fault.h"
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include "net_m4.h"
+#include "net_platform.h"
+
+static void network_config_entry(const NetM4::Config &config)
+{
+    net_m4_configure(config);
+}
+#endif
 
 using namespace ScriptingM4;
 using CubePilotFW::Channel;
@@ -269,12 +278,20 @@ int main(void)
     HwSemaphore::setRxCallback(RESTART_GROUP, restart_callback);
     HwSemaphore::enableRxIrq(DOORBELL_GROUP, true);
     HwSemaphore::enableRxIrq(RESTART_GROUP, true);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    net_platform_init(window, restarts);
+    HwSemaphore::setRxCallback(AP_NETWORKING_M4_DOORBELL_GROUP, net_platform_doorbell_isr);
+    HwSemaphore::enableRxIrq(AP_NETWORKING_M4_DOORBELL_GROUP, true);
+#endif
     // lowest priority: the restart doorbell interrupts thread mode only (ICSR.RETTOBASE)
     HwSemaphore::enableNvic(CORTEX_MINIMUM_PRIORITY);
     if (channel.init(window, CHANNEL_WINDOW_SIZE, Channel::Core::M4, DOORBELL_GROUP) != 0) {
         m4_park_forever();
     }
     channel.resetAfterRestart();
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    net_m4_session_start();
+#endif
     PeerHeader::publish(window, PeerHeader::Core::M4, PROTOCOL_VERSION, CONTRACT_HASH, restarts);
     // SCR_M4_INJECT 12: the session the M7 marked faults before the M7 reads its header
     if (restarts != 0 && block->fault_after_publish_grant.load() == restarts) {
@@ -284,7 +301,7 @@ int main(void)
     const M4Platform platform { millis_now, cycles_now, AP_SCRIPTING_M4_CORE_CLOCK_HZ / 1000000U,
                                 inject_fault, lua_port_wake,
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-                                nullptr,
+                                network_config_entry,
 #endif
                               };
     service.init(channel, window, call_link, platform);

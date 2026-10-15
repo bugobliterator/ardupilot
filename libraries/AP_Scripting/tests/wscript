@@ -2,3 +2,5 @@
 
 def build(bld):
     bld.ap_find_tests(use='ap')
+    if bld.env.NETWORKING_M4 and bld.env.HAS_GTEST:
+        bld.recurse('m4_service')   # the M4 service's NET_* request, networking builds only

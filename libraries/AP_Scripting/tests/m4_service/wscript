@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+# AP_FLAKE8_CLEAN
+'''the M4 service (libraries/AP_Scripting/m4/m4_service.cpp) on the host, against the M7's end of a Channel'''
+
+
+def build(bld):
+    bld.ap_program(
+        program_name='test_scripting_m4_net_config',
+        program_groups='tests',
+        source=['test_scripting_m4_net_config.cpp', bld.srcnode.find_node('libraries/AP_Scripting/m4/m4_service.cpp'),
+                bld.srcnode.find_node('libraries/AP_Scripting/m4/m4_binding_tables.cpp')],
+        includes=[bld.srcnode.find_dir('libraries/AP_Scripting/m4').abspath(),
+                  bld.srcnode.find_dir('libraries/AP_Scripting').abspath(),
+                  bld.bldnode.make_node('libraries').abspath(),   # AP_Scripting/lua_remote_contract.h
+                  bld.srcnode.abspath() + '/tests/'],
+        use=['GTEST', 'cubeframework'],
+        use_legacy_defines=False,
+        vehicle_binary=False,
+        cxxflags=['-Wno-undef'],
+    )
