@@ -13,6 +13,9 @@
 #include "AP_ScriptingM4_Remote.h"
 #include "AP_ScriptingM4_Rpc.h"
 #include "AP_Scripting.h"
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include <AP_Networking/AP_Networking.h>
+#endif
 
 static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
               "the M4 computes Location math in double (m4/shim/AP_HAL/AP_HAL_Boards.h)");
@@ -735,6 +738,10 @@ void AP_ScriptingM4::grant_restart()
     _restart_grants++;
     // the new session starts without the old one's protocol errors
     _protocol_errors = 0;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the new session starts with every network ring empty
+    AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
+#endif
     // the M4 acts on a restart doorbell only once the grant has changed: store it first
     ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restart_grants);
     platform_request_restart();

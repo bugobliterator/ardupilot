@@ -21,6 +21,9 @@
 #include <CubePilotFW/pal/Posix.h>
 #include <CubePilotFW/pal/PosixChannel.h>
 #include "AP_ScriptingM4_Layout.h"
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include <AP_Networking/AP_Networking.h>
+#endif
 
 extern char **environ;
 extern const AP_HAL::HAL& hal;
@@ -85,6 +88,9 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     }
     kill_stale_m4(ScriptingM4::supervisor_block(_shared));
     ScriptingM4::clear_channel_region(_shared);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
+#endif
     ScriptingM4::SupervisorBlock *block = ScriptingM4::supervisor_block(_shared);
     block->run_permit.store(1);
     block->restart_grant.store(0);

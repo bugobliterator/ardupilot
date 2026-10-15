@@ -14,6 +14,9 @@
 #include <CubePilotFW/pal/HSEM.h>
 #include "AP_ScriptingM4_Layout.h"
 #include "AP_ScriptingM4_ServeWait.h"
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include <AP_Networking/AP_Networking.h>
+#endif
 
 #if !defined(STM32H757xx)
 #error "M4 scripting needs a dual-core STM32H757"
@@ -73,6 +76,9 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     }
     _shared = reinterpret_cast<uint8_t *>(AP_SCRIPTING_M4_WINDOW_BASE);
     ScriptingM4::clear_channel_region(_shared);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
+#endif
     ScriptingM4::SupervisorBlock *block = ScriptingM4::supervisor_block(_shared);
     block->run_permit.store(1);
     block->restart_grant.store(0);
