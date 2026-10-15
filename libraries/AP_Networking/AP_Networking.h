@@ -13,6 +13,7 @@
 #include <AP_HAL/utility/RingBuffer.h>
 #if AP_NETWORKING_M4_ENABLED
 #include <atomic>
+#include "AP_Networking_M4_Config.h"
 #endif
 
 /*
@@ -197,6 +198,9 @@ public:
     // while the M4 cannot run, before every start and every restart grant that follows an M4
     // fault or exit
     void m4_region_reset(uint8_t *region);
+
+    // NET_* for the M4 network stack; false: networking off or the parameters do not fit
+    bool m4_config(NetM4::Config &out) const;
 #endif
 
 private:
