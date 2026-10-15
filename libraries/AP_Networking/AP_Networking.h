@@ -11,6 +11,9 @@
 #include "AP_Networking_CAN.h"
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <AP_HAL/utility/RingBuffer.h>
+#if AP_NETWORKING_M4_ENABLED
+#include <atomic>
+#endif
 
 /*
   Note! all uint32_t IPv4 addresses are in host byte order
@@ -191,12 +194,20 @@ public:
 
 #if AP_NETWORKING_M4_ENABLED
     // the M4 network region (AP_Networking_M4_Layout.h): the scripting supervisor clears it
-    // with the M4 held or parked, before every start and every restart grant
+    // while the M4 cannot run, before every start and every restart grant that follows an M4
+    // fault or exit
     void m4_region_reset(uint8_t *region);
 #endif
 
 private:
     static AP_Networking *singleton;
+
+#if AP_NETWORKING_M4_ENABLED
+    // held by m4_region_reset() and by every M7 ring operation (session contract:
+    // AP_Networking_M4_Layout.h)
+    HAL_Semaphore _m4_sem;
+    std::atomic<uint32_t> _m4_region_generation {0};
+#endif
 
     void announce_address_changes();
 

@@ -9,41 +9,72 @@
 
 namespace NetM4 {
 
-void ByteRing::attach(RingControl *control, uint8_t *data, uint32_t size)
+void ByteRing::attach(RingControl *control, uint8_t *data, uint32_t size,
+                      const std::atomic<uint32_t> *generation)
 {
     _control = control;
     _data = data;
     _size = size;
     _index_mask = 2 * size - 1;
+    _generation = generation;
+    _attached_generation = generation != nullptr ? generation->load(std::memory_order_acquire) : 0;
+}
+
+bool ByteRing::stale() const
+{
+    return _generation != nullptr && _generation->load(std::memory_order_acquire) != _attached_generation;
+}
+
+bool ByteRing::producer_snapshot(uint32_t &head, uint32_t &tail) const
+{
+    if (stale()) {
+        return false;
+    }
+    head = _control->head.value.load(std::memory_order_relaxed);
+    tail = _control->tail.value.load(std::memory_order_acquire);
+    return valid(head, tail);
+}
+
+bool ByteRing::consumer_snapshot(uint32_t &head, uint32_t &tail) const
+{
+    if (stale()) {
+        return false;
+    }
+    head = _control->head.value.load(std::memory_order_acquire);
+    tail = _control->tail.value.load(std::memory_order_relaxed);
+    return valid(head, tail);
 }
 
 bool ByteRing::desynced() const
 {
     const uint32_t head = _control->head.value.load(std::memory_order_acquire);
     const uint32_t tail = _control->tail.value.load(std::memory_order_acquire);
-    return head > _index_mask || tail > _index_mask || used(head, tail) > _size;
+    return !valid(head, tail);
 }
 
 uint32_t ByteRing::space() const
 {
-    if (desynced()) {
+    uint32_t head, tail;
+    if (!producer_snapshot(head, tail)) {
         return 0;
     }
-    return _size - used(_control->head.value.load(std::memory_order_relaxed),
-                        _control->tail.value.load(std::memory_order_acquire));
+    return _size - used(head, tail);
 }
 
 uint32_t ByteRing::available() const
 {
-    if (desynced()) {
+    uint32_t head, tail;
+    if (!consumer_snapshot(head, tail)) {
         return 0;
     }
-    return used(_control->head.value.load(std::memory_order_acquire),
-                _control->tail.value.load(std::memory_order_relaxed));
+    return used(head, tail);
 }
 
 void ByteRing::copy_in(uint32_t index, const uint8_t *src, uint32_t len)
 {
+    if (len > _size) {
+        len = _size;
+    }
     const uint32_t offset = index & (_size - 1);
     const uint32_t first = len < _size - offset ? len : _size - offset;
     memcpy(&_data[offset], src, first);
@@ -52,6 +83,9 @@ void ByteRing::copy_in(uint32_t index, const uint8_t *src, uint32_t len)
 
 void ByteRing::copy_out(uint32_t index, uint8_t *dst, uint32_t len) const
 {
+    if (len > _size) {
+        len = _size;
+    }
     const uint32_t offset = index & (_size - 1);
     const uint32_t first = len < _size - offset ? len : _size - offset;
     memcpy(dst, &_data[offset], first);
@@ -60,11 +94,17 @@ void ByteRing::copy_out(uint32_t index, uint8_t *dst, uint32_t len) const
 
 uint32_t ByteRing::write(const uint8_t *src, uint32_t len)
 {
-    const uint32_t free_bytes = space();
+    uint32_t head, tail;
+    if (!producer_snapshot(head, tail)) {
+        return 0;
+    }
+    const uint32_t free_bytes = _size - used(head, tail);
     if (len > free_bytes) {
         len = free_bytes;
     }
-    const uint32_t head = _control->head.value.load(std::memory_order_relaxed);
+    if (len == 0) {
+        return 0;
+    }
     copy_in(head, src, len);
     _control->head.value.store((head + len) & _index_mask, std::memory_order_release);
     return len;
@@ -72,11 +112,11 @@ uint32_t ByteRing::write(const uint8_t *src, uint32_t len)
 
 bool ByteRing::write_record(const uint8_t *src, uint16_t len)
 {
-    if (len > MAX_RECORD || space() < uint32_t(len) + 2) {
+    uint32_t head, tail;
+    if (len > MAX_RECORD || !producer_snapshot(head, tail) || _size - used(head, tail) < uint32_t(len) + 2) {
         return false;
     }
     const uint8_t header[2] = { uint8_t(len), uint8_t(len >> 8) };
-    const uint32_t head = _control->head.value.load(std::memory_order_relaxed);
     copy_in(head, header, 2);
     copy_in(head + 2, src, len);
     _control->head.value.store((head + 2 + len) & _index_mask, std::memory_order_release);
@@ -85,17 +125,26 @@ bool ByteRing::write_record(const uint8_t *src, uint16_t len)
 
 void ByteRing::producer_reset()
 {
+    if (stale()) {
+        return;
+    }
     _control->head.value.store(_control->tail.value.load(std::memory_order_acquire) & _index_mask,
                                std::memory_order_release);
 }
 
 uint32_t ByteRing::read(uint8_t *dst, uint32_t len)
 {
-    const uint32_t have = available();
+    uint32_t head, tail;
+    if (!consumer_snapshot(head, tail)) {
+        return 0;
+    }
+    const uint32_t have = used(head, tail);
     if (len > have) {
         len = have;
     }
-    const uint32_t tail = _control->tail.value.load(std::memory_order_relaxed);
+    if (len == 0) {
+        return 0;
+    }
     copy_out(tail, dst, len);
     _control->tail.value.store((tail + len) & _index_mask, std::memory_order_release);
     return len;
@@ -103,14 +152,14 @@ uint32_t ByteRing::read(uint8_t *dst, uint32_t len)
 
 int32_t ByteRing::read_record(uint8_t *dst, uint16_t capacity)
 {
-    if (desynced()) {
+    uint32_t head, tail;
+    if (!consumer_snapshot(head, tail)) {
         return RECORD_BAD;
     }
-    const uint32_t have = available();
+    const uint32_t have = used(head, tail);
     if (have < 2) {
         return RECORD_NONE;
     }
-    const uint32_t tail = _control->tail.value.load(std::memory_order_relaxed);
     uint8_t header[2];
     copy_out(tail, header, 2);
     const uint16_t len = uint16_t(header[0] | (header[1] << 8));
@@ -124,6 +173,9 @@ int32_t ByteRing::read_record(uint8_t *dst, uint16_t capacity)
 
 void ByteRing::consumer_resync()
 {
+    if (stale()) {
+        return;
+    }
     _control->tail.value.store(_control->head.value.load(std::memory_order_acquire) & _index_mask,
                                std::memory_order_release);
 }
