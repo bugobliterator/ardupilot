@@ -31,7 +31,12 @@ enum : uint32_t {
 };
 static_assert(SYS_COUNT == 5, "port_syscall compares against the handler count");
 
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+// no guard: the stack sits directly on privileged RAM (MPU region 2), where an overflow faults
+static const uint32_t STACK_GUARD_SIZE = 0;
+#else
 static const uint32_t STACK_GUARD_SIZE = 32;
+#endif
 
 extern "C" uint8_t __ram1_end__[], __heap_base__[], __heap_end__[];
 
@@ -292,7 +297,9 @@ void lua_port_wake()
     chBSemSignal(&lua_done);
 }
 
+#if !(defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED)
 uint32_t lua_stack_guard()
 {
     return uint32_t(uintptr_t(lua_stack));
 }
+#endif

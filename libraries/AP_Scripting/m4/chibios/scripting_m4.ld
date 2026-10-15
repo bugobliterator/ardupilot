@@ -21,8 +21,8 @@ MEMORY
     flash5 (rx) : org = 0x00000000, len = 0
     flash6 (rx) : org = 0x00000000, len = 0
     flash7 (rx) : org = 0x00000000, len = 0
-    ram0   (wx) : org = 0x30000000, len = 32k       /* D2 SRAM1, privileged */
-    ram1   (wx) : org = 0x30008000, len = 224k      /* rest of SRAM1 + SRAM2: Lua RAM */
+    ram0   (wx) : org = 0x30000000, len = placement_priv_ram_size        /* D2 SRAM1, privileged */
+    ram1   (wx) : org = 0x30000000 + placement_priv_ram_size, len = placement_ram_size - placement_priv_ram_size
     ram2   (wx) : org = 0x00000000, len = 0
     ram3   (wx) : org = 0x00000000, len = 0
     ram4   (wx) : org = 0x00000000, len = 0

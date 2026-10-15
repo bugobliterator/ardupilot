@@ -7,5 +7,7 @@
 void lua_port_start(ScriptingM4::LuaLink &link, binary_semaphore_t &service_wake);
 // M4Platform::wake_lua
 void lua_port_wake();
+#if !(defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED)
 // the lowest 32 bytes of the Lua thread's stack: an MPU no-access guard (region 6)
 uint32_t lua_stack_guard();
+#endif

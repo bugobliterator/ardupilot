@@ -38,10 +38,26 @@
 #define AP_SCRIPTING_M4_RAM_SIZE         (256U * 1024U)
 // M4 RAM split (m4/chibios/scripting_m4.ld): privileged RAM first (kernel, service,
 // stacks; MPU region privileged-only), then Lua RAM (Lua thread, newlib, Lua heap)
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+// networking layout (Network Baseline): lwIP pools, network threads and buffers join the kernel
+// and service in the first 7 of 8 16 KB subregions of a 128 KB MPU region 2
+#define AP_SCRIPTING_M4_PRIV_RAM_SIZE    (112U * 1024U)
+#define AP_SCRIPTING_M4_PRIV_REGION_MPU_SIZE 16U     // 2^(16+1) = 128 KB
+#define AP_SCRIPTING_M4_PRIV_REGION_SRD  0x80U       // subregion 7 off: Lua RAM from 0x3001C000
+#else
+// plain M4 Lua layout, unchanged from c8a1a9f55a
 #define AP_SCRIPTING_M4_PRIV_RAM_SIZE    (32U * 1024U)
+#define AP_SCRIPTING_M4_PRIV_REGION_MPU_SIZE 14U     // 2^(14+1) = 32 KB, all subregions
+#define AP_SCRIPTING_M4_PRIV_REGION_SRD  0x00U
+#endif
 #define AP_SCRIPTING_M4_LUA_STACK_SIZE   (16U * 1024U)
 // the Lua heap the M4 image guarantees (linker assert); the SITL M4 caps its heap here too
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+// Lua RAM 147456 less the stack and the Lua objects' data and bss (10208 B), rounded down to 1 KB
+#define AP_SCRIPTING_M4_LUA_HEAP_MIN     (118U * 1024U)
+#else
 #define AP_SCRIPTING_M4_LUA_HEAP_MIN     (192U * 1024U)
+#endif
 // of that heap, what Lua's count (SCR_HEAP_SIZE) never reaches: newlib's own allocations
 // (strtod and _dtoa_r Bigints) and fragmentation; both platforms cap Lua below it
 #define AP_SCRIPTING_M4_NEWLIB_RESERVE   (8U * 1024U)
