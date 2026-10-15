@@ -273,6 +273,10 @@ submodules at specific revisions.
                  default=False,
                  help="SITL: run Lua scripting in a second process over the CubeFramework transport (M4 two-process mode)")
 
+    g.add_option('--enable-networking-m4', action='store_true',
+                 default=False,
+                 help="SITL: run lwIP and the NET_P ports in the M4 process (needs --enable-scripting-m4)")
+
     g.add_option('--no-gcs', action='store_true',
                  default=False,
                  help="Disable GCS code")
@@ -557,6 +561,10 @@ def configure(cfg):
         if cfg.env.BOARD_CLASS != 'SITL':
             cfg.fatal('--enable-scripting-m4 is for SITL; hardware uses --board CubeOrangePlus-M4Lua')
         cfg.env.SCRIPTING_M4 = '1'
+    if cfg.options.enable_networking_m4:
+        if not cfg.options.enable_scripting_m4:
+            cfg.fatal('--enable-networking-m4 needs --enable-scripting-m4; hardware uses --board CubeOrangePlus-M4LuaNet')
+        cfg.env.NETWORKING_M4 = '1'
     if cfg.env.SCRIPTING_M4:
         cfg.load('cubeframework')
 
