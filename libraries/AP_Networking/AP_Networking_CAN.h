@@ -3,6 +3,8 @@
 #include "AP_Networking.h"
 #include <AP_HAL/utility/Socket.h>
 
+class SocketAPM;
+
 class AP_Networking_CAN {
 public:
     void start(const uint8_t bus_mask);

@@ -352,7 +352,7 @@ void AP_Networking::startup_wait(void) const
     } while (get_ip_active() == 0);
 #endif
 }
-
+#if AP_NETWORKING_SOCKETS_ENABLED
 /*
   send the rest of a file to a socket
  */
@@ -439,7 +439,7 @@ void AP_Networking::sendfile_check(void)
         }
     }
 }
-
+#endif  // AP_NETWORKING_SOCKETS_ENABLED
 AP_Networking *AP_Networking::singleton;
 
 namespace AP
