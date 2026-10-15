@@ -37,6 +37,7 @@ from pymavlink.mavftp_op import FTP_OP
 from pymavlink.rotmat import Matrix3
 from pymavlink.rotmat import Vector3
 
+import m4_ppp_peer
 import vehicle_test_suite
 
 from pysim import util
@@ -19618,6 +19619,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4EarlyFault,
             self.ScriptingM4MissionFlight,
             self.ScriptingM4MidAutoFaults,
+            self.NetworkM4Status,
+            self.NetworkM4InboundFlood,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22194,6 +22197,115 @@ RTL_ALT_M 111
         self.wait_statustext("Scripting: M4 heartbeat lost", check_context=True, timeout=10)
         self.wait_statustext("Scripting: M4 not responding, off until reboot", check_context=True, timeout=10)
         self.context_pop()
+        self.reboot_sitl()
+
+    M4_PEER_IP = "10.0.14.1"
+    M4_IP = "10.0.14.2"
+    M4_PPP_PORT = 5770
+    M4_UDP_CLIENT_PORT = 14560
+    M4_UDP_SERVER_PORT = 14570
+
+    def m4_network_context(self, parameters):
+        '''a PPP peer for the SITL M4 process (m4_ppp_peer), NET_ENABLE and the given NET_P ports, then
+        a reboot; the caller has pushed a context, and closes the peer and drops SCRIPTING_M4_PPP
+        before it pops it (which restarts SITL without the variable)'''
+        if not self.networking_m4_build():
+            raise NotAchievedException("needs a --enable-scripting-m4 --enable-networking-m4 SITL build")
+        peer = m4_ppp_peer.M4PPPPeer(self.M4_PPP_PORT, self.M4_PEER_IP, self.M4_IP)
+        os.environ['SCRIPTING_M4_PPP'] = 'tcp:127.0.0.1:%u' % self.M4_PPP_PORT
+        self.context_get().sitl_commandline_customised = True
+        self.customise_SITL_commandline([])     # restarts SITL with the variable in its environment
+        self.set_parameter("SIM_SPEEDUP", 1)    # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({"SCR_ENABLE": 1, "NET_ENABLE": 1})
+        self.reboot_sitl()                      # the NET_P parameters exist once NET_ENABLE is set
+        self.set_parameters(parameters)
+        self.reboot_sitl()
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        if not peer.wait_ipv4_up(60):
+            raise NotAchievedException("PPP to the M4 did not come up")
+        return peer
+
+    def m4_udp_client_parameters(self):
+        '''NET_P1: MAVLink2 UDP client to the peer, NET_P2: MAVLink2 UDP server'''
+        ip = [int(x) for x in self.M4_PEER_IP.split(".")]
+        return {
+            "NET_P1_TYPE": 1, "NET_P1_PROTOCOL": 2, "NET_P1_PORT": self.M4_UDP_CLIENT_PORT,
+            "NET_P1_IP0": ip[0], "NET_P1_IP1": ip[1], "NET_P1_IP2": ip[2], "NET_P1_IP3": ip[3],
+            "NET_P2_TYPE": 2, "NET_P2_PROTOCOL": 2, "NET_P2_PORT": self.M4_UDP_SERVER_PORT,
+        }
+
+    def m4_mavlink_datagrams(self, peer, seconds):
+        '''MAVLink2 datagrams the M4's UDP client port sent the peer within seconds (wall clock)'''
+        peer.take_udp()
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self.drain_mav()
+            time.sleep(0.1)
+        return [d for d in peer.take_udp() if d[1] == self.M4_UDP_CLIENT_PORT and d[2][:1] == b'\xfd']
+
+    def NetworkM4Status(self):
+        '''the M4 publishes the PPP addresses through the status block; a stopped M4's status goes stale'''
+        self.context_push()
+        peer = None
+        try:
+            # 0 restarts: the injected fault turns the M4 off with its session unchanged
+            peer = self.m4_network_context(dict(self.m4_udp_client_parameters(), SCR_M4_RST_MAX=0))
+            # the addresses IPCP gave the M4, read by the M7 from the status block
+            self.wait_statustext("Net: M4 up, ppp0 %s" % self.M4_IP, check_context=True, timeout=60)
+            self.wait_statustext("NET: IP      %s" % self.M4_IP, check_context=True, timeout=10)
+            self.wait_statustext("NET: Mask    255.255.255.255", check_context=True, timeout=10)
+            self.wait_statustext("NET: Gateway %s" % self.M4_PEER_IP, check_context=True, timeout=10)
+            # NET_P1 runs on the M4: the M7's MAVLink stream reaches the peer over PPP
+            if len(self.m4_mavlink_datagrams(peer, 5)) == 0:
+                raise NotAchievedException("no MAVLink from the M4's UDP client port")
+            # an M4 that is off for good keeps its session: only the status heartbeat stops
+            self.context_clear_collection("STATUSTEXT")
+            self.set_parameter("SCR_M4_INJECT", 1)
+            self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=30)
+            self.wait_statustext("NET: IP      0.0.0.0", check_context=True, timeout=10)
+        finally:
+            if peer is not None:
+                peer.close()
+            os.environ.pop('SCRIPTING_M4_PPP', None)
+            self.context_pop()
+        self.reboot_sitl()
+
+    def NetworkM4InboundFlood(self):
+        '''a UDP flood into an M4 port leaves the M4 heartbeat and its other ports running'''
+        self.context_push()
+        peer = None
+        try:
+            peer = self.m4_network_context(self.m4_udp_client_parameters())
+            self.wait_statustext("Net: M4 up, ppp0 %s" % self.M4_IP, check_context=True, timeout=60)
+            before = len(self.m4_mavlink_datagrams(peer, 5))
+            if before == 0:
+                raise NotAchievedException("no MAVLink from the M4's UDP client port")
+            self.context_clear_collection("STATUSTEXT")
+            payload = bytes(range(256)) * 4
+            sent = 0
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                for _ in range(50):
+                    peer.send_udp(self.M4_UDP_SERVER_PORT + 1, self.M4_UDP_SERVER_PORT, payload[:1000])
+                    sent += 1
+                self.drain_mav()
+            self.progress("flooded the M4's UDP server port with %u datagrams of 1000 bytes" % sent)
+            for m in self.context_collection("STATUSTEXT"):
+                if "Scripting: M4" in m.text or m.text.startswith("NET: IP"):
+                    raise NotAchievedException("M4 flood gave '%s'" % m.text)
+            after = len(self.m4_mavlink_datagrams(peer, 5))
+            self.progress("MAVLink datagrams from the M4's UDP client port in 5 s: %u before, %u after" % (before, after))
+            if after < before // 2:
+                raise NotAchievedException("the M4's UDP client port slowed: %u then %u datagrams" % (before, after))
+            for m in self.context_collection("STATUSTEXT"):
+                if "Scripting: M4" in m.text:
+                    raise NotAchievedException("after the M4 flood: '%s'" % m.text)
+        finally:
+            if peer is not None:
+                peer.close()
+            os.environ.pop('SCRIPTING_M4_PPP', None)
+            self.context_pop()
         self.reboot_sitl()
 
     def networking_m4_build(self):
@@ -26134,6 +26246,8 @@ return update, 1000
             "ScriptingM4EarlyFault": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4MissionFlight": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4MidAutoFaults": "Requires --enable-scripting-m4 SITL build",
+            "NetworkM4Status": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
+            "NetworkM4InboundFlood": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
         }
 
 
