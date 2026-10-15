@@ -117,10 +117,11 @@ extern "C" {
 #define IP_REASS_MAX_PBUFS              24
 #define MEMP_NUM_REASSDATA              IP_REASS_MAX_PBUFS
 
-/* threads: os_thread_start adds NORMALPRIO on ChibiOS and ignores the priority on POSIX */
+/* threads: os_thread_start adds NORMALPRIO on ChibiOS and ignores the priority on POSIX; every
+   network thread runs below the service thread (NORMALPRIO), which beats the M4 heartbeat */
 #define TCPIP_THREAD_NAME               "tcpip"
 #define TCPIP_THREAD_STACKSIZE          2048
-#define TCPIP_THREAD_PRIO               3
+#define TCPIP_THREAD_PRIO               (-1)
 
 /* hooks: errno per thread, the routing hook (PPP gateway routes), the core-lock check, asserts */
 void net_m4_set_errno(int err);

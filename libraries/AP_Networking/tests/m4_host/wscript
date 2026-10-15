@@ -25,10 +25,13 @@ def m4_test(bld, name, sources, with_lwip):
         use=['GTEST'],
         use_legacy_defines=False,
         vehicle_binary=False,
-        cflags=['-Wno-error'],
+        cflags=['-Wno-error', '-Wno-implicit-fallthrough', '-Wno-parentheses-equality'],
         cxxflags=['-Wno-undef', '-std=gnu++17'],
     )
 
 
 def build(bld):
     m4_test(bld, 'test_networking_m4_sys_arch', ['net_sys_arch.cpp', 'net_sys_arch_posix.cpp'], with_lwip=False)
+    m4_test(bld, 'test_networking_m4_service',
+            ['net_sys_arch.cpp', 'net_sys_arch_posix.cpp', 'net_m4.cpp', 'net_port_service.cpp', '../AP_Networking_M4_Rings.cpp'],
+            with_lwip=True)
