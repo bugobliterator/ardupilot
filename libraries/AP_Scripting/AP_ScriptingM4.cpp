@@ -98,8 +98,8 @@ void AP_ScriptingM4::init()
     // binding calls run vehicle code (mode changes, set_target_location) on this thread,
     // which the in-process scripting thread ran with 17 KB.
     // above the I/O-class threads (io 58, storage/log_io 59, UART/net 60) so a call is not queued
-    // behind logging; below every vehicle-timing thread (I2C 176 and up). The serve budget and
-    // backoff bound what a flooding M4 can take from those threads
+    // behind logging; below every vehicle-timing thread (I2C 176 and up). The duty cap bounds
+    // the CPU share a flooding M4 can take from those threads
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ScriptingM4::host_thread, void),
                                       "ScriptingM4", 8192, AP_HAL::Scheduler::PRIORITY_UART, 1)) {
         go_off("no host thread");
@@ -141,6 +141,8 @@ void AP_ScriptingM4::host_thread()
             // frames are pending. An empty ring keeps listening, so its next doorbell is not missed
             _duty_cap_hits++;
             pause_for_duty_cap(MIN(cap_wait_us, platform_wait_us()), ring_empty);
+            // frames pending after the pause are served at once (the cap still comes first)
+            last = ServeResult::Idle;
             break;
         case ScriptingM4::HostWait::Backoff:
             // the budget ran out with frames left: pause so a flooding M4 costs bounded M7 time

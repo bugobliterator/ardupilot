@@ -247,7 +247,9 @@ static void art_enable()
 {
     RCC_C2->AHB1ENR |= RCC_AHB1ENR_ARTEN;
     (void)RCC_C2->AHB1ENR;
-    ART->CTR &= ~ART_CTR_EN;   // EN 0 -> 1 invalidates: a warm restart starts with an empty cache
+    // EN off while PCACHEADDR changes (RM0399 6.3.2). Stale code is not possible: the image is
+    // rewritten only by SWD or the bootloader, and both end in a system reset, which clears CTR
+    ART->CTR &= ~ART_CTR_EN;
     ART->CTR = (ART->CTR & ~ART_CTR_PCACHEADDR) |
                ((AP_SCRIPTING_M4_FLASH_BASE >> 20) << ART_CTR_PCACHEADDR_Pos);
     ART->CTR |= ART_CTR_EN;
