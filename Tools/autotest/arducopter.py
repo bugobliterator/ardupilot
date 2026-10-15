@@ -22227,7 +22227,6 @@ RTL_ALT_M 111
 
         dfreader = self.dfreader_for_current_onboard_log()
         requests_max = 0
-        busy_max = 0
         cpu_max = 0
         cap_hits = 0
         dropped = 0
@@ -22241,12 +22240,10 @@ RTL_ALT_M 111
             if m.St != 2:
                 continue
             requests_max = max(requests_max, m.Req)
-            busy_max = max(busy_max, m.Busy)
             cpu_max = max(cpu_max, m.CPU)
             cap_hits += m.Cap
-        self.progress("M4 flood: most requests in one second %u, host CPU at most %u per mille "
-                      "(wall %u), duty cap pauses %u, DSF dropped %u" %
-                      (requests_max, cpu_max, busy_max, cap_hits, dropped))
+        self.progress("M4 flood: most requests in one second %u, host CPU at most %u per mille, "
+                      "duty cap pauses %u, DSF dropped %u" % (requests_max, cpu_max, cap_hits, dropped))
         if requests_max <= 256:
             raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
         # 10 % of the CPU, plus the 2 ms burst and one pass in a one-second row
