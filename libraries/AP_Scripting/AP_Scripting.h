@@ -96,6 +96,10 @@ public:
     // restart_all()), and in restart whether it is a restart: a stop asked without one wins.
     // Taken once. M4 host thread
     bool take_stop_request(bool &restart) { return _m4_requests.take(restart); }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the M4's current session (AP_ScriptingM4::m4_session()), for AP_Networking's proxy
+    uint32_t m4_session() const { return _m4.m4_session(); }
+#endif
 #endif
 
    // User parameters for inputs into scripts 
