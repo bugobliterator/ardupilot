@@ -58,7 +58,6 @@ public:
     bool m4_session_confirmed(uint32_t session) const {
         return _confirmed_grant.load(std::memory_order_acquire) == session + 1U;
     }
-    bool m4_session_confirmed() const { return m4_session_confirmed(m4_session()); }
 #endif
 
     static const struct AP_Param::GroupInfo var_info[];
