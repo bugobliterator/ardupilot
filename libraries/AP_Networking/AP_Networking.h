@@ -206,10 +206,22 @@ public:
     // NET_* for the M4 network stack; false, with out zeroed: networking off or a NET_P port invalid
     bool m4_config(NetM4::Config &out) const;
 
+    // the scripting supervisor's current M4 grant, and whether the M4 confirmed running it
+    static uint32_t m4_session();
+    static bool m4_session_confirmed(uint32_t session);
+
     // the NET_P ports' bytes through the rings; IO thread
     void m4_io_update();
     // the same for a given M4 session, confirmed running or not (tests)
     void m4_io_update(uint32_t session, bool confirmed);
+    // one pass from a grant source: current() is read once, and confirmed() is asked about that
+    // value only, so a grant landing during the pass never runs it unheld (tests pass a fake)
+    template <typename Grant>
+    void m4_io_update_from(const Grant &grant)
+    {
+        const uint32_t session = grant.current();
+        m4_io_update(session, grant.confirmed(session));
+    }
 
     // every byte in the ports' buffers and rings (tests)
     uint32_t m4_queued_bytes_for_test();
@@ -237,10 +249,9 @@ private:
     bool _m4_held = true;
     bool _m4_doorbell_pending = false;
     uint32_t _m4_doorbells = 0;      // doorbells rung
-    uint32_t _m4_tx_resyncs = 0;     // TX rings the M4 desynced
+    uint32_t _m4_tx_desyncs = 0;     // times a TX ring was found desynced (the M4 recovers it)
+    bool _m4_tx_desynced[NetM4::NUM_PORTS] {};
     uint32_t _m4_bytes_dropped = 0;  // port bytes dropped at session changes
-    static uint32_t m4_session();
-    static bool m4_session_confirmed();
     void m4_hold_ports();
     void m4_attach(uint32_t session);
     uint8_t m4_track_status(NetM4::StatusTracker &tracker, NetM4::StatusFields &out);

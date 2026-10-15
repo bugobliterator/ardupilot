@@ -158,7 +158,9 @@ static_assert(sizeof(Region) == 16384, "the network region is 16 KB");
     operation, so a reset never runs during one;
   - rings are attached with &generation; after a reset they return 0 / RECORD_BAD until
     attached again, and the user drops what it cached for the old session (buffered bytes,
-    port state, the last status copy) when it attaches again.
+    port state, the last status copy) when it attaches again;
+  - a desynced ring is recovered by its consumer (consumer_resync()); a producer never resets
+    a ring the consumer may be resyncing, outside a session change while the ports are held.
  */
 inline uint32_t reset_region(Region &region, std::atomic<uint32_t> &generation)
 {
