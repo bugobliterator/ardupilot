@@ -51,7 +51,7 @@ public:
 private:
     enum class ServeResult : uint8_t {
         Idle,     // the ring is empty
-        Busy,     // the per-wake budget ran out with frames left
+        Busy,     // the per-wake budget ran out with a frame just served; more may remain
         Stuck,    // nothing can be served now: not running, or a protocol error
     };
 

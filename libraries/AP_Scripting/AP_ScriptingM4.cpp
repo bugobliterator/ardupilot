@@ -11,6 +11,7 @@
 #include <CubePilotFW/PeerHeader.h>
 #include "AP_ScriptingM4_Layout.h"
 #include "AP_ScriptingM4_Rpc.h"
+#include "AP_ScriptingM4_ServeWait.h"
 #include "AP_Scripting.h"
 
 static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
@@ -24,7 +25,7 @@ using ScriptingM4::MsgType;
 // one wake serves at most this many requests or this long (spec §7)
 static const uint8_t MAX_REQUESTS_PER_WAKE = 32;
 static const uint32_t MAX_SERVE_US = 200;
-// after a pass that hit either limit: a flooding M4 gets one pass per pause
+// after a pass that hit either limit with frames left: a flooding M4 gets one pass per pause
 static const uint32_t SERVE_BACKOFF_US = 500;
 // protocol errors within one second that count as a failure
 static const uint16_t PROTOCOL_ERROR_LIMIT = 3;
@@ -127,13 +128,22 @@ void AP_ScriptingM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
-        if (last == ServeResult::Busy) {
-            // the budget ran out: pause so a flooding M4 costs bounded M7 time (spec §7)
+        const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
+        switch (ScriptingM4::host_wait_after(last == ServeResult::Busy, last == ServeResult::Stuck, ring_empty)) {
+        case ScriptingM4::HostWait::Backoff:
+            // the budget ran out with frames left: pause so a flooding M4 costs bounded M7 time
+            // (spec §7). No doorbell is needed while we pause
+            _channel->wake();
             hal.scheduler->delay_microseconds(SERVE_BACKOFF_US);
-        } else if (_channel->prepareSleep() || last == ServeResult::Stuck) {
+            break;
+        case ScriptingM4::HostWait::Doorbell:
+        case ScriptingM4::HostWait::Timeout:
             // a ring that cannot be served now (not running, or a frame stuck after
             // a protocol error) must not make this loop spin: wait for the timeout
-            IGNORE_RETURN(_doorbell.wait(platform_wait_us()));
+            if (ring_empty || last == ServeResult::Stuck) {
+                IGNORE_RETURN(_doorbell.wait(platform_wait_us()));
+            }
+            break;
         }
         _channel->wake();
         _woke_us = AP_HAL::micros();
@@ -174,10 +184,8 @@ AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
     if (_state != State::Running) {
         return ServeResult::Stuck;   // frames from before a (re)start are dropped by the re-handshake
     }
+    // an empty ring is Idle whatever the time; Busy means a limit ran out with a frame just served
     for (uint8_t i = 0; i < MAX_REQUESTS_PER_WAKE; i++) {
-        if (AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
-            return ServeResult::Busy;
-        }
         uint16_t len = 0;
         const int ret = _channel->receive(_rx_frame, sizeof(_rx_frame), &len);
         if (ret == -EAGAIN) {
@@ -189,6 +197,9 @@ AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
             return ServeResult::Stuck;
         }
         handle_message(_rx_frame, len);
+        if (AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
+            return ServeResult::Busy;
+        }
     }
     return ServeResult::Busy;
 }
