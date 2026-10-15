@@ -25,6 +25,15 @@
 
 #include "../m4_service.h"
 #include "lua_port.h"
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include "net_m4.h"
+#include "net_platform.h"
+
+static void network_config_entry(const NetM4::Config &config)
+{
+    net_m4_configure(config);
+}
+#endif
 
 using namespace ScriptingM4;
 using CubePilotFW::Channel;
@@ -105,6 +114,10 @@ extern "C" void on_restart_signal(int)
 
 extern "C" void on_fault_signal(int sig, siginfo_t *info, void *)
 {
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the M7 clears the network region once it sees the fault: the net_port thread stops first
+    net_m4_park();
+#endif
     PeerHeader::recordFault(window, PeerHeader::Core::M4, uint32_t(sig), 0,
                             uint32_t(uintptr_t(info->si_addr)), 0);
     SupervisorBlock *block = supervisor_block(window);
@@ -204,6 +217,10 @@ int main(int argc, char **argv)
     }
     restart_grant_at_start = block->restart_grant.load();
     install_handlers();
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    net_platform_init(window, restart_grant_at_start);
+    net_m4_session_start();
+#endif
     PeerHeader::publish(window, PeerHeader::Core::M4, PROTOCOL_VERSION, CONTRACT_HASH,
                         restart_grant_at_start);
     // SCR_M4_INJECT 12: the session the M7 marked faults before the M7 reads its header
@@ -214,7 +231,7 @@ int main(int argc, char **argv)
     const M4Platform platform { millis_now, cycles_now, 1, inject_fault, lua_port_wake, lock_service,
                                 unlock_service,
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-                                nullptr,
+                                network_config_entry,
 #endif
                               };
     service.init(channel, window, call_link, platform);

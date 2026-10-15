@@ -7,3 +7,5 @@ def build(bld):
     if bld.env.HAS_GTEST and 'AP_SCRIPTING_M4_ENABLED=1' in bld.env.DEFINES:
         tg = bld.get_tgen_by_name('tests/test_scripting_m4_service')
         tg.includes = list(tg.to_list(tg.includes)) + [bld.srcnode.find_dir('libraries/AP_Scripting').abspath()]
+    if bld.env.NETWORKING_M4 and bld.env.HAS_GTEST:
+        bld.recurse('m4_service')   # the M4 service's NET_* request, networking builds only
