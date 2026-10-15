@@ -205,35 +205,30 @@ TEST(ScriptingM4ServeWait, IntervalCpuFromClockReadings)
 }
 
 /*
-  A flood whose statistics are reset in every interval (the attack of a script opening
+  A flood whose statistics are reset during every pass (the attack of a script opening
   @SYS/threads.txt each pass, or a GCS reading it as fast as it can): each pass runs 200 us of
-  CPU in 300 us of wall time, each wait 50 us of wall time with no CPU. The meter here is the
-  CPU actually used, which the charges do not feed: its share stays within the cap.
+  CPU in 300 us of wall time, and the waits sleep. The host charges each pass from a reading
+  at its start to one at its end; the meter here is the CPU actually used, which the charges
+  do not feed: its share stays within the cap.
  */
-TEST(ScriptingM4ServeWait, StatisticsResetEveryIntervalKeepsTheShare)
+TEST(ScriptingM4ServeWait, StatisticsResetEveryPassKeepsTheShare)
 {
     ServeDutyCap cap;
     uint64_t elapsed = 0;
     uint64_t used = 0;
-    uint64_t clock = 0;   // the thread's CPU clock, reset to 0 in every interval
     const uint64_t duration = 10000000U;
     EXPECT_EQ(cap.wait_us(0U), 0U);
     while (elapsed < duration) {
         const uint32_t wait = cap.wait_us(uint32_t(elapsed));
-        // the wait or pause before the pass: its interval is charged at the pass start
-        const uint32_t wait_wall = wait != 0 ? (wait < 10000U ? wait : 10000U) : 50U;
-        elapsed += wait_wall;
-        uint64_t reading = clock;
-        clock = 0;   // reset
-        cap.charge(interval_cpu_us(reading, clock, true, wait_wall));
-        if (cap.wait_us(uint32_t(elapsed)) != 0) {
+        if (wait != 0) {
+            elapsed += wait < 10000U ? wait : 10000U;
             continue;
         }
-        reading = clock;
-        clock = 150U;   // reset part way through the pass, which then runs 150 us more
+        const uint64_t start = 5000000U;   // the clock at the pass start
+        const uint64_t end = 150U;         // reset part way through, 150 us more after it
         elapsed += 300U;
         used += 200U;
-        cap.charge(interval_cpu_us(reading, clock, true, 300U));
+        cap.charge(interval_cpu_us(start, end, true, 300U));
     }
     const uint64_t ppm = used * 1000000U / elapsed;
     EXPECT_LE(ppm, ServeDutyCap::SHARE_PERCENT * 10000U + (300U + ServeDutyCap::BURST_US) * uint64_t(1000000U) / duration);

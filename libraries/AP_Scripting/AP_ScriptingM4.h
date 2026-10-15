@@ -95,7 +95,8 @@ private:
     // CPU time this thread has used, in microseconds; true when the clock was reset (statistics
     // cleared) since the previous call, so the difference to that reading is not the CPU used
     bool platform_thread_cpu_us(uint64_t &cpu_us);
-    uint32_t charge_cpu();
+    void start_pass_cpu();
+    uint32_t charge_pass_cpu();
     // the clock the start and restart timeouts count: the vehicle's on ChibiOS, wall-clock time in
     // SITL, where the M4 process runs on wall-clock time whatever SIM_SPEEDUP is
     uint32_t platform_timeout_ms() const;
@@ -141,9 +142,9 @@ private:
     uint32_t _host_cpu_us;             // host thread CPU time, what the duty cap charges
     uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
     uint32_t _pass_cpu_max_us;         // the largest CPU time of one pass
-    uint16_t _cpu_clock_resets;        // intervals charged their wall time after a CPU clock reset
-    uint64_t _cpu_charged_us;          // the CPU clock reading charged up to
-    uint32_t _cpu_charged_wall_us;     // and when it was taken
+    uint16_t _cpu_clock_resets;        // thread statistics resets seen
+    uint64_t _pass_start_cpu_us;       // the CPU clock when this pass started
+    uint32_t _pass_start_wall_us;      // and the wall clock
     bool _summary_enabled;
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ScriptingM4::ServeDutyCap _duty_cap;
