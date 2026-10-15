@@ -106,6 +106,11 @@ private:
     uint8_t _restarts_used;
     uint32_t _restart_grants;         // restarts granted the M4: fault restarts and requested ones
     bool _restart_requested;          // the restart under way is a request, not a fault
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the failure being handled left the M4 unable to run (in its fault handler, or exited): the
+    // next grant may clear the network region
+    bool _m4_halted {false};
+#endif
     ScriptingM4::RunControl _run_control;
     uint32_t _m4_session;             // M4 peer header session being served
     uint32_t _m4_fault_count;         // M4 fault count already handled
