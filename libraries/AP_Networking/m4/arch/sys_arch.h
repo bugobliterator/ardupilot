@@ -1,4 +1,6 @@
 #pragma once
+// net_sys_arch.cpp and net_libc.c check that lwIP found this header, not the M7 port's
+#define AP_NETWORKING_M4_SYS_ARCH 1
 // sys_prot_t comes from AP's arch/cc.h (libraries/AP_Networking/lwip_hal/include)
 struct sys_sem;
 struct sys_mutex;
