@@ -3,6 +3,9 @@
 
 using namespace ScriptingM4;
 
+// plain SITL builds tests as C++11, where EXPECT_* binding a static constexpr member by reference
+// needs a definition: such members are compared through a cast
+
 // a flooding M4: the budget ran out and frames remain, so the host pauses
 TEST(ScriptingM4ServeWait, BudgetOutWithFramesLeftBacksOff)
 {
@@ -43,7 +46,7 @@ TEST(ScriptingM4ServeWait, FirstPassAfterConstruction)
 {
     ServeDutyCap cap;
     EXPECT_EQ(cap.wait_us(123456789U), 0U);
-    EXPECT_EQ(cap.credit_us(), ServeDutyCap::BURST_US);
+    EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::BURST_US));
     // time before the first call earns nothing: a long first pass is not covered by it
     cap.charge(50000);
     EXPECT_NE(cap.wait_us(123456789U + 50000U), 0U);
@@ -61,7 +64,7 @@ TEST(ScriptingM4ServeWait, WrapAround)
     EXPECT_NE(cap.wait_us(start + wait - 10U), 0U);
     EXPECT_EQ(cap.wait_us(start + wait), 0U);   // past the wrap
     EXPECT_LT(start + wait, start);
-    EXPECT_EQ(cap.credit_us(), ServeDutyCap::RESUME_US);
+    EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::RESUME_US));
 }
 
 // a gap with no calls (a long preemption) refills at most the burst
@@ -71,7 +74,7 @@ TEST(ScriptingM4ServeWait, LongGapRefillsBurstOnly)
     EXPECT_EQ(cap.wait_us(1000U), 0U);
     cap.charge(5000);
     EXPECT_EQ(cap.wait_us(1000U + 3000000000U), 0U);
-    EXPECT_EQ(cap.credit_us(), ServeDutyCap::BURST_US);
+    EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::BURST_US));
 }
 
 /*
