@@ -247,6 +247,13 @@ class M4PPPPeer(object):
             self.udp_received.append((sport, dport, bytes(udp[8:length])))
 
     # the test's side
+    def drop_connection(self):
+        '''closes the PPP connection, as a peer that went away; the M4 connects again'''
+        with self.lock:
+            conn = self.conn
+        if conn is not None:
+            conn.shutdown(socket.SHUT_RDWR)
+
     def wait_ipv4_up(self, timeout):
         deadline = time.time() + timeout
         while time.time() < deadline:
