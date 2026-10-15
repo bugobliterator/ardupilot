@@ -56,7 +56,7 @@ ifeq ($(NETWORKING_M4),1)
 NET_CSRC = $(wildcard $(LWIP)/core/*.c $(LWIP)/core/ipv4/*.c $(LWIP)/api/*.c $(LWIP)/netif/ppp/*.c) \
            $(LWIP)/netif/ethernet.c $(NETM4)/m4/net_libc.c
 NET_CPPSRC = $(NETM4)/m4/net_m4.cpp $(NETM4)/m4/net_sys_arch.cpp $(NETM4)/m4/net_sys_arch_chibios.cpp \
-             $(NETM4)/AP_Networking_M4_Rings.cpp
+             $(NETM4)/AP_Networking_M4_Rings.cpp $(CONFDIR)/net_platform_chibios.cpp
 NET_INCDIR = $(NETM4)/m4 $(LWIP)/include $(NETM4)/lwip_hal/include $(NETM4)
 NET_INCOPT = -I$(NETM4)/m4
 NET_PRIVILEGED_LIBC = strcpy strncpy
