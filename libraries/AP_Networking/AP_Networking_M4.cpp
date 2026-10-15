@@ -2,8 +2,9 @@
 
 #if AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED
 
-#include "AP_Networking_M4_Layout.h"
+#include "AP_Networking_M4.h"
 #include <AP_Scripting/AP_ScriptingM4_Placement.h>
+#include <AP_HAL/utility/packetise.h>
 #include <GCS_MAVLink/GCS.h>
 
 static_assert(sizeof(NetM4::Region) == AP_NETWORKING_M4_RING_SIZE, "the region fills the ring window");
@@ -66,6 +67,92 @@ bool AP_Networking::m4_config(NetM4::Config &out) const
     }
     out = config;
     return true;
+}
+
+uint32_t NetM4::flush_tx(ByteBuffer &writebuffer, ByteRing &ring, bool packetise, bool mavlink_frames)
+{
+    uint32_t moved = 0;
+    uint8_t buf[MAX_RECORD];
+    while (writebuffer.available() > 0) {
+        uint32_t len = MIN(writebuffer.available(), uint32_t(MAX_RECORD));
+        if (packetise) {
+#if AP_MAVLINK_PACKETISE_ENABLED
+            if (mavlink_frames) {
+                len = mavlink_packetise(writebuffer, len);
+            }
+#else
+            (void)mavlink_frames;
+#endif
+            if (len == 0 || writebuffer.peekbytes(buf, len) != len || !ring.write_record(buf, uint16_t(len))) {
+                break;
+            }
+            writebuffer.advance(len);
+            moved += len;
+        } else {
+            len = writebuffer.peekbytes(buf, len);
+            const uint32_t written = ring.write(buf, len);
+            writebuffer.advance(written);
+            moved += written;
+            if (written < len || written == 0) {
+                break;
+            }
+        }
+    }
+    return moved;
+}
+
+uint32_t NetM4::drain_rx(ByteRing &ring, ByteBuffer &readbuffer)
+{
+    if (ring.desynced()) {
+        ring.consumer_resync();
+        return 0;
+    }
+    uint32_t moved = 0;
+    uint8_t buf[256];
+    while (true) {
+        const uint32_t len = MIN(readbuffer.space(), uint32_t(sizeof(buf)));
+        const uint32_t got = len > 0 ? ring.read(buf, len) : 0;
+        if (got == 0) {
+            return moved;
+        }
+        readbuffer.write(buf, got);
+        moved += got;
+    }
+}
+
+uint32_t NetM4::reset_port(ByteBuffer &readbuffer, ByteBuffer &writebuffer)
+{
+    const uint32_t dropped = readbuffer.available() + writebuffer.available();
+    readbuffer.clear();
+    writebuffer.clear();
+    return dropped;
+}
+
+uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, uint32_t session, StatusFields &out)
+{
+    uint8_t events = 0;
+    if (session != tracker.session) {
+        tracker = StatusTracker {};
+        tracker.session = session;
+        events |= STATUS_NEW_SESSION;
+    }
+    StatusFields status;
+    if (!read_status(block, status) || status.session != session) {
+        // the last good copy stands: a torn or bad block, or the last session's
+        return events;
+    }
+    if (!tracker.have_status || status.change_count != tracker.change_count) {
+        events |= STATUS_ADDRESSES;
+    }
+    const bool link_up = (status.flags & STATUS_LINK_UP) != 0;
+    if (link_up && !tracker.link_up) {
+        events |= STATUS_LINK_CAME_UP;
+    }
+    tracker.have_status = true;
+    tracker.change_count = status.change_count;
+    tracker.link_up = link_up;
+    out = status;
+    return events;
 }
 
 #endif  // AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED
