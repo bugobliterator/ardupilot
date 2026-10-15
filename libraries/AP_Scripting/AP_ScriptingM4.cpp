@@ -644,6 +644,9 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
 void AP_ScriptingM4::check_running(uint32_t now_ms)
 {
     if (platform_m4_exited()) {
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        _m4_halted = true;   // the M4 process is gone
+#endif
         failure("process exit");
         return;
     }
@@ -661,6 +664,9 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
             _m4_fault_pc = view.faultPc;
             char reason[40];
             fault_reason(view, reason, sizeof(reason));
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+            _m4_halted = true;   // in its fault handler, waiting for the grant
+#endif
             failure(reason);
             return;
         }
@@ -703,6 +709,9 @@ bool AP_ScriptingM4::report_start_fault()
     _m4_fault_pc = view.faultPc;
     char reason[40];
     fault_reason(view, reason, sizeof(reason));
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    _m4_halted = true;   // in its fault handler, waiting for the grant
+#endif
     failure(reason);
     return true;
 }
@@ -739,8 +748,12 @@ void AP_ScriptingM4::grant_restart()
     // the new session starts without the old one's protocol errors
     _protocol_errors = 0;
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    // the new session starts with every network ring empty
-    AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
+    // only an M4 that cannot run may have the region cleared under it; after a request, a lost
+    // heartbeat or protocol errors it may still be running, and its new session resyncs the rings
+    if (_m4_halted) {
+        AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
+    }
+    _m4_halted = false;
 #endif
     // the M4 acts on a restart doorbell only once the grant has changed: store it first
     ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restart_grants);
