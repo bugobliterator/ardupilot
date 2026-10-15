@@ -19,4 +19,41 @@ TEST(ScriptingM4Layout, PlainBuildKeepsTheM4LuaLayout)
 }
 #endif
 
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+TEST(ScriptingM4Layout, NetworkingWindowSplitsIntoChannelBlockAndRings)
+{
+    EXPECT_EQ(CHANNEL_WINDOW_SIZE, 16352U);
+    EXPECT_EQ(CHANNEL_WINDOW_SIZE + SUPERVISOR_BLOCK_SIZE, RING_REGION_OFFSET);
+    EXPECT_EQ(AP_SCRIPTING_M4_WINDOW_BASE + RING_REGION_OFFSET, AP_NETWORKING_M4_RING_BASE);
+    EXPECT_EQ(RING_REGION_OFFSET + AP_NETWORKING_M4_RING_SIZE, WINDOW_SIZE);
+    EXPECT_EQ(AP_NETWORKING_M4_RING_BASE % AP_NETWORKING_M4_RING_SIZE, 0U);
+    EXPECT_NE(AP_NETWORKING_M4_DOORBELL_GROUP, AP_SCRIPTING_M4_DOORBELL_GROUP);
+    EXPECT_NE(AP_NETWORKING_M4_DOORBELL_GROUP, AP_SCRIPTING_M4_RESTART_GROUP);
+    EXPECT_EQ(RPC_PROTOCOL_VERSION, 4U);
+}
+
+TEST(ScriptingM4Layout, NetworkingClearLeavesTheRingRegion)
+{
+    static uint8_t window[AP_SCRIPTING_M4_WINDOW_SIZE];
+    memset(window, 0xA5, sizeof(window));
+    clear_channel_region(window);
+    for (uint32_t i = 0; i < RING_REGION_OFFSET; i++) {
+        ASSERT_EQ(window[i], 0U) << i;
+    }
+    for (uint32_t i = RING_REGION_OFFSET; i < sizeof(window); i++) {
+        ASSERT_EQ(window[i], 0xA5U) << i;
+    }
+}
+#endif
+
+TEST(ScriptingM4Layout, ClearCoversTheChannelAndBlock)
+{
+    static uint8_t window[AP_SCRIPTING_M4_WINDOW_SIZE];
+    memset(window, 0xA5, sizeof(window));
+    clear_channel_region(window);
+    for (uint32_t i = 0; i < AP_SCRIPTING_M4_CHANNEL_REGION_SIZE; i++) {
+        ASSERT_EQ(window[i], 0U) << i;
+    }
+}
+
 AP_GTEST_MAIN()
