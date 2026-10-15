@@ -690,6 +690,10 @@ TEST(ScriptingM4ServeWait, FastLaneTakesOnlyBoundedFrames)
     EXPECT_TRUE(serve_on_fast_lane(MsgType::Reply, 0, false));
     EXPECT_TRUE(serve_on_fast_lane(MsgType::FaultInject, 0, false));
     EXPECT_TRUE(serve_on_fast_lane(MsgType::Ready, 0, false));
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::NetConfigRequest, 0, false));
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::NetConfig, 0, false));
+#endif
     EXPECT_FALSE(serve_on_fast_lane(MsgType(99), 0, true));
     EXPECT_FALSE(serve_on_fast_lane(MsgType(0), 0, true));
 }

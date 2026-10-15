@@ -366,6 +366,11 @@ inline bool serve_on_fast_lane(MsgType type, uint16_t method, bool binding_fast)
     case MsgType::FaultInject:
     case MsgType::Ready:
         return true;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    case MsgType::NetConfigRequest:   // answered from NET_* with a non-blocking send
+    case MsgType::NetConfig:
+        return true;
+#endif
     case MsgType::Call:
     case MsgType::Notify:
         if (method >= FIRST_BINDING_METHOD) {

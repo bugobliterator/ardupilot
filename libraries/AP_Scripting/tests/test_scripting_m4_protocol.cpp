@@ -67,4 +67,36 @@ TEST(ScriptingM4Protocol, HandlerFaultIsAServiceFault)
     EXPECT_FALSE(lua_thread_fault(FaultKind::HandlerFault));   // the service pends it, not the Lua thread
 }
 
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+TEST(ScriptingM4Protocol, NetConfigMessagesHaveFixedSizes)
+{
+    uint8_t buf[MAX_FRAME] {};
+    MsgHeader header;
+    NetConfigRequestMsg request {};
+    fill_header(request.header, MsgType::NetConfigRequest, sizeof(request), 1);
+    memcpy(buf, &request, sizeof(request));
+    EXPECT_TRUE(parse_header(buf, sizeof(request), header));
+    NetConfigMsg config {};
+    fill_header(config.header, MsgType::NetConfig, sizeof(config), 2);
+    memcpy(buf, &config, sizeof(config));
+    EXPECT_TRUE(parse_header(buf, sizeof(config), header));
+    fill_header(config.header, MsgType::NetConfig, sizeof(config) - 1, 2);
+    memcpy(buf, &config, sizeof(config) - 1);
+    EXPECT_FALSE(parse_header(buf, sizeof(config) - 1, header));
+}
+#else
+TEST(ScriptingM4Protocol, PlainBuildsRejectNetConfigTypes)
+{
+    uint8_t buf[MAX_FRAME] {};
+    MsgHeader header;
+    ReadyMsg ready {};
+    for (uint8_t type = 9; type <= 10; type++) {
+        fill_header(ready.header, MsgType::Ready, sizeof(ready), 1);
+        ready.header.type = type;
+        memcpy(buf, &ready, sizeof(ready));
+        EXPECT_FALSE(parse_header(buf, sizeof(ready), header));
+    }
+}
+#endif
+
 AP_GTEST_MAIN()

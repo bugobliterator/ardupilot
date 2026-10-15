@@ -212,7 +212,11 @@ int main(int argc, char **argv)
     }
 
     const M4Platform platform { millis_now, cycles_now, 1, inject_fault, lua_port_wake, lock_service,
-                                unlock_service };
+                                unlock_service,
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+                                nullptr,
+#endif
+                              };
     service.init(channel, window, call_link, platform);
     if (!lua_port_start(call_link, forward_posted)) {
         fprintf(stderr, "scripting_m4: no Lua thread\n");
