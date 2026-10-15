@@ -19604,6 +19604,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingFlipMode,
             self.ScriptingBindingStats,
             self.ScriptingM4Containment,
+            self.ScriptingM4FloodCap,
             self.ScriptingM4Scripts,
             self.ScriptingM4Checksums,
             self.ScriptingM4Bindings,
@@ -22193,6 +22194,63 @@ RTL_ALT_M 111
         self.set_parameter("SCR_M4_INJECT", 4)
         self.wait_statustext("Scripting: M4 heartbeat lost", check_context=True, timeout=10)
         self.wait_statustext("Scripting: M4 not responding, off until reboot", check_context=True, timeout=10)
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ScriptingM4FloodCap(self):
+        '''an M4 request flood while flying: the host stays within its duty cap and the logger keeps up'''
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process and the duty cap run on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "LOG_DISARMED": 1,
+        })
+        self.install_test_script_context("m4_loop.lua")
+        self.reboot_sitl()
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
+        self.wait_ready_to_arm()
+        self.takeoff(10, mode="LOITER")
+        self.set_rc(3, 1500)
+        # back-to-back floods (each lasts FLOOD_MS, 2 s): about 10 s with the ring kept full
+        for _ in range(5):
+            self.set_parameter("SCR_M4_INJECT", 0)
+            self.set_parameter("SCR_M4_INJECT", 6)
+            self.delay_sim_time(2, reason="M4 request flood")
+        self.assert_mode("LOITER")
+        if not self.armed():
+            raise NotAchievedException("disarmed during an M4 request flood")
+        self.wait_altitude(8, 12, relative=True, timeout=10)
+        self.wait_statustext(r"M4 loop \d+$", regex=True, check_context=True, timeout=10)
+        self.land_and_disarm()
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        requests_max = 0
+        busy_max = 0
+        cap_hits = 0
+        dropped = 0
+        while True:
+            m = dfreader.recv_match(type=["M4ST", "DSF"])
+            if m is None:
+                break
+            if m.get_type() == "DSF":
+                dropped = max(dropped, m.Dp)
+                continue
+            if m.St != 2:
+                continue
+            requests_max = max(requests_max, m.Req)
+            busy_max = max(busy_max, m.Busy)
+            cap_hits += m.Cap
+        self.progress("M4 flood: most requests in one second %u, host busy at most %u per mille, "
+                      "duty cap pauses %u, DSF dropped %u" % (requests_max, busy_max, cap_hits, dropped))
+        if requests_max <= 256:
+            raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
+        # 10 % share, plus the 2 ms burst and one pass in a one-second row
+        if busy_max > 105:
+            raise NotAchievedException("M4 host busy %u per mille: over its duty cap" % busy_max)
+        if dropped != 0:
+            raise NotAchievedException("DSF dropped %u blocks during the M4 flood" % dropped)
         self.context_pop()
         self.reboot_sitl()
 
@@ -26107,6 +26165,7 @@ return update, 1000
             "ScriptingOSD": "Requires SFML which is not available in CI",
             "ScriptingBindingStats": "Requires AP_SCRIPTING_BINDING_STATS_ENABLED build",
             "ScriptingM4Containment": "Requires --enable-scripting-m4 SITL build",
+            "ScriptingM4FloodCap": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Scripts": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Checksums": "Requires --enable-scripting-m4 SITL build",
             "ScriptingM4Bindings": "Requires --enable-scripting-m4 SITL build",
