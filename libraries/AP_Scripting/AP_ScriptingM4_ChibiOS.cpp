@@ -113,15 +113,22 @@ uint32_t AP_ScriptingM4::platform_wait_us() const
 #error "the M4 host duty cap charges ChibiOS thread statistics: define HAL_ENABLE_THREAD_STATISTICS"
 #endif
 
-uint64_t AP_ScriptingM4::platform_thread_cpu_us() const
+bool AP_ScriptingM4::platform_thread_cpu_us(uint64_t &cpu_us)
 {
     chSysLock();
-    const thread_t *self = chThdGetSelfX();
-    // the running slice is not in cumulative yet: stats.last holds the cycle it started on.
-    // Reading @SYS/threads.txt resets the counters, so the total can restart from 0
+    thread_t *self = chThdGetSelfX();
+    // reading @SYS/threads.txt from another thread resets this thread's statistics
+    // (chTMObjectInit): best becomes all ones. best is kept 0 here (no slice is shorter, so
+    // ChibiOS never changes it), which marks a reset. The M4 cannot open the file
+    // (check_script_path()), and nothing on this thread generates it, so this thread never
+    // resets its own statistics
+    const bool reset = self->stats.best != 0;
+    self->stats.best = 0;
+    // the running slice is not in cumulative yet: stats.last holds the cycle it started on
     const rttime_t cycles = self->stats.cumulative + rtcnt_t(chSysGetRealtimeCounterX() - self->stats.last);
     chSysUnlock();
-    return cycles / (HAL_EXPECTED_SYSCLOCK / 1000000U);
+    cpu_us = cycles / (HAL_EXPECTED_SYSCLOCK / 1000000U);
+    return reset;
 }
 
 uint32_t AP_ScriptingM4::platform_timeout_ms() const

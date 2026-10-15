@@ -119,7 +119,8 @@ void AP_ScriptingM4::host_thread()
 {
     ServeResult last = ServeResult::Idle;
     // the duty cap is charged all CPU time the thread uses from here on, waits and pauses included
-    uint64_t cpu_charged_us = platform_thread_cpu_us();
+    _cpu_charged_wall_us = AP_HAL::micros();
+    IGNORE_RETURN(platform_thread_cpu_us(_cpu_charged_us));
     while (true) {
         if (_state == State::Off) {
             platform_m4_exited();   // SITL: reap the stopped process
@@ -161,6 +162,7 @@ void AP_ScriptingM4::host_thread()
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
+        IGNORE_RETURN(charge_cpu());   // the wait or pause before this pass
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
         // the M4 asks for the image at every start: a value set before a start acts on it
         _server.set_refuse_bindings(_inject.get() == INJECT_REFUSE_BINDINGS);
@@ -186,11 +188,7 @@ void AP_ScriptingM4::host_thread()
         if (busy_us > LONG_PASS_US) {
             _long_passes++;
         }
-        const uint64_t cpu_us = platform_thread_cpu_us();
-        const uint32_t used_us = ScriptingM4::pass_cpu_us(cpu_charged_us, cpu_us);
-        cpu_charged_us = cpu_us;
-        _host_cpu_us += used_us;
-        _duty_cap.charge(used_us);
+        _pass_cpu_max_us = MAX(_pass_cpu_max_us, charge_cpu());
         if (now_ms - _stats_start_ms >= 1000) {
             log_supervisor(now_ms, now_ms - _stats_start_ms);
             _stats_start_ms = now_ms;
@@ -201,8 +199,28 @@ void AP_ScriptingM4::host_thread()
             _duty_cap_hits = 0;
             _host_cpu_us = 0;
             _long_passes = 0;
+            _pass_cpu_max_us = 0;
+            _cpu_clock_resets = 0;
         }
     }
+}
+
+// charge the duty cap the CPU time used since the last charge; returns it
+uint32_t AP_ScriptingM4::charge_cpu()
+{
+    uint64_t cpu_us;
+    const bool reset = platform_thread_cpu_us(cpu_us);
+    const uint32_t wall_us = AP_HAL::micros();
+    const uint32_t used_us = ScriptingM4::interval_cpu_us(_cpu_charged_us, cpu_us, reset,
+                                                          wall_us - _cpu_charged_wall_us);
+    if (reset || cpu_us < _cpu_charged_us) {
+        _cpu_clock_resets++;
+    }
+    _cpu_charged_us = cpu_us;
+    _cpu_charged_wall_us = wall_us;
+    _host_cpu_us += used_us;
+    _duty_cap.charge(used_us);
+    return used_us;
 }
 
 // listening: the ring was empty with the asleep flag set, so the M4 rings for its next frame
@@ -393,6 +411,18 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
                                 _duty_cap_hits,
                                 uint16_t(MIN(_host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 _long_passes);
+#endif
+#if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
+    // @LoggerMessage: M4HP
+    // @Description: Scripting M4 host thread passes, once per second (M4 scripting builds)
+    // @Field: TimeUS: Time since system startup
+    // @Field: PassMax: the largest CPU time of one host pass in the last second, in microseconds
+    // @Field: WallBusy: host thread wall time in the last second, per mille of the M7 (an upper bound of its CPU that thread statistics do not feed)
+    // @Field: StatsReset: intervals charged their wall time in the last second because the thread statistics were reset
+    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset", "s---", "F---", "QIHH",
+                                AP_HAL::micros64(), _pass_cpu_max_us,
+                                uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
+                                _cpu_clock_resets);
 #endif
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {

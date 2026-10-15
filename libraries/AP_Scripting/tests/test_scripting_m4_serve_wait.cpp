@@ -190,13 +190,58 @@ TEST(ScriptingM4ServeWait, SemaphoreWaitsAtNormalRateAreNotCapped)
     }
 }
 
-// the CPU clock read before and after a pass, including a statistics reset in between
-TEST(ScriptingM4ServeWait, PassCpuFromClockReadings)
+// the CPU clock read before and after an interval: a reset, or a clock that went back, charges
+// the interval's wall time, never less than the thread used
+TEST(ScriptingM4ServeWait, IntervalCpuFromClockReadings)
 {
-    EXPECT_EQ(pass_cpu_us(1000U, 1250U), 250U);
-    EXPECT_EQ(pass_cpu_us(1000U, 1000U), 0U);
-    EXPECT_EQ(pass_cpu_us(5000000U, 300U), 300U);   // reset: what was used since
-    EXPECT_EQ(pass_cpu_us(0U, uint64_t(UINT32_MAX) + 10U), UINT32_MAX);
+    EXPECT_EQ(interval_cpu_us(1000U, 1250U, false, 400U), 250U);
+    EXPECT_EQ(interval_cpu_us(1000U, 1000U, false, 400U), 0U);
+    EXPECT_EQ(interval_cpu_us(1000U, 1250U, true, 400U), 400U);      // reset seen: the wall time
+    EXPECT_EQ(interval_cpu_us(5000000U, 300U, false, 400U), 400U);   // went back: the wall time
+    EXPECT_EQ(interval_cpu_us(0U, uint64_t(UINT32_MAX) + 10U, false, 400U), UINT32_MAX);
+}
+
+/*
+  A flood whose statistics are reset in every interval (the attack of a script opening
+  @SYS/threads.txt each pass, or a GCS reading it as fast as it can): each pass runs 200 us of
+  CPU in 300 us of wall time, each wait 50 us of wall time with no CPU. The meter here is the
+  CPU actually used, which the charges do not feed: its share stays within the cap.
+ */
+TEST(ScriptingM4ServeWait, StatisticsResetEveryIntervalKeepsTheShare)
+{
+    ServeDutyCap cap;
+    uint64_t elapsed = 0;
+    uint64_t used = 0;
+    uint64_t clock = 0;   // the thread's CPU clock, reset to 0 in every interval
+    const uint64_t duration = 10000000U;
+    EXPECT_EQ(cap.wait_us(0U), 0U);
+    while (elapsed < duration) {
+        const uint32_t wait = cap.wait_us(uint32_t(elapsed));
+        // the wait or pause before the pass: its interval is charged at the pass start
+        const uint32_t wait_wall = wait != 0 ? (wait < 10000U ? wait : 10000U) : 50U;
+        elapsed += wait_wall;
+        uint64_t reading = clock;
+        clock = 0;   // reset
+        cap.charge(interval_cpu_us(reading, clock, true, wait_wall));
+        if (cap.wait_us(uint32_t(elapsed)) != 0) {
+            continue;
+        }
+        reading = clock;
+        clock = 150U;   // reset part way through the pass, which then runs 150 us more
+        elapsed += 300U;
+        used += 200U;
+        cap.charge(interval_cpu_us(reading, clock, true, 300U));
+    }
+    const uint64_t ppm = used * 1000000U / elapsed;
+    EXPECT_LE(ppm, ServeDutyCap::SHARE_PERCENT * 10000U + (300U + ServeDutyCap::BURST_US) * uint64_t(1000000U) / duration);
+}
+
+// without the reset flag, a clock zeroed between readings under-charges: the case the
+// reading's reset marker exists for
+TEST(ScriptingM4ServeWait, UnflaggedResetWouldUnderCharge)
+{
+    EXPECT_EQ(interval_cpu_us(10U, 150U, false, 300U), 140U);   // 200 us used, 140 charged
+    EXPECT_EQ(interval_cpu_us(10U, 150U, true, 300U), 300U);
 }
 
 AP_GTEST_MAIN()

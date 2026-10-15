@@ -64,11 +64,15 @@ private:
     bool _started = false;
 };
 
-// CPU time of one pass from two readings of the thread's CPU clock. The clock restarts from 0
-// when its statistics are reset: the pass is then charged what it used since the reset
-inline uint32_t pass_cpu_us(uint64_t start_us, uint64_t end_us)
+// CPU time to charge for the interval between two readings of the thread's CPU clock. When
+// the clock was reset in between (statistics cleared), or went backwards, the interval's wall
+// time is charged: the thread cannot have used more, so a reset at worst over-charges
+inline uint32_t interval_cpu_us(uint64_t start_us, uint64_t end_us, bool reset, uint32_t wall_us)
 {
-    const uint64_t used = end_us >= start_us ? end_us - start_us : end_us;
+    if (reset || end_us < start_us) {
+        return wall_us;
+    }
+    const uint64_t used = end_us - start_us;
     return used > UINT32_MAX ? UINT32_MAX : uint32_t(used);
 }
 
