@@ -4,9 +4,9 @@
   The M4's files on the M7 (m4:fs_* system methods, AP_ScriptingM4_FileServer):
   the per-session table of AP_Filesystem descriptors behind the ids the M4
   holds, and the check of every path the M4 sends: the reach of in-process
-  scripting, less a ".." above the filesystem root and writes on the "@"
+  scripting, less a ".." above the filesystem root, writes on the "@"
   virtual filesystems (also as "/@...": AP_Filesystem skips one leading '/'
-  before it selects the filesystem). An id carries a per-slot serial, so the id of a closed
+  before it selects the filesystem) and @SYS/threads.txt. An id carries a per-slot serial, so the id of a closed
   file, or of an earlier M4 session, never reaches a descriptor. The check is
   lexical; '\' counts as a separator, as FatFs takes it.
   C++11, no ArduPilot dependencies (host unit tests).
@@ -31,8 +31,31 @@ enum class PathUse : uint8_t {
     Write,   // open for writing, remove: never on an "@" filesystem
 };
 
+// AP_Filesystem_Sys's threads.txt: "@SYS/" (after the one leading '/' AP_Filesystem skips), then
+// the exact name; one more '/' before it is refused too, though AP_Filesystem_Sys does not find
+// that name. Generating the file resets every thread's ChibiOS statistics, which the M7 host's
+// duty cap charges
+inline bool resets_thread_statistics(const char *selector, size_t length)
+{
+    static const char prefix[] = "@SYS/";
+    static const char name[] = "threads.txt";
+    const size_t prefix_length = sizeof(prefix) - 1;
+    const size_t name_length = sizeof(name) - 1;
+    if (length < prefix_length || memcmp(selector, prefix, prefix_length) != 0) {
+        return false;
+    }
+    const char *rest = selector + prefix_length;
+    size_t rest_length = length - prefix_length;
+    if (rest_length > 0 && rest[0] == '/') {
+        rest++;
+        rest_length--;
+    }
+    return rest_length == name_length && memcmp(rest, name, name_length) == 0;
+}
+
 // 0 if the M4 may use path this way, else the errno its call fails with: the reach of
-// in-process scripting, less a ".." above the start of the path and writes on "@" filesystems
+// in-process scripting, less a ".." above the start of the path, writes on "@" filesystems
+// and @SYS/threads.txt
 inline int check_script_path(const char *path, size_t length, PathUse use)
 {
     if (length == 0) {
@@ -51,6 +74,9 @@ inline int check_script_path(const char *path, size_t length, PathUse use)
     const char *selector = path[0] == '/' ? path + 1 : path;
     if (selector[0] == '@' && use == PathUse::Write) {
         return EROFS;
+    }
+    if (resets_thread_statistics(selector, length - size_t(selector - path))) {
+        return EACCES;
     }
     // components split at '/' and at '\' (FatFs takes both); "." and empty ones count nothing
     int32_t depth = 0;

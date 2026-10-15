@@ -119,6 +119,9 @@ local function reach()
   check(ok == nil and type(msg) == "string" and code == EROFS, "slash param remove")
   local file, text, errno = io.open("../m4_escape.txt", "r")
   check(file == nil and string.find(text, "../m4_escape.txt", 1, true) == 1 and errno == EACCES, "refusal text")
+  -- except @SYS/threads.txt: it resets the thread statistics the M7 host's duty cap charges
+  refused("sys threads read", EACCES, io.open("@SYS/threads.txt", "r"))
+  refused("slash sys threads read", EACCES, io.open("/@SYS//threads.txt", "r"))
   -- reads of the @ filesystems stay allowed
   local sys = io.open("@SYS/tasks.txt", "r")   -- SITL's threads.txt is empty, so ENOENT
   check(sys ~= nil, "sys read")

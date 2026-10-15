@@ -2226,7 +2226,8 @@ TEST(ScriptingM4Remote, FileContentNeedsAReadablePathAndRoom)
     EXPECT_TRUE(file_content_allowed(path, strlen(path), FILE_CONTENT_QUEUE_MAX - 1));
     EXPECT_FALSE(file_content_allowed(path, strlen(path), FILE_CONTENT_QUEUE_MAX));
     EXPECT_EQ(FILE_CONTENT_QUEUE_MAX, 40);
-    EXPECT_TRUE(file_content_allowed("@SYS/threads.txt", 16, 0));   // reads of @ files are allowed
+    EXPECT_TRUE(file_content_allowed("@SYS/tasks.txt", 14, 0));     // reads of @ files are allowed
+    EXPECT_FALSE(file_content_allowed("@SYS/threads.txt", 16, 0));  // it resets the thread statistics
     EXPECT_FALSE(file_content_allowed("../../x", 7, 0));           // above the root
     static const char nul[] = { 'a', 0, 'b' };
     EXPECT_FALSE(file_content_allowed(nul, sizeof(nul), 0));

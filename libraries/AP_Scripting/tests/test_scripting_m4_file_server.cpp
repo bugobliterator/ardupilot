@@ -247,7 +247,10 @@ TEST_F(FileServerTest, PathsFromTheM4AreChecked)
     EXPECT_LT(odd, 0);
     EXPECT_NE(odd, -EROFS);
     // reads of the "@" filesystems stay allowed
-    EXPECT_NE(open_file("@SYS/threads.txt", "r"), -EROFS);
+    EXPECT_NE(open_file("@SYS/memory.txt", "r"), -EROFS);
+    EXPECT_NE(open_file("@SYS/memory.txt", "r"), -EACCES);
+    // except @SYS/threads.txt: it resets the thread statistics the host's duty cap charges
+    EXPECT_EQ(open_file("@SYS/threads.txt", "r"), -EACCES);
 }
 
 TEST_F(FileServerTest, BadArgumentsRaiseArgumentErrors)

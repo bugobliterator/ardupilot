@@ -34,7 +34,7 @@ TEST(ScriptingM4Files, PathsReachWhatInProcessReaches)
     EXPECT_EQ(check("a/b/../../..", PathUse::List), EACCES);
     // the @ filesystems: read, never written
     EXPECT_EQ(check("@ROMFS/scripts/modules/x.lua", PathUse::Read), 0);
-    EXPECT_EQ(check("@SYS/threads.txt", PathUse::Read), 0);
+    EXPECT_EQ(check("@SYS/tasks.txt", PathUse::Read), 0);
     EXPECT_EQ(check("@ROMFS/scripts", PathUse::List), 0);
     EXPECT_EQ(check("@ROMFS/scripts/x.lua", PathUse::Write), EROFS);
     EXPECT_EQ(check("@SYS/threads.txt", PathUse::Write), EROFS);
@@ -45,6 +45,20 @@ TEST(ScriptingM4Files, PathsReachWhatInProcessReaches)
     EXPECT_EQ(check("/@PARAM/x", PathUse::Write), EROFS);
     EXPECT_EQ(check("/@MISSION/x", PathUse::Write), EROFS);
     EXPECT_EQ(check("/@PARAM/param.pck", PathUse::Read), 0);
+    // @SYS/threads.txt resets the thread statistics the host's duty cap charges: refused with or
+    // without the leading '/', and with one '/' more before the name (refused to be safe)
+    EXPECT_EQ(check("@SYS/threads.txt", PathUse::Read), EACCES);
+    EXPECT_EQ(check("/@SYS/threads.txt", PathUse::Read), EACCES);
+    EXPECT_EQ(check("@SYS//threads.txt", PathUse::Read), EACCES);
+    EXPECT_EQ(check("/@SYS//threads.txt", PathUse::Read), EACCES);
+    EXPECT_EQ(check("@SYS/threads.txt", PathUse::List), EACCES);
+    EXPECT_EQ(check("@SYS/threads.txt", PathUse::Write), EROFS);
+    // other names stay as they were
+    EXPECT_EQ(check("@SYS///threads.txt", PathUse::Read), 0);
+    EXPECT_EQ(check("@SYS/threads.txt2", PathUse::Read), 0);
+    EXPECT_EQ(check("@SYS/xthreads.txt", PathUse::Read), 0);
+    EXPECT_EQ(check("//@SYS/threads.txt", PathUse::Read), 0);           // a FatFs path
+    EXPECT_EQ(check("@SYS", PathUse::List), 0);
     // bytes the M7 does not take
     EXPECT_EQ(check_script_path("./scripts/a\0../x", 16, PathUse::Read), EINVAL);
     EXPECT_EQ(check("", PathUse::Read), ENOENT);
