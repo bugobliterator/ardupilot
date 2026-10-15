@@ -141,8 +141,11 @@ def _sitl_program(bld):
     network_defines = []
     network_use = []
     if bld.env.NETWORKING_M4:
-        network = [NET_M4_DIR + '/net_m4.cpp', NET_M4_DIR + '/net_sys_arch.cpp', NET_M4_DIR + '/net_sys_arch_posix.cpp',
-                   'libraries/AP_Networking/AP_Networking_M4_Rings.cpp']
+        # the network service and its POSIX platform: every C++ file but the M4 image's ChibiOS ones
+        network = ([node.path_from(bld.srcnode)
+                    for node in bld.srcnode.ant_glob([NET_M4_DIR + '/*.cpp', M4_DIR + '/sitl/net_*.cpp'],
+                                                     excl=['**/*_chibios.cpp'])] +
+                   ['libraries/AP_Networking/AP_Networking_M4_Rings.cpp'])
         network_includes = NET_M4_INCLUDES
         network_defines = ['AP_NETWORKING_M4_ENABLED=1', 'NET_M4_POSIX=1']
         # lwIP in its own objects: its warnings are not the Lua core's
