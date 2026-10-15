@@ -189,6 +189,12 @@ public:
     }
 #endif
 
+#if AP_NETWORKING_M4_ENABLED
+    // the M4 network region (AP_Networking_M4_Layout.h): the scripting supervisor clears it
+    // with the M4 held or parked, before every start and every restart grant
+    void m4_region_reset(uint8_t *region);
+#endif
+
 private:
     static AP_Networking *singleton;
 
