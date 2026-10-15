@@ -3,6 +3,9 @@
 #if AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED
 
 #include "AP_Networking_M4_Layout.h"
+#include <AP_Scripting/AP_ScriptingM4_Placement.h>
+
+static_assert(sizeof(NetM4::Region) == AP_NETWORKING_M4_RING_SIZE, "the region fills the ring window");
 
 void AP_Networking::m4_region_reset(uint8_t *region)
 {

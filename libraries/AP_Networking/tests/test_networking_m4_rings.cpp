@@ -152,14 +152,19 @@ struct GuardedRing {
     RingControl control;
     uint8_t before[64];
     uint8_t data[PORT_RING_DATA];
-    uint8_t after[64];
+    uint8_t after[2 * PORT_RING_DATA];   // the first ring code overflowed by up to 1932 B
 };
 static const uint8_t GUARD = 0xA5;
 
 static bool guards_intact(const GuardedRing &ring)
 {
-    for (uint32_t i = 0; i < sizeof(ring.before); i++) {
-        if (ring.before[i] != GUARD || ring.after[i] != GUARD) {
+    for (uint8_t b : ring.before) {
+        if (b != GUARD) {
+            return false;
+        }
+    }
+    for (uint8_t b : ring.after) {
+        if (b != GUARD) {
             return false;
         }
     }
@@ -250,11 +255,48 @@ TEST(NetM4Rings, RecordHeaderOverLimitsIsBad)
     uint8_t short_record[12] = {200, 0};
     ASSERT_EQ(tx.write(short_record, sizeof(short_record)), sizeof(short_record));
     EXPECT_EQ(rx.read_record(out, sizeof(out)), RECORD_BAD);
-    // a header within the limits but over the reader's capacity
+}
+
+TEST(NetM4Rings, RecordOverCapacityIsSkipped)
+{
+    ByteRing tx, rx;
     attach_pair(tx, rx);
-    const uint8_t record[20] {};
-    ASSERT_TRUE(tx.write_record(record, sizeof(record)));
-    EXPECT_EQ(rx.read_record(out, 19), RECORD_BAD);
+    const uint8_t big[20] {}, next[3] = {7, 8, 9};
+    ASSERT_TRUE(tx.write_record(big, sizeof(big)));
+    ASSERT_TRUE(tx.write_record(next, sizeof(next)));
+    uint8_t out[19];
+    EXPECT_EQ(rx.read_record(out, sizeof(out)), RECORD_DROPPED);
+    EXPECT_EQ(rx.records_dropped(), 1U);
+    // the ring is not jammed: the next record reads
+    EXPECT_EQ(rx.read_record(out, sizeof(out)), 3);
+    EXPECT_EQ(out[2], 9);
+    EXPECT_EQ(rx.read_record(out, sizeof(out)), RECORD_NONE);
+}
+
+TEST(NetM4Rings, AttachRejectsBadSizes)
+{
+    static RingControl control;
+    static uint8_t data[1024];
+    ByteRing ring;
+    // never attached: every operation refuses
+    EXPECT_TRUE(ring.desynced());
+    EXPECT_EQ(ring.space(), 0U);
+    EXPECT_EQ(ring.write(data, 4), 0U);
+    EXPECT_EQ(ring.read(data, 4), 0U);
+    EXPECT_EQ(ring.read_record(data, 4), RECORD_BAD);
+    ring.producer_reset();
+    ring.consumer_resync();
+    EXPECT_FALSE(ring.attach(&control, data, 0));
+    EXPECT_FALSE(ring.attach(&control, data, 1000));
+    EXPECT_FALSE(ring.attach(&control, data, 0xC0000000U));
+    EXPECT_FALSE(ring.attach(nullptr, data, 1024));
+    EXPECT_EQ(ring.available(), 0U);
+    EXPECT_TRUE(ring.attach(&control, data, 1024));
+    EXPECT_FALSE(ring.desynced());
+    // a failed attach leaves the ring refusing, not on the old area
+    EXPECT_FALSE(ring.attach(&control, data, 3));
+    EXPECT_TRUE(ring.desynced());
+    EXPECT_EQ(ring.write(data, 4), 0U);
 }
 
 TEST(NetM4Rings, ResetBumpsTheGeneration)
@@ -282,6 +324,7 @@ TEST(NetM4Rings, RingAttachedBeforeAResetIsStale)
     region.ports[1].rx_control.head.value.store(4);
     EXPECT_TRUE(tx.stale());
     EXPECT_TRUE(rx.stale());
+    EXPECT_TRUE(rx.desynced());
     uint8_t out[16];
     EXPECT_EQ(tx.space(), 0U);
     EXPECT_EQ(tx.write(data, sizeof(data)), 0U);
