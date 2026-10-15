@@ -379,19 +379,17 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: Drop: replies dropped because the M4's ring was full
 // @Field: Lost: M4 calls without a reply since the previous row
 // @Field: QHit: M4 calls refused by their quota since the previous row: binding calls, print, the M4's statustexts and script error texts, its file writes, write opens and removes (FileIo), MAVLink sends (MavTx), log rows (Log) and OSD calls (Osd, OsdFrame) (over quota, texts and void calls are dropped, boolean calls return false)
-// @Field: Busy: host thread wall time in the last second, per mille of the M7 (preemption included)
 // @Field: Cap: pauses the host's duty cap (10 % of the M7's CPU) forced in the last second
 // @Field: CPU: host thread CPU time in the last second, per mille of the M7 (what the duty cap charges)
-// @Field: Long: host passes over 50 ms of wall time in the last second (blocked in a binding, or preempted)
+// @Field: Lng: host passes over 50 ms of wall time in the last second (blocked in a binding, or preempted)
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
-    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Busy,Cap,CPU,Long",
-                                "s---------------", "F---------------", "QBIIBIIIHHIIHHHH",
+    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Cap,CPU,Lng",
+                                "s--------------", "F--------------", "QBIIBIIIHHIIHHH",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
                                 _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits(),
-                                uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 _duty_cap_hits,
                                 uint16_t(MIN(_host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 _long_passes);
