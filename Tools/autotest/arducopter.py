@@ -22379,12 +22379,9 @@ RTL_ALT_M 111
         self.reboot_sitl()
 
     def networking_m4_build(self):
-        '''True when this binary was built with --enable-networking-m4, from waf's configuration'''
-        cache = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(self.binary))), "c4che", "sitl_cache.py")
-        if not os.path.exists(cache):
-            raise NotAchievedException("no waf configuration at %s" % cache)
-        with open(cache) as f:
-            return re.search(r"^NETWORKING_M4 = '1'$", f.read(), re.MULTILINE) is not None
+        '''True when this binary was built with --enable-networking-m4: it holds the M4 network proxy'''
+        symbols = subprocess.run(["nm", self.binary], check=True, capture_output=True, text=True).stdout
+        return "AP_Networking_M4" in symbols
 
     def ScriptingM4Scripts(self):
         '''example and test scripts run unchanged in the SITL M4 scripting process'''
