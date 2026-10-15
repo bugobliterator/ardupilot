@@ -81,9 +81,12 @@ bool NetM4::current_is_lua_thread()
     return is_lua;
 }
 
+// as lwIP's default set_errno: a success (0) leaves errno as it is
 extern "C" void net_m4_set_errno(int err)
 {
-    NetM4::thread_errno_set(err);
+    if (err != 0) {
+        NetM4::thread_errno_set(err);
+    }
 }
 
 // a failed lwIP assertion faults the M4: the fault handler records it and the M7 restarts the M4
@@ -235,7 +238,9 @@ sys_thread_t sys_thread_new(const char *name, lwip_thread_fn thread, void *arg, 
         LWIP_ASSERT("sys_thread_new: only the tcpip thread", 0);
         return nullptr;
     }
+    // tcpip_init ignores the result: without the thread every API call would block forever
     if (!os_thread_start(name, TCPIP_THREAD_PRIO, thread, arg)) {
+        LWIP_ASSERT("sys_thread_new: tcpip thread not started", 0);
         return nullptr;
     }
     // lwIP only compares the handle with NULL

@@ -45,6 +45,7 @@ bool os_sem_wait_ms(OsSem *sem, uint32_t timeout_ms);   // 0: forever
 void os_mutex_init(OsMutex *mutex);
 void os_mutex_lock(OsMutex *mutex);
 void os_mutex_unlock(OsMutex *mutex);
+// thread context only: no os_* call is ISR-safe (no sys_mbox_trypost_fromisr)
 void os_mbox_init(OsMbox *mbox, void **slots, int count);
 void os_mbox_post(OsMbox *mbox, void *msg);
 bool os_mbox_trypost(OsMbox *mbox, void *msg);

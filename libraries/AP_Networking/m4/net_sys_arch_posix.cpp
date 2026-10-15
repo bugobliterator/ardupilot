@@ -1,6 +1,7 @@
 #include "net_sys_arch.h"
 
 #include <errno.h>
+#include <string.h>
 #include <time.h>
 
 static thread_local int net_errno;
@@ -184,21 +185,29 @@ static void *thread_entry(void *start)
     return nullptr;
 }
 
-// the start record of each thread, from a static pool as on the M4 (tcpip, net_port, ppp_rx)
-static ThreadStart thread_starts[3];
-static int threads_started;
+// the M4's threads, each started at most once, as net_sys_arch_chibios.cpp
+static const char *const thread_names[] = { "tcpip", "net_port", "ppp_rx" };
+static ThreadStart thread_starts[sizeof(thread_names) / sizeof(thread_names[0])];
+static bool thread_started[sizeof(thread_names) / sizeof(thread_names[0])];
 
 bool os_thread_start(const char *name, int priority, void (*fn)(void *), void *arg)
 {
-    (void)name;
     (void)priority;
-    os_protect_enter();
-    if (threads_started >= int(sizeof(thread_starts) / sizeof(thread_starts[0]))) {
-        os_protect_exit();
+    size_t i = 0;
+    while (i < sizeof(thread_names) / sizeof(thread_names[0]) && strcmp(name, thread_names[i]) != 0) {
+        i++;
+    }
+    if (i == sizeof(thread_names) / sizeof(thread_names[0])) {
         return false;
     }
-    ThreadStart *start = &thread_starts[threads_started++];
+    os_protect_enter();
+    const bool taken = thread_started[i];
+    thread_started[i] = true;
     os_protect_exit();
+    if (taken) {
+        return false;
+    }
+    ThreadStart *start = &thread_starts[i];
     *start = ThreadStart{fn, arg};
     pthread_attr_t attr;
     pthread_attr_init(&attr);

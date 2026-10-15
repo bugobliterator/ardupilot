@@ -3,6 +3,7 @@
 #include <string.h>
 
 static_assert(sizeof(msg_t) == sizeof(void *), "mailbox slots hold pointers");
+static_assert(CH_CFG_ST_FREQUENCY == 1000, "sys_now and TIME_MS2I assume a 1 kHz tick");
 
 // static working areas, one per network thread; a thread never exits, so each starts once
 static THD_WORKING_AREA(tcpip_wa, 2048);
@@ -119,10 +120,10 @@ bool os_thread_start(const char *name, int priority, void (*fn)(void *), void *a
         if (strcmp(name, thread_areas[i].name) != 0) {
             continue;
         }
-        chSysLock();
+        os_protect_enter();
         const bool taken = thread_started[i];
         thread_started[i] = true;
-        chSysUnlock();
+        os_protect_exit();
         if (taken) {
             return false;
         }

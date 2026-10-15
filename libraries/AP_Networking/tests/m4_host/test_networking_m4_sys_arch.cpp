@@ -62,4 +62,26 @@ TEST(NetM4SysArch, ErrnoIsPerThread)
     EXPECT_EQ(thread_errno_get(), 11);
 }
 
+TEST(NetM4SysArch, SuccessKeepsErrno)
+{
+    net_m4_set_errno(11);
+    net_m4_set_errno(0);
+    EXPECT_EQ(thread_errno_get(), 11);
+}
+
+static void thread_returns(void *)
+{
+}
+
+// a tcpip thread that cannot start faults (lwIP's tcpip_init ignores the result)
+TEST(NetM4SysArch, ThreadThatCannotStartFaults)
+{
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+    EXPECT_DEATH(sys_thread_new("lua", thread_returns, nullptr, 2048, 0), "");
+    EXPECT_DEATH({
+        sys_thread_new(TCPIP_THREAD_NAME, thread_returns, nullptr, TCPIP_THREAD_STACKSIZE, TCPIP_THREAD_PRIO);
+        sys_thread_new(TCPIP_THREAD_NAME, thread_returns, nullptr, TCPIP_THREAD_STACKSIZE, TCPIP_THREAD_PRIO);
+    }, "");
+}
+
 AP_GTEST_MAIN()
