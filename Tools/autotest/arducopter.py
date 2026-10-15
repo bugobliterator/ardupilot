@@ -22214,8 +22214,10 @@ RTL_ALT_M 111
         self.install_test_scripts_context(["math.lua"])
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
-        self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
-                             check_context=True, timeout=30)
+        started = self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
+                                       check_context=True, timeout=30)
+        # networking builds give Lua about 110 KB, plain builds 184 KB
+        m4_heap_kb = int(re.search(r"heap (\d+)KB", started.text).group(1))
         self.wait_statustext("hello, world", check_context=True, timeout=30)
         self.wait_statustext("math.lua exceeded time limit", check_context=True, timeout=60)
         # the prearm text is cut at 50 characters: match its start
@@ -22251,10 +22253,17 @@ RTL_ALT_M 111
             "SCR_VM_I_COUNT": 1000000,
             "SCR_HEAP_SIZE": 188416,   # the CubeOrangePlus-M4Lua default: the M4 heap less newlib's reserve
         })
-        self.install_test_scripts_context(["math.lua", "strings.lua", "m4_loop.lua"])
+        scripts = ["math.lua", "m4_loop.lua"]
+        texts = ["Math tests passed", "Test 100 fault_count 100", "M4 loop 3"]
+        if m4_heap_kb >= 184:
+            scripts.append("strings.lua")
+            texts.append("String tests passed")
+        else:
+            self.progress("skipping strings.lua at a %u KB heap: out of memory at 110 KB" % m4_heap_kb)
+        self.install_test_scripts_context(scripts)
         self.install_example_script_context("fault_handling.lua")
         self.reboot_sitl()
-        for text in ("Math tests passed", "String tests passed", "Test 100 fault_count 100", "M4 loop 3"):
+        for text in texts:
             self.wait_statustext(text, check_context=True, timeout=120)
         self.context_pop()
 
