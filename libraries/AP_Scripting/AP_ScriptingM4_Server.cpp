@@ -110,11 +110,11 @@ void AP_ScriptingM4_Server::end_session()
         scripting->_pwm_source[i] = nullptr;
     }
     scripting->num_pwm_source = 0;
-#if AP_NETWORKING_ENABLED
+#if AP_NETWORKING_SOCKETS_ENABLED
     // clear allocated sockets. _files.reset() ran first: a descriptor sendfile handed to
     // AP_Networking has left the table already, so it is not closed twice
     ScriptingM4Remote::sockets_end_session();
-#endif // AP_NETWORKING_ENABLED
+#endif // AP_NETWORKING_SOCKETS_ENABLED
     // the scripted CRSF menus; _objects.clear() ran first, so no owned CRSFMenu outlives its menu
     ScriptingM4Remote::crsf_end_session();
 #if AP_SCRIPTING_SERIALDEVICE_ENABLED
