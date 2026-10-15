@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+# AP_FLAKE8_CLEAN
+'''host builds of the M4 network code with the M4's lwipopts.h, as gtest programs in build/<board>/tests'''
+
+M4 = 'libraries/AP_Networking/m4'
+LWIP = 'modules/lwip/src'
+LWIP_DIRS = ['core', 'core/ipv4', 'api', 'netif/ppp']
+
+
+def m4_test(bld, name, sources, with_lwip):
+    source = ['%s.cpp' % name] + ['%s/%s' % (M4, s) for s in sources]
+    source = [bld.srcnode.find_node(s) if '/' in s else s for s in source]
+    if with_lwip:
+        for d in LWIP_DIRS:
+            source += bld.srcnode.ant_glob('%s/%s/*.c' % (LWIP, d))
+        source.append(bld.srcnode.find_node('%s/netif/ethernet.c' % LWIP))
+    bld.ap_program(
+        program_name=name,
+        program_groups='tests',
+        source=source,
+        includes=[bld.srcnode.find_dir(M4).abspath(), bld.srcnode.find_dir(LWIP + '/include').abspath(),
+                  bld.srcnode.find_dir('libraries/AP_Networking/lwip_hal/include').abspath(),
+                  bld.srcnode.find_dir('libraries/AP_Networking').abspath(), bld.srcnode.abspath() + '/tests/'],
+        defines=['NET_M4_POSIX=1', 'AP_NETWORKING_M4_ENABLED=1'],
+        use=['GTEST'],
+        use_legacy_defines=False,
+        vehicle_binary=False,
+        cflags=['-Wno-error'],
+        cxxflags=['-Wno-undef', '-std=gnu++17'],
+    )
+
+
+def build(bld):
+    m4_test(bld, 'test_networking_m4_sys_arch', ['net_sys_arch.cpp', 'net_sys_arch_posix.cpp'], with_lwip=False)

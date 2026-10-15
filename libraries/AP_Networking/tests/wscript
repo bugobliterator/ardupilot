@@ -3,4 +3,6 @@
 
 
 def build(bld):
-    bld.ap_find_tests(use='ap')
+    bld.ap_find_tests(use='ap')     # this directory's *.cpp only: the M7-side tests
+    if bld.env.NETWORKING_M4 and bld.env.HAS_GTEST:
+        bld.recurse('m4_host')       # lwIP built with the M4's options, on the host
