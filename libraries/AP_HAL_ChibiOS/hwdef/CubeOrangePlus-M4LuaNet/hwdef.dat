@@ -1,0 +1,9 @@
+# CubeOrangePlus-M4Lua with lwIP, PPP and the NET_P ports on the M4; the M7 keeps a proxy
+# (AP_Networking_M4). The networking RAM layout: libraries/AP_Scripting/AP_ScriptingM4_Placement.h
+include ../CubeOrangePlus-M4Lua/hwdef.dat
+
+env NETWORKING_M4 1
+
+# SCR_HEAP_SIZE default: the networking layout's AP_SCRIPTING_M4_LUA_HEAP_MIN less AP_SCRIPTING_M4_NEWLIB_RESERVE
+undef SCRIPTING_HEAP_SIZE
+define SCRIPTING_HEAP_SIZE (110*1024)
