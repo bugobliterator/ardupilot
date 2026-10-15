@@ -1,4 +1,6 @@
 #include <AP_gtest.h>
+#if __cplusplus >= 201703L
+// C++17 (CubeFramework): builds configured with --enable-scripting-m4
 #include <AP_Scripting/AP_ScriptingM4_Layout.h>
 
 using namespace ScriptingM4;
@@ -75,5 +77,7 @@ TEST(ScriptingM4Layout, ClearCoversTheChannelAndBlock)
         ASSERT_EQ(window[i], 0U) << i;
     }
 }
+
+#endif  // __cplusplus >= 201703L
 
 AP_GTEST_MAIN()
