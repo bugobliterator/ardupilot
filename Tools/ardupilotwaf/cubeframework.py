@@ -43,6 +43,8 @@ def configure(cfg):
         # gnu++17 turns on sized deallocation, which AP_Common/c++.cpp warns about
         env.CXXFLAGS += ['-Wno-error=sized-deallocation']
     env.DEFINES += ['AP_CUBEFRAMEWORK_ENABLED=1', 'AP_SCRIPTING_M4_ENABLED=1']
+    if env.NETWORKING_M4:
+        env.DEFINES += ['AP_NETWORKING_M4_ENABLED=1']
 
 
 @conf
@@ -104,11 +106,11 @@ def _chibios_image(bld):
     bin_dir = bld.bldnode.make_node('bin')
     targets = [bin_dir.find_or_declare('scripting_m4.elf'), bin_dir.find_or_declare('scripting_m4.bin')]
     rule = ("'%s' -s -j%u -f '%s' CHIBIOS='%s' AP_ROOT='%s' BUILDDIR='%s' M4_LUA_SOURCES='%s' "
-            "M4_GENERATED_ROOT='%s' && "
+            "M4_GENERATED_ROOT='%s' NETWORKING_M4='%s' && "
             "mkdir -p '%s' && cp '%s/scripting_m4.elf' '%s/scripting_m4.bin' '%s'") % (
         bld.env.get_flat('MAKE'), bld.options.jobs, makefile.abspath(),
         src.find_dir('modules/ChibiOS').abspath(), src.abspath(), out.abspath(), ' '.join(M4_LUA_SOURCES),
-        generated_root.abspath(),
+        generated_root.abspath(), '1' if bld.env.NETWORKING_M4 else '0',
         bin_dir.abspath(), out.abspath(), out.abspath(), bin_dir.abspath())
     bld(rule=rule, source=sources, target=targets, name='scripting_m4_image')
 
