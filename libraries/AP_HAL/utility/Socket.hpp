@@ -148,7 +148,8 @@ public:
     // dotted quad from host order ipv4; nullptr if dst is too short
     static const char *inet_addr_to_str(uint32_t addr, char *dst, uint16_t len);
 
-    // host order ipv4 from a dotted quad; 0 if it is not one
+    // host order ipv4 from a dotted quad; 0 if it is not one. Strict dotted decimal, unlike
+    // lwIP's inet_pton: no octal or hex parts, no short forms, nothing after the fourth number
     static uint32_t inet_str_to_addr(const char *ipstr);
 };
 
