@@ -18,12 +18,15 @@ USE_CPPOPT = -std=gnu++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics -fno
 USE_LINK_GC = yes
 # scripting_m4.ld asserts its memory against AP_ScriptingM4_Placement.h, read through
 # the preprocessor (the header's values may depend on the networking switch);
-# a value missing from the header becomes 0 and fails the assert
+# a value the header does not define as a number, or a preprocessor failure, stops make
 NETWORKING_M4 ?= 0
 PLACEMENT_DEFS = -DAP_NETWORKING_M4_ENABLED=$(NETWORKING_M4)
 PLACEMENT_H = $(AP_ROOT)/libraries/AP_Scripting/AP_ScriptingM4_Placement.h
-placement_value = $(shell value=$$(printf '\#include "%s"\n%s\n' '$(PLACEMENT_H)' '$(1)' | \
-                    $(TRGT)gcc -E -P $(PLACEMENT_DEFS) -x c - | tail -1 | tr -d U); echo $$(($${value:-0})))
+placement_expr = $(shell value=$$(printf '\#include "%s"\n%s\n' '$(PLACEMENT_H)' '$(1)' | \
+                   $(TRGT)gcc -E -P $(PLACEMENT_DEFS) -x c -) || exit 1; \
+                   value=$$(printf '%s\n' "$$value" | tail -1 | tr -d U); \
+                   printf '%s\n' "$$value" | grep -Eq '^[0-9a-fA-FxX ()*+/-]+$$' && echo $$(($$value)))
+placement_value = $(or $(call placement_expr,$(1)),$(error $(1): no numeric value in $(PLACEMENT_H) with $(PLACEMENT_DEFS)))
 USE_LDOPT = --defsym=placement_flash_base=$(call placement_value,AP_SCRIPTING_M4_FLASH_BASE),--defsym=placement_flash_size=$(call placement_value,AP_SCRIPTING_M4_FLASH_SIZE),--defsym=placement_ram_base=$(call placement_value,AP_SCRIPTING_M4_RAM_BASE),--defsym=placement_ram_size=$(call placement_value,AP_SCRIPTING_M4_RAM_SIZE),--defsym=placement_priv_ram_size=$(call placement_value,AP_SCRIPTING_M4_PRIV_RAM_SIZE),--defsym=placement_lua_stack_size=$(call placement_value,AP_SCRIPTING_M4_LUA_STACK_SIZE),--defsym=placement_lua_heap_min=$(call placement_value,AP_SCRIPTING_M4_LUA_HEAP_MIN)
 USE_LTO = no
 USE_VERBOSE_COMPILE = no
