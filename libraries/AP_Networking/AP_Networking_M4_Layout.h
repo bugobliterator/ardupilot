@@ -23,6 +23,8 @@ static const uint32_t CAN_RING_DATA = 1024;
 static const uint16_t MAX_RECORD = 300;
 static const int32_t RECORD_NONE = -1;
 static const int32_t RECORD_BAD = -2;
+// a well-formed record longer than the reader's capacity: skipped and counted, read again
+static const int32_t RECORD_DROPPED = -3;
 
 struct alignas(32) RingIndex {
     std::atomic<uint32_t> value;
@@ -41,8 +43,9 @@ class ByteRing {
 public:
     // generation: on the M7, its own region generation (reset_region() bumps it); a ring attached
     // under one generation refuses every operation after a reset until it is attached again.
-    // nullptr on the M4
-    void attach(RingControl *control, uint8_t *data, uint32_t size,
+    // nullptr on the M4. False, and every operation refuses, when size is not a power of two
+    // in [1, 2^31]
+    bool attach(RingControl *control, uint8_t *data, uint32_t size,
                 const std::atomic<uint32_t> *generation = nullptr);
     // producer
     uint32_t space() const;
@@ -52,8 +55,13 @@ public:
     // consumer
     uint32_t available() const;
     uint32_t read(uint8_t *dst, uint32_t len);
+    // a record's length, RECORD_NONE when no whole header is queued, RECORD_BAD when the ring
+    // is desynced, stale or the header claims more than MAX_RECORD or than is queued (resync),
+    // RECORD_DROPPED when a well-formed record is longer than capacity (skipped and counted)
     int32_t read_record(uint8_t *dst, uint16_t capacity);
+    uint32_t records_dropped() const { return _records_dropped; }
     void consumer_resync();
+    // the indices are out of range, or the ring is stale
     bool desynced() const;
     // the region was reset after attach()
     bool stale() const;
@@ -63,17 +71,20 @@ private:
     bool valid(uint32_t head, uint32_t tail) const {
         return head <= _index_mask && tail <= _index_mask && used(head, tail) <= _size;
     }
+    // attached with a valid size, and not stale
+    bool usable() const;
     // one load of each index (acquire on the peer's, relaxed on ours); false: stale or out of range
     bool producer_snapshot(uint32_t &head, uint32_t &tail) const;
     bool consumer_snapshot(uint32_t &head, uint32_t &tail) const;
     void copy_in(uint32_t index, const uint8_t *src, uint32_t len);
     void copy_out(uint32_t index, uint8_t *dst, uint32_t len) const;
-    RingControl *_control;
-    uint8_t *_data;
-    uint32_t _size;
-    uint32_t _index_mask;   // 2 * size - 1
-    const std::atomic<uint32_t> *_generation;
-    uint32_t _attached_generation;
+    RingControl *_control = nullptr;   // nullptr until attached with a valid size
+    uint8_t *_data = nullptr;
+    uint32_t _size = 0;
+    uint32_t _index_mask = 0;   // 2 * size - 1
+    const std::atomic<uint32_t> *_generation = nullptr;
+    uint32_t _attached_generation = 0;
+    uint32_t _records_dropped = 0;
 };
 
 static const uint32_t STATUS_MAGIC = 0x5453344E;   // "N4ST"

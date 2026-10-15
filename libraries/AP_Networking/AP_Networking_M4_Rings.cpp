@@ -9,15 +9,20 @@
 
 namespace NetM4 {
 
-void ByteRing::attach(RingControl *control, uint8_t *data, uint32_t size,
+bool ByteRing::attach(RingControl *control, uint8_t *data, uint32_t size,
                       const std::atomic<uint32_t> *generation)
 {
+    if (control == nullptr || data == nullptr || size == 0 || size > 0x80000000U || (size & (size - 1)) != 0) {
+        _control = nullptr;
+        return false;
+    }
     _control = control;
     _data = data;
     _size = size;
     _index_mask = 2 * size - 1;
     _generation = generation;
     _attached_generation = generation != nullptr ? generation->load(std::memory_order_acquire) : 0;
+    return true;
 }
 
 bool ByteRing::stale() const
@@ -25,9 +30,14 @@ bool ByteRing::stale() const
     return _generation != nullptr && _generation->load(std::memory_order_acquire) != _attached_generation;
 }
 
+bool ByteRing::usable() const
+{
+    return _control != nullptr && !stale();
+}
+
 bool ByteRing::producer_snapshot(uint32_t &head, uint32_t &tail) const
 {
-    if (stale()) {
+    if (!usable()) {
         return false;
     }
     head = _control->head.value.load(std::memory_order_relaxed);
@@ -37,7 +47,7 @@ bool ByteRing::producer_snapshot(uint32_t &head, uint32_t &tail) const
 
 bool ByteRing::consumer_snapshot(uint32_t &head, uint32_t &tail) const
 {
-    if (stale()) {
+    if (!usable()) {
         return false;
     }
     head = _control->head.value.load(std::memory_order_acquire);
@@ -47,6 +57,9 @@ bool ByteRing::consumer_snapshot(uint32_t &head, uint32_t &tail) const
 
 bool ByteRing::desynced() const
 {
+    if (!usable()) {
+        return true;
+    }
     const uint32_t head = _control->head.value.load(std::memory_order_acquire);
     const uint32_t tail = _control->tail.value.load(std::memory_order_acquire);
     return !valid(head, tail);
@@ -125,7 +138,7 @@ bool ByteRing::write_record(const uint8_t *src, uint16_t len)
 
 void ByteRing::producer_reset()
 {
-    if (stale()) {
+    if (!usable()) {
         return;
     }
     _control->head.value.store(_control->tail.value.load(std::memory_order_acquire) & _index_mask,
@@ -163,8 +176,13 @@ int32_t ByteRing::read_record(uint8_t *dst, uint16_t capacity)
     uint8_t header[2];
     copy_out(tail, header, 2);
     const uint16_t len = uint16_t(header[0] | (header[1] << 8));
-    if (len > MAX_RECORD || len > capacity || uint32_t(len) + 2 > have) {
+    if (len > MAX_RECORD || uint32_t(len) + 2 > have) {
         return RECORD_BAD;
+    }
+    if (len > capacity) {
+        _records_dropped++;
+        _control->tail.value.store((tail + 2 + len) & _index_mask, std::memory_order_release);
+        return RECORD_DROPPED;
     }
     copy_out(tail + 2, dst, len);
     _control->tail.value.store((tail + 2 + len) & _index_mask, std::memory_order_release);
@@ -173,7 +191,7 @@ int32_t ByteRing::read_record(uint8_t *dst, uint16_t capacity)
 
 void ByteRing::consumer_resync()
 {
-    if (stale()) {
+    if (!usable()) {
         return;
     }
     _control->tail.value.store(_control->head.value.load(std::memory_order_acquire) & _index_mask,
