@@ -14,7 +14,6 @@
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <AP_HAL/utility/packetise.h>
 #include <errno.h>
-
 extern const AP_HAL::HAL& hal;
 
 #ifndef AP_NETWORKING_PORT_MIN_TXSIZE
@@ -56,7 +55,6 @@ const AP_Param::GroupInfo AP_Networking::Port::var_info[] = {
     // @RebootRequired: True
     // @User: Advanced
     AP_GROUPINFO("PORT", 4,  AP_Networking::Port, port, 0),
-    
     AP_GROUPEND
 };
 
@@ -69,7 +67,9 @@ void AP_Networking::ports_init(void)
         auto &p = ports[i];
         p.type = (NetworkPortType)p.type_param;
         p.state.idx = AP_SERIALMANAGER_NET_PORT_1 + i;
-#if AP_NETWORKING_SOCKETS_ENABLED
+#if AP_NETWORKING_M4_ENABLED
+        p.m4_init();
+#elif AP_NETWORKING_SOCKETS_ENABLED
         switch (p.type) {
         case NetworkPortType::NONE:
             break;
@@ -552,6 +552,25 @@ enum AP_HAL::UARTDriver::flow_control AP_Networking::Port::get_flow_control(void
     }
     return AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE;
 }
+
+#if AP_NETWORKING_M4_ENABLED
+void AP_Networking::Port::m4_init(void)
+{
+    if (type == NetworkPortType::NONE) {
+        return;
+    }
+    hal.util->snprintf(thread_name, sizeof(thread_name), "NET_P%u", unsigned(state.idx - AP_SERIALMANAGER_NET_PORT_1));
+    if (!init_buffers(AP_NETWORKING_PORT_MIN_RXSIZE, AP_NETWORKING_PORT_MIN_TXSIZE)) {
+        AP_BoardConfig::allocation_error("Failed to allocate %s buffers", thread_name);
+        return;
+    }
+    // MAVLink on a UDP port: one frame per datagram, as udp_client_init() sets it
+    packetise = (type == NetworkPortType::UDP_CLIENT || type == NetworkPortType::UDP_SERVER) &&
+                (state.protocol == AP_SerialManager::SerialProtocol_MAVLink ||
+                 state.protocol == AP_SerialManager::SerialProtocol_MAVLink2);
+    AP::serialmanager().register_port(this);
+}
+#endif  // AP_NETWORKING_M4_ENABLED
 
 #endif // AP_NETWORKING_REGISTER_PORT_ENABLED
 

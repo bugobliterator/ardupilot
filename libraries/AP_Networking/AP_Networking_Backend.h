@@ -61,4 +61,9 @@ protected:
     } routes[AP_NETWORKING_MAX_ROUTES];
 };
 
+#if AP_NETWORKING_M4_ENABLED
+// the backend on networking-on-M4 builds, for AP_Networking::init()
+#include "AP_Networking_M4.h"
+#endif
+
 #endif // AP_NETWORKING_ENABLED

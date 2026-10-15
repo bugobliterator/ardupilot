@@ -218,6 +218,52 @@ TEST(NetM4Proxy, TornOrBadStatusKeepsTheLastCopy)
     EXPECT_EQ(tracker.change_count, 1U);
 }
 
+// the frontend's reset path, through the singleton
+static AP_Networking networking;
+
+TEST(NetM4Proxy, RegionResetClearsEveryPortAndRing)
+{
+    static Region shared;
+    AP_Networking &net = AP::network();
+    net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));
+    for (uint8_t i = 0; i < NUM_PORTS; i++) {
+        ByteRing tx;
+        ASSERT_TRUE(tx.attach(&shared.ports[i].tx_control, shared.ports[i].tx, PORT_RING_DATA));
+        const uint8_t stale[4] = {1, 2, 3, 4};
+        tx.write(stale, sizeof(stale));
+    }
+    EXPECT_GT(net.m4_queued_bytes_for_test(), 0U);
+    net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));   // what grant_restart() calls first
+    EXPECT_EQ(net.m4_queued_bytes_for_test(), 0U);
+    for (uint8_t i = 0; i < NUM_PORTS; i++) {
+        ByteRing rx;
+        ASSERT_TRUE(rx.attach(&shared.ports[i].tx_control, shared.ports[i].tx, PORT_RING_DATA));
+        EXPECT_EQ(rx.available(), 0U) << unsigned(i);
+    }
+}
+
+TEST(NetM4Proxy, SessionChangeDropsTheRingsWithoutAReset)
+{
+    static Region shared;
+    AP_Networking &net = AP::network();
+    net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));
+    net.m4_io_update(0);
+    // the M4 of session 0 left bytes for the M7, and the M7 queued bytes it never took
+    ByteRing m4_rx, m7_tx;
+    ASSERT_TRUE(m4_rx.attach(&shared.ports[1].rx_control, shared.ports[1].rx, PORT_RING_DATA));
+    ASSERT_TRUE(m7_tx.attach(&shared.ports[2].tx_control, shared.ports[2].tx, PORT_RING_DATA));
+    const uint8_t stale[6] = {1, 2, 3, 4, 5, 6};
+    m4_rx.write(stale, sizeof(stale));
+    m7_tx.write(stale, sizeof(stale));
+    net.m4_io_update(0);
+    EXPECT_EQ(net.m4_queued_bytes_for_test(), 2 * sizeof(stale));
+    // a restart that kept the region: session 1 starts with the M7's ends empty
+    net.m4_io_update(1);
+    EXPECT_EQ(net.m4_queued_bytes_for_test(), 0U);
+    EXPECT_EQ(shared.ports[1].rx_control.tail.value.load(), shared.ports[1].rx_control.head.value.load());
+    EXPECT_EQ(shared.ports[2].tx_control.head.value.load(), shared.ports[2].tx_control.tail.value.load());
+}
+
 #endif  // AP_NETWORKING_M4_ENABLED
 
 AP_GTEST_MAIN()

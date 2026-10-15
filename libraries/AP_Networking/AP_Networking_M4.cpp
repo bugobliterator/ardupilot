@@ -5,16 +5,17 @@
 #include "AP_Networking_M4.h"
 #include <AP_Scripting/AP_ScriptingM4_Placement.h>
 #include <AP_HAL/utility/packetise.h>
+#include <AP_HAL/utility/Socket.h>
+#include <AP_Scripting/AP_Scripting.h>
 #include <GCS_MAVLink/GCS.h>
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+#include <hal.h>   // __CORTEX_M, for HSEM.h
+#include <CubePilotFW/pal/HSEM.h>
+#endif
+
+extern const AP_HAL::HAL& hal;
 
 static_assert(sizeof(NetM4::Region) == AP_NETWORKING_M4_RING_SIZE, "the region fills the ring window");
-
-void AP_Networking::m4_region_reset(uint8_t *region)
-{
-    WITH_SEMAPHORE(_m4_sem);
-    // the region is AP_NETWORKING_M4_RING_SIZE aligned
-    NetM4::reset_region(*static_cast<NetM4::Region *>(static_cast<void *>(region)), _m4_region_generation);
-}
 
 static_assert(ARRAY_SIZE(NetM4::Config::ports) == NetM4::NUM_PORTS, "one config per port ring");
 #if AP_NETWORKING_REGISTER_PORT_ENABLED
@@ -153,6 +154,165 @@ uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, ui
     tracker.link_up = link_up;
     out = status;
     return events;
+}
+
+/*
+  the M4 network region: the scripting supervisor clears it while the M4 cannot run, before
+  every start and every restart grant that follows an M4 fault or exit
+ */
+void AP_Networking::m4_region_reset(uint8_t *region)
+{
+    WITH_SEMAPHORE(_m4_sem);
+    // the region is AP_NETWORKING_M4_RING_SIZE aligned
+    _m4_region = static_cast<NetM4::Region *>(static_cast<void *>(region));
+    NetM4::reset_region(*_m4_region, _m4_region_generation);
+    m4_attach(m4_session());
+}
+
+uint32_t AP_Networking::m4_session()
+{
+    const AP_Scripting *scripting = AP::scripting();
+    return scripting != nullptr ? scripting->m4_session() : 0;
+}
+
+/*
+  a new M4 session (a region reset, or a restart that kept the region): the rings attached
+  again, the M7's ends of them reset, and every port's buffered bytes dropped, so that nothing
+  queued for one session reaches the next. _m4_sem held
+ */
+void AP_Networking::m4_attach(uint32_t session)
+{
+    _m4_attached = true;
+    _m4_attached_generation = _m4_region_generation.load(std::memory_order_acquire);
+    _m4_attached_session = session;
+    for (uint8_t i = 0; i < NetM4::NUM_PORTS; i++) {
+        NetM4::PortRings &rings = _m4_region->ports[i];
+        if (!_m4_tx[i].attach(&rings.tx_control, rings.tx, NetM4::PORT_RING_DATA, &_m4_region_generation) ||
+            !_m4_rx[i].attach(&rings.rx_control, rings.rx, NetM4::PORT_RING_DATA, &_m4_region_generation)) {
+            _m4_attached = false;
+            continue;
+        }
+        _m4_tx[i].producer_reset();
+        _m4_rx[i].consumer_resync();
+    }
+#if AP_NETWORKING_REGISTER_PORT_ENABLED
+    for (auto &port : ports) {
+        WITH_SEMAPHORE(port.sem);
+        if (port.readbuffer != nullptr && port.writebuffer != nullptr) {
+            _m4_bytes_dropped += NetM4::reset_port(*port.readbuffer, *port.writebuffer);
+        }
+    }
+#endif
+}
+
+/*
+  the NET_P ports' data through the rings, registered with the IO thread. Waits only on M7
+  threads: the supervisor's reset and the ports' writers
+ */
+void AP_Networking::m4_io_update()
+{
+    m4_io_update(m4_session());
+}
+
+void AP_Networking::m4_io_update(uint32_t session)
+{
+    WITH_SEMAPHORE(_m4_sem);
+    if (_m4_region == nullptr) {
+        return;
+    }
+    if (!_m4_attached || session != _m4_attached_session ||
+        _m4_region_generation.load(std::memory_order_acquire) != _m4_attached_generation) {
+        m4_attach(session);
+        if (!_m4_attached) {
+            return;
+        }
+    }
+#if AP_NETWORKING_REGISTER_PORT_ENABLED
+    bool ring_doorbell = false;
+    for (uint8_t i = 0; i < ARRAY_SIZE(ports); i++) {
+        auto &port = ports[i];
+        if (port.type == NetworkPortType::NONE || port.readbuffer == nullptr || port.writebuffer == nullptr) {
+            continue;
+        }
+        WITH_SEMAPHORE(port.sem);
+        const bool was_empty = _m4_tx[i].space() == NetM4::PORT_RING_DATA;
+        // UDP ports carry records (NetM4::Config packetise), MAVLink ones ending on frames
+        const bool records = port.type == NetworkPortType::UDP_CLIENT || port.type == NetworkPortType::UDP_SERVER;
+        const uint32_t sent = NetM4::flush_tx(*port.writebuffer, _m4_tx[i], records, port.packetise);
+        port.tx_stats_bytes += sent;
+        port.rx_stats_bytes += NetM4::drain_rx(_m4_rx[i], *port.readbuffer);
+        ring_doorbell |= was_empty && sent > 0;
+    }
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+    // the M4 sleeps until a doorbell; the SITL M4 process polls
+    if (ring_doorbell && CubePilotFW::HwSemaphore::takeTx(AP_NETWORKING_M4_DOORBELL_GROUP)) {
+        CubePilotFW::HwSemaphore::releaseTx(AP_NETWORKING_M4_DOORBELL_GROUP);
+    }
+#else
+    (void)ring_doorbell;
+#endif
+#endif  // AP_NETWORKING_REGISTER_PORT_ENABLED
+}
+
+uint8_t AP_Networking::m4_track_status(NetM4::StatusTracker &tracker, NetM4::StatusFields &out)
+{
+    WITH_SEMAPHORE(_m4_sem);
+    if (_m4_region == nullptr) {
+        return 0;
+    }
+    return NetM4::track_status(tracker, _m4_region->status, m4_session(), out);
+}
+
+uint32_t AP_Networking::m4_queued_bytes_for_test()
+{
+    WITH_SEMAPHORE(_m4_sem);
+    uint32_t total = 0;
+#if AP_NETWORKING_REGISTER_PORT_ENABLED
+    for (auto &port : ports) {
+        WITH_SEMAPHORE(port.sem);
+        if (port.readbuffer != nullptr && port.writebuffer != nullptr) {
+            total += port.readbuffer->available() + port.writebuffer->available();
+        }
+    }
+#endif
+    if (_m4_region != nullptr) {
+        for (uint8_t i = 0; i < NetM4::NUM_PORTS; i++) {
+            total += (NetM4::PORT_RING_DATA - _m4_tx[i].space()) + _m4_rx[i].available();
+        }
+    }
+    return total;
+}
+
+bool AP_Networking_M4::init()
+{
+    hal.scheduler->register_io_process(FUNCTOR_BIND(&frontend, &AP_Networking::m4_io_update, void));
+    return true;
+}
+
+/*
+  the addresses and link state the M4 publishes, at 10Hz
+ */
+void AP_Networking_M4::update()
+{
+    NetM4::StatusFields status;
+    const uint8_t events = frontend.m4_track_status(tracker, status);
+    if ((events & NetM4::STATUS_NEW_SESSION) && (activeSettings.ip != 0 || activeSettings.nm != 0 || activeSettings.gw != 0)) {
+        activeSettings.ip = 0;
+        activeSettings.nm = 0;
+        activeSettings.gw = 0;
+        activeSettings.last_change_ms = AP_HAL::millis();
+    }
+    if (events & NetM4::STATUS_ADDRESSES) {
+        activeSettings.ip = status.ip;
+        activeSettings.nm = status.netmask;
+        activeSettings.gw = status.gateway;
+        activeSettings.last_change_ms = AP_HAL::millis();
+    }
+    if (events & NetM4::STATUS_LINK_CAME_UP) {
+        char ipstr[IP4_STR_LEN];
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Net: M4 up, ppp0 %s",
+                      SocketAPM::inet_addr_to_str(status.ip, ipstr, sizeof(ipstr)));
+    }
 }
 
 #endif  // AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED
