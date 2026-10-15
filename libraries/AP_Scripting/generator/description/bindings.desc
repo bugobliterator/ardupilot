@@ -660,12 +660,12 @@ ap_object AP_HAL::I2CDevice manual read_registers AP_HAL__I2CDevice_read_registe
 ap_object AP_HAL::I2CDevice manual transfer AP_HAL__I2CDevice_transfer 2 1
 ap_object AP_HAL::I2CDevice method set_address void uint8_t'skip_check
 
-include AP_HAL/utility/Socket.h depends (AP_NETWORKING_ENABLED==1)
-global manual Socket lua_get_SocketAPM 1 1 depends (AP_NETWORKING_ENABLED==1)
-global manual ipv4_addr_to_string SocketAPM_ipv4_addr_to_string 1 1 depends (AP_NETWORKING_ENABLED==1)
-global manual string_to_ipv4_addr SocketAPM_string_to_ipv4_addr 1 1 depends (AP_NETWORKING_ENABLED==1)
+include AP_HAL/utility/Socket.h depends (AP_NETWORKING_SOCKETS_ENABLED==1)
+global manual Socket lua_get_SocketAPM 1 1 depends (AP_NETWORKING_SOCKETS_ENABLED==1)
+global manual ipv4_addr_to_string SocketAPM_ipv4_addr_to_string 1 1 depends (AP_NETWORKING_SOCKETS_ENABLED==1)
+global manual string_to_ipv4_addr SocketAPM_string_to_ipv4_addr 1 1 depends (AP_NETWORKING_SOCKETS_ENABLED==1)
 
-ap_object SocketAPM depends (AP_NETWORKING_ENABLED==1)
+ap_object SocketAPM depends (AP_NETWORKING_SOCKETS_ENABLED==1)
 ap_object SocketAPM method connect boolean string uint16_t'skip_check
 ap_object SocketAPM method bind boolean string uint16_t'skip_check
 ap_object SocketAPM method send int32_t string uint32_t'skip_check

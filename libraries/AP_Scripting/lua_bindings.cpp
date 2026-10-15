@@ -880,7 +880,7 @@ int lua_get_PWMSource(lua_State *L) {
     return 1;
 }
 
-#if AP_NETWORKING_ENABLED
+#if AP_NETWORKING_SOCKETS_ENABLED
 /*
   allocate a SocketAPM
  */
@@ -1041,7 +1041,7 @@ int SocketAPM_string_to_ipv4_addr(lua_State *L) {
     return 1;
 }
 
-#endif // AP_NETWORKING_ENABLED
+#endif // AP_NETWORKING_SOCKETS_ENABLED
 
 
 int lua_get_current_env_ref()
