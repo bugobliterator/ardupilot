@@ -208,8 +208,8 @@ public:
 
     // the NET_P ports' bytes through the rings; IO thread
     void m4_io_update();
-    // the same for a given M4 session (tests)
-    void m4_io_update(uint32_t session);
+    // the same for a given M4 session, confirmed running or not (tests)
+    void m4_io_update(uint32_t session, bool confirmed);
 
     // every byte in the ports' buffers and rings (tests)
     uint32_t m4_queued_bytes_for_test();
@@ -225,15 +225,23 @@ private:
     std::atomic<uint32_t> _m4_region_generation {0};
 
     friend class AP_Networking_M4;
-    NetM4::Region *_m4_region;   // nullptr until the first reset
+    friend struct NetM4TestAccess;
+    NetM4::Region *_m4_region = nullptr;   // nullptr until the first reset
     NetM4::ByteRing _m4_tx[NetM4::NUM_PORTS];   // M7 -> M4, our producer end
     NetM4::ByteRing _m4_rx[NetM4::NUM_PORTS];   // M4 -> M7, our consumer end
     // the generation and M4 session the rings were attached under
-    bool _m4_attached;
-    uint32_t _m4_attached_generation;
-    uint32_t _m4_attached_session;
-    uint32_t _m4_bytes_dropped;   // port bytes dropped at session changes
+    bool _m4_attached = false;
+    uint32_t _m4_attached_generation = 0;
+    uint32_t _m4_attached_session = 0;
+    // the ports wait for the next session to be confirmed (m4_hold_ports())
+    bool _m4_held = true;
+    bool _m4_doorbell_pending = false;
+    uint32_t _m4_doorbells = 0;      // doorbells rung
+    uint32_t _m4_tx_resyncs = 0;     // TX rings the M4 desynced
+    uint32_t _m4_bytes_dropped = 0;  // port bytes dropped at session changes
     static uint32_t m4_session();
+    static bool m4_session_confirmed();
+    void m4_hold_ports();
     void m4_attach(uint32_t session);
     uint8_t m4_track_status(NetM4::StatusTracker &tracker, NetM4::StatusFields &out);
 #endif
@@ -309,8 +317,10 @@ private:
 
 #if AP_NETWORKING_M4_ENABLED
         friend class AP_Networking;
+        friend struct NetM4TestAccess;
         // a port the M4 runs: buffers and registration, no socket (AP_Networking::m4_io_update())
         void m4_init(void);
+        void m4_open(void);
 #endif
         void udp_client_init(void);
         void udp_server_init(void);
@@ -356,6 +366,12 @@ private:
         uint32_t last_size_tx;
         uint32_t last_size_rx;
         bool packetise;
+#if AP_NETWORKING_M4_ENABLED
+        // between M4 sessions: reads and writes return 0 (AP_Networking::m4_hold_ports())
+        bool m4_held;
+#else
+        static constexpr bool m4_held = false;
+#endif
         bool connected;
         bool is_udp_client_unicast;  // only meaningful when type == UDP_CLIENT, set in udp_client_loop()
         uint32_t last_udp_connect_address;

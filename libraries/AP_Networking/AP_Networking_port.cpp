@@ -474,7 +474,7 @@ bool AP_Networking::Port::send_receive(void)
 uint32_t AP_Networking::Port::txspace(void)
 {
     WITH_SEMAPHORE(sem);
-    return writebuffer->space();
+    return m4_held ? 0 : writebuffer->space();
 }
 
 void AP_Networking::Port::_begin(uint32_t b, uint16_t rxS, uint16_t txS)
@@ -487,19 +487,19 @@ void AP_Networking::Port::_begin(uint32_t b, uint16_t rxS, uint16_t txS)
 size_t AP_Networking::Port::_write(const uint8_t *buffer, size_t size)
 {
     WITH_SEMAPHORE(sem);
-    return writebuffer->write(buffer, size);
+    return m4_held ? 0 : writebuffer->write(buffer, size);
 }
 
 ssize_t AP_Networking::Port::_read(uint8_t *buffer, uint16_t count)
 {
     WITH_SEMAPHORE(sem);
-    return readbuffer->read(buffer, count);
+    return m4_held ? 0 : readbuffer->read(buffer, count);
 }
 
 uint32_t AP_Networking::Port::_available()
 {
     WITH_SEMAPHORE(sem);
-    return readbuffer->available();
+    return m4_held ? 0 : readbuffer->available();
 }
 
 
@@ -564,11 +564,19 @@ void AP_Networking::Port::m4_init(void)
         AP_BoardConfig::allocation_error("Failed to allocate %s buffers", thread_name);
         return;
     }
+    m4_open();
+    AP::serialmanager().register_port(this);
+}
+
+// the port's flags; it waits for a confirmed M4 session (AP_Networking::m4_attach())
+void AP_Networking::Port::m4_open(void)
+{
+    WITH_SEMAPHORE(sem);
     // MAVLink on a UDP port: one frame per datagram, as udp_client_init() sets it
     packetise = (type == NetworkPortType::UDP_CLIENT || type == NetworkPortType::UDP_SERVER) &&
                 (state.protocol == AP_SerialManager::SerialProtocol_MAVLink ||
                  state.protocol == AP_SerialManager::SerialProtocol_MAVLink2);
-    AP::serialmanager().register_port(this);
+    m4_held = true;
 }
 #endif  // AP_NETWORKING_M4_ENABLED
 

@@ -221,19 +221,66 @@ TEST(NetM4Proxy, TornOrBadStatusKeepsTheLastCopy)
 // the frontend's reset path, through the singleton
 static AP_Networking networking;
 
+// AP_Networking's ports and counters (friend of AP_Networking and of its Port)
+struct NetM4TestAccess {
+    static AP_HAL::UARTDriver &uart(AP_Networking &net, uint8_t i) { return net.ports[i]; }
+    static void open(AP_Networking &net, uint8_t i, AP_Networking::NetworkPortType type,
+                     AP_SerialManager::SerialProtocol protocol)
+    {
+        AP_Networking::Port &port = net.ports[i];
+        port.type = type;
+        port.state.idx = AP_SERIALMANAGER_NET_PORT_1 + i;
+        port.state.protocol.set(int8_t(protocol));
+        ASSERT_TRUE(port.init_buffers(2048, 2048));
+        port.m4_open();
+    }
+    static void udp_mavlink_and_tcp(AP_Networking &net)
+    {
+        open(net, 0, AP_Networking::NetworkPortType::UDP_CLIENT, AP_SerialManager::SerialProtocol_MAVLink2);
+        open(net, 1, AP_Networking::NetworkPortType::TCP_CLIENT, AP_SerialManager::SerialProtocol_None);
+        net.ports[2].type = AP_Networking::NetworkPortType::NONE;
+        net.ports[3].type = AP_Networking::NetworkPortType::NONE;
+    }
+    static uint32_t tx_stats(AP_Networking &net, uint8_t i) { return net.ports[i].tx_stats_bytes; }
+    static uint32_t rx_stats(AP_Networking &net, uint8_t i) { return net.ports[i].rx_stats_bytes; }
+    static uint32_t doorbells(AP_Networking &net) { return net._m4_doorbells; }
+    static uint32_t bytes_dropped(AP_Networking &net) { return net._m4_bytes_dropped; }
+    static uint32_t tx_resyncs(AP_Networking &net) { return net._m4_tx_resyncs; }
+};
+
+static Region shared;
+
+// a region, the two test ports, and a confirmed session
+static AP_Networking &started(uint32_t session)
+{
+    AP_Networking &net = AP::network();
+    NetM4TestAccess::udp_mavlink_and_tcp(net);
+    net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));
+    net.m4_io_update(session, true);
+    return net;
+}
+
+// the M4's end of port i's rings
+static void peer(uint8_t i, ByteRing &tx, ByteRing &rx)
+{
+    ASSERT_TRUE(tx.attach(&shared.ports[i].tx_control, shared.ports[i].tx, PORT_RING_DATA));
+    ASSERT_TRUE(rx.attach(&shared.ports[i].rx_control, shared.ports[i].rx, PORT_RING_DATA));
+}
+
 TEST(NetM4Proxy, RegionResetClearsEveryPortAndRing)
 {
-    static Region shared;
-    AP_Networking &net = AP::network();
-    net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));
+    AP_Networking &net = started(0);
     for (uint8_t i = 0; i < NUM_PORTS; i++) {
         ByteRing tx;
         ASSERT_TRUE(tx.attach(&shared.ports[i].tx_control, shared.ports[i].tx, PORT_RING_DATA));
         const uint8_t stale[4] = {1, 2, 3, 4};
         tx.write(stale, sizeof(stale));
     }
+    const uint8_t queued[3] = {7, 8, 9};
+    NetM4TestAccess::uart(net, 1).write(queued, sizeof(queued));
     EXPECT_GT(net.m4_queued_bytes_for_test(), 0U);
     net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));   // what grant_restart() calls first
+    net.m4_io_update(1, true);                                  // the new session confirmed
     EXPECT_EQ(net.m4_queued_bytes_for_test(), 0U);
     for (uint8_t i = 0; i < NUM_PORTS; i++) {
         ByteRing rx;
@@ -242,26 +289,141 @@ TEST(NetM4Proxy, RegionResetClearsEveryPortAndRing)
     }
 }
 
-TEST(NetM4Proxy, SessionChangeDropsTheRingsWithoutAReset)
+TEST(NetM4Proxy, PortsFlushByTheirType)
 {
-    static Region shared;
-    AP_Networking &net = AP::network();
-    net.m4_region_reset(reinterpret_cast<uint8_t *>(&shared));
-    net.m4_io_update(0);
-    // the M4 of session 0 left bytes for the M7, and the M7 queued bytes it never took
-    ByteRing m4_rx, m7_tx;
-    ASSERT_TRUE(m4_rx.attach(&shared.ports[1].rx_control, shared.ports[1].rx, PORT_RING_DATA));
-    ASSERT_TRUE(m7_tx.attach(&shared.ports[2].tx_control, shared.ports[2].tx, PORT_RING_DATA));
-    const uint8_t stale[6] = {1, 2, 3, 4, 5, 6};
-    m4_rx.write(stale, sizeof(stale));
-    m7_tx.write(stale, sizeof(stale));
-    net.m4_io_update(0);
-    EXPECT_EQ(net.m4_queued_bytes_for_test(), 2 * sizeof(stale));
-    // a restart that kept the region: session 1 starts with the M7's ends empty
-    net.m4_io_update(1);
-    EXPECT_EQ(net.m4_queued_bytes_for_test(), 0U);
-    EXPECT_EQ(shared.ports[1].rx_control.tail.value.load(), shared.ports[1].rx_control.head.value.load());
-    EXPECT_EQ(shared.ports[2].tx_control.head.value.load(), shared.ports[2].tx_control.tail.value.load());
+    AP_Networking &net = started(0);
+    ByteRing udp_tx, udp_rx, tcp_tx, tcp_rx;
+    peer(0, udp_tx, udp_rx);
+    peer(1, tcp_tx, tcp_rx);
+    uint8_t frame[MAVLINK_MAX_PACKET_LEN];
+    const uint16_t len = heartbeat(frame, 3);
+    AP_HAL::UARTDriver &udp = NetM4TestAccess::uart(net, 0);
+    AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
+    EXPECT_EQ(udp.write(frame, len), len);
+    EXPECT_EQ(udp.write(frame, len), len);
+    const uint8_t bytes[5] = {'b', 'y', 't', 'e', 's'};
+    EXPECT_EQ(tcp.write(bytes, sizeof(bytes)), sizeof(bytes));
+    const uint32_t udp_sent = NetM4TestAccess::tx_stats(net, 0);
+    const uint32_t tcp_sent = NetM4TestAccess::tx_stats(net, 1);
+    net.m4_io_update(0, true);
+    // MAVLink UDP: one frame per record
+    uint8_t out[MAX_RECORD];
+    EXPECT_EQ(udp_tx.read_record(out, sizeof(out)), int32_t(len));
+    EXPECT_EQ(udp_tx.read_record(out, sizeof(out)), int32_t(len));
+    EXPECT_EQ(udp_tx.read_record(out, sizeof(out)), RECORD_NONE);
+    // TCP: the bytes as they are, no record header
+    EXPECT_EQ(tcp_tx.available(), sizeof(bytes));
+    EXPECT_EQ(tcp_tx.read(out, sizeof(out)), sizeof(bytes));
+    EXPECT_EQ(memcmp(out, bytes, sizeof(bytes)), 0);
+    EXPECT_EQ(NetM4TestAccess::tx_stats(net, 0) - udp_sent, uint32_t(2 * len));
+    EXPECT_EQ(NetM4TestAccess::tx_stats(net, 1) - tcp_sent, sizeof(bytes));
+    // RX: into the port's read buffer, counted
+    const uint32_t tcp_received = NetM4TestAccess::rx_stats(net, 1);
+    tcp_rx.write(bytes, sizeof(bytes));
+    net.m4_io_update(0, true);
+    EXPECT_EQ(tcp.available(), sizeof(bytes));
+    EXPECT_EQ(tcp.read(out, sizeof(out)), ssize_t(sizeof(bytes)));
+    EXPECT_EQ(NetM4TestAccess::rx_stats(net, 1) - tcp_received, sizeof(bytes));
+}
+
+TEST(NetM4Proxy, DoorbellOnlyWhenATxRingGetsDataFromEmpty)
+{
+    AP_Networking &net = started(0);
+    ByteRing tcp_tx, tcp_rx;
+    peer(1, tcp_tx, tcp_rx);
+    AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
+    const uint8_t bytes[4] = {1, 2, 3, 4};
+    const uint32_t before = NetM4TestAccess::doorbells(net);
+    net.m4_io_update(0, true);
+    EXPECT_EQ(NetM4TestAccess::doorbells(net), before);          // nothing sent
+    tcp.write(bytes, sizeof(bytes));
+    net.m4_io_update(0, true);
+    EXPECT_EQ(NetM4TestAccess::doorbells(net), before + 1);      // empty -> data
+    tcp.write(bytes, sizeof(bytes));
+    net.m4_io_update(0, true);
+    EXPECT_EQ(NetM4TestAccess::doorbells(net), before + 1);      // the M4 has not read yet
+    uint8_t out[16];
+    EXPECT_EQ(tcp_tx.read(out, sizeof(out)), 8U);
+    tcp.write(bytes, sizeof(bytes));
+    net.m4_io_update(0, true);
+    EXPECT_EQ(NetM4TestAccess::doorbells(net), before + 2);
+}
+
+TEST(NetM4Proxy, SessionChangeDropsThePortsBytesOnceConfirmed)
+{
+    AP_Networking &net = started(0);
+    AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
+    ByteRing tcp_tx, tcp_rx;
+    peer(1, tcp_tx, tcp_rx);
+    const uint8_t bytes[10] {};
+    tcp_rx.write(bytes, 6);
+    net.m4_io_update(0, true);
+    EXPECT_EQ(tcp.available(), 6U);
+    // the grant moves on: the port holds, nothing is reset yet
+    net.m4_io_update(1, false);
+    EXPECT_EQ(tcp.available(), 0U);
+    EXPECT_EQ(tcp.write(bytes, sizeof(bytes)), 0U);
+    EXPECT_EQ(tcp.txspace(), 0U);
+    const uint32_t dropped = NetM4TestAccess::bytes_dropped(net);
+    // confirmed: the held read buffer is dropped and counted
+    net.m4_io_update(1, true);
+    EXPECT_EQ(NetM4TestAccess::bytes_dropped(net) - dropped, 6U);
+    EXPECT_EQ(tcp.available(), 0U);
+    EXPECT_EQ(tcp.write(bytes, sizeof(bytes)), sizeof(bytes));
+}
+
+TEST(NetM4Proxy, OldPeerAfterTheGrantNeverReachesTheNewSession)
+{
+    AP_Networking &net = started(0);
+    AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
+    ByteRing old_tx, old_rx;   // the M4 of session 0, still running after the grant
+    peer(1, old_tx, old_rx);
+    const uint8_t old_bytes[4] = {'o', 'l', 'd', '!'};
+    old_rx.write(old_bytes, sizeof(old_bytes));
+    net.m4_io_update(0, true);
+    net.m4_io_update(1, false);   // grant 1, not running yet
+    for (uint8_t pass = 0; pass < 3; pass++) {
+        old_rx.write(old_bytes, sizeof(old_bytes));
+        const uint8_t new_out[3] = {'n', 'e', 'w'};
+        EXPECT_EQ(tcp.write(new_out, sizeof(new_out)), 0U);   // held: no new-session TX at all
+        net.m4_io_update(1, false);
+        uint8_t taken[16];
+        EXPECT_EQ(old_tx.read(taken, sizeof(taken)), 0U);     // the old peer gets nothing
+        EXPECT_EQ(tcp.available(), 0U);
+    }
+    // session 1 confirmed; its M4 writes its own bytes
+    net.m4_io_update(1, true);
+    ByteRing new_tx, new_rx;
+    peer(1, new_tx, new_rx);
+    const uint8_t new_in[5] = {'f', 'r', 'e', 's', 'h'};
+    new_rx.write(new_in, sizeof(new_in));
+    const uint8_t new_out[3] = {'n', 'e', 'w'};
+    EXPECT_EQ(tcp.write(new_out, sizeof(new_out)), sizeof(new_out));
+    net.m4_io_update(1, true);
+    uint8_t in[32];
+    ASSERT_EQ(tcp.available(), sizeof(new_in));
+    EXPECT_EQ(tcp.read(in, sizeof(in)), ssize_t(sizeof(new_in)));
+    EXPECT_EQ(memcmp(in, new_in, sizeof(new_in)), 0);
+    uint8_t out[32];
+    EXPECT_EQ(new_tx.read(out, sizeof(out)), sizeof(new_out));
+    EXPECT_EQ(memcmp(out, new_out, sizeof(new_out)), 0);
+}
+
+TEST(NetM4Proxy, DesyncedTxRingIsResyncedAndCounted)
+{
+    AP_Networking &net = started(0);
+    AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
+    // the M4 stores a tail more than a ring's length behind the head
+    shared.ports[1].tx_control.tail.value.store(500);
+    const uint32_t resyncs = NetM4TestAccess::tx_resyncs(net);
+    const uint8_t bytes[4] = {1, 2, 3, 4};
+    tcp.write(bytes, sizeof(bytes));
+    net.m4_io_update(0, true);
+    EXPECT_EQ(NetM4TestAccess::tx_resyncs(net) - resyncs, 1U);
+    ByteRing m4_tx, m4_rx;
+    peer(1, m4_tx, m4_rx);
+    EXPECT_FALSE(m4_tx.desynced());
+    EXPECT_EQ(m4_tx.available(), sizeof(bytes));   // the port flows again
 }
 
 #endif  // AP_NETWORKING_M4_ENABLED
