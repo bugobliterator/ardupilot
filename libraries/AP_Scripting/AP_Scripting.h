@@ -100,7 +100,6 @@ public:
     // the M4's current session (AP_ScriptingM4::m4_session()), for AP_Networking's proxy
     uint32_t m4_session() const { return _m4.m4_session(); }
     bool m4_session_confirmed(uint32_t session) const { return _m4.m4_session_confirmed(session); }
-    bool m4_session_confirmed() const { return _m4.m4_session_confirmed(); }
 #endif
 #endif
 
