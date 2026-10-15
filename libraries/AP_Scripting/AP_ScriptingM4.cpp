@@ -396,6 +396,9 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         if (_state == State::Starting || !_restart_requested) {
             _m4_fault_count = view.faultCount;
         }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        _net_region_clear.session_started(view.faultCount);
+#endif
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
         _m4_heartbeat_ms = now_ms;
         // re-handshake: drop whatever either side queued before this start
@@ -426,7 +429,7 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
 {
     if (platform_m4_exited()) {
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-        _m4_halted = true;   // the M4 process is gone
+        _net_region_clear.process_exited();
 #endif
         failure("process exit");
         return;
@@ -446,7 +449,7 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
             char reason[40];
             fault_reason(view, reason, sizeof(reason));
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-            _m4_halted = true;   // in its fault handler, waiting for the grant
+            _net_region_clear.fault_seen(view.faultCount);
 #endif
             failure(reason);
             return;
@@ -491,7 +494,7 @@ bool AP_ScriptingM4::report_start_fault()
     char reason[40];
     fault_reason(view, reason, sizeof(reason));
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    _m4_halted = true;   // in its fault handler, waiting for the grant
+    _net_region_clear.fault_seen(view.faultCount);
 #endif
     failure(reason);
     return true;
@@ -531,10 +534,9 @@ void AP_ScriptingM4::grant_restart()
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // only an M4 that cannot run may have the region cleared under it; after a request, a lost
     // heartbeat or protocol errors it may still be running, and its new session resyncs the rings
-    if (_m4_halted) {
+    if (_net_region_clear.take_clear()) {
         AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
     }
-    _m4_halted = false;
 #endif
     // the M4 acts on a restart doorbell only once the grant has changed: store it first
     ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restart_grants);
