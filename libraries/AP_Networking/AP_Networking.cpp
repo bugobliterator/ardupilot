@@ -21,7 +21,6 @@ extern const AP_HAL::HAL& hal;
 #include <lwipopts.h>
 #include <errno.h>
 
-
 #include <AP_HAL/utility/Socket.h>
 
 #if AP_NETWORKING_BACKEND_PPP
@@ -168,8 +167,9 @@ void AP_Networking::init()
         backend_PPP = NEW_NOTHROW AP_Networking_PPP(*this);
     }
 #endif
-
-
+#if AP_NETWORKING_M4_ENABLED
+    backend = NEW_NOTHROW AP_Networking_M4(*this);
+#endif
 #if AP_NETWORKING_BACKEND_PPP
     if (backend == nullptr && AP::serialmanager().have_serial(AP_SerialManager::SerialProtocol_PPP, 0)) {
         backend = NEW_NOTHROW AP_Networking_PPP(*this);

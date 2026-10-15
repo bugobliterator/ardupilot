@@ -24,6 +24,14 @@
 // ---------------------------
 // Backends
 // ---------------------------
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED && CONFIG_HAL_BOARD == HAL_BOARD_SITL
+// networking on the M4: AP_Networking_M4 is the only backend
+#undef AP_NETWORKING_BACKEND_SITL
+#define AP_NETWORKING_BACKEND_SITL 0
+#undef AP_NETWORKING_BACKEND_SITL_TUN
+#define AP_NETWORKING_BACKEND_SITL_TUN 0
+#endif
+
 #ifndef AP_NETWORKING_BACKEND_CHIBIOS
 #ifndef HAL_USE_MAC
 #define HAL_USE_MAC 0
@@ -166,4 +174,15 @@
 // lwIP, PPP and the NET_P ports on the M4, a proxy on the M7 (--enable-networking-m4)
 #ifndef AP_NETWORKING_M4_ENABLED
 #define AP_NETWORKING_M4_ENABLED 0
+#endif
+
+#if AP_NETWORKING_M4_ENABLED && !AP_NETWORKING_ENABLED
+#error "networking on the M4 needs AP_Networking on the M7 (the proxy)"
+#endif
+#if AP_NETWORKING_M4_ENABLED && (AP_NETWORKING_BACKEND_CHIBIOS || AP_NETWORKING_BACKEND_PPP || \
+                                 AP_NETWORKING_BACKEND_SITL || AP_NETWORKING_BACKEND_SITL_TUN)
+#error "networking on the M4: the M7 builds no other backend"
+#endif
+#if AP_NETWORKING_M4_ENABLED && AP_NETWORKING_CAN_MCAST_ENABLED
+#error "networking on the M4 has no CAN multicast bridge yet"
 #endif

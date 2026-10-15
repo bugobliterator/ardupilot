@@ -4,6 +4,7 @@
 
 #if AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED
 
+#include "AP_Networking_Backend.h"
 #include "AP_Networking_M4_Layout.h"
 #include <AP_HAL/utility/RingBuffer.h>
 
@@ -35,5 +36,22 @@ enum StatusEvent : uint8_t {
 uint8_t track_status(StatusTracker &tracker, const StatusBlock &block, uint32_t session, StatusFields &out);
 
 }  // namespace NetM4
+
+// the M7 side of networking on the M4: the NET_P ports through the rings (AP_Networking::m4_io_update()),
+// the addresses from the status block
+class AP_Networking_M4 : public AP_Networking_Backend
+{
+public:
+    using AP_Networking_Backend::AP_Networking_Backend;
+
+    /* Do not allow copies */
+    CLASS_NO_COPY(AP_Networking_M4);
+
+    bool init() override;
+    void update() override;
+
+private:
+    NetM4::StatusTracker tracker;
+};
 
 #endif  // AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED

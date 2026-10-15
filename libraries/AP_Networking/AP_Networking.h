@@ -14,6 +14,10 @@
 #if AP_NETWORKING_M4_ENABLED
 #include <atomic>
 #include "AP_Networking_M4_Config.h"
+#include "AP_Networking_M4_Layout.h"
+namespace NetM4 {
+struct StatusTracker;
+}
 #endif
 
 /*
@@ -201,6 +205,14 @@ public:
 
     // NET_* for the M4 network stack; false, with out zeroed: networking off or a NET_P port invalid
     bool m4_config(NetM4::Config &out) const;
+
+    // the NET_P ports' bytes through the rings; IO thread
+    void m4_io_update();
+    // the same for a given M4 session (tests)
+    void m4_io_update(uint32_t session);
+
+    // every byte in the ports' buffers and rings (tests)
+    uint32_t m4_queued_bytes_for_test();
 #endif
 
 private:
@@ -211,6 +223,19 @@ private:
     // AP_Networking_M4_Layout.h)
     HAL_Semaphore _m4_sem;
     std::atomic<uint32_t> _m4_region_generation {0};
+
+    friend class AP_Networking_M4;
+    NetM4::Region *_m4_region;   // nullptr until the first reset
+    NetM4::ByteRing _m4_tx[NetM4::NUM_PORTS];   // M7 -> M4, our producer end
+    NetM4::ByteRing _m4_rx[NetM4::NUM_PORTS];   // M4 -> M7, our consumer end
+    // the generation and M4 session the rings were attached under
+    bool _m4_attached;
+    uint32_t _m4_attached_generation;
+    uint32_t _m4_attached_session;
+    uint32_t _m4_bytes_dropped;   // port bytes dropped at session changes
+    static uint32_t m4_session();
+    void m4_attach(uint32_t session);
+    uint8_t m4_track_status(NetM4::StatusTracker &tracker, NetM4::StatusFields &out);
 #endif
 
     void announce_address_changes();
@@ -282,6 +307,11 @@ private:
             return true;
         }
 
+#if AP_NETWORKING_M4_ENABLED
+        friend class AP_Networking;
+        // a port the M4 runs: buffers and registration, no socket (AP_Networking::m4_io_update())
+        void m4_init(void);
+#endif
         void udp_client_init(void);
         void udp_server_init(void);
         void tcp_server_init(void);
