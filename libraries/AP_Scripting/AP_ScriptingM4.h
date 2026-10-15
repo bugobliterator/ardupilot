@@ -61,11 +61,12 @@ public:
     // the session the M4 publishes in the network status block: the restart grant it runs under.
     // Read by AP_Networking's threads
     uint32_t m4_session() const { return _restart_grants.load(std::memory_order_acquire); }
-    // the M4 runs m4_session(): its peer header reported that grant (check_starting()). Until then
-    // the last session's M4 may still be running
-    bool m4_session_confirmed() const {
-        return _confirmed_grant.load(std::memory_order_acquire) == m4_session() + 1U;
+    // the M4 runs session, a value m4_session() returned: its peer header reported that grant
+    // (check_starting()). Until then the last session's M4 may still be running
+    bool m4_session_confirmed(uint32_t session) const {
+        return _confirmed_grant.load(std::memory_order_acquire) == session + 1U;
     }
+    bool m4_session_confirmed() const { return m4_session_confirmed(m4_session()); }
 #endif
 
     static const struct AP_Param::GroupInfo var_info[];
