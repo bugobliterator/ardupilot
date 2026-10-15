@@ -802,4 +802,41 @@ uint32_t SOCKET_CLASS_NAME::inet_str_to_addr(const char *ipstr)
 
 }
 
+#elif AP_NETWORKING_M4_ENABLED
+
+#include "Socket.h"
+#include <stdio.h>
+
+const char *SocketAPM::inet_addr_to_str(uint32_t addr, char *dst, uint16_t len)
+{
+    const int n = snprintf(dst, len, "%u.%u.%u.%u", unsigned(addr >> 24), unsigned((addr >> 16) & 0xFFU),
+                           unsigned((addr >> 8) & 0xFFU), unsigned(addr & 0xFFU));
+    if (n < 0 || n >= int(len)) {
+        return nullptr;
+    }
+    return dst;
+}
+
+uint32_t SocketAPM::inet_str_to_addr(const char *ipstr)
+{
+    uint32_t addr = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+        uint32_t octet = 0;
+        uint8_t digits = 0;
+        while (*ipstr >= '0' && *ipstr <= '9') {
+            octet = octet * 10U + uint32_t(*ipstr - '0');
+            ipstr++;
+            if (++digits > 3) {
+                return 0;
+            }
+        }
+        if (digits == 0 || octet > 255U || *ipstr != (i == 3 ? '\0' : '.')) {
+            return 0;
+        }
+        ipstr++;
+        addr = (addr << 8) | octet;
+    }
+    return addr;
+}
+
 #endif // AP_NETWORKING_SOCKETS_ENABLED || defined(AP_SOCKET_NATIVE_ENABLED)

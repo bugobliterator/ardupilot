@@ -134,4 +134,22 @@ private:
     void make_sockaddr(const char *address, uint16_t port, struct sockaddr_in &sockaddr);
 };
 
+#elif AP_NETWORKING_M4_ENABLED
+// networking on the M4 (AP_Networking_M4): the M7 has no sockets, only the address conversions
+
+#ifndef SOCKET_CLASS_NAME
+#error "Don't include Socket.hpp directly"
+#endif
+
+#define IP4_STR_LEN 16
+
+class SOCKET_CLASS_NAME {
+public:
+    // dotted quad from host order ipv4; nullptr if dst is too short
+    static const char *inet_addr_to_str(uint32_t addr, char *dst, uint16_t len);
+
+    // host order ipv4 from a dotted quad; 0 if it is not one
+    static uint32_t inet_str_to_addr(const char *ipstr);
+};
+
 #endif // AP_NETWORKING_SOCKETS_ENABLED
