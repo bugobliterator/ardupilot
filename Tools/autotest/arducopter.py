@@ -22378,6 +22378,14 @@ RTL_ALT_M 111
         self.context_pop()
         self.reboot_sitl()
 
+    def networking_m4_build(self):
+        '''True when this binary was built with --enable-networking-m4, from waf's configuration'''
+        cache = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(self.binary))), "c4che", "sitl_cache.py")
+        if not os.path.exists(cache):
+            raise NotAchievedException("no waf configuration at %s" % cache)
+        with open(cache) as f:
+            return re.search(r"^NETWORKING_M4 = '1'$", f.read(), re.MULTILINE) is not None
+
     def ScriptingM4Scripts(self):
         '''example and test scripts run unchanged in the SITL M4 scripting process'''
         # instruction limit at its default: math.lua runs past it, as in ScriptStats
@@ -22396,10 +22404,8 @@ RTL_ALT_M 111
         self.install_test_scripts_context(["math.lua"])
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
-        started = self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
-                                       check_context=True, timeout=30)
-        # networking builds give Lua about 110 KB, plain builds 184 KB
-        m4_heap_kb = int(re.search(r"heap (\d+)KB", started.text).group(1))
+        self.wait_statustext(r"Scripting: started on M4 \(2 scripts, heap \d+KB\)", regex=True,
+                             check_context=True, timeout=30)
         self.wait_statustext("hello, world", check_context=True, timeout=30)
         self.wait_statustext("math.lua exceeded time limit", check_context=True, timeout=60)
         # the prearm text is cut at 50 characters: match its start
@@ -22437,11 +22443,12 @@ RTL_ALT_M 111
         })
         scripts = ["math.lua", "m4_loop.lua"]
         texts = ["Math tests passed", "Test 100 fault_count 100", "M4 loop 3"]
-        if m4_heap_kb >= 184:
+        if not self.networking_m4_build():
             scripts.append("strings.lua")
             texts.append("String tests passed")
         else:
-            self.progress("skipping strings.lua at a %u KB heap: out of memory at 110 KB" % m4_heap_kb)
+            # networking builds give Lua about 110 KB, plain builds 184 KB
+            self.progress("skipping strings.lua on a networking build: out of memory at 110 KB")
         self.install_test_scripts_context(scripts)
         self.install_example_script_context("fault_handling.lua")
         self.reboot_sitl()
