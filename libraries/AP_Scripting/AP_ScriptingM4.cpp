@@ -640,6 +640,7 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         }
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
         _net_region_clear.session_started(view.faultCount);
+        _confirmed_grant.store(_restart_grants + 1U, std::memory_order_release);
 #endif
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
         _m4_heartbeat_ms = now_ms;

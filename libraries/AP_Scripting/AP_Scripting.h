@@ -99,6 +99,7 @@ public:
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // the M4's current session (AP_ScriptingM4::m4_session()), for AP_Networking's proxy
     uint32_t m4_session() const { return _m4.m4_session(); }
+    bool m4_session_confirmed() const { return _m4.m4_session_confirmed(); }
 #endif
 #endif
 
