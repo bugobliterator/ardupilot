@@ -16,10 +16,14 @@ USE_OPT = -Os -ggdb -fomit-frame-pointer -falign-functions=16
 USE_COPT =
 USE_CPPOPT = -std=gnu++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics -fno-use-cxa-atexit
 USE_LINK_GC = yes
-# scripting_m4.ld asserts its memory against AP_ScriptingM4_Placement.h;
+# scripting_m4.ld asserts its memory against AP_ScriptingM4_Placement.h, read through
+# the preprocessor (the header's values may depend on the networking switch);
 # a value missing from the header becomes 0 and fails the assert
+NETWORKING_M4 ?= 0
+PLACEMENT_DEFS = -DAP_NETWORKING_M4_ENABLED=$(NETWORKING_M4)
 PLACEMENT_H = $(AP_ROOT)/libraries/AP_Scripting/AP_ScriptingM4_Placement.h
-placement_value = $(shell value=$$(sed -n 's/^.define $(1)  *//p' '$(PLACEMENT_H)' | tr -d U); echo $$(($${value:-0})))
+placement_value = $(shell value=$$(printf '\#include "%s"\n%s\n' '$(PLACEMENT_H)' '$(1)' | \
+                    $(TRGT)gcc -E -P $(PLACEMENT_DEFS) -x c - | tail -1 | tr -d U); echo $$(($${value:-0})))
 USE_LDOPT = --defsym=placement_flash_base=$(call placement_value,AP_SCRIPTING_M4_FLASH_BASE),--defsym=placement_flash_size=$(call placement_value,AP_SCRIPTING_M4_FLASH_SIZE),--defsym=placement_ram_base=$(call placement_value,AP_SCRIPTING_M4_RAM_BASE),--defsym=placement_ram_size=$(call placement_value,AP_SCRIPTING_M4_RAM_SIZE),--defsym=placement_priv_ram_size=$(call placement_value,AP_SCRIPTING_M4_PRIV_RAM_SIZE),--defsym=placement_lua_stack_size=$(call placement_value,AP_SCRIPTING_M4_LUA_STACK_SIZE),--defsym=placement_lua_heap_min=$(call placement_value,AP_SCRIPTING_M4_LUA_HEAP_MIN)
 USE_LTO = no
 USE_VERBOSE_COMPILE = no
@@ -87,7 +91,8 @@ CPPWARN = -Wall -Wextra -Wundef
 # makes CubeFramework's Config.h include it (HSEM.cpp built without USE_CHIBIOS,
 # as Tools/renode/tests/dual_core_images.py does). PORT_USE_SYSCALL: the
 # unprivileged Lua thread. ARDUPILOT_BUILD and LUA_32BITS as the M7's Lua build.
-UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DLUA_32BITS=1 -DAP_LUA_NO_PRINTF_A=1 -DAP_LUA_MAX_NUMBER_TEXT=100
+UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DLUA_32BITS=1 -DAP_LUA_NO_PRINTF_A=1 -DAP_LUA_MAX_NUMBER_TEXT=100 \
+        $(PLACEMENT_DEFS)
 UADEFS = -DCORE_CM4 -DSTM32H757xx
 UINCDIR =
 # scripting_m4.ld includes the Lua RAM lists written below
