@@ -4,6 +4,10 @@
 #include "lwip/opt.h"
 #include "lwip/err.h"
 
+#if !defined(AP_NETWORKING_M4_SYS_ARCH)
+#error "M4 lwIP picked up the M7 arch/sys_arch.h"
+#endif
+
 struct sys_sem {
     OsSem os;
     bool used;
@@ -202,6 +206,15 @@ void sys_mbox_post(sys_mbox_t *mbox, void *msg)
 err_t sys_mbox_trypost(sys_mbox_t *mbox, void *msg)
 {
     return os_mbox_trypost(&(*mbox)->os, msg) ? ERR_OK : ERR_MEM;
+}
+
+// the ISR path is unsupported on the M4: no os_* call is ISR-safe
+err_t sys_mbox_trypost_fromisr(sys_mbox_t *mbox, void *msg)
+{
+    (void)mbox;
+    (void)msg;
+    net_m4_assert(__FILE__, __LINE__);
+    return ERR_MEM;
 }
 
 u32_t sys_arch_mbox_fetch(sys_mbox_t *mbox, void **msg, u32_t timeout)
