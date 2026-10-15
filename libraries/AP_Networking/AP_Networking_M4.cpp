@@ -158,7 +158,8 @@ uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, ui
 
 /*
   the M4 network region: the scripting supervisor clears it while the M4 cannot run, before
-  every start and every restart grant that follows an M4 fault or exit
+  every start and every restart grant that follows an M4 fault or exit. The ports hold until
+  the next session is confirmed
  */
 void AP_Networking::m4_region_reset(uint8_t *region)
 {
@@ -166,7 +167,8 @@ void AP_Networking::m4_region_reset(uint8_t *region)
     // the region is AP_NETWORKING_M4_RING_SIZE aligned
     _m4_region = static_cast<NetM4::Region *>(static_cast<void *>(region));
     NetM4::reset_region(*_m4_region, _m4_region_generation);
-    m4_attach(m4_session());
+    _m4_attached = false;
+    m4_hold_ports();
 }
 
 uint32_t AP_Networking::m4_session()
@@ -175,10 +177,31 @@ uint32_t AP_Networking::m4_session()
     return scripting != nullptr ? scripting->m4_session() : 0;
 }
 
+bool AP_Networking::m4_session_confirmed()
+{
+    const AP_Scripting *scripting = AP::scripting();
+    return scripting != nullptr && scripting->m4_session_confirmed();
+}
+
 /*
-  a new M4 session (a region reset, or a restart that kept the region): the rings attached
-  again, the M7's ends of them reset, and every port's buffered bytes dropped, so that nothing
-  queued for one session reaches the next. _m4_sem held
+  the M4 of the last session may still run: no port reads or writes, and no ring access, until
+  the next session is confirmed. _m4_sem held
+ */
+void AP_Networking::m4_hold_ports()
+{
+    _m4_held = true;
+#if AP_NETWORKING_REGISTER_PORT_ENABLED
+    for (auto &port : ports) {
+        WITH_SEMAPHORE(port.sem);
+        port.m4_held = true;
+    }
+#endif
+}
+
+/*
+  a confirmed new M4 session (after a region reset, or a restart that kept the region): the
+  rings attached again, the M7's ends of them reset and every port's buffered bytes dropped, so
+  nothing queued in one session reaches the next; then the ports run. _m4_sem held
  */
 void AP_Networking::m4_attach(uint32_t session)
 {
@@ -195,12 +218,18 @@ void AP_Networking::m4_attach(uint32_t session)
         _m4_tx[i].producer_reset();
         _m4_rx[i].consumer_resync();
     }
+    if (!_m4_attached) {
+        return;
+    }
+    _m4_held = false;
+    _m4_doorbell_pending = false;
 #if AP_NETWORKING_REGISTER_PORT_ENABLED
     for (auto &port : ports) {
         WITH_SEMAPHORE(port.sem);
         if (port.readbuffer != nullptr && port.writebuffer != nullptr) {
             _m4_bytes_dropped += NetM4::reset_port(*port.readbuffer, *port.writebuffer);
         }
+        port.m4_held = false;
     }
 #endif
 }
@@ -211,16 +240,22 @@ void AP_Networking::m4_attach(uint32_t session)
  */
 void AP_Networking::m4_io_update()
 {
-    m4_io_update(m4_session());
+    m4_io_update(m4_session(), m4_session_confirmed());
 }
 
-void AP_Networking::m4_io_update(uint32_t session)
+void AP_Networking::m4_io_update(uint32_t session, bool confirmed)
 {
     WITH_SEMAPHORE(_m4_sem);
     if (_m4_region == nullptr) {
         return;
     }
-    if (!_m4_attached || session != _m4_attached_session ||
+    if (!confirmed) {
+        if (!_m4_held) {
+            m4_hold_ports();
+        }
+        return;
+    }
+    if (_m4_held || !_m4_attached || session != _m4_attached_session ||
         _m4_region_generation.load(std::memory_order_acquire) != _m4_attached_generation) {
         m4_attach(session);
         if (!_m4_attached) {
@@ -228,11 +263,15 @@ void AP_Networking::m4_io_update(uint32_t session)
         }
     }
 #if AP_NETWORKING_REGISTER_PORT_ENABLED
-    bool ring_doorbell = false;
     for (uint8_t i = 0; i < ARRAY_SIZE(ports); i++) {
         auto &port = ports[i];
         if (port.type == NetworkPortType::NONE || port.readbuffer == nullptr || port.writebuffer == nullptr) {
             continue;
+        }
+        if (_m4_tx[i].desynced()) {
+            // the M4 wrote a bad tail: start the ring again from it
+            _m4_tx[i].producer_reset();
+            _m4_tx_resyncs++;
         }
         WITH_SEMAPHORE(port.sem);
         const bool was_empty = _m4_tx[i].space() == NetM4::PORT_RING_DATA;
@@ -241,16 +280,24 @@ void AP_Networking::m4_io_update(uint32_t session)
         const uint32_t sent = NetM4::flush_tx(*port.writebuffer, _m4_tx[i], records, port.packetise);
         port.tx_stats_bytes += sent;
         port.rx_stats_bytes += NetM4::drain_rx(_m4_rx[i], *port.readbuffer);
-        ring_doorbell |= was_empty && sent > 0;
+        if (was_empty && sent > 0) {
+            _m4_doorbell_pending = true;
+        }
     }
+    if (_m4_doorbell_pending) {
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-    // the M4 sleeps until a doorbell; the SITL M4 process polls
-    if (ring_doorbell && CubePilotFW::HwSemaphore::takeTx(AP_NETWORKING_M4_DOORBELL_GROUP)) {
-        CubePilotFW::HwSemaphore::releaseTx(AP_NETWORKING_M4_DOORBELL_GROUP);
-    }
+        // the M4 sleeps until a doorbell; a busy take is retried on the next pass
+        if (CubePilotFW::HwSemaphore::takeTx(AP_NETWORKING_M4_DOORBELL_GROUP)) {
+            CubePilotFW::HwSemaphore::releaseTx(AP_NETWORKING_M4_DOORBELL_GROUP);
+            _m4_doorbell_pending = false;
+            _m4_doorbells++;
+        }
 #else
-    (void)ring_doorbell;
+        // the SITL M4 process polls
+        _m4_doorbell_pending = false;
+        _m4_doorbells++;
 #endif
+    }
 #endif  // AP_NETWORKING_REGISTER_PORT_ENABLED
 }
 
@@ -276,8 +323,13 @@ uint32_t AP_Networking::m4_queued_bytes_for_test()
     }
 #endif
     if (_m4_region != nullptr) {
+        // the bytes in the region, whatever the proxy's own ring ends
         for (uint8_t i = 0; i < NetM4::NUM_PORTS; i++) {
-            total += (NetM4::PORT_RING_DATA - _m4_tx[i].space()) + _m4_rx[i].available();
+            NetM4::ByteRing tx, rx;
+            if (tx.attach(&_m4_region->ports[i].tx_control, _m4_region->ports[i].tx, NetM4::PORT_RING_DATA) &&
+                rx.attach(&_m4_region->ports[i].rx_control, _m4_region->ports[i].rx, NetM4::PORT_RING_DATA)) {
+                total += rx.available() + (NetM4::PORT_RING_DATA - tx.space());
+            }
         }
     }
     return total;
