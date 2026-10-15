@@ -22,6 +22,13 @@ CF_CXXFLAGS = ['-Wno-error', '-Wno-cast-align', '-Wno-shadow']
 M4_DIR = 'libraries/AP_Scripting/m4'
 LUA_DIR = 'libraries/AP_Scripting/lua/src'
 # the Lua core the M4 runtime links: no os, debug, coroutine, bit32 or utf8 library
+NET_M4_DIR = 'libraries/AP_Networking/m4'
+LWIP_DIR = 'modules/lwip/src'
+# lwIP on the M4, as the M4 Makefile builds it: no slipif.c, bridgeif*, lowpan6* or zepif.c
+LWIP_PATTERNS = ['core/*.c', 'core/ipv4/*.c', 'api/*.c', 'netif/ppp/*.c', 'netif/ethernet.c']
+# the M4's arch/sys_arch.h must come before the M7 port's (lwip_hal/include)
+NET_M4_INCLUDES = [NET_M4_DIR, LWIP_DIR + '/include', 'libraries/AP_Networking/lwip_hal/include',
+                   'libraries/AP_Networking']
 M4_LUA_SOURCES = ['lapi.c', 'lauxlib.c', 'lbaselib.c', 'lcode.c', 'lctype.c', 'ldebug.c', 'ldo.c',
                   'ldump.c', 'lfunc.c', 'lgc.c', 'liolib.c', 'llex.c', 'lmathlib.c', 'lmem.c', 'loadlib.c',
                   'lobject.c', 'lopcodes.c', 'lparser.c', 'lstate.c', 'lstring.c', 'lstrlib.c',
@@ -100,6 +107,9 @@ def _chibios_image(bld):
                [src.find_node('libraries/AP_HAL_ChibiOS/ap_setjmp.c')] +
                src.ant_glob(CUBEFRAMEWORK + '/CubePilotFW/**/*.h') +
                [src.find_node(path) for path in _cf(CF_CHIBIOS_SOURCES)] +
+               src.ant_glob(NET_M4_DIR + '/**/*') +
+               src.ant_glob('libraries/AP_Networking/AP_Networking_M4_*') +
+               src.ant_glob(LWIP_DIR + '/**/*') +
                generator_inputs)
     out = bld.bldnode.make_node('scripting_m4')
     generated_root = bld.bldnode.make_node('libraries')
@@ -123,11 +133,28 @@ def _sitl_program(bld):
     # AP_Math and AP_Common/Location for the M4's local pure-data types: the real sources
     # through wrappers, with the SITL vehicle's own flags, as the SITL M7 compiles them
     local = [node.path_from(bld.srcnode) for node in bld.srcnode.ant_glob(M4_DIR + '/local/*.cpp')]
+    network = []
+    network_includes = []
+    network_defines = []
+    network_use = []
+    if bld.env.NETWORKING_M4:
+        network = [NET_M4_DIR + '/net_m4.cpp', NET_M4_DIR + '/net_sys_arch.cpp', NET_M4_DIR + '/net_sys_arch_posix.cpp',
+                   'libraries/AP_Networking/AP_Networking_M4_Rings.cpp']
+        network_includes = NET_M4_INCLUDES
+        network_defines = ['AP_NETWORKING_M4_ENABLED=1', 'NET_M4_POSIX=1']
+        # lwIP in its own objects: its warnings are not the Lua core's
+        bld.objects(target='scripting_m4_lwip',
+                    source=[node.path_from(bld.srcnode) for pattern in LWIP_PATTERNS
+                            for node in bld.srcnode.ant_glob('%s/%s' % (LWIP_DIR, pattern))],
+                    includes=network_includes, defines=network_defines,
+                    cflags=['-Wno-error', '-Wno-implicit-fallthrough', '-Wno-parentheses-equality'])
+        network_use = ['scripting_m4_lwip']
     bld.program(target='bin/scripting_m4', name='scripting_m4_image',
                 source=(runtime + local +
                         [M4_DIR + '/sitl/main.cpp', M4_DIR + '/sitl/lua_port.cpp'] +
                         ['%s/%s' % (LUA_DIR, path) for path in M4_LUA_SOURCES] +
-                        _cf(CF_POSIX_SOURCES)),
-                includes=[M4_DIR + '/shim', M4_DIR, 'libraries/AP_Scripting', 'libraries', CUBEFRAMEWORK],
-                defines=['__CORTEX_M=4', 'AP_LUA_MAX_NUMBER_TEXT=100'], cxxflags=CF_CXXFLAGS,
-                cflags=['-Wno-error'], linkflags=['-pthread'], use=[])
+                        _cf(CF_POSIX_SOURCES) + network),
+                includes=network_includes + [M4_DIR + '/shim', M4_DIR, 'libraries/AP_Scripting', 'libraries',
+                                             CUBEFRAMEWORK],
+                defines=['__CORTEX_M=4', 'AP_LUA_MAX_NUMBER_TEXT=100'] + network_defines, cxxflags=CF_CXXFLAGS,
+                cflags=['-Wno-error'], linkflags=['-pthread'], use=network_use)
