@@ -15,6 +15,8 @@ TEST(ScriptingM4Layout, PlainBuildKeepsTheM4LuaLayout)
     EXPECT_EQ(AP_SCRIPTING_M4_PRIV_RAM_SIZE, 32768U);
     EXPECT_EQ(AP_SCRIPTING_M4_LUA_STACK_SIZE, 16384U);
     EXPECT_EQ(AP_SCRIPTING_M4_LUA_HEAP_MIN, 196608U);
+    EXPECT_EQ(AP_SCRIPTING_M4_PRIV_REGION_MPU_SIZE, 14U);
+    EXPECT_EQ(AP_SCRIPTING_M4_PRIV_REGION_SRD, 0U);
     EXPECT_EQ(RPC_PROTOCOL_VERSION, 3U);
 }
 #endif
@@ -43,6 +45,24 @@ TEST(ScriptingM4Layout, NetworkingClearLeavesTheRingRegion)
     for (uint32_t i = RING_REGION_OFFSET; i < sizeof(window); i++) {
         ASSERT_EQ(window[i], 0xA5U) << i;
     }
+}
+
+TEST(ScriptingM4Layout, NetworkingPrivilegedRamIsWholeSubregionsOfRegion2)
+{
+    const uint32_t region = 1U << (AP_SCRIPTING_M4_PRIV_REGION_MPU_SIZE + 1);
+    const uint32_t subregion = region / 8;
+    uint32_t enabled = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+        if ((AP_SCRIPTING_M4_PRIV_REGION_SRD & (1U << i)) == 0) {
+            EXPECT_EQ(i, enabled);   // enabled subregions start at the base and are contiguous
+            enabled++;
+        }
+    }
+    EXPECT_EQ(AP_SCRIPTING_M4_PRIV_RAM_SIZE, enabled * subregion);
+    EXPECT_EQ(AP_SCRIPTING_M4_RAM_BASE % region, 0U);
+    // Network Baseline split (measurements.json split.CubeOrangePlus-M4Lua)
+    EXPECT_EQ(AP_SCRIPTING_M4_PRIV_RAM_SIZE, 114688U);
+    EXPECT_EQ(AP_SCRIPTING_M4_LUA_HEAP_MIN, 120832U);
 }
 #endif
 

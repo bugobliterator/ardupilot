@@ -208,7 +208,9 @@ static const uint32_t SHARED_DEVICE = 1U << 16;        // TEX=000 C=0 B=1
 
 static_assert(AP_SCRIPTING_M4_FLASH_SIZE == (1U << (17 + 1)), "flash region size field");
 static_assert(AP_SCRIPTING_M4_RAM_SIZE == (1U << (17 + 1)), "RAM region size field");
-static_assert(AP_SCRIPTING_M4_PRIV_RAM_SIZE == (1U << (14 + 1)), "privileged RAM region size field");
+static_assert(AP_SCRIPTING_M4_PRIV_RAM_SIZE ==
+              (1U << (AP_SCRIPTING_M4_PRIV_REGION_MPU_SIZE + 1)) / 8U * (8U - __builtin_popcount(AP_SCRIPTING_M4_PRIV_REGION_SRD)),
+              "privileged RAM is the enabled subregions of region 2");
 static_assert(AP_SCRIPTING_M4_WINDOW_SIZE == (1U << (AP_SCRIPTING_M4_WINDOW_MPU_SIZE + 1)), "window size field");
 
 /*
@@ -230,8 +232,9 @@ static void mpu_setup()
         { AP_SCRIPTING_M4_FLASH_BASE, rasr(17, AP_ALL_RO, true, NORMAL_WRITE_THROUGH) },
         // 1: SRAM1/2, the Lua RAM part of it for the Lua thread
         { AP_SCRIPTING_M4_RAM_BASE, rasr(17, AP_FULL_RW, false, NORMAL_NON_CACHEABLE) },
-        // 2: privileged RAM, the first 32 KB: kernel, service, stacks
-        { AP_SCRIPTING_M4_RAM_BASE, rasr(14, AP_PRIV_RW, false, NORMAL_NON_CACHEABLE) },
+        // 2: privileged RAM: kernel, service, stacks; SRD (bits 15:8) disables the subregions above it
+        { AP_SCRIPTING_M4_RAM_BASE, rasr(AP_SCRIPTING_M4_PRIV_REGION_MPU_SIZE, AP_PRIV_RW, false,
+                                         NORMAL_NON_CACHEABLE | (AP_SCRIPTING_M4_PRIV_REGION_SRD << 8)) },
         // 3: the shared window
         { AP_SCRIPTING_M4_WINDOW_BASE, rasr(AP_SCRIPTING_M4_WINDOW_MPU_SIZE, AP_PRIV_RW, false,
                                             NORMAL_NON_CACHEABLE | SHAREABLE) },
@@ -239,8 +242,10 @@ static void mpu_setup()
         { HSEM_BASE, rasr(9, AP_PRIV_RW, false, SHARED_DEVICE | SHAREABLE) },
         // 5: guard below the main thread's stack, above the exception stack (32 B)
         { uint32_t(uintptr_t(__main_thread_stack_base__)), rasr(4, AP_NONE, false, NORMAL_NON_CACHEABLE) },
+#if !(defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED)
         // 6: guard at the bottom of the Lua thread's stack (32 B)
         { lua_stack_guard(), rasr(4, AP_NONE, false, NORMAL_NON_CACHEABLE) },
+#endif
     };
     const uint32_t count = sizeof(regions) / sizeof(regions[0]);
     MPU->CTRL = 0;
