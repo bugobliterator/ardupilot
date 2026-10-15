@@ -13,8 +13,9 @@ $(error M4_GENERATED_ROOT is not set: waf passes the build's libraries directory
 endif
 
 USE_OPT = -Os -ggdb -fomit-frame-pointer -falign-functions=16
-USE_COPT =
-USE_CPPOPT = -std=gnu++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics -fno-use-cxa-atexit
+# NET_INCOPT: the M4's arch/sys_arch.h ahead of the M7 port's, which the sorted INCDIR puts first
+USE_COPT = $(NET_INCOPT)
+USE_CPPOPT = -std=gnu++17 -fno-rtti -fno-exceptions -fno-threadsafe-statics -fno-use-cxa-atexit $(NET_INCOPT)
 USE_LINK_GC = yes
 # scripting_m4.ld asserts its memory against AP_ScriptingM4_Placement.h, read through
 # the preprocessor (the header's values may depend on the networking switch);
@@ -47,6 +48,18 @@ LUA := $(AP_ROOT)/libraries/AP_Scripting/lua/src
 # (location.o and Location.o would collide on a case-insensitive file system)
 M4_LOCAL_SOURCES = m4_math_ap_math.cpp m4_math_vector2.cpp m4_math_vector3.cpp m4_math_matrix3.cpp \
                    m4_math_quaternion.cpp m4_math_location.cpp m4_math_ap_location.cpp
+# networking on the M4 (NETWORKING_M4, from Network RAM Split): lwIP and the network service,
+# privileged. Not slipif.c (it calls sio_*), bridgeif*, lowpan6*, zepif.c: none is used
+NETM4 := $(AP_ROOT)/libraries/AP_Networking
+LWIP := $(AP_ROOT)/modules/lwip/src
+ifeq ($(NETWORKING_M4),1)
+NET_CSRC = $(wildcard $(LWIP)/core/*.c $(LWIP)/core/ipv4/*.c $(LWIP)/api/*.c $(LWIP)/netif/ppp/*.c) \
+           $(LWIP)/netif/ethernet.c $(NETM4)/m4/net_libc.c
+NET_CPPSRC = $(NETM4)/m4/net_m4.cpp $(NETM4)/m4/net_sys_arch.cpp $(NETM4)/m4/net_sys_arch_chibios.cpp \
+             $(NETM4)/AP_Networking_M4_Rings.cpp
+NET_INCDIR = $(NETM4)/m4 $(LWIP)/include $(NETM4)/lwip_hal/include $(NETM4)
+NET_INCOPT = -I$(NETM4)/m4
+endif
 
 include $(CHIBIOS)/os/license/license.mk
 include $(CHIBIOS)/os/common/startup/ARMCMx/compilers/GCC/mk/startup_stm32h7xx_m4.mk
@@ -58,7 +71,8 @@ LDSCRIPT = $(CONFDIR)/scripting_m4.ld
 # ap_setjmp.c saves d8-d15, which the gcc 10 newlib setjmp does not (Lua errors use it)
 CSRC = $(ALLCSRC) \
        $(addprefix $(LUA)/,$(M4_LUA_SOURCES)) \
-       $(AP_ROOT)/libraries/AP_HAL_ChibiOS/ap_setjmp.c
+       $(AP_ROOT)/libraries/AP_HAL_ChibiOS/ap_setjmp.c \
+       $(NET_CSRC)
 CPPSRC = $(ALLCPPSRC) \
          $(CONFDIR)/main.cpp \
          $(CONFDIR)/fault.cpp \
@@ -77,14 +91,15 @@ CPPSRC = $(ALLCPPSRC) \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/PeerHeader.cpp \
-         $(CUBEFRAMEWORK)/CubePilotFW/pal/HSEM.cpp
+         $(CUBEFRAMEWORK)/CubePilotFW/pal/HSEM.cpp \
+         $(NET_CPPSRC)
 ASMSRC = $(ALLASMSRC)
 ASMXSRC = $(ALLXASMSRC)
 # the Lua core finds its AP headers in the shim directory. rules.mk sorts INCDIR, so
 # $(AP_ROOT)/libraries would come before the shim and shadow it; the generated root
 # (<AP_Scripting/lua_remote_*>) holds only build outputs; the generated local userdata
 # code finds m4_binding_deps.h in $(M4DIR)
-INCDIR = $(CONFDIR) $(ALLINC) $(M4DIR)/shim $(M4DIR) $(AP_ROOT)/libraries/AP_Scripting $(M4_GENERATED_ROOT) \
+INCDIR = $(NET_INCDIR) $(CONFDIR) $(ALLINC) $(M4DIR)/shim $(M4DIR) $(AP_ROOT)/libraries/AP_Scripting $(M4_GENERATED_ROOT) \
          $(CUBEFRAMEWORK)
 
 CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes
@@ -198,7 +213,7 @@ $(BUILDDIR)/local_pure_data.ok: $(BUILDDIR)/$(PROJECT).elf $(STATE_READING_SAMPL
 # lua_port.o's _sbrk sets errno and lua_thread enters lua_main, both on the Lua thread.
 PRIVILEGED_OBJECTS = $(filter-out $(addprefix $(OBJDIR)/,$(LUA_RAM_OBJECTS)),$(OBJS))
 CHIBIOS_OBJECTS = $(addprefix $(OBJDIR)/,$(notdir $(ALLCSRC:.c=.o) $(ALLCPPSRC:.cpp=.o) $(ALLASMSRC:.s=.o) $(ALLXASMSRC:.S=.o)))
-PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen
+PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen strcpy strncpy
 LUA_PORT_LUA_IMPORTS = __errno _ZN11ScriptingM48lua_mainEv
 all: $(BUILDDIR)/privileged_imports.ok
 $(BUILDDIR)/privileged_imports.ok: $(BUILDDIR)/$(PROJECT).elf
