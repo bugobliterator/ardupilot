@@ -692,8 +692,13 @@
  * @brief   Threads descriptor structure extension.
  * @details User fields added to the end of the @p thread_t structure.
  */
+/* networking builds only, so the plain image's thread_t is unchanged: lwIP's errno, per thread */
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#define CH_CFG_THREAD_EXTRA_FIELDS          int net_errno;
+#else
 #define CH_CFG_THREAD_EXTRA_FIELDS                                          \
   /* Add threads custom fields here.*/
+#endif
 
 /**
  * @brief   Threads initialization hook.
