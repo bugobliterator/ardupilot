@@ -216,8 +216,10 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     // the value limit is part of the contract: an M4 image built with another limit is refused
     uint32_t hash = FNV_OFFSET;
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    // networking builds: the Channel's size, so an image with the other window split is refused
+    // networking builds: the Channel's size, so an image with the other window split is refused,
+    // and the NetConfig layout
     hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, hash);
+    hash = fnv1a_word(60, hash);
 #endif
     hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
            fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), hash))))));

@@ -113,6 +113,7 @@ private:
     bool _call_timed;            // _call_posted_ms belongs to the current call
     bool _rx_stalled;
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    bool _net_requested;    // a request of this session is on the ring
     bool _net_configured;
     uint32_t _net_request_ms;
 #endif
