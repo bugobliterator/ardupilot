@@ -239,10 +239,27 @@ static void mpu_setup()
     __ISB();
 }
 
+// The ART caches the M4's fetches from one 1 MB flash page: the one holding this image (RM0399).
+// RCC and ART lie outside every MPU region, so this runs while the MPU is off (reset, warm restart)
+static_assert((AP_SCRIPTING_M4_FLASH_BASE >> 20) == ((AP_SCRIPTING_M4_FLASH_BASE + AP_SCRIPTING_M4_FLASH_SIZE - 1U) >> 20),
+              "the image must lie inside the ART's one cacheable page");
+static void art_enable()
+{
+    RCC_C2->AHB1ENR |= RCC_AHB1ENR_ARTEN;
+    (void)RCC_C2->AHB1ENR;
+    ART->CTR &= ~ART_CTR_EN;   // EN 0 -> 1 invalidates: a warm restart starts with an empty cache
+    ART->CTR = (ART->CTR & ~ART_CTR_PCACHEADDR) |
+               ((AP_SCRIPTING_M4_FLASH_BASE >> 20) << ART_CTR_PCACHEADDR_Pos);
+    ART->CTR |= ART_CTR_EN;
+    __DSB();
+    __ISB();
+}
+
 int main(void)
 {
     // before anything can fault: the fault handler waits for a change from this value
     const uint32_t restarts = m4_latch_restart_grant();
+    art_enable();
     mpu_setup();
     SysTick->LOAD = AP_SCRIPTING_M4_CORE_CLOCK_HZ / CH_CFG_ST_FREQUENCY - 1U;
     SysTick->VAL = 0;
