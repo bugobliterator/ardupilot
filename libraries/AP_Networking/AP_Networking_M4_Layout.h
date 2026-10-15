@@ -92,6 +92,8 @@ static const uint32_t STATUS_STACK_UP = 1U << 0;   // lwIP running
 static const uint32_t STATUS_LINK_UP = 1U << 1;    // a netif with an address
 static const uint32_t STATUS_DHCP = 1U << 2;       // the address came from DHCP
 static const uint32_t STATUS_KNOWN_FLAGS = STATUS_STACK_UP | STATUS_LINK_UP | STATUS_DHCP;
+static const uint32_t STATUS_PERIOD_MS = 100;       // the M4 writes the status this often
+static const uint32_t STATUS_STALE_MS = 1000;       // the M7 drops a status whose heartbeat stood still this long
 enum PortState : uint32_t { PORT_CLOSED = 0, PORT_OPEN = 1, PORT_CONNECTED = 2 };
 
 struct StatusFields {
@@ -107,7 +109,9 @@ struct StatusFields {
     uint32_t dds_tx, dds_rx, can_tx, can_rx;
     uint32_t pbuf_free;        // lwIP PBUF_POOL elements free
     uint32_t mem_free;         // lwIP heap bytes free
-    uint32_t reserved[10];
+    uint32_t heartbeat;        // bumped by every write (every STATUS_PERIOD_MS): a still value is stale
+    uint32_t port_tx_dropped[NUM_PORTS];   // records the M4 dropped: no UDP peer yet, oversized, send failed
+    uint32_t reserved[5];
 };
 struct StatusBlock {
     std::atomic<uint32_t> seq;   // odd while the M4 writes

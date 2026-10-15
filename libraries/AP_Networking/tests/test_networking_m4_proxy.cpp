@@ -158,7 +158,9 @@ TEST(NetM4Proxy, RegionResetDropsQueuedBytes)
 
 static StatusFields status_of(uint32_t session, uint32_t change_count, uint32_t flags)
 {
+    static uint32_t heartbeat;
     StatusFields fields {};
+    fields.heartbeat = ++heartbeat;   // every M4 write moves it
     fields.magic = STATUS_MAGIC;
     fields.session = session;
     fields.flags = flags;
@@ -175,13 +177,13 @@ TEST(NetM4Proxy, StatusOfTheSessionGivesAddressesAndLinkUp)
     StatusTracker tracker {};
     StatusFields out {};
     write_status(block, status_of(3, 1, STATUS_STACK_UP | STATUS_LINK_UP));
-    EXPECT_EQ(track_status(tracker, block, 3, out), STATUS_NEW_SESSION | STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
+    EXPECT_EQ(track_status(tracker, block, 3, 0, out), STATUS_NEW_SESSION | STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
     EXPECT_EQ(out.ip, 0x0A000002U);
     EXPECT_EQ(out.gateway, 0x0A000001U);
     // unchanged: nothing to announce
-    EXPECT_EQ(track_status(tracker, block, 3, out), 0);
+    EXPECT_EQ(track_status(tracker, block, 3, 0, out), 0);
     write_status(block, status_of(3, 2, STATUS_STACK_UP | STATUS_LINK_UP));
-    EXPECT_EQ(track_status(tracker, block, 3, out), STATUS_ADDRESSES);
+    EXPECT_EQ(track_status(tracker, block, 3, 0, out), STATUS_ADDRESSES);
 }
 
 TEST(NetM4Proxy, StatusOfAnotherSessionIsIgnored)
@@ -190,15 +192,15 @@ TEST(NetM4Proxy, StatusOfAnotherSessionIsIgnored)
     StatusTracker tracker {};
     StatusFields out {};
     write_status(block, status_of(3, 1, STATUS_LINK_UP));
-    EXPECT_EQ(track_status(tracker, block, 3, out), STATUS_NEW_SESSION | STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
+    EXPECT_EQ(track_status(tracker, block, 3, 0, out), STATUS_NEW_SESSION | STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
     // the supervisor granted session 4; the block still holds session 3's
     StatusFields stale {};
-    EXPECT_EQ(track_status(tracker, block, 4, stale), STATUS_NEW_SESSION);
+    EXPECT_EQ(track_status(tracker, block, 4, 0, stale), STATUS_NEW_SESSION);
     EXPECT_EQ(stale.ip, 0U);
     EXPECT_FALSE(tracker.have_status);
     // the new session publishes: its link comes up again
     write_status(block, status_of(4, 1, STATUS_LINK_UP));
-    EXPECT_EQ(track_status(tracker, block, 4, out), STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
+    EXPECT_EQ(track_status(tracker, block, 4, 0, out), STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
 }
 
 TEST(NetM4Proxy, TornOrBadStatusKeepsTheLastCopy)
@@ -207,15 +209,51 @@ TEST(NetM4Proxy, TornOrBadStatusKeepsTheLastCopy)
     StatusTracker tracker {};
     StatusFields out {};
     write_status(block, status_of(1, 1, STATUS_LINK_UP));
-    track_status(tracker, block, 1, out);
+    track_status(tracker, block, 1, 0, out);
     block.seq.store(block.seq.load() | 1U);   // the M4 is writing, forever
     StatusFields torn {};
-    EXPECT_EQ(track_status(tracker, block, 1, torn), 0);
+    EXPECT_EQ(track_status(tracker, block, 1, 0, torn), 0);
     EXPECT_EQ(torn.ip, 0U);
     write_status(block, status_of(1, 2, 1U << 7));   // an unknown flag
-    EXPECT_EQ(track_status(tracker, block, 1, torn), 0);
+    EXPECT_EQ(track_status(tracker, block, 1, 0, torn), 0);
     EXPECT_TRUE(tracker.have_status);
     EXPECT_EQ(tracker.change_count, 1U);
+}
+
+TEST(NetM4Proxy, StillHeartbeatVoidsTheStatusUntilItMoves)
+{
+    StatusBlock block {};
+    StatusTracker tracker {};
+    StatusFields out {};
+    write_status(block, status_of(2, 1, STATUS_STACK_UP | STATUS_LINK_UP));
+    EXPECT_EQ(track_status(tracker, block, 2, 5000, out), STATUS_NEW_SESSION | STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
+    // the M4 stops writing (off for good: the session stays)
+    EXPECT_EQ(track_status(tracker, block, 2, 5000 + STATUS_STALE_MS - 1, out), 0);
+    EXPECT_EQ(track_status(tracker, block, 2, 5000 + STATUS_STALE_MS, out), STATUS_WENT_STALE);
+    EXPECT_TRUE(tracker.stale);
+    EXPECT_FALSE(tracker.link_up);
+    EXPECT_EQ(track_status(tracker, block, 2, 9000, out), 0);   // reported once
+    // writing again: the same addresses count as new, and the link comes up again
+    write_status(block, status_of(2, 1, STATUS_STACK_UP | STATUS_LINK_UP));
+    EXPECT_EQ(track_status(tracker, block, 2, 9100, out), STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
+    EXPECT_FALSE(tracker.stale);
+    // a status that keeps moving never goes stale
+    for (uint32_t t = 9200; t < 9200 + 3 * STATUS_STALE_MS; t += STATUS_PERIOD_MS) {
+        write_status(block, status_of(2, 1, STATUS_STACK_UP | STATUS_LINK_UP));
+        EXPECT_EQ(track_status(tracker, block, 2, t, out), 0);
+    }
+}
+
+TEST(NetM4Proxy, StatusTornForeverGoesStale)
+{
+    StatusBlock block {};
+    StatusTracker tracker {};
+    StatusFields out {};
+    write_status(block, status_of(5, 1, STATUS_STACK_UP | STATUS_LINK_UP));
+    EXPECT_EQ(track_status(tracker, block, 5, 100, out), STATUS_NEW_SESSION | STATUS_ADDRESSES | STATUS_LINK_CAME_UP);
+    block.seq.store(block.seq.load() | 1U);   // the M4 stopped inside a write
+    EXPECT_EQ(track_status(tracker, block, 5, 100 + STATUS_STALE_MS - 1, out), 0);
+    EXPECT_EQ(track_status(tracker, block, 5, 100 + STATUS_STALE_MS, out), STATUS_WENT_STALE);
 }
 
 // the frontend's reset path, through the singleton
@@ -245,6 +283,7 @@ struct NetM4TestAccess {
     static uint32_t rx_stats(AP_Networking &net, uint8_t i) { return net.ports[i].rx_stats_bytes; }
     static uint32_t doorbells(AP_Networking &net) { return net._m4_doorbells; }
     static uint32_t bytes_dropped(AP_Networking &net) { return net._m4_bytes_dropped; }
+    static uint32_t session_rx_dropped(AP_Networking &net) { return net._m4_session_rx_dropped; }
     static uint32_t tx_desyncs(AP_Networking &net) { return net._m4_tx_desyncs; }
     static bool held(AP_Networking &net) { return net._m4_held; }
     static uint32_t attached_session(AP_Networking &net) { return net._m4_attached_session; }
@@ -393,8 +432,11 @@ TEST(NetM4Proxy, OldPeerAfterTheGrantNeverReachesTheNewSession)
         EXPECT_EQ(old_tx.read(taken, sizeof(taken)), 0U);     // the old peer gets nothing
         EXPECT_EQ(tcp.available(), 0U);
     }
-    // session 1 confirmed; its M4 writes its own bytes
+    // session 1 confirmed: the RX ring bytes left in it are dropped and counted
+    const uint32_t ring_dropped = NetM4TestAccess::session_rx_dropped(net);
     net.m4_io_update(1, true);
+    EXPECT_EQ(NetM4TestAccess::session_rx_dropped(net) - ring_dropped, 3 * sizeof(old_bytes));
+    // its M4 writes its own bytes
     ByteRing new_tx, new_rx;
     peer(1, new_tx, new_rx);
     const uint8_t new_in[5] = {'f', 'r', 'e', 's', 'h'};
