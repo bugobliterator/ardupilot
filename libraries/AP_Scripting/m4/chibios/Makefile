@@ -59,6 +59,7 @@ NET_CPPSRC = $(NETM4)/m4/net_m4.cpp $(NETM4)/m4/net_sys_arch.cpp $(NETM4)/m4/net
              $(NETM4)/AP_Networking_M4_Rings.cpp
 NET_INCDIR = $(NETM4)/m4 $(LWIP)/include $(NETM4)/lwip_hal/include $(NETM4)
 NET_INCOPT = -I$(NETM4)/m4
+NET_PRIVILEGED_LIBC = strcpy strncpy
 endif
 
 include $(CHIBIOS)/os/license/license.mk
@@ -214,7 +215,7 @@ $(BUILDDIR)/local_pure_data.ok: $(BUILDDIR)/$(PROJECT).elf $(STATE_READING_SAMPL
 # lua_port.o's _sbrk sets errno and lua_thread enters lua_main, both on the Lua thread.
 PRIVILEGED_OBJECTS = $(filter-out $(addprefix $(OBJDIR)/,$(LUA_RAM_OBJECTS)),$(OBJS))
 CHIBIOS_OBJECTS = $(addprefix $(OBJDIR)/,$(notdir $(ALLCSRC:.c=.o) $(ALLCPPSRC:.cpp=.o) $(ALLASMSRC:.s=.o) $(ALLXASMSRC:.S=.o)))
-PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen strcpy strncpy
+PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen $(NET_PRIVILEGED_LIBC)
 LUA_PORT_LUA_IMPORTS = __errno _ZN11ScriptingM48lua_mainEv
 all: $(BUILDDIR)/privileged_imports.ok
 $(BUILDDIR)/privileged_imports.ok: $(BUILDDIR)/$(PROJECT).elf
