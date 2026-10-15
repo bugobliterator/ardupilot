@@ -24,3 +24,6 @@ define SCRIPTING_HEAP_SIZE (184*1024)
 # the variant bootloader (hwdef-bl.dat) is not built into Tools/bootloaders
 # or flashed from the app yet
 define AP_BOOTLOADER_FLASHING_ENABLED 0
+
+# per-thread CPU time (ChibiOS statistics): the M4 host thread's duty cap charges it
+define HAL_ENABLE_THREAD_STATISTICS 1
