@@ -20,11 +20,9 @@ extern const AP_HAL::HAL& hal;
 #ifndef AP_NETWORKING_PORT_MIN_TXSIZE
 #define AP_NETWORKING_PORT_MIN_TXSIZE 2048
 #endif
-
 #ifndef AP_NETWORKING_PORT_MIN_RXSIZE
 #define AP_NETWORKING_PORT_MIN_RXSIZE 2048
 #endif
-
 #ifndef AP_NETWORKING_PORT_STACK_SIZE
 #define AP_NETWORKING_PORT_STACK_SIZE 1300
 #endif
@@ -71,6 +69,7 @@ void AP_Networking::ports_init(void)
         auto &p = ports[i];
         p.type = (NetworkPortType)p.type_param;
         p.state.idx = AP_SERIALMANAGER_NET_PORT_1 + i;
+#if AP_NETWORKING_SOCKETS_ENABLED
         switch (p.type) {
         case NetworkPortType::NONE:
             break;
@@ -90,9 +89,10 @@ void AP_Networking::ports_init(void)
         if (p.sock != nullptr || p.listen_sock != nullptr) {
             AP::serialmanager().register_port(&p);
         }
+#endif  // AP_NETWORKING_SOCKETS_ENABLED
     }
 }
-
+#if AP_NETWORKING_SOCKETS_ENABLED
 /*
   wrapper for thread_create for port functions
  */
@@ -467,7 +467,7 @@ bool AP_Networking::Port::send_receive(void)
 
     return active;
 }
-
+#endif  // AP_NETWORKING_SOCKETS_ENABLED
 /*
   available space in outgoing buffer
  */
