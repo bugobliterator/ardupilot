@@ -24,9 +24,12 @@ struct __attribute__((packed)) Config {
     uint32_t ip;
     uint32_t netmask;
     uint32_t gateway;
+    uint32_t remote_ppp_ip;   // NET_REMPPP_IP, 0 where the PPP gateway is not built
     uint32_t options;         // NET_OPTIONS
     PortConfig ports[4];
 };
+// part of the scripting contract hash (AP_ScriptingM4_Rpc.h): a layout change is a deliberate edit
+static_assert(sizeof(Config) == 60, "NetConfig layout");
 
 inline bool config_valid(const Config &config)
 {
