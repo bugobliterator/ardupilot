@@ -94,7 +94,8 @@ def _chibios_image(bld):
     src = bld.srcnode
     makefile = src.find_node(M4_DIR + '/chibios/Makefile')
     generator_inputs = [src.find_node('libraries/AP_Scripting/generator/description/bindings.desc'),
-                        src.find_node('libraries/AP_Scripting/generator/src/main.c')]
+                        src.find_node('libraries/AP_Scripting/generator/src/main.c'),
+                        src.find_node('libraries/AP_Scripting/generator/gen/generated_cpp_deps.h')]
     sources = (src.ant_glob(M4_DIR + '/**/*') +
                src.ant_glob('libraries/AP_Scripting/AP_ScriptingM4_*.h') +
                [src.find_node('libraries/AP_Scripting/AP_Scripting_BindingHistogram.h')] +
@@ -107,10 +108,12 @@ def _chibios_image(bld):
                [src.find_node('libraries/AP_HAL_ChibiOS/ap_setjmp.c')] +
                src.ant_glob(CUBEFRAMEWORK + '/CubePilotFW/**/*.h') +
                [src.find_node(path) for path in _cf(CF_CHIBIOS_SOURCES)] +
-               src.ant_glob(NET_M4_DIR + '/**/*') +
-               src.ant_glob('libraries/AP_Networking/AP_Networking_M4_*') +
-               src.ant_glob(LWIP_DIR + '/**/*') +
                generator_inputs)
+    if bld.env.NETWORKING_M4:
+        sources += (src.ant_glob(NET_M4_DIR + '/**/*') +
+                    src.ant_glob('libraries/AP_Networking/AP_Networking_M4_*') +
+                    src.ant_glob('libraries/AP_Networking/lwip_hal/include/**/*') +
+                    src.ant_glob(LWIP_DIR + '/**/*'))
     out = bld.bldnode.make_node('scripting_m4')
     generated_root = bld.bldnode.make_node('libraries')
     bin_dir = bld.bldnode.make_node('bin')
