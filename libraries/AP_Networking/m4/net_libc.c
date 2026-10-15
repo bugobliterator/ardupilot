@@ -12,7 +12,8 @@
 
 int atoi(const char *text)
 {
-    int value = 0;
+    // unsigned: an over-long number wraps instead of overflowing a signed int
+    unsigned value = 0;
     int sign = 1;
     while (*text == ' ' || (*text >= '\t' && *text <= '\r')) {
         text++;
@@ -22,8 +23,8 @@ int atoi(const char *text)
         text++;
     }
     while (*text >= '0' && *text <= '9') {
-        value = value * 10 + (*text - '0');
+        value = value * 10U + (unsigned)(*text - '0');
         text++;
     }
-    return sign * value;
+    return sign < 0 ? (int)(0U - value) : (int)value;
 }
