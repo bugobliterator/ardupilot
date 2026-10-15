@@ -10,6 +10,7 @@
 #include "AP_ScriptingM4_Protocol.h"
 #include "AP_ScriptingM4_Server.h"
 #include "AP_ScriptingM4_RunControl.h"
+#include "AP_ScriptingM4_ServeWait.h"
 #include "AP_ScriptingM4_StartFault.h"
 
 namespace CubePilotFW {
@@ -62,6 +63,7 @@ private:
 #endif
 
     void host_thread();
+    void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
     void handle_message(const uint8_t *buf, uint16_t len);
     void handle_call(const uint8_t *buf, uint16_t len, const ScriptingM4::MsgHeader &header, uint32_t start_us);
@@ -131,7 +133,10 @@ private:
     uint16_t _protocol_errors;
     uint16_t _dropped;
     uint32_t _host_busy_us;
+    uint16_t _duty_cap_hits;           // pauses the duty cap forced
     bool _summary_enabled;
+    // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
+    ScriptingM4::ServeDutyCap _duty_cap;
 
     struct {
         uint32_t count;           // calls timed since the last summary

@@ -11,7 +11,6 @@
 #include <CubePilotFW/PeerHeader.h>
 #include "AP_ScriptingM4_Layout.h"
 #include "AP_ScriptingM4_Rpc.h"
-#include "AP_ScriptingM4_ServeWait.h"
 #include "AP_Scripting.h"
 
 static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
@@ -128,8 +127,16 @@ void AP_ScriptingM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
+        const uint32_t cap_wait_us = _duty_cap.wait_us(AP_HAL::micros());
         const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
-        switch (ScriptingM4::host_wait_after(last == ServeResult::Busy, last == ServeResult::Stuck, ring_empty)) {
+        switch (ScriptingM4::host_wait_after(cap_wait_us, last == ServeResult::Busy, last == ServeResult::Stuck,
+                                             ring_empty)) {
+        case ScriptingM4::HostWait::DutyCap:
+            // the host's share of the M7 ran out: serve nothing until credit returns, however many
+            // frames are pending. An empty ring keeps listening, so its next doorbell is not missed
+            _duty_cap_hits++;
+            pause_for_duty_cap(MIN(cap_wait_us, platform_wait_us()), ring_empty);
+            break;
         case ScriptingM4::HostWait::Backoff:
             // the budget ran out with frames left: pause so a flooding M4 costs bounded M7 time
             // (spec §7). No doorbell is needed while we pause
@@ -154,7 +161,11 @@ void AP_ScriptingM4::host_thread()
         // the M4 asks for the image at every start: a value set before a start acts on it
         _server.set_refuse_bindings(_inject.get() == INJECT_REFUSE_BINDINGS);
 #endif
-        last = serve();
+        // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
+        // runs every platform_wait_us()) serves nothing
+        if (_duty_cap.wait_us(_woke_us) == 0) {
+            last = serve();
+        }
         const uint32_t now_ms = AP_HAL::millis();
         PeerHeader::beat(_shared, PeerHeader::Core::M7);
         supervise(now_ms);
@@ -166,7 +177,9 @@ void AP_ScriptingM4::host_thread()
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
         send_fault_inject();
 #endif
-        _host_busy_us += AP_HAL::micros() - _woke_us;
+        const uint32_t busy_us = AP_HAL::micros() - _woke_us;
+        _host_busy_us += busy_us;
+        _duty_cap.charge(busy_us);
         if (now_ms - _stats_start_ms >= 1000) {
             log_supervisor(now_ms, now_ms - _stats_start_ms);
             _stats_start_ms = now_ms;
@@ -174,6 +187,29 @@ void AP_ScriptingM4::host_thread()
             _protocol_errors = 0;
             _dropped = 0;
             _host_busy_us = 0;
+            _duty_cap_hits = 0;
+        }
+    }
+}
+
+// listening: the ring was empty with the asleep flag set, so the M4 rings for its next frame
+void AP_ScriptingM4::pause_for_duty_cap(uint32_t pause_us, bool listening)
+{
+    const uint32_t until_us = AP_HAL::micros() + pause_us;
+    if (!listening) {
+        _channel->wake();   // frames are pending: no doorbell is needed while we pause
+    }
+    while (true) {
+        const uint32_t now_us = AP_HAL::micros();
+        if (int32_t(until_us - now_us) <= 0) {
+            break;
+        }
+        const uint32_t remaining_us = until_us - now_us;
+        if (!listening) {
+            hal.scheduler->delay_microseconds(uint16_t(MIN(remaining_us, uint32_t(UINT16_MAX))));
+        } else if (_doorbell.wait(remaining_us)) {
+            listening = false;   // heard: the frame is served when the pause ends, no more doorbells
+            _channel->wake();
         }
     }
 }
@@ -330,14 +366,18 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: Drop: replies dropped because the M4's ring was full
 // @Field: Lost: M4 calls without a reply since the previous row
 // @Field: QHit: M4 calls refused by their quota since the previous row: binding calls, print, the M4's statustexts and script error texts, its file writes, write opens and removes (FileIo), MAVLink sends (MavTx), log rows (Log) and OSD calls (Osd, OsdFrame) (over quota, texts and void calls are dropped, boolean calls return false)
+// @Field: Busy: host thread wall time in the last second, per mille of the M7 (preemption included)
+// @Field: Cap: pauses the host's duty cap (10 % of the M7) forced in the last second
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
-    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit",
-                                "s-----------", "F-----------", "QBIIBIIIHHII",
+    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Busy,Cap",
+                                "s-------------", "F-------------", "QBIIBIIIHHIIHH",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
-                                _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits());
+                                _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits(),
+                                uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
+                                _duty_cap_hits);
 #endif
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {
