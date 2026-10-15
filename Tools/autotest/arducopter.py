@@ -22198,7 +22198,7 @@ RTL_ALT_M 111
         self.reboot_sitl()
 
     def ScriptingM4FloodCap(self):
-        '''an M4 request flood while flying: the host stays within its duty cap and the logger keeps up'''
+        '''an M4 request flood while flying, a script opening @SYS/threads.txt: the duty cap holds, the logger keeps up'''
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process and the duty cap run on wall-clock time
         self.context_collect("STATUSTEXT")
@@ -22206,7 +22206,9 @@ RTL_ALT_M 111
             "SCR_ENABLE": 1,
             "LOG_DISARMED": 1,
         })
-        self.install_test_script_context("m4_loop.lua")
+        # m4_sys_threads.lua opens @SYS/threads.txt every 10 ms: refused, so it cannot reset the
+        # thread statistics the duty cap charges
+        self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua"])
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
         self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
@@ -22223,6 +22225,10 @@ RTL_ALT_M 111
             raise NotAchievedException("disarmed during an M4 request flood")
         self.wait_altitude(8, 12, relative=True, timeout=10)
         self.wait_statustext(r"M4 loop \d+$", regex=True, check_context=True, timeout=10)
+        text = self.wait_statustext(r"M4 threads.txt refused \d+ of \d+", regex=True, check_context=True, timeout=10)
+        refused, tries = [int(n) for n in re.findall(r"\d+", text.text.split("refused")[1])]
+        if tries == 0 or refused != tries:
+            raise NotAchievedException("M4 opened @SYS/threads.txt: %s" % text.text)
         self.land_and_disarm()
 
         dfreader = self.dfreader_for_current_onboard_log()
@@ -22230,12 +22236,20 @@ RTL_ALT_M 111
         cpu_max = 0
         cap_hits = 0
         dropped = 0
+        pass_max = 0
+        wall_max = 0
+        stats_resets = 0
         while True:
-            m = dfreader.recv_match(type=["M4ST", "DSF"])
+            m = dfreader.recv_match(type=["M4ST", "DSF", "M4HP"])
             if m is None:
                 break
             if m.get_type() == "DSF":
                 dropped = max(dropped, m.Dp)
+                continue
+            if m.get_type() == "M4HP":
+                pass_max = max(pass_max, m.PassMax)
+                wall_max = max(wall_max, m.WallBusy)
+                stats_resets += m.StatsReset
                 continue
             if m.St != 2:
                 continue
@@ -22244,6 +22258,8 @@ RTL_ALT_M 111
             cap_hits += m.Cap
         self.progress("M4 flood: most requests in one second %u, host CPU at most %u per mille, "
                       "duty cap pauses %u, DSF dropped %u" % (requests_max, cpu_max, cap_hits, dropped))
+        self.progress("M4 host passes: one pass at most %u us of CPU, wall time at most %u per mille, "
+                      "statistics resets %u" % (pass_max, wall_max, stats_resets))
         if requests_max <= 256:
             raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
         # 10 % of the CPU, plus the 2 ms burst and one pass in a one-second row
