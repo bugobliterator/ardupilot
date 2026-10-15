@@ -12,6 +12,9 @@
 #include "AP_ScriptingM4_RunControl.h"
 #include "AP_ScriptingM4_ServeWait.h"
 #include "AP_ScriptingM4_StartFault.h"
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include "AP_ScriptingM4_NetRegionClear.h"
+#endif
 
 namespace CubePilotFW {
 class Channel;
@@ -126,9 +129,8 @@ private:
     uint32_t _restart_grants;         // restarts granted the M4: fault restarts and requested ones
     bool _restart_requested;          // the restart under way is a request, not a fault
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    // the failure being handled left the M4 unable to run (in its fault handler, or exited): the
-    // next grant may clear the network region
-    bool _m4_halted {false};
+    // whether the next grant may clear the network region
+    ScriptingM4::NetRegionClear _net_region_clear;
 #endif
     ScriptingM4::RunControl _run_control;
     uint32_t _m4_session;             // M4 peer header session being served
