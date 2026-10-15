@@ -22426,7 +22426,8 @@ RTL_ALT_M 111
         return [d for d in peer.take_udp() if d[1] == self.M4_UDP_CLIENT_PORT and d[2][:1] == b'\xfd']
 
     def NetworkM4Status(self):
-        '''the M4 publishes the PPP addresses through the status block; a stopped M4's status goes stale'''
+        '''the M4 publishes the PPP addresses through the status block, connects PPP again after the peer goes away,
+        and a stopped M4's status goes stale'''
         self.context_push()
         peer = None
         try:
@@ -22440,6 +22441,20 @@ RTL_ALT_M 111
             # NET_P1 runs on the M4: the M7's MAVLink stream reaches the peer over PPP
             if len(self.m4_mavlink_datagrams(peer, 5)) == 0:
                 raise NotAchievedException("no MAVLink from the M4's UDP client port")
+            # the transport closing: the M4 connects again and PPP comes back, with no fault
+            self.context_clear_collection("STATUSTEXT")
+            connections = peer.connections
+            peer.drop_connection()
+            self.wait_statustext("NET: IP      0.0.0.0", check_context=True, timeout=10)
+            self.wait_statustext("Net: M4 up, ppp0 %s" % self.M4_IP, check_context=True, timeout=30)
+            self.wait_statustext("NET: IP      %s" % self.M4_IP, check_context=True, timeout=10)
+            if peer.connections != connections + 1:
+                raise NotAchievedException("expected one new PPP connection, got %u" % (peer.connections - connections))
+            for m in self.context_collection("STATUSTEXT"):
+                if "Scripting: M4" in m.text:
+                    raise NotAchievedException("PPP reconnect gave '%s'" % m.text)
+            if len(self.m4_mavlink_datagrams(peer, 5)) == 0:
+                raise NotAchievedException("no MAVLink from the M4's UDP client port after the reconnect")
             # an M4 that is off for good keeps its session: only the status heartbeat stops
             self.context_clear_collection("STATUSTEXT")
             self.set_parameter("SCR_M4_INJECT", 1)
