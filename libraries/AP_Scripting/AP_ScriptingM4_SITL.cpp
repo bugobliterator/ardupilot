@@ -163,6 +163,14 @@ uint32_t AP_ScriptingM4::platform_wait_us() const
     return 1000;   // POSIX HSEM raises no interrupt: poll
 }
 
+// the host thread is a pthread: its own CPU clock
+uint64_t AP_ScriptingM4::platform_thread_cpu_us() const
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return uint64_t(ts.tv_sec) * 1000000U + uint64_t(ts.tv_nsec) / 1000U;
+}
+
 // the M4 process starts on wall-clock time: at SIM_SPEEDUP 100 a 500 ms timeout on the
 // vehicle's clock would be 5 ms
 uint32_t AP_ScriptingM4::platform_timeout_ms() const

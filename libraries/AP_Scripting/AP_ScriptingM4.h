@@ -92,6 +92,8 @@ private:
     bool platform_m4_exited();
     void platform_stop();
     uint32_t platform_wait_us() const;
+    // CPU time this thread has used, in microseconds; it may restart from 0 (statistics reset)
+    uint64_t platform_thread_cpu_us() const;
     // the clock the start and restart timeouts count: the vehicle's on ChibiOS, wall-clock time in
     // SITL, where the M4 process runs on wall-clock time whatever SIM_SPEEDUP is
     uint32_t platform_timeout_ms() const;
@@ -134,6 +136,8 @@ private:
     uint16_t _dropped;
     uint32_t _host_busy_us;
     uint16_t _duty_cap_hits;           // pauses the duty cap forced
+    uint32_t _host_cpu_us;             // host thread CPU time, what the duty cap charges
+    uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
     bool _summary_enabled;
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ScriptingM4::ServeDutyCap _duty_cap;

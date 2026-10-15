@@ -26,6 +26,8 @@ static const uint8_t MAX_REQUESTS_PER_WAKE = 32;
 static const uint32_t MAX_SERVE_US = 200;
 // after a pass that hit either limit with frames left: a flooding M4 gets one pass per pause
 static const uint32_t SERVE_BACKOFF_US = 500;
+// a pass this long in wall time is counted (M4ST.Long): blocked in a binding, or preempted
+static const uint32_t LONG_PASS_US = 50000;
 // protocol errors within one second that count as a failure
 static const uint16_t PROTOCOL_ERROR_LIMIT = 3;
 // Ready is repeated this often until the first call of a session
@@ -116,6 +118,8 @@ void AP_ScriptingM4::doorbell_isr(uint8_t group)
 void AP_ScriptingM4::host_thread()
 {
     ServeResult last = ServeResult::Idle;
+    // the duty cap is charged all CPU time the thread uses from here on, waits and pauses included
+    uint64_t cpu_charged_us = platform_thread_cpu_us();
     while (true) {
         if (_state == State::Off) {
             platform_m4_exited();   // SITL: reap the stopped process
@@ -179,7 +183,14 @@ void AP_ScriptingM4::host_thread()
 #endif
         const uint32_t busy_us = AP_HAL::micros() - _woke_us;
         _host_busy_us += busy_us;
-        _duty_cap.charge(busy_us);
+        if (busy_us > LONG_PASS_US) {
+            _long_passes++;
+        }
+        const uint64_t cpu_us = platform_thread_cpu_us();
+        const uint32_t used_us = ScriptingM4::pass_cpu_us(cpu_charged_us, cpu_us);
+        cpu_charged_us = cpu_us;
+        _host_cpu_us += used_us;
+        _duty_cap.charge(used_us);
         if (now_ms - _stats_start_ms >= 1000) {
             log_supervisor(now_ms, now_ms - _stats_start_ms);
             _stats_start_ms = now_ms;
@@ -188,6 +199,8 @@ void AP_ScriptingM4::host_thread()
             _dropped = 0;
             _host_busy_us = 0;
             _duty_cap_hits = 0;
+            _host_cpu_us = 0;
+            _long_passes = 0;
         }
     }
 }
@@ -367,17 +380,21 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: Lost: M4 calls without a reply since the previous row
 // @Field: QHit: M4 calls refused by their quota since the previous row: binding calls, print, the M4's statustexts and script error texts, its file writes, write opens and removes (FileIo), MAVLink sends (MavTx), log rows (Log) and OSD calls (Osd, OsdFrame) (over quota, texts and void calls are dropped, boolean calls return false)
 // @Field: Busy: host thread wall time in the last second, per mille of the M7 (preemption included)
-// @Field: Cap: pauses the host's duty cap (10 % of the M7) forced in the last second
+// @Field: Cap: pauses the host's duty cap (10 % of the M7's CPU) forced in the last second
+// @Field: CPU: host thread CPU time in the last second, per mille of the M7 (what the duty cap charges)
+// @Field: Long: host passes over 50 ms of wall time in the last second (blocked in a binding, or preempted)
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED && AP_SCRIPTING_RPC_STATS_ENABLED
-    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Busy,Cap",
-                                "s-------------", "F-------------", "QBIIBIIIHHIIHH",
+    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Busy,Cap,CPU,Long",
+                                "s---------------", "F---------------", "QBIIBIIIHHIIHHHH",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
                                 _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits(),
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
-                                _duty_cap_hits);
+                                _duty_cap_hits,
+                                uint16_t(MIN(_host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
+                                _long_passes);
 #endif
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {

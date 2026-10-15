@@ -5,12 +5,12 @@
 namespace ScriptingM4 {
 
 /*
-  Token bucket on the host thread's wall time per pass. Credit accrues at
-  SHARE_PERCENT of elapsed time up to BURST_US; each pass is charged in full
-  after it runs, so credit goes negative by the length of that pass. While
-  credit is below RESUME_US the host serves nothing, however many frames are
-  pending. Wall time includes preemption and any wait inside a binding, so the
-  cap errs on the side of serving less.
+  Token bucket on the host thread's CPU time. Credit accrues at SHARE_PERCENT
+  of elapsed wall time up to BURST_US; each pass is charged in full for the
+  CPU time it used, so credit goes negative by that much. While credit is
+  below RESUME_US the host serves nothing, however many frames are pending.
+  Time a binding spends blocked (a semaphore, the SD card) yields the CPU to
+  other threads and is not charged; a binding that spins is.
  */
 class ServeDutyCap {
 public:
@@ -63,6 +63,14 @@ private:
     uint32_t _refilled_us = 0;
     bool _started = false;
 };
+
+// CPU time of one pass from two readings of the thread's CPU clock. The clock restarts from 0
+// when its statistics are reset: the pass is then charged what it used since the reset
+inline uint32_t pass_cpu_us(uint64_t start_us, uint64_t end_us)
+{
+    const uint64_t used = end_us >= start_us ? end_us - start_us : end_us;
+    return used > UINT32_MAX ? UINT32_MAX : uint32_t(used);
+}
 
 enum class HostWait { DutyCap, Doorbell, Backoff, Timeout };
 

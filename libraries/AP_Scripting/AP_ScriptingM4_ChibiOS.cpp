@@ -109,6 +109,21 @@ uint32_t AP_ScriptingM4::platform_wait_us() const
     return 10000;
 }
 
+#if CH_DBG_STATISTICS != TRUE
+#error "the M4 host duty cap charges ChibiOS thread statistics: define HAL_ENABLE_THREAD_STATISTICS"
+#endif
+
+uint64_t AP_ScriptingM4::platform_thread_cpu_us() const
+{
+    chSysLock();
+    const thread_t *self = chThdGetSelfX();
+    // the running slice is not in cumulative yet: stats.last holds the cycle it started on.
+    // Reading @SYS/threads.txt resets the counters, so the total can restart from 0
+    const rttime_t cycles = self->stats.cumulative + rtcnt_t(chSysGetRealtimeCounterX() - self->stats.last);
+    chSysUnlock();
+    return cycles / (HAL_EXPECTED_SYSCLOCK / 1000000U);
+}
+
 uint32_t AP_ScriptingM4::platform_timeout_ms() const
 {
     return AP_HAL::millis();

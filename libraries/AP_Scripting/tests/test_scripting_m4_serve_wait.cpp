@@ -76,33 +76,43 @@ TEST(ScriptingM4ServeWait, LongGapRefillsBurstOnly)
 
 /*
   The host loop with a cap: each iteration waits as the cap says (in steps of at most
-  max_pause_us, as the host still supervises), then runs one pass of pass_us and is charged
-  for it. Returns the host's share of the time, in parts per million.
+  max_pause_us, as the host still supervises), then runs one pass of pass_us wall time that
+  uses cpu_us of CPU, and is charged the CPU. Returns the host's CPU share of the time, in
+  parts per million, and counts the passes and the cap pauses.
  */
-static uint64_t simulate_share_ppm(uint32_t pass_us, uint32_t gap_us, uint64_t duration_us,
-                                   uint32_t start_us, uint32_t max_pause_us, uint64_t &passes)
+static uint64_t simulate_share_ppm(uint32_t pass_us, uint32_t cpu_us, uint32_t gap_us, uint64_t duration_us,
+                                   uint32_t start_us, uint32_t max_pause_us, uint64_t &passes, uint64_t &pauses)
 {
     ServeDutyCap cap;
     uint64_t elapsed = 0;
     uint64_t busy = 0;
     passes = 0;
+    pauses = 0;
     while (elapsed < duration_us) {
         const uint32_t now = start_us + uint32_t(elapsed);
         const uint32_t wait = cap.wait_us(now);
         if (wait != 0) {
+            pauses++;
             elapsed += wait < max_pause_us ? wait : max_pause_us;
             continue;
         }
         elapsed += pass_us;
-        busy += pass_us;
-        cap.charge(pass_us);
+        busy += cpu_us;
+        cap.charge(cpu_us);
         passes++;
         elapsed += gap_us;
     }
     return busy * 1000000U / elapsed;
 }
 
-// passes of 50 ms each (a binding that holds the host): the long-run share stays within
+static uint64_t simulate_share_ppm(uint32_t pass_us, uint32_t gap_us, uint64_t duration_us,
+                                   uint32_t start_us, uint32_t max_pause_us, uint64_t &passes)
+{
+    uint64_t pauses;
+    return simulate_share_ppm(pass_us, pass_us, gap_us, duration_us, start_us, max_pause_us, passes, pauses);
+}
+
+// passes using 50 ms of CPU each (a binding that spins): the long-run share stays within
 // SHARE_PERCENT plus one pass (and the starting burst), the charge is never clamped
 TEST(ScriptingM4ServeWait, LongPassesKeepTheShare)
 {
@@ -153,6 +163,40 @@ TEST(ScriptingM4ServeWait, NormalRateIsNotCapped)
         cap.charge(pass_us);
         now += 500U;
     }
+}
+
+// passes of 50 ms wall time that are blocked (a semaphore, the SD card) and use 100 us of CPU:
+// they yield the CPU, so the cap never pauses them
+TEST(ScriptingM4ServeWait, BlockedPassesAreNotThrottled)
+{
+    uint64_t passes, pauses;
+    const uint64_t ppm = simulate_share_ppm(50000U, 100U, 0U, 100000000U, 0U, 10000U, passes, pauses);
+    EXPECT_EQ(pauses, 0U);
+    EXPECT_EQ(passes, 2000U);   // one after another for 100 s
+    EXPECT_EQ(ppm, 2000U);      // 0.2 % CPU
+}
+
+// a scheduler-semaphore binding at the bench's rate: 2000 calls/s, each pass 17 us of CPU,
+// and every fifth one blocked for a 2.5 ms main loop: wall time would trip a wall-time cap
+TEST(ScriptingM4ServeWait, SemaphoreWaitsAtNormalRateAreNotCapped)
+{
+    ServeDutyCap cap;
+    uint32_t now = 0;
+    EXPECT_EQ(cap.wait_us(now), 0U);
+    for (uint32_t pass = 0; pass < 200000; pass++) {
+        ASSERT_EQ(cap.wait_us(now), 0U) << "capped at pass " << pass;
+        cap.charge(17U);
+        now += (pass % 5 == 0) ? 2500U : 500U;
+    }
+}
+
+// the CPU clock read before and after a pass, including a statistics reset in between
+TEST(ScriptingM4ServeWait, PassCpuFromClockReadings)
+{
+    EXPECT_EQ(pass_cpu_us(1000U, 1250U), 250U);
+    EXPECT_EQ(pass_cpu_us(1000U, 1000U), 0U);
+    EXPECT_EQ(pass_cpu_us(5000000U, 300U), 300U);   // reset: what was used since
+    EXPECT_EQ(pass_cpu_us(0U, uint64_t(UINT32_MAX) + 10U), UINT32_MAX);
 }
 
 AP_GTEST_MAIN()
