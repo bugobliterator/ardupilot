@@ -177,10 +177,18 @@ uint32_t AP_Networking::m4_session()
     return scripting != nullptr ? scripting->m4_session() : 0;
 }
 
-bool AP_Networking::m4_session_confirmed()
+bool AP_Networking::m4_session_confirmed(uint32_t session)
 {
     const AP_Scripting *scripting = AP::scripting();
-    return scripting != nullptr && scripting->m4_session_confirmed();
+    return scripting != nullptr && scripting->m4_session_confirmed(session);
+}
+
+namespace {
+// the scripting supervisor's grant, for m4_io_update_from()
+struct SupervisorGrant {
+    uint32_t current() const { return AP_Networking::m4_session(); }
+    bool confirmed(uint32_t session) const { return AP_Networking::m4_session_confirmed(session); }
+};
 }
 
 /*
@@ -240,7 +248,7 @@ void AP_Networking::m4_attach(uint32_t session)
  */
 void AP_Networking::m4_io_update()
 {
-    m4_io_update(m4_session(), m4_session_confirmed());
+    m4_io_update_from(SupervisorGrant {});
 }
 
 void AP_Networking::m4_io_update(uint32_t session, bool confirmed)
@@ -268,11 +276,13 @@ void AP_Networking::m4_io_update(uint32_t session, bool confirmed)
         if (port.type == NetworkPortType::NONE || port.readbuffer == nullptr || port.writebuffer == nullptr) {
             continue;
         }
-        if (_m4_tx[i].desynced()) {
-            // the M4 wrote a bad tail: start the ring again from it
-            _m4_tx[i].producer_reset();
-            _m4_tx_resyncs++;
+        // a bad tail from the M4: its consumer resyncs the ring; until then nothing fits and the
+        // port's bytes wait in its write buffer
+        const bool desynced = _m4_tx[i].desynced();
+        if (desynced && !_m4_tx_desynced[i]) {
+            _m4_tx_desyncs++;
         }
+        _m4_tx_desynced[i] = desynced;
         WITH_SEMAPHORE(port.sem);
         const bool was_empty = _m4_tx[i].space() == NetM4::PORT_RING_DATA;
         // UDP ports carry records (NetM4::Config packetise), MAVLink ones ending on frames

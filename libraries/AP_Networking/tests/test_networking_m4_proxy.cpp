@@ -245,7 +245,9 @@ struct NetM4TestAccess {
     static uint32_t rx_stats(AP_Networking &net, uint8_t i) { return net.ports[i].rx_stats_bytes; }
     static uint32_t doorbells(AP_Networking &net) { return net._m4_doorbells; }
     static uint32_t bytes_dropped(AP_Networking &net) { return net._m4_bytes_dropped; }
-    static uint32_t tx_resyncs(AP_Networking &net) { return net._m4_tx_resyncs; }
+    static uint32_t tx_desyncs(AP_Networking &net) { return net._m4_tx_desyncs; }
+    static bool held(AP_Networking &net) { return net._m4_held; }
+    static uint32_t attached_session(AP_Networking &net) { return net._m4_attached_session; }
 };
 
 static Region shared;
@@ -409,21 +411,67 @@ TEST(NetM4Proxy, OldPeerAfterTheGrantNeverReachesTheNewSession)
     EXPECT_EQ(memcmp(out, new_out, sizeof(new_out)), 0);
 }
 
-TEST(NetM4Proxy, DesyncedTxRingIsResyncedAndCounted)
+TEST(NetM4Proxy, DesyncedTxRingIsCountedAndLeftToTheM4)
 {
     AP_Networking &net = started(0);
     AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
     // the M4 stores a tail more than a ring's length behind the head
     shared.ports[1].tx_control.tail.value.store(500);
-    const uint32_t resyncs = NetM4TestAccess::tx_resyncs(net);
+    const uint32_t head = shared.ports[1].tx_control.head.value.load();
+    const uint32_t desyncs = NetM4TestAccess::tx_desyncs(net);
     const uint8_t bytes[4] = {1, 2, 3, 4};
-    tcp.write(bytes, sizeof(bytes));
-    net.m4_io_update(0, true);
-    EXPECT_EQ(NetM4TestAccess::tx_resyncs(net) - resyncs, 1U);
+    EXPECT_EQ(tcp.write(bytes, sizeof(bytes)), sizeof(bytes));
+    for (uint8_t pass = 0; pass < 3; pass++) {
+        net.m4_io_update(0, true);
+    }
+    // counted once, the head untouched, the bytes waiting in the port
+    EXPECT_EQ(NetM4TestAccess::tx_desyncs(net) - desyncs, 1U);
+    EXPECT_EQ(shared.ports[1].tx_control.head.value.load(), head);
+    // the M4's consumer resyncs: the bytes flow
     ByteRing m4_tx, m4_rx;
     peer(1, m4_tx, m4_rx);
+    m4_tx.consumer_resync();
+    net.m4_io_update(0, true);
     EXPECT_FALSE(m4_tx.desynced());
-    EXPECT_EQ(m4_tx.available(), sizeof(bytes));   // the port flows again
+    EXPECT_EQ(m4_tx.available(), sizeof(bytes));
+}
+
+// a grant source whose grant moves on at a chosen point of the pass
+struct RacingGrant {
+    mutable uint32_t grant;
+    uint32_t confirmed_grant;     // the grant the M4 confirmed
+    bool bump_after_current;      // the grant lands between the two reads
+    uint32_t current() const
+    {
+        const uint32_t now = grant;
+        if (bump_after_current) {
+            grant++;
+        }
+        return now;
+    }
+    bool confirmed(uint32_t session) const { return session == confirmed_grant; }
+};
+
+TEST(NetM4Proxy, GrantLandingDuringAPassNeverRunsItUnheld)
+{
+    AP_Networking &net = started(0);
+    ByteRing old_tx, old_rx;
+    peer(1, old_tx, old_rx);
+    AP_HAL::UARTDriver &tcp = NetM4TestAccess::uart(net, 1);
+    // grant 1 lands after the pass read grant 0: the pass is one more ordinary pass for session 0
+    RacingGrant during {0, 0, true};
+    net.m4_io_update_from(during);
+    EXPECT_FALSE(NetM4TestAccess::held(net));
+    EXPECT_EQ(NetM4TestAccess::attached_session(net), 0U);
+    // the next pass reads grant 1, which only session 0 is confirmed for: held, nothing moves
+    const uint8_t old_bytes[3] = {'o', 'l', 'd'};
+    old_rx.write(old_bytes, sizeof(old_bytes));
+    RacingGrant after {during.grant, 0, false};
+    net.m4_io_update_from(after);
+    EXPECT_TRUE(NetM4TestAccess::held(net));
+    EXPECT_EQ(NetM4TestAccess::attached_session(net), 0U);
+    EXPECT_EQ(tcp.available(), 0U);
+    EXPECT_EQ(old_rx.space(), PORT_RING_DATA - sizeof(old_bytes));   // not drained
 }
 
 #endif  // AP_NETWORKING_M4_ENABLED
