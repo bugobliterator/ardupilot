@@ -358,7 +358,7 @@ void AP_Scripting::thread(void) {
         }
         num_pwm_source = 0;
 
-#if AP_NETWORKING_ENABLED
+#if AP_NETWORKING_SOCKETS_ENABLED
         // clear allocated sockets
         for (uint8_t i=0; i<SCRIPTING_MAX_NUM_NET_SOCKET; i++) {
             if (_net_sockets[i] != nullptr) {
@@ -366,7 +366,7 @@ void AP_Scripting::thread(void) {
                 _net_sockets[i] = nullptr;
             }
         }
-#endif // AP_NETWORKING_ENABLED
+#endif // AP_NETWORKING_SOCKETS_ENABLED
 
 #if AP_SCRIPTING_SERIALDEVICE_ENABLED
         // clear data in serial buffers that hasn't been transmitted

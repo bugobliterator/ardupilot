@@ -14,7 +14,7 @@
 
 #include <AP_Networking/AP_Networking_Config.h>
 
-#if AP_NETWORKING_ENABLED
+#if AP_NETWORKING_SOCKETS_ENABLED
 
 #include <AP_HAL/utility/Socket.h>
 #include <AP_Networking/AP_Networking.h>
@@ -293,5 +293,5 @@ void sockets_end_session()
 
 }  // namespace ScriptingM4Remote
 
-#endif  // AP_NETWORKING_ENABLED
+#endif  // AP_NETWORKING_SOCKETS_ENABLED
 #endif  // AP_SCRIPTING_M4_ENABLED
