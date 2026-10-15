@@ -56,6 +56,10 @@ public:
     State state() const { return _state; }
     uint32_t loaded_checksum() const { return _server.loaded_checksum(); }
     uint32_t running_checksum() const { return _server.running_checksum(); }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the session the M4 publishes in the network status block: the restart grant it runs under
+    uint32_t m4_session() const { return _restart_grants; }
+#endif
 
     static const struct AP_Param::GroupInfo var_info[];
 
