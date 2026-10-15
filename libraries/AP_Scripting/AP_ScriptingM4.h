@@ -13,6 +13,7 @@
 #include "AP_ScriptingM4_StartFault.h"
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
 #include "AP_ScriptingM4_NetRegionClear.h"
+#include <atomic>
 #endif
 
 namespace CubePilotFW {
@@ -49,8 +50,14 @@ public:
     uint32_t loaded_checksum() const { return _server.loaded_checksum(); }
     uint32_t running_checksum() const { return _server.running_checksum(); }
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    // the session the M4 publishes in the network status block: the restart grant it runs under
-    uint32_t m4_session() const { return _restart_grants; }
+    // the session the M4 publishes in the network status block: the restart grant it runs under.
+    // Read by AP_Networking's threads
+    uint32_t m4_session() const { return _restart_grants.load(std::memory_order_acquire); }
+    // the M4 runs m4_session(): its peer header reported that grant (check_starting()). Until then
+    // the last session's M4 may still be running
+    bool m4_session_confirmed() const {
+        return _confirmed_grant.load(std::memory_order_acquire) == m4_session() + 1U;
+    }
 #endif
 
     static const struct AP_Param::GroupInfo var_info[];
@@ -114,7 +121,12 @@ private:
     uint32_t _state_start_ms;
     uint32_t _state_start_timeout_ms; // platform_timeout_ms() when the state was entered
     uint8_t _restarts_used;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    std::atomic<uint32_t> _restart_grants;   // restarts granted the M4: fault restarts and requested ones
+    std::atomic<uint32_t> _confirmed_grant;  // the grant the M4 reported starting, plus one; 0: none yet
+#else
     uint32_t _restart_grants;         // restarts granted the M4: fault restarts and requested ones
+#endif
     bool _restart_requested;          // the restart under way is a request, not a fault
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // whether the next grant may clear the network region
