@@ -31,6 +31,7 @@ void M4Service::init(Channel &channel, uint8_t *window, LuaLink &link, const M4P
     _call_timed = false;
     _last_stats_ms = platform.millis();
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    _net_requested = false;
     _net_configured = false;
     _net_request_ms = _last_stats_ms - NET_CONFIG_RETRY_MS;
 #endif
@@ -120,8 +121,9 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     case MsgType::NetConfig: {
         NetConfigMsg msg;
         memcpy(&msg, buf, sizeof(msg));
-        // the first answer only: a retried request may be answered twice
-        if (!_net_configured && _platform.network_config != nullptr) {
+        // the first answer to a request of this session only: a retried request may be answered
+        // twice, and an answer to the previous session's request can follow a restart
+        if (_net_requested && !_net_configured && _platform.network_config != nullptr) {
             _net_configured = true;
             _platform.network_config(msg.config);
         }
@@ -386,6 +388,7 @@ void M4Service::request_net_config(uint32_t now_ms)
     if (_channel->send(&request, sizeof(request)) != 0) {
         return;   // ring full: try again on the next step
     }
+    _net_requested = true;
     _net_request_ms = now_ms;
 }
 #endif

@@ -286,7 +286,7 @@ void AP_ScriptingM4::send_net_config(uint32_t seq)
     ScriptingM4::NetConfigMsg msg;
     ScriptingM4::fill_header(msg.header, MsgType::NetConfig, sizeof(msg), seq);
     if (!AP::network().m4_config(msg.config)) {
-        msg.config.magic = 0;   // no network on the M4 this session
+        memset(&msg.config, 0, sizeof(msg.config));   // magic 0: no network on the M4 this session
     }
     if (_channel->send(&msg, sizeof(msg)) != 0) {
         _dropped++;
