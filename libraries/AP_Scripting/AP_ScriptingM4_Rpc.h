@@ -13,11 +13,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "AP_ScriptingM4_Placement.h"
 #include "AP_ScriptingM4_Protocol.h"
 
 namespace ScriptingM4 {
 
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+static const uint32_t RPC_PROTOCOL_VERSION = 4;   // Channel 16 KB: the window holds the network rings
+#else
 static const uint32_t RPC_PROTOCOL_VERSION = 3;
+#endif
 
 enum class ValueTag : uint8_t {
     Nil = 0,
@@ -561,16 +566,24 @@ constexpr uint32_t fnv1a_string(const char *text, uint32_t hash)
     return *text == 0 ? hash : fnv1a_string(text + 1, fnv1a_byte(hash, uint8_t(*text)));
 }
 
-// the contract of both images: protocol version, frame layout and the method table
+// the contract of both images: protocol version, frame layout and the method table; on
+// networking builds the Channel's size too
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#define SCRIPTING_M4_WINDOW_TERM(inner) fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, inner)
+#else
+#define SCRIPTING_M4_WINDOW_TERM(inner) inner
+#endif
 #define SCRIPTING_M4_HASH_OPEN(id, symbol, name, kind) \
     fnv1a_string(name, fnv1a_word((uint32_t(id) << 1) | uint32_t(MethodKind::kind),
 #define SCRIPTING_M4_HASH_CLOSE(id, symbol, name, kind) ))
 static constexpr uint32_t SYSTEM_CONTRACT_HASH =
     SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_HASH_OPEN)
     fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
-               fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET))))))
+               fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader),
+               SCRIPTING_M4_WINDOW_TERM(FNV_OFFSET)))))))
     SCRIPTING_M4_SYSTEM_METHODS(SCRIPTING_M4_HASH_CLOSE);
 #undef SCRIPTING_M4_HASH_OPEN
 #undef SCRIPTING_M4_HASH_CLOSE
+#undef SCRIPTING_M4_WINDOW_TERM
 
 }  // namespace ScriptingM4

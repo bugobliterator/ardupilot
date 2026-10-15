@@ -214,8 +214,13 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     };
     // the constexpr chain folds from the last method to the first
     // the value limit is part of the contract: an M4 image built with another limit is refused
-    uint32_t hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
-                    fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), FNV_OFFSET))))));
+    uint32_t hash = FNV_OFFSET;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // networking builds: the Channel's size, so an image with the other window split is refused
+    hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, hash);
+#endif
+    hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
+           fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), hash))))));
     for (int i = int(sizeof(table) / sizeof(table[0])) - 1; i >= 0; i--) {
         hash = fnv1a_string(table[i].name, fnv1a_word((uint32_t(table[i].id) << 1) | uint32_t(table[i].kind), hash));
     }

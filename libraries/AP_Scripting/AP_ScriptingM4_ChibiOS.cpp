@@ -50,7 +50,7 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
         return false;
     }
     _shared = reinterpret_cast<uint8_t *>(AP_SCRIPTING_M4_WINDOW_BASE);
-    memset(_shared, 0, ScriptingM4::WINDOW_SIZE);
+    ScriptingM4::clear_channel_region(_shared);
     ScriptingM4::SupervisorBlock *block = ScriptingM4::supervisor_block(_shared);
     block->run_permit.store(1);
     block->restart_grant.store(0);

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "AP_ScriptingM4_Placement.h"
 #include "AP_ScriptingM4_Rpc.h"
 #include <AP_Scripting/lua_remote_contract.h>
@@ -23,7 +24,14 @@ static const uint32_t CONTRACT_HASH = fnv1a_word(BINDING_HASH, SYSTEM_CONTRACT_H
 
 static const uint32_t WINDOW_SIZE = AP_SCRIPTING_M4_WINDOW_SIZE;
 static const uint32_t SUPERVISOR_BLOCK_SIZE = 32;
-static const uint32_t CHANNEL_WINDOW_SIZE = WINDOW_SIZE - SUPERVISOR_BLOCK_SIZE;
+static const uint32_t CHANNEL_WINDOW_SIZE = AP_SCRIPTING_M4_CHANNEL_REGION_SIZE - SUPERVISOR_BLOCK_SIZE;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+// the network rings start here, from the window base
+static const uint32_t RING_REGION_OFFSET = AP_SCRIPTING_M4_CHANNEL_REGION_SIZE;
+static_assert(AP_SCRIPTING_M4_WINDOW_BASE + RING_REGION_OFFSET == AP_NETWORKING_M4_RING_BASE,
+              "the rings follow the supervisor block");
+static_assert(RING_REGION_OFFSET + AP_NETWORKING_M4_RING_SIZE == WINDOW_SIZE, "the rings end the window");
+#endif
 static const uint8_t DOORBELL_GROUP = AP_SCRIPTING_M4_DOORBELL_GROUP;
 static const uint8_t RESTART_GROUP = AP_SCRIPTING_M4_RESTART_GROUP;
 static const uint32_t SUPERVISOR_MAGIC = 0x5350344D;   // "M4PS"
@@ -53,6 +61,13 @@ static_assert(CHANNEL_WINDOW_SIZE % 32 == 0, "the Channel window and the block s
 inline SupervisorBlock *supervisor_block(uint8_t *window)
 {
     return reinterpret_cast<SupervisorBlock *>(reinterpret_cast<uintptr_t>(window) + CHANNEL_WINDOW_SIZE);
+}
+
+// at scripting start: the Channel and the supervisor block (the whole window on plain builds).
+// On networking builds the rings belong to AP_Networking's proxy (AP_Networking::m4_region_reset())
+inline void clear_channel_region(uint8_t *window)
+{
+    memset(window, 0, AP_SCRIPTING_M4_CHANNEL_REGION_SIZE);
 }
 
 }  // namespace ScriptingM4

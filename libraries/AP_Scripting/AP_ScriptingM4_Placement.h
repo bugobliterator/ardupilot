@@ -15,6 +15,16 @@
 #define AP_SCRIPTING_M4_WINDOW_SIZE      (32U * 1024U)
 // MPU RASR SIZE field of the window: 2^(14+1) bytes = 32 KB
 #define AP_SCRIPTING_M4_WINDOW_MPU_SIZE  14U
+// the window, in order: the Lua Channel and the supervisor block (32 B at its top), then, on
+// networking-on-M4 builds only, the network rings (AP_Networking_M4_Layout.h), aligned to their size
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#define AP_SCRIPTING_M4_CHANNEL_REGION_SIZE (16U * 1024U)
+#define AP_NETWORKING_M4_RING_BASE       0x30044000U
+#define AP_NETWORKING_M4_RING_SIZE       (16U * 1024U)
+#define AP_NETWORKING_M4_DOORBELL_GROUP  3U   // M7 -> M4: a network ring left empty got data
+#else
+#define AP_SCRIPTING_M4_CHANNEL_REGION_SIZE AP_SCRIPTING_M4_WINDOW_SIZE
+#endif
 
 // CubeFramework HSEM groups (group g uses semaphores 2g and 2g+1)
 #define AP_SCRIPTING_M4_DOORBELL_GROUP   1U   // Channel doorbell, both directions
