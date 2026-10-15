@@ -252,6 +252,7 @@ private:
     uint32_t _m4_tx_desyncs = 0;     // times a TX ring was found desynced (the M4 recovers it)
     bool _m4_tx_desynced[NetM4::NUM_PORTS] {};
     uint32_t _m4_bytes_dropped = 0;  // port bytes dropped at session changes
+    uint32_t _m4_session_rx_dropped = 0;   // RX ring bytes dropped when a session is attached
     void m4_hold_ports();
     void m4_attach(uint32_t session);
     uint8_t m4_track_status(NetM4::StatusTracker &tracker, NetM4::StatusFields &out);

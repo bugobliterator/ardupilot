@@ -23,17 +23,22 @@ uint32_t reset_port(ByteBuffer &readbuffer, ByteBuffer &writebuffer);
 struct StatusTracker {
     uint32_t session;
     uint32_t change_count;
+    uint32_t heartbeat;
+    uint32_t heartbeat_ms;   // when the heartbeat last moved
     bool have_status;   // a status of this session was taken
     bool link_up;
+    bool stale;         // the heartbeat stood still for STATUS_STALE_MS: the M4 stopped writing
 };
 enum StatusEvent : uint8_t {
     STATUS_NEW_SESSION = 1U << 0,   // the session changed: the last session's addresses are void
     STATUS_ADDRESSES = 1U << 1,     // out holds this session's addresses, first seen or changed
     STATUS_LINK_CAME_UP = 1U << 2,
+    STATUS_WENT_STALE = 1U << 3,    // this session's addresses are void until its heartbeat moves again
 };
 // session: the supervisor's current grant (AP_ScriptingM4::m4_session()). A torn or out of range
 // block, or one of another session, leaves the tracker's copy as it was
-uint8_t track_status(StatusTracker &tracker, const StatusBlock &block, uint32_t session, StatusFields &out);
+uint8_t track_status(StatusTracker &tracker, const StatusBlock &block, uint32_t session, uint32_t now_ms,
+                     StatusFields &out);
 
 }  // namespace NetM4
 

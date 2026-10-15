@@ -129,7 +129,8 @@ uint32_t NetM4::reset_port(ByteBuffer &readbuffer, ByteBuffer &writebuffer)
     return dropped;
 }
 
-uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, uint32_t session, StatusFields &out)
+uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, uint32_t session, uint32_t now_ms,
+                            StatusFields &out)
 {
     uint8_t events = 0;
     if (session != tracker.session) {
@@ -138,11 +139,20 @@ uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, ui
         events |= STATUS_NEW_SESSION;
     }
     StatusFields status;
-    if (!read_status(block, status) || status.session != session) {
-        // the last good copy stands: a torn or bad block, or the last session's
+    const bool fresh = read_status(block, status) && status.session == session &&
+                       (!tracker.have_status || status.heartbeat != tracker.heartbeat);
+    if (!fresh) {
+        // the last good copy stands (a torn or bad block, the last session's, an unchanged one)
+        // until this session's heartbeat has stood still for STATUS_STALE_MS: e.g. the M4 is off
+        // for good, or stopped inside a write
+        if (tracker.have_status && !tracker.stale && now_ms - tracker.heartbeat_ms >= STATUS_STALE_MS) {
+            tracker.stale = true;
+            tracker.link_up = false;
+            events |= STATUS_WENT_STALE;
+        }
         return events;
     }
-    if (!tracker.have_status || status.change_count != tracker.change_count) {
+    if (!tracker.have_status || tracker.stale || status.change_count != tracker.change_count) {
         events |= STATUS_ADDRESSES;
     }
     const bool link_up = (status.flags & STATUS_LINK_UP) != 0;
@@ -150,6 +160,9 @@ uint8_t NetM4::track_status(StatusTracker &tracker, const StatusBlock &block, ui
         events |= STATUS_LINK_CAME_UP;
     }
     tracker.have_status = true;
+    tracker.stale = false;
+    tracker.heartbeat = status.heartbeat;
+    tracker.heartbeat_ms = now_ms;
     tracker.change_count = status.change_count;
     tracker.link_up = link_up;
     out = status;
@@ -224,6 +237,8 @@ void AP_Networking::m4_attach(uint32_t session)
             continue;
         }
         _m4_tx[i].producer_reset();
+        // what the new session wrote before this pass, after it published its header
+        _m4_session_rx_dropped += _m4_rx[i].available();
         _m4_rx[i].consumer_resync();
     }
     if (!_m4_attached) {
@@ -317,7 +332,7 @@ uint8_t AP_Networking::m4_track_status(NetM4::StatusTracker &tracker, NetM4::Sta
     if (_m4_region == nullptr) {
         return 0;
     }
-    return NetM4::track_status(tracker, _m4_region->status, m4_session(), out);
+    return NetM4::track_status(tracker, _m4_region->status, m4_session(), AP_HAL::millis(), out);
 }
 
 uint32_t AP_Networking::m4_queued_bytes_for_test()
@@ -358,7 +373,8 @@ void AP_Networking_M4::update()
 {
     NetM4::StatusFields status;
     const uint8_t events = frontend.m4_track_status(tracker, status);
-    if ((events & NetM4::STATUS_NEW_SESSION) && (activeSettings.ip != 0 || activeSettings.nm != 0 || activeSettings.gw != 0)) {
+    if ((events & (NetM4::STATUS_NEW_SESSION | NetM4::STATUS_WENT_STALE)) &&
+        (activeSettings.ip != 0 || activeSettings.nm != 0 || activeSettings.gw != 0)) {
         activeSettings.ip = 0;
         activeSettings.nm = 0;
         activeSettings.gw = 0;
