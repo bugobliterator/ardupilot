@@ -40,6 +40,10 @@ struct M4Platform {
     uint32_t cycles_per_us;
     void (*inject_fault)(FaultKind kind);   // HardFault, MemManage, Stall, Lockup
     void (*wake_lua)();                     // the call on the LuaLink is Done
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // this session's NET_*, once; magic 0: networking off on the M7 side. nullptr: no network
+    void (*network_config)(const NetM4::Config &config);
+#endif
 };
 
 class M4Service {
@@ -61,6 +65,9 @@ private:
     // m4:other row (spec §11: SRPC, top methods by total time)
     static const uint8_t STATS_SLOTS = 32;
     static const uint8_t STATS_REPORTED = 8;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    static const uint32_t NET_CONFIG_RETRY_MS = 1000;
+#endif
 
     static StatsRow row_of(const MethodStats &slot);
     static void clear(MethodStats &slot);
@@ -76,6 +83,9 @@ private:
     void send_stats(uint32_t now_ms);
     void flood();
     void corrupt_tx_ring();
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    void request_net_config(uint32_t now_ms);
+#endif
 
     CubePilotFW::Channel *_channel;
     uint8_t *_window;
@@ -94,6 +104,10 @@ private:
     bool _ready;
     bool _call_timed;            // _call_posted_ms belongs to the current call
     bool _rx_stalled;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    bool _net_configured;
+    uint32_t _net_request_ms;
+#endif
     uint8_t _rx[MAX_FRAME];
 };
 

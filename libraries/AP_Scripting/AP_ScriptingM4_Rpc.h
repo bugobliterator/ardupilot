@@ -19,7 +19,7 @@
 namespace ScriptingM4 {
 
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-static const uint32_t RPC_PROTOCOL_VERSION = 4;   // Channel 16 KB: the window holds the network rings
+static const uint32_t RPC_PROTOCOL_VERSION = 5;   // Channel 16 KB, network rings; NetConfigRequest/NetConfig
 #else
 static const uint32_t RPC_PROTOCOL_VERSION = 3;
 #endif

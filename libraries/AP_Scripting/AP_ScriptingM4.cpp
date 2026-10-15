@@ -215,6 +215,14 @@ void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
     case MsgType::Ready:
         _protocol_errors++;   // M7 -> M4 only
         return;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    case MsgType::NetConfigRequest:
+        send_net_config(header.seq);
+        return;
+    case MsgType::NetConfig:
+        _protocol_errors++;   // M7 -> M4 only
+        return;
+#endif
     }
 }
 
@@ -270,6 +278,21 @@ void AP_ScriptingM4::send_ready(uint32_t now_ms)
         _dropped++;
     }
 }
+
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+// NET_* for the M4 session; a full ring is a drop and the M4 asks again
+void AP_ScriptingM4::send_net_config(uint32_t seq)
+{
+    ScriptingM4::NetConfigMsg msg;
+    ScriptingM4::fill_header(msg.header, MsgType::NetConfig, sizeof(msg), seq);
+    if (!AP::network().m4_config(msg.config)) {
+        msg.config.magic = 0;   // no network on the M4 this session
+    }
+    if (_channel->send(&msg, sizeof(msg)) != 0) {
+        _dropped++;
+    }
+}
+#endif
 
 // SRPC as in AP_Scripting_BindingStats.cpp, one row per method; SemMax carries the largest
 // M7-side time of one call

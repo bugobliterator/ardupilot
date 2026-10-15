@@ -282,7 +282,11 @@ int main(void)
     }
 
     const M4Platform platform { millis_now, cycles_now, AP_SCRIPTING_M4_CORE_CLOCK_HZ / 1000000U,
-                                inject_fault, lua_port_wake };
+                                inject_fault, lua_port_wake,
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+                                nullptr,
+#endif
+                              };
     service.init(channel, window, call_link, platform);
     lua_port_start(call_link, doorbell);
     while (true) {

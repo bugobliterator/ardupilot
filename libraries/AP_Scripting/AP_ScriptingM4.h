@@ -69,6 +69,9 @@ private:
     void handle_message(const uint8_t *buf, uint16_t len);
     void handle_call(const uint8_t *buf, uint16_t len, const ScriptingM4::MsgHeader &header, uint32_t start_us);
     void send_ready(uint32_t now_ms);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    void send_net_config(uint32_t seq);
+#endif
     void log_rpc_stats(const uint8_t *buf);
     void log_supervisor(uint32_t now_ms, uint32_t elapsed_ms);
     void supervise(uint32_t now_ms);

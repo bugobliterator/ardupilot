@@ -11,6 +11,10 @@
 
 #include <stdint.h>
 #include <string.h>
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+// relative to this header: the M4 image's include list has no libraries/ entry
+#include "../AP_Networking/AP_Networking_M4_Config.h"
+#endif
 
 namespace ScriptingM4 {
 
@@ -22,6 +26,10 @@ enum class MsgType : uint8_t {
     Reply = 6,       // M7 -> M4: results of a Call
     Notify = 7,      // M4 -> M7: Lua call without a reply
     Ready = 8,       // M7 -> M4: the M7 serves calls of this session
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    NetConfigRequest = 9,   // M4 -> M7: send this session's NET_* (networking on the M4)
+    NetConfig = 10,         // M7 -> M4: NET_*, answer to NetConfigRequest
+#endif
 };
 
 enum class FaultKind : uint8_t {
@@ -104,6 +112,17 @@ struct __attribute__((packed)) ReadyMsg {
     MsgHeader header;
 };
 
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+struct __attribute__((packed)) NetConfigRequestMsg {
+    MsgHeader header;
+};
+
+struct __attribute__((packed)) NetConfigMsg {
+    MsgHeader header;
+    NetM4::Config config;   // magic 0: no network on the M4 this session
+};
+#endif
+
 // true if buf holds exactly one message of a known type; the header is copied out
 inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
 {
@@ -126,6 +145,12 @@ inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
         return len >= sizeof(CallHeader);
     case MsgType::Reply:
         return len >= sizeof(ReplyHeader);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    case MsgType::NetConfigRequest:
+        return len == sizeof(NetConfigRequestMsg);
+    case MsgType::NetConfig:
+        return len == sizeof(NetConfigMsg);
+#endif
     }
     return false;
 }
