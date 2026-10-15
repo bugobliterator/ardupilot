@@ -1,0 +1,19 @@
+#include <AP_gtest.h>
+#include <AP_Scripting/AP_ScriptingM4_Layout.h>
+
+using namespace ScriptingM4;
+
+#if !(defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED)
+// c8a1a9f55a's layout: plain M4 Lua builds keep it (owner, 2026-10-15)
+TEST(ScriptingM4Layout, PlainBuildKeepsTheM4LuaLayout)
+{
+    EXPECT_EQ(WINDOW_SIZE, 32768U);
+    EXPECT_EQ(CHANNEL_WINDOW_SIZE, 32736U);
+    EXPECT_EQ(AP_SCRIPTING_M4_PRIV_RAM_SIZE, 32768U);
+    EXPECT_EQ(AP_SCRIPTING_M4_LUA_STACK_SIZE, 16384U);
+    EXPECT_EQ(AP_SCRIPTING_M4_LUA_HEAP_MIN, 196608U);
+    EXPECT_EQ(RPC_PROTOCOL_VERSION, 3U);
+}
+#endif
+
+AP_GTEST_MAIN()
