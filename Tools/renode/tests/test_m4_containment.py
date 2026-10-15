@@ -29,7 +29,7 @@ from test_mission import (check_process, log_tail, set_parameter,  # noqa: E402
                           stop_process_group, unused_tcp_port)
 
 ROOT = Path(__file__).resolve().parents[3]
-BOARD = 'CubeOrangePlus-M4Lua'
+BOARD = os.environ.get('M4LUA_BOARD', 'CubeOrangePlus-M4Lua')
 BUILD = ROOT / 'build' / BOARD / 'bin'
 RCC_GCR = 0x580244A0
 RESET_SCOPE = 0x3      # WW1RSC | WW2RSC
