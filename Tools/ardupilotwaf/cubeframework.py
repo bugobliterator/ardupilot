@@ -112,7 +112,8 @@ def _chibios_image(bld):
                [src.find_node(path) for path in _cf(CF_CHIBIOS_SOURCES)] +
                generator_inputs)
     if bld.env.NETWORKING_M4:
-        sources += (src.ant_glob(NET_M4_DIR + '/**/*') +
+        # the SITL PPP peer is a host tool, not part of the image
+        sources += (src.ant_glob(NET_M4_DIR + '/**/*', excl=[NET_M4_DIR + '/sitl_peer/**']) +
                     src.ant_glob('libraries/AP_Networking/AP_Networking_M4_*') +
                     src.ant_glob('libraries/AP_Networking/lwip_hal/include/**/*') +
                     src.ant_glob(LWIP_DIR + '/**/*'))
