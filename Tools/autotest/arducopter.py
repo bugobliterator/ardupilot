@@ -22198,7 +22198,7 @@ RTL_ALT_M 111
         self.reboot_sitl()
 
     def ScriptingM4FloodCap(self):
-        '''an M4 request flood while flying, a script opening @SYS/threads.txt: the duty cap holds, the logger keeps up'''
+        '''an M4 request flood and heavy frames in flight: heavy frames go to the slow worker, @SYS/threads.txt is refused'''
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process and the duty cap run on wall-clock time
         self.context_collect("STATUSTEXT")
@@ -22208,7 +22208,9 @@ RTL_ALT_M 111
         })
         # m4_sys_threads.lua opens @SYS/threads.txt every 10 ms: refused, so it cannot reset the
         # thread statistics the duty cap charges
-        self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua"])
+        # m4_sys_heavy.lua reads @SYS/tasks.txt as fast as it can (slow worker frames) and tries
+        # fs:crc32("@SYS/threads.txt"), which is refused as well
+        self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua", "m4_sys_heavy.lua"])
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
         self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
@@ -22229,6 +22231,10 @@ RTL_ALT_M 111
         refused, tries = [int(n) for n in re.findall(r"\d+", text.text.split("refused")[1])]
         if tries == 0 or refused != tries:
             raise NotAchievedException("M4 opened @SYS/threads.txt: %s" % text.text)
+        text = self.wait_statustext(r"M4 heavy \d+ crc refused \d+ of \d+", regex=True, check_context=True, timeout=10)
+        reads, crc_refused, crc_tries = [int(n) for n in re.findall(r"\d+", text.text.split("heavy")[1])]
+        if reads == 0 or crc_tries == 0 or crc_refused != crc_tries:
+            raise NotAchievedException("M4 heavy frames: %s" % text.text)
         self.land_and_disarm()
 
         dfreader = self.dfreader_for_current_onboard_log()
@@ -22239,6 +22245,10 @@ RTL_ALT_M 111
         pass_max = 0
         wall_max = 0
         stats_resets = 0
+        slow_requests = 0
+        slow_max = 0
+        row_cpu = None   # M4ST.CPU of the row M4HP follows (log_supervisor() writes them in turn)
+        cpu_over_wall = 0
         while True:
             m = dfreader.recv_match(type=["M4ST", "DSF", "M4HP"])
             if m is None:
@@ -22250,16 +22260,29 @@ RTL_ALT_M 111
                 pass_max = max(pass_max, m.PassMax)
                 wall_max = max(wall_max, m.WallBusy)
                 stats_resets += m.StatsReset
+                slow_requests += m.SlowReq
+                slow_max = max(slow_max, m.SlowMax)
+                # the charged CPU is inside the bracket WallBusy times
+                if row_cpu is not None and row_cpu > m.WallBusy + 2:
+                    cpu_over_wall += 1
+                row_cpu = None
                 continue
             if m.St != 2:
                 continue
             requests_max = max(requests_max, m.Req)
             cpu_max = max(cpu_max, m.CPU)
+            row_cpu = m.CPU
             cap_hits += m.Cap
         self.progress("M4 flood: most requests in one second %u, host CPU at most %u per mille, "
                       "duty cap pauses %u, DSF dropped %u" % (requests_max, cpu_max, cap_hits, dropped))
         self.progress("M4 host passes: one pass at most %u us of CPU, wall time at most %u per mille, "
-                      "statistics resets %u" % (pass_max, wall_max, stats_resets))
+                      "statistics resets %u, slow worker frames %u (longest %u us)" %
+                      (pass_max, wall_max, stats_resets, slow_requests, slow_max))
+        # the heavy frames ran on the slow worker, not on the fast lane
+        if slow_requests < 1000:
+            raise NotAchievedException("slow worker served %u frames: heavy frames ran on the fast lane" % slow_requests)
+        if cpu_over_wall != 0:
+            raise NotAchievedException("M4ST.CPU above M4HP.WallBusy in %u rows" % cpu_over_wall)
         if requests_max <= 256:
             raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
         # 10 % of the CPU, plus the 2 ms burst and one pass in a one-second row
