@@ -5,6 +5,7 @@
  */
 #include <atomic>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -81,6 +82,9 @@ bool net_platform_ppp_open()
         return false;
     }
     const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);   // an execv restart must not keep the old connection open
+    }
     bool connected = fd >= 0 && connect(fd, found->ai_addr, found->ai_addrlen) == 0;
     freeaddrinfo(found);
     if (!connected) {
