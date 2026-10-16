@@ -31,8 +31,6 @@ static const uint32_t RING_REGION_OFFSET = AP_SCRIPTING_M4_CHANNEL_REGION_SIZE;
 static_assert(AP_SCRIPTING_M4_WINDOW_BASE + RING_REGION_OFFSET == AP_NETWORKING_M4_RING_BASE,
               "the rings follow the supervisor block");
 static_assert(RING_REGION_OFFSET + AP_NETWORKING_M4_RING_SIZE == WINDOW_SIZE, "the rings end the window");
-// SupervisorBlock.reserved[1]: 1 the M4 starts the Lua thread, 0 it runs the network alone
-static const uint8_t LUA_PERMIT_SLOT = 1;
 #endif
 static const uint8_t DOORBELL_GROUP = AP_SCRIPTING_M4_DOORBELL_GROUP;
 static const uint8_t RESTART_GROUP = AP_SCRIPTING_M4_RESTART_GROUP;

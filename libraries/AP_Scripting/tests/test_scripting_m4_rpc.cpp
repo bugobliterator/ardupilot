@@ -217,10 +217,11 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     uint32_t hash = FNV_OFFSET;
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // networking builds: the Channel's size, so an image with the other window split is refused,
-    // the NetConfig layout and the status block's meaning
+    // the NetConfig layout, the status block's meaning and the Lua permit slot
     hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, hash);
     hash = fnv1a_word(60, hash);
     hash = fnv1a_word(2, hash);   // NetM4::STATUS_LAYOUT_VERSION
+    hash = fnv1a_word(1, hash);   // LUA_PERMIT_SLOT: the M4 starts Lua only on the M7's permit
 #endif
     hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
            fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), hash))))));
