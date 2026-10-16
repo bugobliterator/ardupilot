@@ -6,7 +6,7 @@
   length or a pointer from Lua (send, sendto, sendfile), the M7 checks it.
   Every socket is non-blocking on the M7, whatever the script asks: the M4
   waits in place of a blocking call (m4/m4_socket_wait.h), and pollin/pollout
-  wait at most SOCKET_POLL_TIMEOUT_MAX_MS, so no call holds the host thread.
+  wait at most SOCKET_POLL_TIMEOUT_MAX_MS, so no call holds the serving thread.
  */
 #include "AP_Scripting_config.h"
 

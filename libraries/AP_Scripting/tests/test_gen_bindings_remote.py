@@ -63,7 +63,7 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertIsNotNone(binding_hash)
 
     def method_flags(self, name):
-        '''{(type id, row name): method flags} of a generated description'''
+        '''{(type name, row name): method flags} of a generated description'''
         work = os.path.join(self.tmp, name)
         with open(os.path.join(work, 'remote_tables.cpp')) as f:
             tables = f.read()
@@ -71,8 +71,9 @@ class GenBindingsRemote(unittest.TestCase):
             dispatch = f.read()
         flags = [int(v, 16) for v in re.findall(r'0x([0-9a-f]{2})',
                  re.search(r'remote_method_flags\[[^]]*\] = \{(.*?)\};', dispatch, re.S).group(1))]
+        types = re.findall(r'\{ "([^"]+)", \d+, \d+, \d+, \d+, \d+ \}', tables)
         rows = re.findall(r'\{ "([^"]+)", (\d+), 0x[0-9a-f]{2}, (\d+) \}', tables)
-        return {(int(t), n): flags[int(m) - 64] for n, m, t in rows}
+        return {(types[int(t) - 1], n): flags[int(m) - 64] for n, m, t in rows}
 
     def test_fast_lane_and_path_flags(self):
         # METHOD_FAST_LANE 0x04 and METHOD_PATH_ARGS 0x08 are M7-only: the contract stays the same
@@ -87,6 +88,10 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertTrue(all(v & 0x08 and not v & 0x04 for v in by_name['crc32']))   # fs:crc32
         self.assertTrue(all(not v & 0x04 for v in by_name['set_home']))    # ahrs: storage
         self.assertTrue(all(not v & 0x04 for v in by_name['run_aux_function']))
+        self.assertFalse(flags[('vehicle', 'set_mode')] & 0x04)   # mode init
+        self.assertFalse(flags[('vehicle', 'reboot')] & 0x04)     # parameters, logging, SD
+        self.assertTrue(flags[('vehicle', 'set_target_location')] & 0x04)
+        self.assertTrue(flags[('mount', 'set_mode')] & 0x04)      # the mount's, a target only
         self.assertTrue(all(not v & 0x04 for v in by_name['set_and_save']))   # param: quota, string
 
     def test_unlisted_userdata(self):

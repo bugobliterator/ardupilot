@@ -10,7 +10,8 @@
   leave the function with ap_longjmp, as luaL_error() does in-process; the
   generated code checks every argument before it takes a semaphore.
   Userdata arrive as blobs (the described fields of a pure-data type, in
-  their wire form) or handles (HandleTable). Scripting host thread only.
+  their wire form) or handles (HandleTable). The scripting host thread or its
+  slow worker, one at a time (the host waits for the worker).
  */
 
 #include <errno.h>
@@ -73,7 +74,7 @@ static const uint32_t I2C_RETRIES_MAX = 18;
 static const uint32_t I2C_BUS_CLEAR_MS = 1;
 static_assert(I2C_SEMAPHORE_WAIT_MS + (I2C_RETRIES_MAX + 1) *
               (1 + 2 * ((8 * 1000000UL / I2C_CLOCK_MIN_HZ) * I2C_TRANSFER_BYTES_MAX) / 1000 + I2C_BUS_CLEAR_MS) <= 850,
-              "the worst I2C transfer fits the host thread's budget");
+              "the worst I2C transfer fits the serving thread's budget");
 
 inline uint32_t i2c_clamp_bus_clock(uint32_t hertz)
 {
@@ -330,7 +331,7 @@ int lua_mission_receive(lua_State *L);
 void mavlink_end_session();
 
 // gcs:run_command_int() refuses with MAV_RESULT_DENIED the commands whose handler holds the
-// calling thread for longer than the host thread's 900 ms (the scheduler semaphore is held too, so
+// calling thread for longer than the serving thread's 900 ms (the scheduler semaphore is held too, so
 // the main loop stalls with it), or never returns, or takes the M7 down. In-process the scripting
 // thread and the main loop wait, or the vehicle crashes (recorded deviation):
 // - MAV_CMD_PREFLIGHT_CALIBRATION: a gyro/accel/baro calibration of seconds
@@ -876,7 +877,7 @@ private:
 };
 
 // Sockets (AP_ScriptingM4_ManualSocket.cpp). The M7 issues every socket call non-blocking, so
-// its host thread never waits on the network: a script's blocking socket (the in-process default,
+// its serving thread never waits on the network: a script's blocking socket (the in-process default,
 // or set_blocking(true)) is the M4's, which tries a connect or send again until it completes
 // (m4/m4_socket_wait.h). pollin()/pollout() wait in select() for at most this long (recorded
 // deviation: in-process waits as long as the script asks)

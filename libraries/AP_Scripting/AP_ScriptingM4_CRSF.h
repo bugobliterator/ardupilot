@@ -12,7 +12,8 @@
   Here a menu's parameter array holds CRSF_PARAMETERS_PER_MENU from the start
   and never moves, every allocation is checked, and the menus change only under
   AP_CRSF_Telem's scr_sem, which the CRSF thread holds while it reads them.
-  Scripting host thread only.
+  The scripting host thread or its slow worker, one at a time (the host waits
+  for the worker).
  */
 
 #include <AP_RCTelemetry/AP_RCTelemetry_config.h>

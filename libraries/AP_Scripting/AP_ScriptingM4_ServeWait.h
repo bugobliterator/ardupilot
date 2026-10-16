@@ -165,22 +165,52 @@ private:
     uint16_t _resets = 0;
 };
 
+// gen-bindings -r's fast-lane method flag (ScriptingM4Remote::METHOD_FAST_LANE)
+static const uint8_t METHOD_FLAG_FAST_LANE = 0x04;
+
 /*
   Which thread serves a frame. The host's fast lane, above the I/O threads, takes only what does
   fixed work with no file, storage, SD or bus access: the generated methods marked so
-  (gen-bindings -r METHOD_FAST_LANE, binding_fast here), m4:noop, m4:run_stats and the Stats
-  rows. Everything else, unclassified methods included, goes to the slow worker below the I/O
-  threads. A frame that is no M4 request is a protocol error, counted on the fast lane.
+  (METHOD_FAST_LANE, binding_fast here), m4:noop, m4:run_stats and the Stats rows, and the M7 ->
+  M4 types, which only count a protocol error. Everything else, unclassified methods and frame
+  types included, goes to the slow worker below the I/O threads.
  */
 inline bool serve_on_fast_lane(MsgType type, uint16_t method, bool binding_fast)
 {
-    if (type != MsgType::Call && type != MsgType::Notify) {
+    switch (type) {
+    case MsgType::Stats:
+    case MsgType::Reply:
+    case MsgType::FaultInject:
+    case MsgType::Ready:
         return true;
+    case MsgType::Call:
+    case MsgType::Notify:
+        if (method >= FIRST_BINDING_METHOD) {
+            return binding_fast;
+        }
+        return method == uint16_t(SystemMethod::Noop) || method == uint16_t(SystemMethod::RunStats);
     }
-    if (method >= FIRST_BINDING_METHOD) {
-        return binding_fast;
+    return false;
+}
+
+// the lane of one frame as it came off the ring; method_flags is the generated table's lookup
+// (ScriptingM4Remote::method_flags(), 0 for a method this M7 does not have). A frame that does
+// not parse goes to the worker, whose handle_message() counts it
+inline bool frame_on_fast_lane(const uint8_t *buf, uint16_t len, uint8_t (*method_flags)(uint16_t))
+{
+    MsgHeader header;
+    if (!parse_header(buf, len, header)) {
+        return false;
     }
-    return method == uint16_t(SystemMethod::Noop) || method == uint16_t(SystemMethod::RunStats);
+    const MsgType type = MsgType(header.type);
+    uint16_t method = 0;
+    if (type == MsgType::Call || type == MsgType::Notify) {
+        CallHeader call;
+        memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(CallHeader)
+        method = call.method;
+    }
+    const bool binding_fast = method >= FIRST_BINDING_METHOD && (method_flags(method) & METHOD_FLAG_FAST_LANE) != 0;
+    return serve_on_fast_lane(type, method, binding_fast);
 }
 
 // a call whose string arguments are filesystem paths (gen-bindings -r METHOD_PATH_ARGS: fs:crc32,

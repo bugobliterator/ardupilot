@@ -1,13 +1,16 @@
 -- M4 scripting tests (ScriptingM4FloodCap, arducopter.py): heavy frames for the M7's slow worker.
 -- Reads @SYS/tasks.txt (the M7 generates it per open) as fast as the round trips allow, and
 -- tries fs:crc32 on @SYS/threads.txt, which the M7 refuses (nil). Once a second the counts go
--- out as text
+-- out as text. It pauses while SCR_USER1 is 1 (m4_sys_attack.lua's window)
 local reads = 0
 local crc_tries = 0
 local crc_refused = 0
 local last_report_ms = millis()
 
 local function update()
+  if param:get("SCR_USER1") == 1 then
+    return update, 100   -- m4_sys_attack.lua's window: its loop alone sets the rate
+  end
   for _ = 1, 10 do
     local file = io.open("@SYS/tasks.txt", "r")
     if file then

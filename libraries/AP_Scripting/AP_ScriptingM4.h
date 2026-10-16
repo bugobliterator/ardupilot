@@ -24,6 +24,13 @@ class Channel;
   operations never block, ring-full is a counted drop, and the host thread
   waits only on its own doorbell semaphore, with a timeout.
  */
+namespace ScriptingM4 {
+// thread_create() offsets: the host on PRIORITY_UART, the slow worker on PRIORITY_IO (on ChibiOS
+// 61 and 56; the bounds are checked in AP_ScriptingM4_ChibiOS.cpp)
+static const int8_t HOST_PRIORITY_OFFSET = 1;
+static const int8_t WORKER_PRIORITY_OFFSET = -2;
+}
+
 class AP_ScriptingM4 {
 public:
     AP_ScriptingM4();
@@ -144,8 +151,9 @@ private:
     uint32_t _host_cpu_us;             // host thread CPU time, what the duty cap charges
     uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
     uint32_t _pass_cpu_max_us;         // the largest CPU time of one pass
-    uint16_t _slow_requests;           // frames the slow worker served
+    uint32_t _slow_requests;           // frames the slow worker served
     uint32_t _slow_max_us;             // the longest of them, wall time
+    uint32_t _slow_cpu_max_us;         // the most CPU one of them used
     bool _summary_enabled;
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ScriptingM4::ServeDutyCap _duty_cap;
@@ -153,11 +161,15 @@ private:
     ScriptingM4::HostCpuCharge _cpu_charge { CONFIG_HAL_BOARD != HAL_BOARD_SITL };
 
     // the slow worker, below the I/O threads, serves the frames the fast lane does not
-    // (serve_on_fast_lane()): the host hands it one frame (_rx_frame) and waits for it, so the
+    // (frame_on_fast_lane()): the host hands it one frame (_rx_frame) and waits for it, so the
     // M4 sees its replies in order and only one of the two threads runs the server at a time
     HAL_BinarySemaphore _worker_request;
     HAL_BinarySemaphore _worker_done;
     uint16_t _worker_len;
+    // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
+    // after _worker_done
+    ScriptingM4::HostCpuCharge _worker_cpu_charge { false };
+    uint32_t _worker_used_us;
 
     struct {
         uint32_t count;           // calls timed since the last summary

@@ -3101,10 +3101,12 @@ static const char *remote_fast_types[] = {
   "AP_Follow", "AP_Mount", "QuadPlane", "Sub", "ScriptingLED",
   NULL };
 static const char *remote_fast_manual[] = { "lua_millis", "lua_micros", NULL };
-// methods of those types that stay on the slow worker: they can write storage
+// methods of those types that stay on the slow worker: they can write storage or run unbounded work
 static const char *remote_slow_methods[] = {
   "AP_AHRS:set_home",                // the vehicle saves home with the mission
   "RC_Channels:run_aux_function",    // any auxiliary function: saving a waypoint, resetting the mission, ...
+  "AP_Vehicle:set_mode",             // the new mode's init: starting a mission, unbounded per mode
+  "AP_Vehicle:reboot",               // flushes parameters, stops logging, unmounts the SD card
   NULL };
 static int remote_slow_method_matched[sizeof(remote_slow_methods) / sizeof(remote_slow_methods[0])];
 // singletons whose string arguments are filesystem paths: the M7 checks them as m4:fs_open does
@@ -4583,7 +4585,8 @@ static void remote_emit_dispatch(FILE *f) {
         "{\n"
         "    return method_available(method) ? remote_method_flags[method - ScriptingM4::FIRST_BINDING_METHOD] : 0;\n"
         "}\n\n"
-        "// scripting host thread only: run() keeps the call in a static, and the handle\n"
+        "// the scripting host thread or its slow worker, one at a time (the host waits for the\n"
+        "// worker): run() keeps the call in a static, and the handle\n"
         "// table's reset(session) must never run while a call is in progress\n"
         "ReplyStatus dispatch(uint16_t method, const RpcValue *args, uint8_t argc, RemoteCall &call,\n"
         "                     RpcWriter &results, uint8_t &error_arg)\n"

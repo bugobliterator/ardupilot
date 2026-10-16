@@ -26,12 +26,16 @@ namespace PeerHeader = CubePilotFW::PeerHeader;
 
 // the host thread runs at UART priority + 1, the interrupt only signals it
 static const uint8_t HSEM_IRQ_PRIORITY = 12;
-static_assert(APM_UART_PRIORITY + 1 > APM_STORAGE_PRIORITY && APM_UART_PRIORITY + 1 > APM_IO_PRIORITY &&
-              APM_UART_PRIORITY + 1 > APM_NET_PRIORITY && APM_UART_PRIORITY + 1 < APM_I2C_PRIORITY,
+static constexpr int HOST_PRIORITY = APM_UART_PRIORITY + ScriptingM4::HOST_PRIORITY_OFFSET;
+static constexpr int WORKER_PRIORITY = APM_IO_PRIORITY + ScriptingM4::WORKER_PRIORITY_OFFSET;
+static_assert(HOST_PRIORITY > APM_STORAGE_PRIORITY && HOST_PRIORITY > APM_IO_PRIORITY &&
+              HOST_PRIORITY > APM_NET_PRIORITY && HOST_PRIORITY > APM_UART_PRIORITY && HOST_PRIORITY < APM_I2C_PRIORITY,
               "the M4 host thread sits above the I/O threads and below vehicle timing");
-static_assert(APM_IO_PRIORITY - 1 < APM_IO_PRIORITY && APM_IO_PRIORITY - 1 < APM_STORAGE_PRIORITY &&
-              APM_IO_PRIORITY - 1 < APM_UART_PRIORITY && APM_IO_PRIORITY - 1 > LOWPRIO,
-              "the M4 slow worker sits below the I/O threads");
+// below io - 1, which the OA path planner, the mount POI thread and SmartAudio use; no other
+// thread runs at io - 2 (56)
+static_assert(WORKER_PRIORITY < APM_IO_PRIORITY - 1 && WORKER_PRIORITY < APM_STORAGE_PRIORITY &&
+              WORKER_PRIORITY < APM_UART_PRIORITY && WORKER_PRIORITY > APM_STARTUP_PRIORITY && WORKER_PRIORITY > LOWPRIO,
+              "the M4 slow worker sits below the I/O threads and their io - 1 peers");
 
 bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
 {

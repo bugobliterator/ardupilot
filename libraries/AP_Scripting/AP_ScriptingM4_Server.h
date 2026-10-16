@@ -23,9 +23,10 @@
   generated binding calls (ids from FIRST_BINDING_METHOD) with their quotas,
   handles and owned objects. Arguments come from the untrusted M4 and are
   checked as luaL_check* does in-process, with the same texts.
-  Runs on the scripting host thread; arming_checks() and the checksums are
-  also read from other threads. handle() and reset() are host thread only:
-  the generated dispatch keeps per-call state that no other thread may touch.
+  Runs on the scripting host thread or its slow worker, one at a time (the
+  host hands the worker a frame and waits); arming_checks() and the checksums
+  are also read from other threads. handle() and reset() run on those two
+  only, never at once: the generated dispatch keeps per-call state.
  */
 class AP_ScriptingM4_Server {
 public:
@@ -81,7 +82,7 @@ private:
     void list_dir(const char *dirname);
     void close_file();
 
-    // written by the host thread only, so its own reads need no lock; the
+    // written by the host thread or its worker only, one at a time, so their reads need no lock; the
     // checksums are read from other threads under _table_sem
     ScriptingM4::ScriptTable _table;
     mutable HAL_Semaphore _table_sem;

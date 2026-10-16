@@ -116,7 +116,7 @@ int AP_HAL__I2CDevice_read_registers(lua_State *L)
 
     uint8_t data[UINT8_MAX];   // in-process a variable-length array of recv_length
 
-    // byte cap, bus time and bounded take: the host thread never waits past 900 ms (I2C_* in Remote.h)
+    // byte cap, bus time and bounded take: the serving thread never waits past 900 ms (I2C_* in Remote.h)
     if (!i2c_transfer_fits(1, recv_length)) {
         return 0;
     }

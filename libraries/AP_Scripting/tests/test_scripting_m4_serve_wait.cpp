@@ -1,5 +1,15 @@
 #include <AP_gtest.h>
+#include <AP_Scripting/AP_Scripting_config.h>
 #include <AP_Scripting/AP_ScriptingM4_ServeWait.h>
+#if AP_SCRIPTING_M4_ENABLED
+#include <AP_Scripting/AP_ScriptingM4_Bindings.h>
+#include <AP_Scripting/AP_ScriptingM4_Remote.h>
+// the M4's tables as gen-bindings -r wrote them for this tree (the M7 links no copy)
+#include <AP_Scripting/lua_remote_tables.cpp>
+#include <AP_HAL/AP_HAL.h>
+// method_flags() comes with the generated dispatch, which needs the HAL to link
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+#endif
 
 using namespace ScriptingM4;
 
@@ -413,7 +423,108 @@ TEST(ScriptingM4ServeWait, FastLaneTakesOnlyBoundedFrames)
     }
     EXPECT_FALSE(serve_on_fast_lane(MsgType::Call, 60, true));   // no system method yet: the worker
     EXPECT_TRUE(serve_on_fast_lane(MsgType::Stats, 0, false));
+    // M7 -> M4 types only count a protocol error; a type no M7 knows fails closed
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::Reply, 0, false));
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::FaultInject, 0, false));
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::Ready, 0, false));
+    EXPECT_FALSE(serve_on_fast_lane(MsgType(99), 0, true));
+    EXPECT_FALSE(serve_on_fast_lane(MsgType(0), 0, true));
 }
+
+/*
+  The worker's CPU is charged to the same duty cap as the host's: a script looping a frame that
+  runs 40 ms of CPU on the worker (fs:crc32 of a large file) for every 50 us host hand-off. The
+  CPU actually used, host and worker, stays within the cap; were the worker's charge left out,
+  the host's hand-offs alone would never pause it
+ */
+TEST(ScriptingM4ServeWait, WorkerCpuIsCharged)
+{
+    for (const bool charge_worker : { true, false }) {
+        ServeDutyCap cap;
+        HostCpuCharge worker { false };
+        uint32_t now = 1000;
+        uint64_t used = 0;
+        uint64_t worker_clock = 0;
+        EXPECT_EQ(cap.wait_us(now), 0U);
+        const uint32_t start = now;
+        while (now - start < 20000000U) {
+            const uint32_t wait = cap.wait_us(now);
+            if (wait != 0) {
+                now += wait < 10000U ? wait : 10000U;
+                continue;
+            }
+            cap.charge(50U);   // the host's pass: the hand-off
+            IGNORE_RETURN(worker.pass_start(worker_clock, false, now));
+            worker_clock += 40000U;
+            now += 40050U;
+            const uint32_t worker_us = worker.pass_end(worker_clock, false, now);
+            if (charge_worker) {
+                cap.charge(worker_us);
+            }
+            used += 40050U;
+        }
+        const uint64_t ppm = used * 1000000U / (now - start);
+        if (charge_worker) {
+            EXPECT_LE(ppm, ServeDutyCap::SHARE_PERCENT * 10000U + (40050U + ServeDutyCap::BURST_US) * uint64_t(1000000U) / 20000000U);
+        } else {
+            EXPECT_GT(ppm, 900000U);   // nearly all of the time
+        }
+    }
+}
+
+#if AP_SCRIPTING_M4_ENABLED
+// the lane of real frames against the flags gen-bindings -r wrote for this tree: kills a lane
+// decision that ignores, inverts or misreads METHOD_FAST_LANE
+static uint16_t binding_method(const char *type_name, const char *row_name)
+{
+    for (uint8_t id = 1; id <= BINDING_TYPE_COUNT; id++) {
+        const BindingType &type = binding_types[id - 1];
+        if (strcmp(type.name, type_name) != 0) {
+            continue;
+        }
+        for (uint16_t i = type.first_row; i < type.first_row + type.row_count; i++) {
+            if (strcmp(binding_rows[i].name, row_name) == 0) {
+                return binding_rows[i].method;
+            }
+        }
+    }
+    return 0;
+}
+
+static bool call_frame_on_fast_lane(uint16_t method, MsgType type = MsgType::Call)
+{
+    CallHeader call {};
+    fill_header(call.header, type, sizeof(call), 1);
+    call.method = method;
+    uint8_t buf[sizeof(call)];
+    memcpy(buf, &call, sizeof(call));
+    return frame_on_fast_lane(buf, sizeof(buf), ScriptingM4Remote::method_flags);
+}
+
+TEST(ScriptingM4ServeWait, GeneratedFlagsChooseTheLane)
+{
+    const uint16_t millis = binding_method("global", "millis");
+    const uint16_t get_location = binding_method("ahrs", "get_location");
+    const uint16_t crc32 = binding_method("fs", "crc32");
+    const uint16_t param_get = binding_method("param", "get");
+    const uint16_t set_mode = binding_method("vehicle", "set_mode");
+    const uint16_t reboot = binding_method("vehicle", "reboot");
+    for (const uint16_t method : { millis, get_location, crc32, param_get, set_mode, reboot }) {
+        ASSERT_GE(method, FIRST_BINDING_METHOD);
+    }
+    EXPECT_TRUE(call_frame_on_fast_lane(millis));
+    EXPECT_TRUE(call_frame_on_fast_lane(get_location));
+    EXPECT_TRUE(call_frame_on_fast_lane(get_location, MsgType::Notify));
+    EXPECT_FALSE(call_frame_on_fast_lane(crc32));
+    EXPECT_FALSE(call_frame_on_fast_lane(param_get));
+    EXPECT_FALSE(call_frame_on_fast_lane(set_mode));
+    EXPECT_FALSE(call_frame_on_fast_lane(reboot));
+    // a method id this M7 does not have, and a frame that does not parse: the worker
+    EXPECT_FALSE(call_frame_on_fast_lane(uint16_t(FIRST_BINDING_METHOD + BINDING_METHOD_COUNT)));
+    const uint8_t short_frame[3] = { uint8_t(MsgType::Call), 0, 3 };
+    EXPECT_FALSE(frame_on_fast_lane(short_frame, sizeof(short_frame), ScriptingM4Remote::method_flags));
+}
+#endif  // AP_SCRIPTING_M4_ENABLED
 
 // fs:crc32 and fs:stat: their paths are checked as m4:fs_open's
 TEST(ScriptingM4ServeWait, PathArgumentsAreChecked)
