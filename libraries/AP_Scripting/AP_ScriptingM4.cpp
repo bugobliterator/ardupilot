@@ -142,6 +142,7 @@ void AP_ScriptingM4::host_thread()
                 _slow_requests = 0;
                 _slow_max_us = 0;
                 _slow_cpu_max_us = 0;
+                _slow_refused = 0;
             }
             hal.scheduler->delay(100);
             continue;
@@ -186,6 +187,7 @@ void AP_ScriptingM4::host_thread()
         // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
         // runs every platform_wait_us()) serves nothing
         if (_duty_cap.wait_us(_woke_us) == 0) {
+            _duty_cap.pass_started(_woke_us);
             last = serve();
         }
         const uint32_t now_ms = AP_HAL::millis();
@@ -219,6 +221,7 @@ void AP_ScriptingM4::host_thread()
             _slow_requests = 0;
             _slow_max_us = 0;
             _slow_cpu_max_us = 0;
+            _slow_refused = 0;
         }
     }
 }
@@ -279,6 +282,41 @@ void AP_ScriptingM4::serve_on_worker(uint16_t len)
     _slow_cpu_max_us = MAX(_slow_cpu_max_us, _worker_used_us);
 }
 
+/*
+  In a pass the duty cap allows while its debt is beyond MAX_DEBT_US: a binding call (Call or
+  Notify) that would go to the slow worker is not run. A call gets an Error reply at once, which
+  the M4 raises as a Lua error in the calling script; a notify is dropped, as over its quota.
+  False for anything else (system methods, which do bounded work per frame, and frames that do not
+  parse), which the worker serves as usual
+ */
+bool AP_ScriptingM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
+{
+    using namespace ScriptingM4;
+    const uint32_t start_us = AP_HAL::micros();
+    MsgHeader header;
+    if (!parse_header(buf, len, header) ||
+        (MsgType(header.type) != MsgType::Call && MsgType(header.type) != MsgType::Notify)) {
+        return false;
+    }
+    CallHeader call;
+    memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(CallHeader)
+    if (call.method < FIRST_BINDING_METHOD) {
+        return false;
+    }
+    _requests++;
+    _session_calls++;
+    _slow_refused++;
+    if (MsgType(header.type) == MsgType::Notify) {
+        return true;
+    }
+    static const char refused[] = "M4: M7 duty cap: heavy call refused";
+    RpcWriter results;
+    results.begin(_tx_frame, sizeof(_tx_frame), sizeof(ReplyHeader));
+    results.string(refused, sizeof(refused) - 1);
+    send_reply(header, ReplyStatus::Error, results, 0, start_us);
+    return true;
+}
+
 // listening: the ring was empty with the asleep flag set, so the M4 rings for its next frame
 void AP_ScriptingM4::pause_for_duty_cap(uint32_t pause_us, bool listening)
 {
@@ -321,7 +359,7 @@ AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
         }
         if (on_fast_lane(_rx_frame, len)) {
             handle_message(_rx_frame, len);
-        } else {
+        } else if (!_duty_cap.refuses_slow_bindings() || !refuse_slow_binding(_rx_frame, len)) {
             serve_on_worker(len);
         }
         if (AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
@@ -380,6 +418,14 @@ void AP_ScriptingM4::handle_call(const uint8_t *buf, uint16_t len, const Scripti
     if (MsgType(header.type) == MsgType::Notify) {
         return;
     }
+    send_reply(header, status, results, error_arg, start_us);
+}
+
+// a reply to a call: the results written after the header's room, or an error if they did not fit
+void AP_ScriptingM4::send_reply(const ScriptingM4::MsgHeader &header, ScriptingM4::ReplyStatus status,
+                                ScriptingM4::RpcWriter &results, uint8_t error_arg, uint32_t start_us)
+{
+    using namespace ScriptingM4;
     if (!results.ok()) {
         static const char too_large[] = "M4: results too large";
         results.begin(_tx_frame, sizeof(_tx_frame), sizeof(ReplyHeader));
@@ -482,11 +528,12 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     // @Field: SlowReq: frames the slow worker served in the last second
     // @Field: SlowMax: the longest of them, wall time in microseconds
     // @Field: SlowCPU: the largest CPU time of one of them, in microseconds (charged to the duty cap with the host's)
-    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax,SlowCPU", "s------",
-                                "F------", "QIHHIII", AP_HAL::micros64(), _pass_cpu_max_us,
+    // @Field: SlowRef: binding calls for the slow worker refused unrun in the last second, the duty cap's debt being beyond 50 ms
+    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax,SlowCPU,SlowRef", "s-------",
+                                "F-------", "QIHHIIII", AP_HAL::micros64(), _pass_cpu_max_us,
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
-                                _slow_max_us, _slow_cpu_max_us);
+                                _slow_max_us, _slow_cpu_max_us, _slow_refused);
 #endif
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {

@@ -9,12 +9,15 @@ namespace ScriptingM4 {
 /*
   Token bucket on the host thread's CPU time. Credit accrues at SHARE_PERCENT
   of elapsed wall time up to BURST_US; each pass is charged in full for the
-  CPU time it used, so credit goes negative by that much; once the time the
-  pass took has earned its credit, debt beyond MAX_DEBT_US is forgiven. While
-  credit is below RESUME_US the host serves nothing, however many frames are
-  pending.
+  CPU time it used, so credit goes negative by that much. While credit is
+  below RESUME_US the host serves nothing, however many frames are pending.
   Time a binding spends blocked (a semaphore, the SD card) yields the CPU to
   other threads and is not charged; a binding that spins is.
+  One long worker frame (fs:crc32 of a large file) can leave a debt that
+  would pause serving past the M4's call timeout. Below -MAX_DEBT_US the debt
+  stays, but a pass is still allowed every MAX_PAUSE_US, in which the host
+  refuses binding calls for the slow worker (refuses_slow_bindings()): cheap
+  calls are answered, heavy ones fail until the debt is paid down.
  */
 class ServeDutyCap {
 public:
@@ -22,9 +25,7 @@ public:
     static constexpr int32_t BURST_US = 2000;
     // a pass is at most MAX_SERVE_US plus one frame: start one only with that much credit
     static constexpr int32_t RESUME_US = 200;
-    // debt is floored here so that one long frame (fs:crc32 of a large file on the worker)
-    // pauses serving for at most about 0.5 s, well inside the M4's call timeout; frames up to
-    // about this long still keep the share
+    // the deepest debt that is paid down by pausing alone
     static constexpr int32_t MAX_DEBT_US = 50000;
 
     void charge(uint32_t busy_us)
@@ -32,21 +33,35 @@ public:
         _credit_us -= busy_us;
     }
 
-    // the longest the cap pauses serving, however long the frame charged before it
+    // the longest the cap pauses serving, however deep the debt
     static constexpr uint32_t MAX_PAUSE_US = uint32_t(RESUME_US + MAX_DEBT_US) * (100U / SHARE_PERCENT);
 
     // 0 when a pass may start now, else the microseconds until it may
     uint32_t wait_us(uint32_t now_us)
     {
         refill(now_us);
-        if (_credit_us < -MAX_DEBT_US) {
-            _credit_us = -MAX_DEBT_US;
-        }
         if (_credit_us >= RESUME_US) {
             return 0;
         }
-        const int64_t wait = (RESUME_US - _credit_us) * int64_t(TIME_PER_CREDIT);
-        return wait > int64_t(UINT32_MAX) ? UINT32_MAX : uint32_t(wait);
+        if (refuses_slow_bindings()) {
+            // a debt pass: one every MAX_PAUSE_US since the previous pass started
+            const uint32_t since_us = now_us - _pass_us;
+            return since_us >= MAX_PAUSE_US ? 0 : MAX_PAUSE_US - since_us;
+        }
+        // at most MAX_PAUSE_US
+        return uint32_t((RESUME_US - _credit_us) * int64_t(TIME_PER_CREDIT));
+    }
+
+    // the host starts a pass, wait_us() having returned 0
+    void pass_started(uint32_t now_us)
+    {
+        _pass_us = now_us;
+    }
+
+    // the debt is too deep to run binding calls on the slow worker: they are refused unrun
+    bool refuses_slow_bindings() const
+    {
+        return _credit_us < -MAX_DEBT_US;
     }
 
     int64_t credit_us() const { return _credit_us; }
@@ -62,6 +77,7 @@ private:
         if (!_started) {
             _started = true;   // the first call starts the clock: no credit for time before it
             _refilled_us = now_us;
+            _pass_us = now_us;
             return;
         }
         const uint32_t earned_us = (now_us - _refilled_us) / TIME_PER_CREDIT;
@@ -75,6 +91,7 @@ private:
 
     int64_t _credit_us = BURST_US;
     uint32_t _refilled_us = 0;
+    uint32_t _pass_us = 0;
     bool _started = false;
 };
 

@@ -75,9 +75,12 @@ private:
     ServeResult serve();
     bool on_fast_lane(const uint8_t *buf, uint16_t len) const;
     void serve_on_worker(uint16_t len);
+    bool refuse_slow_binding(const uint8_t *buf, uint16_t len);
     void charge_cpu(bool pass_end);
     void handle_message(const uint8_t *buf, uint16_t len);
     void handle_call(const uint8_t *buf, uint16_t len, const ScriptingM4::MsgHeader &header, uint32_t start_us);
+    void send_reply(const ScriptingM4::MsgHeader &header, ScriptingM4::ReplyStatus status,
+                    ScriptingM4::RpcWriter &results, uint8_t error_arg, uint32_t start_us);
     void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
     void log_supervisor(uint32_t now_ms, uint32_t elapsed_ms);
@@ -154,6 +157,7 @@ private:
     uint32_t _slow_requests;           // frames the slow worker served
     uint32_t _slow_max_us;             // the longest of them, wall time
     uint32_t _slow_cpu_max_us;         // the most CPU one of them used
+    uint32_t _slow_refused;            // binding calls for the worker refused unrun: duty-cap debt too deep
     bool _summary_enabled;
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ScriptingM4::ServeDutyCap _duty_cap;
