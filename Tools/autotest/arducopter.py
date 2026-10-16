@@ -22198,7 +22198,7 @@ RTL_ALT_M 111
         self.reboot_sitl()
 
     def ScriptingM4FloodCap(self):
-        '''an M4 request flood and heavy frames in flight: heavy frames go to the slow worker, @SYS/threads.txt is refused'''
+        '''M4 floods and heavy frames in flight: heavy frames go to the slow worker and are charged to the duty cap'''
         self.context_push()
         self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process and the duty cap run on wall-clock time
         self.context_collect("STATUSTEXT")
@@ -22210,7 +22210,12 @@ RTL_ALT_M 111
         # thread statistics the duty cap charges
         # m4_sys_heavy.lua reads @SYS/tasks.txt as fast as it can (slow worker frames) and tries
         # fs:crc32("@SYS/threads.txt"), which is refused as well
-        self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua", "m4_sys_heavy.lua"])
+        # m4_sys_attack.lua loops fs:crc32 over a 2 MB file while SCR_USER1 is 1: the slow worker's
+        # CPU, charged to the duty cap, pauses it to its share
+        self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua", "m4_sys_heavy.lua", "m4_sys_attack.lua"])
+        big_file = self.installed_script_path("m4_big.bin")
+        with open(big_file, "wb") as f:
+            f.write(os.urandom(2 * 1024 * 1024))
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
         self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
@@ -22235,6 +22240,14 @@ RTL_ALT_M 111
         reads, crc_refused, crc_tries = [int(n) for n in re.findall(r"\d+", text.text.split("heavy")[1])]
         if reads == 0 or crc_tries == 0 or crc_refused != crc_tries:
             raise NotAchievedException("M4 heavy frames: %s" % text.text)
+        # the attack window: fs:crc32 of the large file in a loop
+        self.set_parameter("SCR_USER1", 1)
+        self.wait_statustext(r"M4 attack crc32 \d+", regex=True, check_context=True, timeout=10)
+        self.delay_sim_time(15, reason="M4 fs:crc32 loop")
+        self.set_parameter("SCR_USER1", 0)
+        self.assert_mode("LOITER")
+        if not self.armed():
+            raise NotAchievedException("disarmed during the M4 fs:crc32 loop")
         self.land_and_disarm()
 
         dfreader = self.dfreader_for_current_onboard_log()
@@ -22249,6 +22262,9 @@ RTL_ALT_M 111
         slow_max = 0
         row_cpu = None   # M4ST.CPU of the row M4HP follows (log_supervisor() writes them in turn)
         cpu_over_wall = 0
+        cpu_over_cap = []
+        slow_cpu_max = 0
+        capped_rows = []
         while True:
             m = dfreader.recv_match(type=["M4ST", "DSF", "M4HP"])
             if m is None:
@@ -22262,9 +22278,14 @@ RTL_ALT_M 111
                 stats_resets += m.StatsReset
                 slow_requests += m.SlowReq
                 slow_max = max(slow_max, m.SlowMax)
-                # the charged CPU is inside the bracket WallBusy times
-                if row_cpu is not None and row_cpu > m.WallBusy + 2:
-                    cpu_over_wall += 1
+                slow_cpu_max = max(slow_cpu_max, m.SlowCPU)
+                if row_cpu is not None:
+                    # SITL charges passes only: the charged CPU is inside the bracket WallBusy times
+                    if row_cpu > m.WallBusy + 2:
+                        cpu_over_wall += 1
+                    # within the cap: 10 %, the 2 ms burst, and the one pass the cap charges after it ran
+                    if row_cpu > 102 + (m.PassMax + m.SlowCPU) // 1000:
+                        cpu_over_cap.append((row_cpu, m.PassMax, m.SlowCPU))
                 row_cpu = None
                 continue
             if m.St != 2:
@@ -22273,6 +22294,8 @@ RTL_ALT_M 111
             cpu_max = max(cpu_max, m.CPU)
             row_cpu = m.CPU
             cap_hits += m.Cap
+            if m.Cap > 0:
+                capped_rows.append(m.CPU)
         self.progress("M4 flood: most requests in one second %u, host CPU at most %u per mille, "
                       "duty cap pauses %u, DSF dropped %u" % (requests_max, cpu_max, cap_hits, dropped))
         self.progress("M4 host passes: one pass at most %u us of CPU, wall time at most %u per mille, "
@@ -22283,13 +22306,22 @@ RTL_ALT_M 111
             raise NotAchievedException("slow worker served %u frames: heavy frames ran on the fast lane" % slow_requests)
         if cpu_over_wall != 0:
             raise NotAchievedException("M4ST.CPU above M4HP.WallBusy in %u rows" % cpu_over_wall)
+        # the fs:crc32 loop ran on the worker, its CPU was charged, and the cap paused it
+        self.progress("M4 attack: heaviest worker frame %u us of CPU, %u rows with cap pauses, their CPU %s" %
+                      (slow_cpu_max, len(capped_rows), capped_rows))
+        if slow_cpu_max < 2000:
+            raise NotAchievedException("no heavy worker frame (%u us): the fs:crc32 loop did not run" % slow_cpu_max)
+        if len(capped_rows) < 5:
+            raise NotAchievedException("the cap paused %u rows: the worker's CPU is not charged" % len(capped_rows))
+        if sum(capped_rows) / len(capped_rows) < 50:
+            raise NotAchievedException("capped rows average %.0f per mille of CPU" % (sum(capped_rows) / len(capped_rows)))
+        if cpu_over_cap:
+            raise NotAchievedException("M4ST.CPU over the duty cap: %s" % cpu_over_cap)
         if requests_max <= 256:
             raise NotAchievedException("M4ST requests at most %u/s: no request flood reached the M7" % requests_max)
-        # 10 % of the CPU, plus the 2 ms burst and one pass in a one-second row
-        if cpu_max > 105:
-            raise NotAchievedException("M4 host CPU %u per mille: over its duty cap" % cpu_max)
         if dropped != 0:
             raise NotAchievedException("DSF dropped %u blocks during the M4 flood" % dropped)
+        os.unlink(big_file)
         self.context_pop()
         self.reboot_sitl()
 
