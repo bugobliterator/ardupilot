@@ -17,7 +17,8 @@
   untrusted M4 and are checked here (check_script_path(), FileTable). Failures
   are replies with a negative errno, so the M4's io library returns its usual
   nil, text, errno. Files belong to the M4 session: reset() closes them.
-  Host thread only.
+  The scripting host thread or its slow worker, one at a time (file frames
+  are served on the worker).
  */
 class AP_ScriptingM4_FileServer {
 public:

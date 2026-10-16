@@ -163,7 +163,7 @@ int AP_HAL__I2CDevice_transfer(lua_State *L)
 }
 
 // dev:set_retries(count): the generated method with the count capped at I2C_RETRIES_MAX, which
-// bounds the attempts of a transfer on the host thread (recorded deviation: in-process allows 20),
+// bounds the attempts of a transfer on the serving thread (recorded deviation: in-process allows 20),
 // and the bounded semaphore take
 int lua_m4_I2CDevice_set_retries(lua_State *L)
 {

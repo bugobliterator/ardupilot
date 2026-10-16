@@ -66,7 +66,7 @@ const CRSFAllocators crsf_heap { malloc, calloc };
 AP_CRSF_Telem::ScriptedMenu *crsf_make_menu(AP_CRSF_Telem &telem, AP_CRSF_Telem::ScriptedMenu *parent,
                                             const char *name, const CRSFAllocators &alloc)
 {
-    // the host thread is the only one that adds to a menu
+    // the host thread or its slow worker, one at a time, is the only one that adds to a menu
     if (parent != nullptr && !crsf_menu_has_room(parent->num_params)) {
         return nullptr;
     }

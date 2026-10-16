@@ -148,7 +148,7 @@ private:
     uint16_t _dropped;
     uint32_t _host_busy_us;
     uint16_t _duty_cap_hits;           // pauses the duty cap forced
-    uint32_t _host_cpu_us;             // host thread CPU time, what the duty cap charges
+    uint32_t _host_cpu_us;             // host and slow worker CPU time, what the duty cap charges
     uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
     uint32_t _pass_cpu_max_us;         // the largest CPU time of one pass
     uint32_t _slow_requests;           // frames the slow worker served

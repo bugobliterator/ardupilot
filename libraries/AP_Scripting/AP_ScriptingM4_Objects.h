@@ -6,7 +6,8 @@
   userdata; here it lives in a slot of this pool, the M4 userdata holds an
   owned handle to it (HandleTable), and the object is destroyed when the M4
   collects the userdata (m4:release), when the call that made it fails, or
-  when the M4 session ends. Host thread only; ReleaseQueue is the M4's end.
+  when the M4 session ends. The scripting host thread or its slow worker, one
+  at a time; ReleaseQueue is the M4's end.
   C++11, no ArduPilot dependencies (host unit tests).
  */
 
@@ -191,7 +192,8 @@ private:
 
 // objects the HAL hands out but never takes back (AnalogIn::channel()): those earlier M4 sessions
 // were handed are handed out again, in order, before make() is asked for a new one. Up to N are
-// kept; past that a new object is still handed out, as in-process. Host thread only
+// kept; past that a new object is still handed out, as in-process. The host thread or its slow
+// worker, one at a time
 template <typename T, uint8_t N> class SessionRecycler {
 public:
     template <typename Make> T *take(Make make)

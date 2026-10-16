@@ -58,7 +58,7 @@ struct BlobCodec {
     void (*encode)(WireWriter &writer, const void *object);
 };
 
-// I2C limits on the M7 host thread (AP_ScriptingM4_ManualI2C.cpp, and the generated methods of
+// I2C limits on the M7 serving thread (AP_ScriptingM4_ManualI2C.cpp, and the generated methods of
 // AP_HAL::I2CDevice, which take the semaphore for at most I2C_SEMAPHORE_WAIT_MS). ChibiOS times
 // a transfer out after 1 + 2 * (8e6 / busclock * bytes) / 1000 ms per attempt and makes
 // retries + 1 attempts, clearing the bus between them (20 x 10 us, under 1 ms). At the clock floor
@@ -152,7 +152,7 @@ bool i2c_bus_call(I2CBusBudget &budget, Semaphore &sem, Clock now_us, Run run)
     return done;
 }
 
-// CAN limits on the M7 host thread (AP_ScriptingM4_ManualCAN.cpp). write_frame() waits in
+// CAN limits on the M7 serving thread (AP_ScriptingM4_ManualCAN.cpp). write_frame() waits in
 // CANSensor::write_frame()'s select() for as long as the script asks; the port clamps the wait
 // (recorded deviation: in-process passes any timeout through)
 static const uint32_t CAN_WRITE_TIMEOUT_MAX_US = 900000;
@@ -342,7 +342,7 @@ void mavlink_end_session();
 //   (lockups, a deadlock, faults, a parameter-header wipe; AP_MAVLINK_FAILURE_CREATION_ENABLED) and
 //   DFU boot (p4 99). A plain reboot stays allowed;
 // - MAV_CMD_PREFLIGHT_STORAGE with p1 2 or 4 (erase all parameters) and MAV_CMD_STORAGE_FORMAT with
-//   p1 = p2 = 1 (format the SD card): destructive, and long on the host thread. The ground
+//   p1 = p2 = 1 (format the SD card): destructive, and long on the serving thread. The ground
 //   station keeps both
 static const uint16_t COMMAND_INT_PREFLIGHT_CALIBRATION = 241;   // MAV_CMD_PREFLIGHT_CALIBRATION
 static const uint16_t COMMAND_INT_PREFLIGHT_REBOOT_SHUTDOWN = 246;   // MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN
@@ -397,7 +397,7 @@ template <typename Packet> bool command_int_runs_on_the_host(const Packet &packe
 }
 
 // the result of gcs:run_command_int(): COMMAND_INT_DENIED, with run not called, for a command that
-// must not run on the host thread, else run()'s MAV_RESULT. The port calls this, so a test sees
+// must not run on the serving thread, else run()'s MAV_RESULT. The port calls this, so a test sees
 // the refusal and the call it guards
 template <typename Packet, typename Run> int command_int_result(const Packet &packet, Run run)
 {
@@ -468,7 +468,7 @@ int lua_DroneCAN_get_FlexDebug(lua_State *L);
 
 // logger:write() (AP_ScriptingM4_ManualLogger.cpp) checks what it is given before it asks the
 // logger for a message type, which takes a type and M7 memory for good; SITL's logger stops the
-// host thread on what these refuse (Write_calc_msg_len(): panic; validate_structure(): config_error)
+// serving thread on what these refuse (Write_calc_msg_len(): panic; validate_structure(): config_error)
 
 // the first character of text that allowed does not list, or nullptr
 inline const char *logger_ids_unsupported(const char *text, const char *allowed)
@@ -706,7 +706,8 @@ Buffer *take_CAN_buffer(ScriptingM4::SessionRecycler<Buffer, CAN_BUFFERS_PER_SES
 }
 
 // buffer:write_frame(frame, timeout_us)'s call, the timeout clamped. Back-to-back calls on a bus
-// that takes no frame keep the host thread busy up to 900 ms each (Bench Validation)
+// that takes no frame keep the serving thread (the slow worker) busy up to 900 ms each (Bench
+// Validation)
 template <typename Buffer, typename Frame> int CAN_write_frame(lua_State *L, Buffer &buffer, Frame &frame, int timeout_arg)
 {
     lua_pushboolean(L, buffer.write_frame(frame, can_write_timeout_argument(L, timeout_arg)));

@@ -6,7 +6,8 @@
   puts each quota'd method in a class (gen-bindings -r, remote_quotas[]); over
   its quota a void method is dropped, like a statustext that finds its queue
   full, and a boolean method returns false, its in-process failure value.
-  Host thread only. C++11, no ArduPilot dependencies (host unit tests).
+  The scripting host thread or its slow worker, one at a time. C++11, no
+  ArduPilot dependencies (host unit tests).
  */
 
 #include <stdint.h>

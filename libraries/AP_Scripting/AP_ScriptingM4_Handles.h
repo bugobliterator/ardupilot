@@ -13,7 +13,8 @@
     session reset; a socket's close() forgets its own entry;
   - owned: objects in the M7 object pool (AP_ScriptingM4_Objects.h), one
     entry per M4 userdata, retired when the M4 collects it (m4:release).
-  Host thread only. C++11, no ArduPilot dependencies (host unit tests).
+  The scripting host thread or its slow worker, one at a time. C++11, no
+  ArduPilot dependencies (host unit tests).
  */
 
 #include <stdint.h>

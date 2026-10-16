@@ -6,9 +6,9 @@
 
   Everything logger:write() takes is checked, and the row built, before msg_fmt_for_name() is
   asked for a message type: that takes a type and M7 memory for good, leaks its copy of the
-  strings when the row is too long, and on SITL stops the host thread on what it finds invalid.
+  strings when the row is too long, and on SITL stops the serving thread on what it finds invalid.
 
-  Waits on the host thread (the 900 ms rule): log_write_fmts_sem in msg_fmt_for_name(), and the
+  Waits on the serving thread (the 900 ms rule): log_write_fmts_sem in msg_fmt_for_name(), and the
   backend's write semaphore in WriteBlock(), each held by the main loop and the logging thread for
   one block, the wait of every vehicle log write; FileContent::sem in log_file_content() and
   file_content_queued(), held for one list operation (an allocation and copy, or an unlink): the
