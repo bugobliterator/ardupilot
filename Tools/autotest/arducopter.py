@@ -22210,13 +22210,14 @@ RTL_ALT_M 111
         # thread statistics the duty cap charges
         # m4_sys_heavy.lua reads @SYS/tasks.txt as fast as it can (slow worker frames) and tries
         # fs:crc32("@SYS/threads.txt"), which is refused as well
-        # m4_sys_attack.lua loops fs:crc32 over a 12 MB file while SCR_USER1 is 1: the slow worker's
-        # CPU, charged to the duty cap, pauses it to its share. One frame is over 50 ms of CPU, so
-        # the debt goes beyond the floor and further fs:crc32 calls are refused until it is paid down
+        # m4_sys_attack.lua loops fs:crc32 over a 24 MB file while SCR_USER1 is 1: the slow worker's
+        # CPU, charged to the duty cap, pauses it to its share. One frame is about 190 ms of CPU, a
+        # debt the cap cannot pay down within its 0.5 s longest pause, so the host serves a pass
+        # every 0.5 s and refuses the calls for the worker until the debt is back within 50 ms
         self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua", "m4_sys_heavy.lua", "m4_sys_attack.lua"])
         big_file = self.installed_script_path("m4_big.bin")
         with open(big_file, "wb") as f:
-            f.write(os.urandom(12 * 1024 * 1024))
+            f.write(os.urandom(24 * 1024 * 1024))
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
         self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
