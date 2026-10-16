@@ -122,8 +122,32 @@ static void sys_micros(struct port_extctx *ctx)
   kernel locked so that nothing else runs meanwhile. The Lua thread never gets
   that map: PRIVDEFENA applies to privileged accesses only.
  */
-static uint32_t read_outside_regions(const volatile uint32_t *address)
+enum class OutsideRegister : uint8_t {
+    Tim5Count,
+    Tim5Control,
+    Tim5AutoReload,
+    RccC1Apb1L,
+};
+
+// the registers are fixed here: no caller can pass an address
+static uint32_t read_outside_regions(OutsideRegister reg)
 {
+    const volatile uint32_t *address;
+    switch (reg) {
+    case OutsideRegister::Tim5Count:
+        address = &TIM5->CNT;
+        break;
+    case OutsideRegister::Tim5Control:
+        address = &TIM5->CR1;
+        break;
+    case OutsideRegister::Tim5AutoReload:
+        address = &TIM5->ARR;
+        break;
+    case OutsideRegister::RccC1Apb1L:
+    default:
+        address = &RCC_C1->APB1LENR;
+        break;
+    }
     chSysLock();
     const uint32_t control = MPU->CTRL;
     MPU->CTRL = control | MPU_CTRL_PRIVDEFENA_Msk;
@@ -137,12 +161,14 @@ static uint32_t read_outside_regions(const volatile uint32_t *address)
     return value;
 }
 
-// the M7 enables TIM5's clock (RCC_C1) and starts it in halInit(), before it releases this
-// core; another M7 image may not: then millis()/micros() stay remote calls
+// the M7 enables TIM5's clock (RCC_C1) and starts it in halInit() as its 32-bit system timer
+// (full-range ARR), before it releases this core. Any other use of TIM5 (another M7 image or
+// board, PWM) keeps millis()/micros() remote calls
 static bool m7_counter_started()
 {
-    return (read_outside_regions(&RCC_C1->APB1LENR) & RCC_APB1LENR_TIM5EN) != 0 &&
-           (read_outside_regions(&TIM5->CR1) & TIM_CR1_CEN) != 0;
+    return (read_outside_regions(OutsideRegister::RccC1Apb1L) & RCC_APB1LENR_TIM5EN) != 0 &&
+           (read_outside_regions(OutsideRegister::Tim5Control) & TIM_CR1_CEN) != 0 &&
+           read_outside_regions(OutsideRegister::Tim5AutoReload) == 0xFFFFFFFFU;
 }
 
 // this core's ticks are milliseconds (sys_millis without TIME_I2MS's 64-bit division)
@@ -150,7 +176,7 @@ static_assert(CH_CFG_ST_FREQUENCY == 1000, "sys_m7_time returns ticks as millise
 static void sys_m7_time(struct port_extctx *ctx)
 {
     ctx->r1 = uint32_t(chVTGetSystemTimeX());
-    ctx->r0 = m7_counter_running ? read_outside_regions(&TIM5->CNT) : 0;
+    ctx->r0 = m7_counter_running ? read_outside_regions(OutsideRegister::Tim5Count) : 0;
 }
 
 static void sys_sleep_ms(struct port_extctx *ctx)
@@ -352,7 +378,8 @@ void lua_port_start(LuaLink &link, binary_semaphore_t &wake, bool (*forward_post
     m7_counter_running = m7_counter_started();
     m7_time_available = m7_counter_running;
     chBSemObjectInit(&lua_done, true);
-    // below the service (the main thread, NORMALPRIO): the heartbeat never waits for Lua
+    // below the service (the main thread, NORMALPRIO): the heartbeat waits for Lua only for the
+// service mutex, held for one forward_call() with priority inheritance
     chThdCreateStatic(lua_wa, sizeof(lua_wa), NORMALPRIO - 1, lua_thread, nullptr);
 }
 

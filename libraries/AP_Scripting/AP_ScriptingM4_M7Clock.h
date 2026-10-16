@@ -11,7 +11,10 @@ namespace ScriptingM4 {
   and also needs the count of TIM5 wraps (one per 71.6 min), which TIM5 does
   not hold: the M4 takes it once from one M7 millis() value, then follows the
   wraps itself. A gap between reads longer than one wrap is found from the
-  M4's own millisecond clock, which runs from the same crystal.
+  M4's own millisecond clock, which runs from the same crystal. That clock
+  stops while the M4 core is halted (SWD) and TIM5 does not: a halt longer
+  than one wrap (71.6 min) leaves millis() behind by whole wraps until the
+  next M4 restart.
  */
 struct M7Clock {
     bool calibrated;

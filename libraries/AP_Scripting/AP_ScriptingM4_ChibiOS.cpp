@@ -19,6 +19,15 @@
 #error "M4 scripting needs a dual-core STM32H757"
 #endif
 
+// the M4 reads this core's AP_HAL::micros() as TIM5's count (m4/chibios/lua_port.cpp): the
+// system timer must be TIM5, 32 bits at 1 MHz, with no start offset
+static_assert(STM32_ST_USE_TIMER == 5, "M4 local micros() reads TIM5: the system timer must be TIM5");
+static_assert(CH_CFG_ST_RESOLUTION == 32 && CH_CFG_ST_FREQUENCY == 1000000,
+              "M4 local micros() reads TIM5 as a 32-bit 1 MHz count");
+#ifdef AP_BOARD_START_TIME
+#error "M4 local micros() is TIM5's count: AP_BOARD_START_TIME would offset the M7's micros() from it"
+#endif
+
 extern const AP_HAL::HAL& hal;
 
 using CubePilotFW::HwSemaphore;
