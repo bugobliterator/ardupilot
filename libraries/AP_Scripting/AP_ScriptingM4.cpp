@@ -452,9 +452,14 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         _server.reset(_m4_session);
         _session_calls = 0;
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
+        bool report_restart = !_restart_requested;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        // with Lua held or off the Net: texts report the restart
+        report_restart = report_restart && (!network_wanted() || lua_can_run());
+#endif
         if (_state == State::Starting) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: M4 started");
-        } else if (!_restart_requested) {
+        } else if (report_restart) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Scripting: M4 restarted (%u/%u)",
                           unsigned(_restarts_used), unsigned(restart_limit()));
         }
@@ -598,8 +603,11 @@ void AP_ScriptingM4::network_failure(bool carry_request)
         _lua_off_until_reboot = true;
     } else {
         _restarts_used++;
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 restarting (%u/%u)",
-                      unsigned(_restarts_used), unsigned(restart_limit()));
+        // with Lua held since boot the Net: texts report the restart
+        if (_lua_permitted) {
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 restarting (%u/%u)",
+                          unsigned(_restarts_used), unsigned(restart_limit()));
+        }
     }
     // a stop asked while a start fault was pending (as in failure())
     if (carry_request && lua_can_run() && take_run_request(0) == ScriptingM4::RunAction::Stop) {
@@ -689,8 +697,11 @@ void AP_ScriptingM4::request_restart(bool stopped)
 {
     _server.set_stopped(stopped);
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    // the whole M4 restarts, the network with it: a stopped session starts no Lua thread
-    store_lua_permit();
+    // the whole M4 restarts, the network with it: a stopped session starts no Lua thread.
+    // Without the network the stopped session runs Lua with an empty list, as on plain builds
+    if (network_wanted()) {
+        store_lua_permit();
+    }
 #endif
     _restart_requested = true;
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
@@ -732,7 +743,7 @@ bool AP_ScriptingM4::arming_checks(size_t buflen, char *buffer) const
         hal.util->snprintf(buffer, buflen, "Scripting: M4 fault limit, Lua off");
         return false;
     }
-    if (_state == State::Running && _server.stopped()) {
+    if (network_wanted() && _state == State::Running && _server.stopped()) {
         // stopped: no Lua thread runs to report its empty script list started
         return true;
     }
