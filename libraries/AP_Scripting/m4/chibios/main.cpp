@@ -198,7 +198,8 @@ static_assert(AP_SCRIPTING_M4_WINDOW_SIZE == (1U << (AP_SCRIPTING_M4_WINDOW_MPU_
 /*
   Spec §4. The Lua thread (unprivileged) reaches the image (RO+X) and Lua
   RAM; privileged code also reaches its own RAM, the window and the HSEM.
-  PRIVDEFENA=0: everything else (RCC, PWR, FLASH, AXI SRAM) faults for both;
+  PRIVDEFENA=0: everything else (RCC, PWR, FLASH, AXI SRAM) faults for both,
+  except one privileged read of TIM5 or RCC at a time (lua_port.cpp);
   the PPB (SCB, MPU, NVIC) is privileged-only in any case. Where regions
   overlap the higher number wins.
  */

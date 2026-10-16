@@ -73,6 +73,17 @@ uint32_t ScriptingM4::port_micros()
     return uint32_t(monotonic_us());
 }
 
+// the M7 is another process here: millis() and micros() stay remote calls
+bool ScriptingM4::port_m7_time_available()
+{
+    return false;
+}
+
+M7Counter ScriptingM4::port_m7_counter()
+{
+    return M7Counter { 0, port_millis() };
+}
+
 void ScriptingM4::port_sleep_ms(uint32_t ms)
 {
     struct timespec ts { time_t(ms / 1000), long(ms % 1000) * 1000000L };

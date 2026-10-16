@@ -19,6 +19,14 @@ namespace ScriptingM4 {
 int32_t port_call(const uint8_t *request, uint16_t request_len, uint8_t *reply, uint16_t reply_cap);
 uint32_t port_millis();
 uint32_t port_micros();
+// the M7's clock on this core: TIM5's count (the M7's AP_HAL::micros()) and port_millis(),
+// read together. Only where port_m7_time_available(): the ChibiOS image when TIM5 ran at start
+struct M7Counter {
+    uint32_t counter;
+    uint32_t local_ms;
+};
+bool port_m7_time_available();
+M7Counter port_m7_counter();
 void port_sleep_ms(uint32_t ms);
 // a fault the M7 asked the Lua thread to perform, FaultKind::None if none
 FaultKind port_fault_request();

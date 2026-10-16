@@ -14,7 +14,9 @@
 
 #include <string.h>
 #include <AP_ScriptingM4_Bindings.h>
+#include <AP_ScriptingM4_M7Clock.h>
 #include <AP_ScriptingM4_Objects.h>
+#include "m4_port.h"
 #include "m4_rpc_client.h"
 
 namespace ScriptingM4 {
@@ -559,6 +561,20 @@ static int cache_global(lua_State *L)
     return 1;
 }
 
+// pushes the stub of global function name, a row of Global-kind type id, if this firmware has it
+static bool push_global_stub(lua_State *L, uint8_t id, const char *name)
+{
+    const BindingType &type = type_of(id);
+    for (uint16_t i = type.first_row; i < type.first_row + type.row_count; i++) {
+        const BindingRow &row = binding_rows[i];
+        if (strcmp(row.name, name) == 0 && info_method_available(binding_info, row.method)) {
+            push_stub(L, row.method, row.flags, id);
+            return true;
+        }
+    }
+    return false;
+}
+
 // the sandbox's __index: singletons, constructors and global functions of the generated bindings
 static int global_index(lua_State *L)
 {
@@ -569,12 +585,8 @@ static int global_index(lua_State *L)
             continue;
         }
         if (BindingKind(type.kind) == BindingKind::Global) {
-            for (uint16_t i = type.first_row; i < type.first_row + type.row_count; i++) {
-                const BindingRow &row = binding_rows[i];
-                if (strcmp(row.name, name) == 0 && info_method_available(binding_info, row.method)) {
-                    push_stub(L, row.method, row.flags, id);
-                    return cache_global(L);
-                }
+            if (push_global_stub(L, id, name)) {
+                return cache_global(L);
             }
             continue;
         }
@@ -615,6 +627,47 @@ static int global_index(lua_State *L)
     return 0;
 }
 
+static M7Clock m7_clock;
+
+// the M7's millis() through its remote row: the M7Clock's one calibration
+static uint32_t remote_millis(lua_State *L)
+{
+    for (uint8_t id = 1; id <= BINDING_TYPE_COUNT; id++) {
+        if (info_type_available(binding_info, id) && BindingKind(type_of(id).kind) == BindingKind::Global &&
+            push_global_stub(L, id, "millis")) {
+            lua_call(L, 0, 1);
+            const uint32_t m7_millis = coerce_to_uint32_t(L, -1);
+            lua_pop(L, 1);
+            return m7_millis;
+        }
+    }
+    return uint32_t(luaL_error(L, "M4: no remote millis"));
+}
+
+// millis()/micros() on this core, the M7's values (TIM5 counts the M7's micros()); no RPC
+// after the first millis()
+static int local_millis(lua_State *L)
+{
+    binding_argcheck(L, 0);
+    if (!m7_clock.calibrated) {
+        const uint32_t m7_millis = remote_millis(L);
+        const M7Counter now = port_m7_counter();
+        m7_clock_calibrate(m7_clock, m7_millis, now.counter, now.local_ms);
+    } else {
+        const M7Counter now = port_m7_counter();
+        m7_clock_advance(m7_clock, now.counter, now.local_ms);
+    }
+    *new_uint32_t(L) = m7_clock_millis(m7_clock);
+    return 1;
+}
+
+static int local_micros(lua_State *L)
+{
+    binding_argcheck(L, 0);
+    *new_uint32_t(L) = port_m7_counter().counter;
+    return 1;
+}
+
 void open_remote_functions(lua_State *L)
 {
     // print stays a system method until the manual bindings are ported (IO and Manual Bindings)
@@ -623,6 +676,14 @@ void open_remote_functions(lua_State *L)
     lua_pushinteger(L, 0);
     lua_pushcclosure(L, remote_call, 3);
     lua_setfield(L, -2, "print");
+    // millis()/micros() read the M7's clock on this core where it can; their remote rows stay
+    // in the tables (contract unchanged) and serve the other platforms
+    if (port_m7_time_available()) {
+        lua_pushcfunction(L, local_millis);
+        lua_setfield(L, -2, "millis");
+        lua_pushcfunction(L, local_micros);
+        lua_setfield(L, -2, "micros");
+    }
     // the generated bindings resolve on first use, as the in-process load_generated_sandbox()
     lua_createtable(L, 0, 1);
     lua_pushcfunction(L, global_index);
