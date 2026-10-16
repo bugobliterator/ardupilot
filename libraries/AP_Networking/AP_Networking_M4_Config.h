@@ -7,6 +7,10 @@
 namespace NetM4 {
 
 static const uint32_t CONFIG_MAGIC = 0x4643344E;   // "N4CF"
+// the meaning of the status block's words (AP_Networking_M4_Layout.h StatusFields), in the scripting
+// contract hash: bump it when a field's meaning changes, even at the same size. 2: heartbeat and
+// port_tx_dropped taken from reserved
+static const uint32_t STATUS_LAYOUT_VERSION = 2;
 
 struct __attribute__((packed)) PortConfig {
     uint8_t type;        // AP_Networking::NetworkPortType: 0 off, 1 UDP client, 2 UDP server, 3 TCP client, 4 TCP server

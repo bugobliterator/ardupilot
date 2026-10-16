@@ -77,6 +77,8 @@ TEST(NetM4Service, UdpClientAndTcpServerOverLoopback)
     config.enabled = 1;
     config.ports[0] = { 1, 1, 15550, 0x7F000001 };   // UDP client to 127.0.0.1:15550
     config.ports[1] = { 4, 0, 15763, 0 };            // TCP server on 15763
+    config.ports[2] = { 3, 0, 15900, 0x7F000001 };   // TCP client to 127.0.0.1:15900 (TcpClient...)
+    config.ports[3] = { 2, 1, 15910, 0 };            // UDP server on 15910 (UdpServer...)
     // a peer socket on the same lwIP stack, bound before the service sends
     net_m4_configure(config);
     wait_for(stack_up, 2000);
@@ -122,7 +124,8 @@ TEST(NetM4Service, UdpClientAndTcpServerOverLoopback)
     ASSERT_TRUE(read_status(test_region.status, status));
     EXPECT_EQ(status.port_state[0], uint32_t(PORT_CONNECTED));   // a datagram both ways
     EXPECT_EQ(status.port_state[1], uint32_t(PORT_CONNECTED));
-    EXPECT_EQ(status.port_state[2], uint32_t(PORT_CLOSED));
+    EXPECT_EQ(status.port_state[2], uint32_t(PORT_CLOSED));   // nothing listens on 15900 yet
+    EXPECT_EQ(status.port_state[3], uint32_t(PORT_OPEN));     // bound, no sender yet
     EXPECT_EQ(status.flags & STATUS_LINK_UP, 0U);   // no PPP: no link, loopback only
     EXPECT_EQ(status.session, 1U);
     EXPECT_EQ(status.magic, STATUS_MAGIC);
@@ -156,6 +159,135 @@ TEST(NetM4Service, UdpClientAndTcpServerOverLoopback)
     EXPECT_EQ(rx.available(), 5U);
     lwip_close(udp);
     lwip_close(tcp);
+}
+
+static sockaddr_in loopback(uint16_t port)
+{
+    sockaddr_in addr {};
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = lwip_htons(port);
+    addr.sin_addr.s_addr = lwip_htonl(0x7F000001);
+    return addr;
+}
+
+static uint32_t port_state(uint8_t port)
+{
+    StatusFields s {};
+    return read_status(test_region.status, s) ? s.port_state[port] : 0xFFFFFFFFU;
+}
+
+// a refused connect is retried every second; once connected, bytes both ways; when the peer
+// closes, the client connects again
+TEST(NetM4Service, TcpClientRetriesConnectsAndReconnects)
+{
+    // refused while nothing listens: the port stays closed
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    EXPECT_EQ(port_state(2), uint32_t(PORT_CLOSED));
+    const int listener = lwip_socket(AF_INET, SOCK_STREAM, 0);
+    const timeval four_seconds {4, 0};
+    lwip_setsockopt(listener, SOL_SOCKET, SO_RCVTIMEO, &four_seconds, sizeof(four_seconds));
+    sockaddr_in addr = loopback(15900);
+    ASSERT_EQ(lwip_bind(listener, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)), 0);
+    ASSERT_EQ(lwip_listen(listener, 1), 0);
+    // the next retry connects (within RETRY_MS of the socket set up again after the refusal)
+    int peer = lwip_accept(listener, nullptr, nullptr);
+    ASSERT_GE(peer, 0);
+    lwip_setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &four_seconds, sizeof(four_seconds));
+    wait_for([] { return port_state(2) == PORT_CONNECTED; }, 3000);
+    ASSERT_EQ(port_state(2), uint32_t(PORT_CONNECTED));
+
+    ByteRing tx, rx;
+    ASSERT_TRUE(tx.attach(&test_region.ports[2].tx_control, test_region.ports[2].tx, PORT_RING_DATA));
+    ASSERT_TRUE(rx.attach(&test_region.ports[2].rx_control, test_region.ports[2].rx, PORT_RING_DATA));
+    ASSERT_EQ(tx.write(reinterpret_cast<const uint8_t *>("ping"), 4), 4U);
+    uint8_t got[16];
+    EXPECT_EQ(lwip_recv(peer, got, sizeof(got), 0), 4);
+    EXPECT_EQ(memcmp(got, "ping", 4), 0);
+    EXPECT_EQ(lwip_send(peer, "pong!", 5, 0), 5);
+    wait_for([] {
+        ByteRing r;
+        return r.attach(&test_region.ports[2].rx_control, test_region.ports[2].rx, PORT_RING_DATA) && r.available() == 5; }, 2000);
+    ASSERT_EQ(rx.available(), 5U);
+    EXPECT_EQ(rx.read(got, sizeof(got)), 5U);
+    EXPECT_EQ(memcmp(got, "pong!", 5), 0);
+
+    // the peer closes: the client closes too, then connects again
+    lwip_close(peer);
+    wait_for([] { return port_state(2) == PORT_CLOSED; }, 2000);
+    EXPECT_EQ(port_state(2), uint32_t(PORT_CLOSED));
+    peer = lwip_accept(listener, nullptr, nullptr);
+    ASSERT_GE(peer, 0);
+    wait_for([] { return port_state(2) == PORT_CONNECTED; }, 3000);
+    EXPECT_EQ(port_state(2), uint32_t(PORT_CONNECTED));
+    lwip_close(peer);
+    lwip_close(listener);
+}
+
+// the UDP server answers its first sender; a stray datagram from another sender does not take
+// the stream, a sender heard after 3 s of silence from the peer does. Datagrams over 512 B are
+// delivered cut and the rest counted
+TEST(NetM4Service, UdpServerKeepsItsPeer)
+{
+    const timeval short_wait {0, 300000};
+    int sender[2];
+    for (uint8_t i = 0; i < 2; i++) {
+        sender[i] = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+        lwip_setsockopt(sender[i], SOL_SOCKET, SO_RCVTIMEO, &short_wait, sizeof(short_wait));
+        sockaddr_in local = loopback(uint16_t(15920 + i));
+        ASSERT_EQ(lwip_bind(sender[i], reinterpret_cast<sockaddr *>(&local), sizeof(local)), 0);
+    }
+    sockaddr_in server = loopback(15910);
+    ByteRing tx, rx;
+    ASSERT_TRUE(tx.attach(&test_region.ports[3].tx_control, test_region.ports[3].tx, PORT_RING_DATA));
+    ASSERT_TRUE(rx.attach(&test_region.ports[3].rx_control, test_region.ports[3].rx, PORT_RING_DATA));
+    uint8_t got[16];
+    // which sender a record from the M7 reaches
+    auto reply_goes_to = [&]() {
+        const uint8_t record[1] = {0x55};
+        EXPECT_TRUE(tx.write_record(record, sizeof(record)));
+        for (uint8_t i = 0; i < 2; i++) {
+            if (lwip_recv(sender[i], got, sizeof(got), 0) == 1) {
+                return int(i);
+            }
+        }
+        return -1;
+    };
+    EXPECT_EQ(lwip_sendto(sender[0], "a", 1, 0, reinterpret_cast<sockaddr *>(&server), sizeof(server)), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(reply_goes_to(), 0);
+    // a stray datagram from sender 1 is delivered, and the stream stays with sender 0
+    EXPECT_EQ(lwip_sendto(sender[1], "b", 1, 0, reinterpret_cast<sockaddr *>(&server), sizeof(server)), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(reply_goes_to(), 0);
+    wait_for([] {
+        ByteRing r;
+        return r.attach(&test_region.ports[3].rx_control, test_region.ports[3].rx, PORT_RING_DATA) && r.available() == 2; }, 1000);
+    EXPECT_EQ(rx.available(), 2U);
+    // sender 0 silent for 3 s: sender 1 takes over
+    std::this_thread::sleep_for(std::chrono::milliseconds(3100));
+    EXPECT_EQ(lwip_sendto(sender[1], "b", 1, 0, reinterpret_cast<sockaddr *>(&server), sizeof(server)), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(reply_goes_to(), 1);
+    EXPECT_EQ(port_state(3), uint32_t(PORT_CONNECTED));
+
+    // 600 B: 512 delivered, 88 counted
+    rx.consumer_resync();
+    StatusFields before {};
+    ASSERT_TRUE(read_status(test_region.status, before));
+    uint8_t big[600];
+    memset(big, 0x3C, sizeof(big));
+    EXPECT_EQ(lwip_sendto(sender[1], big, sizeof(big), 0, reinterpret_cast<sockaddr *>(&server), sizeof(server)), int(sizeof(big)));
+    wait_for([] {
+        ByteRing r;
+        return r.attach(&test_region.ports[3].rx_control, test_region.ports[3].rx, PORT_RING_DATA) && r.available() == 512; }, 1000);
+    EXPECT_EQ(rx.available(), 512U);
+    wait_for([] { StatusFields s {}; return read_status(test_region.status, s) && s.port_rx_dropped[3] >= 88; }, 1000);
+    StatusFields after {};
+    ASSERT_TRUE(read_status(test_region.status, after));
+    EXPECT_EQ(after.port_rx_dropped[3] - before.port_rx_dropped[3], 88U);
+    lwip_close(sender[0]);
+    lwip_close(sender[1]);
 }
 
 // a connection a Lua listener accepts is allocated on the tcpip thread, and must still get a
