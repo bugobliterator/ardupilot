@@ -237,13 +237,27 @@ end
 -- logs 64 bytes per 10 ms in SITL), then one file a second (the FileLog quota) up to 45. The queue
 -- takes the first 39 beside the head; without the bound all 45 are logged
 local bound = { written = 0, queued = 0 }
+local kilobyte = string.rep("h", 1023) .. "\n"
+
+-- kb kilobytes, one write each: a whole block as one string does not fit the 110 KB heap of
+-- networking builds beside this script
+local function write_kilobytes(path, kb, mode)
+  local f = io.open(path, mode)
+  check(f ~= nil, "open " .. path)
+  if f then
+    for _ = 1, kb do
+      f:write(kilobyte)
+    end
+    f:close()
+  end
+end
+
 local function file_bound()
   local dir = scripts_dir()
   local head = dir .. "/m4_fh.txt"
-  local kilobyte = string.rep("h", 1023) .. "\n"
   if bound.written < HEAD_CUSHION_KB then
     -- 16 KB a second: 32 FileIo writes of the 50 a second
-    write_file(head, string.rep(kilobyte, 16), bound.written == 0 and "w" or "a")
+    write_kilobytes(head, 16, bound.written == 0 and "w" or "a")
     bound.written = bound.written + 16
     interval = 1000
     return false
@@ -252,7 +266,7 @@ local function file_bound()
     logger:log_file_content(head)
   end
   if bound.queued < BOUND_FILES then
-    write_file(head, string.rep(kilobyte, HEAD_KB_PER_FILE), "a")
+    write_kilobytes(head, HEAD_KB_PER_FILE, "a")
     bound.queued = bound.queued + 1
     local name = string.format("%s/m4_q%02d.txt", dir, bound.queued)
     write_file(name, "q\n")
