@@ -22,6 +22,8 @@ from test_m4_scripts import (M4_SESSION, SCRIPT_TIMEOUT, host_thread_stack,  # n
 
 LOG_PARAMETERS = {'SCR_DEBUG_OPTS': 8,   # 8: LOG_RUNTIME, SRPC rows
                   'LOG_DISARMED': 1, 'LOG_DARM_RATEMAX': 0, 'LOG_FILE_RATEMAX': 0}
+# read on the M4 (TIM5): no RPC, except one millis() per M4 session for the TIM5 wrap count
+M4_CLOCK = ('global:millis', 'global:micros')
 
 
 def srpc_totals(run, directory):
@@ -67,9 +69,13 @@ def test_m4_generated_bindings(start_m4lua, tmp_path):  # noqa: F811
         assert totals.get(name, 0) <= count, \
             'SRPC %s: %u calls logged, the script made %u' % (name, totals.get(name, 0), count)
     # every binding call is logged once: the binding rows and m4:other add up to the script's
-    # total (the system rows, m4:sysother included, and print are not the script's)
+    # total (the system rows, m4:sysother included, and print are not the script's), with the
+    # clock reads the M4 made itself replaced by its one remote millis()
+    assert totals.get('global:millis', 0) <= 1 and totals.get('global:micros', 0) == 0, totals
     logged = sum(count for name, count in totals.items()
                  if name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print'))
+    script_total -= sum(expected.get(name, 0) for name in M4_CLOCK)
+    script_total += 1 if expected.get('global:millis', 0) > 0 else 0
     print('SRPC binding calls logged %u, script made %u' % (logged, script_total), flush=True)
     assert logged == script_total, 'SRPC binding calls: %u logged, the script made %u (%s)' % (
         logged, script_total, totals)
@@ -85,7 +91,7 @@ def test_m4_example_bindings(start_m4lua, tmp_path):  # noqa: F811
              SCRIPT_TIMEOUT)
     run.wait_alive(10)
     totals = srpc_totals(run, tmp_path / 'logs')   # stops Renode
-    for name in ('ahrs:get_location', 'vehicle:get_mode', 'param:get', 'global:millis', 'gps:status'):
+    for name in ('ahrs:get_location', 'vehicle:get_mode', 'param:get', 'gps:status'):
         assert totals.get(name, 0) > 0, 'no SRPC rows for %s (got %s)' % (name, sorted(totals))
     # copy_userdata.lua's Location and vector math, binding_bench's Locations: all on the M4
     from test_m4_pure_data import local_rows   # here, not at the top: test_m4_pure_data imports this module
