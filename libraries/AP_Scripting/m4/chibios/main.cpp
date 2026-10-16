@@ -342,7 +342,14 @@ int main(void)
 #endif
                               };
     service.init(channel, window, call_link, platform);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the M7 holds Lua (SCR_ENABLE 0, scripts stopped, fault limit): the network runs alone
+    if (block->reserved[LUA_PERMIT_SLOT].load() == 1) {
+        lua_port_start(call_link, doorbell, forward_posted);
+    }
+#else
     lua_port_start(call_link, doorbell, forward_posted);
+#endif
     while (true) {
         if (block->run_permit.load() != 1) {
             m4_park_forever();

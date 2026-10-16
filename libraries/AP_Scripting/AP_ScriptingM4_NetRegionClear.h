@@ -16,17 +16,21 @@ namespace ScriptingM4 {
 
 class NetRegionClear {
 public:
-    // a session started; fault_count: its header's
-    void session_started(uint32_t fault_count)
+    // a session started; header: the peer header it published (PeerHeader::View). The fault
+    // count is taken from the header itself, never from the supervisor's own copy, which stays
+    // behind after a requested restart
+    template <typename Header>
+    void session_started(const Header &header)
     {
-        _session_fault_count = fault_count;
+        _session_fault_count = header.faultCount;
         _halted = false;
     }
 
-    // the supervisor charges a fault it read in the header; fault_count: that header's
-    void fault_seen(uint32_t fault_count)
+    // the supervisor charges a fault it read in the header; header: that header
+    template <typename Header>
+    void fault_seen(const Header &header)
     {
-        _halted = fault_count > _session_fault_count;
+        _halted = header.faultCount > _session_fault_count;
     }
 
     // the M4 process is gone (SITL)

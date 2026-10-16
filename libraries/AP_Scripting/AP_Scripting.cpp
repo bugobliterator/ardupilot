@@ -224,9 +224,11 @@ AP_Scripting::AP_Scripting() {
 
 void AP_Scripting::init(void) {
     if (!_enable) {
+#if AP_SCRIPTING_M4_ENABLED && defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        _m4.init_network_only();   // the M4 also runs the network: NET_ENABLE starts it, Lua held
+#endif
         return;
     }
-
 #if AP_FILESYSTEM_FILE_WRITING_ENABLED
     if ((_dir_disable & uint16_t(AP_Scripting::SCR_DIR::SCRIPTS)) == 0) {
         // Only try creating scripts directory if loading from it is enabled
@@ -238,13 +240,11 @@ void AP_Scripting::init(void) {
         }
     }
 #endif
-
 #if AP_SCRIPTING_M4_ENABLED
     // scripts run on the Cortex-M4; the M7 hosts and supervises them
     _m4.init();
     return;
 #endif
-
     AP_HAL::Scheduler::priority_base priority = AP_HAL::Scheduler::PRIORITY_SCRIPTING;
     static const struct {
         ThreadPriority scr_priority;
