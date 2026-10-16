@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pymavlink import DFReader  # noqa: E402
 from test_m4_containment import start_m4lua  # noqa: E402,F401
-from test_m4_scripts import SCRIPT_TIMEOUT, start_with_scripts, stop_and_read_log  # noqa: E402
+from test_m4_scripts import M4_SESSION, SCRIPT_TIMEOUT, start_with_scripts, stop_and_read_log  # noqa: E402
 
 LOG_PARAMETERS = {'SCR_DEBUG_OPTS': 8,   # 8: LOG_RUNTIME, SRPC rows
                   'LOG_DISARMED': 1, 'LOG_DARM_RATEMAX': 0, 'LOG_FILE_RATEMAX': 0}
@@ -30,10 +30,13 @@ WRAP = 1 << 32
 def test_m4_local_time(start_m4lua, tmp_path):  # noqa: F811
     run = start_with_scripts(start_m4lua, ['tests/m4_time.lua'], LOG_PARAMETERS)
     run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
+    session = run.read_word(M4_SESSION)
+    first_text = len(run.texts)
     for _ in range(SAMPLES + 2):
         run.wait_text(r'^T \d+ \d+$', timeout=SCRIPT_TIMEOUT)
-    texts = [text for text in run.texts if text.startswith('Scripting: M4')]
-    assert not texts, 'the M4 reported %s' % texts
+    supervisor = [text for text in run.texts[first_text:] if text.startswith('Scripting: M4')]
+    assert not supervisor, 'the M4 reported %s' % supervisor
+    assert run.read_word(M4_SESSION) == session, 'the M4 restarted'
     run.wait_alive(10)
     log = stop_and_read_log(run, tmp_path / 'logs')
     reader = DFReader.DFReader_binary(str(log), zero_time_base=False)
