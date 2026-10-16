@@ -12,7 +12,8 @@
                                                 the M4's <M4 port>
 
   A new connection on the PPP port replaces the current one only once it shows it speaks PPP (its
-  first byte is a PPP flag or address byte): the M4 restarted. Anything else is closed.
+  first byte is a PPP flag or address byte): the M4 restarted. Anything else is closed, and so is
+  a connection that arrives while an earlier one is still being checked.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -582,7 +583,10 @@ static void accept_m4()
         return;
     }
     if (candidate_fd >= 0) {
-        close(candidate_fd);
+        // the older candidate is still being checked: a stray connection cannot displace a restarted M4
+        printf("m4_net_peer: closed a new connection on the PPP port: another is being checked\n");
+        close(fd);
+        return;
     }
     candidate_fd = fd;
     candidate_since_ms = sys_now();
