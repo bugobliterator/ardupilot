@@ -206,6 +206,10 @@ public:
     // NET_* for the M4 network stack; false, with out zeroed: networking off or a NET_P port invalid
     bool m4_config(NetM4::Config &out) const;
 
+    // NET_ENABLE as set, whether or not a backend started: the scripting supervisor starts the
+    // M4 for it and restarts it with backoff
+    bool is_enabled_param() const { return param.enabled.get() != 0; }
+
     // the scripting supervisor's current M4 grant, and whether the M4 confirmed running it
     static uint32_t m4_session();
     static bool m4_session_confirmed(uint32_t session);
