@@ -39,6 +39,8 @@
 #define CCP_SUPPORT                     0
 #define VJ_SUPPORT                      0
 #define LCP_ECHOINTERVAL                0
+// a dead M4's session ends within 2 s (2 Terminate-Requests 1 s apart), not 12 s
+#define FSM_DEFTIMEOUT                  1
 
 // the host's <arpa/inet.h> provides htons() and friends
 #define LWIP_DONT_PROVIDE_BYTEORDER_FUNCTIONS 1

@@ -11,7 +11,8 @@
     tcp-from-host:<host port>:<M4 port>         a host connection to <host port> is carried to
                                                 the M4's <M4 port>
 
-  A new connection from the M4 process (a restart) replaces the current one; PPP starts again.
+  A new connection on the PPP port replaces the current one only once it shows it speaks PPP (its
+  first byte is a PPP flag or address byte): the M4 restarted. Anything else is closed.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -52,6 +53,7 @@ static const int SEND_FLAGS = 0;
 static const uint32_t LOOPBACK = INADDR_LOOPBACK;   // every host socket binds and sends here only
 static const int POLL_MS = 10;
 static const size_t HOST_READ_MAX = 4096;
+static const uint32_t CANDIDATE_TIMEOUT_MS = 3000;   // a new PPP-port connection must speak by then
 
 enum class RelayKind { UdpToHost, UdpGroupToHost, TcpFromHost };
 
@@ -71,6 +73,7 @@ struct TcpLink {
     struct tcp_pcb *pcb = nullptr;
     bool connected = false;
     bool m4_closed = false;
+    bool host_gone = false;     // the host hung up while data for the M4 was still held
     std::string to_host;        // received from the M4, not yet written to the host (acknowledged on write)
     std::string to_m4;          // read from the host, not yet accepted by tcp_write
 };
@@ -86,6 +89,9 @@ static bool ppp_up;
 static int listen_fd = -1;
 static int ppp_fd = -1;
 static int waiting_fd = -1;     // the M4's new connection, held until PPP is dead
+static int candidate_fd = -1;   // a new connection while a session runs: promoted only if it speaks PPP
+static uint32_t candidate_since_ms;
+static uint32_t ppp_bytes_dropped;
 static uint8_t datagram[65536];
 
 extern "C" u32_t sys_now(void)
@@ -189,15 +195,48 @@ static void set_nosigpipe(int fd)
 }
 
 // a TCP listener on 127.0.0.1:port, or -1
+// a free loopback port refuses at once; a listener accepts, or leaves the SYN pending when its backlog is full
+static bool port_in_use(const struct sockaddr_in &addr)
+{
+    const int probe = socket(AF_INET, SOCK_STREAM, 0);
+    if (probe < 0) {
+        return false;
+    }
+    set_nonblocking(probe);
+    bool in_use = true;
+    if (connect(probe, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        if (errno == EINPROGRESS) {
+            struct pollfd pfd { probe, POLLOUT, 0 };
+            int error = 0;
+            socklen_t len = sizeof(error);
+            if (poll(&pfd, 1, 500) == 1 && getsockopt(probe, SOL_SOCKET, SO_ERROR, &error, &len) == 0 &&
+                error == ECONNREFUSED) {
+                in_use = false;
+            }
+        } else if (errno == ECONNREFUSED) {
+            in_use = false;
+        }
+    }
+    close(probe);
+    return in_use;
+}
+
+// SO_REUSEADDR lets the peer relaunch while its last connections sit in TIME_WAIT, but on macOS it also
+// lets a 127.0.0.1 bind shadow another process's *:port listener (a SITL SERIAL port): a port something
+// already answers on is refused first.
 static int listen_loopback(uint16_t port)
 {
+    const struct sockaddr_in addr = loopback_address(port);
+    if (port_in_use(addr)) {
+        errno = EADDRINUSE;
+        return -1;
+    }
     const int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         return -1;
     }
     const int on = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    const struct sockaddr_in addr = loopback_address(port);
     if (bind(fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(fd, 4) != 0) {
         close(fd);
         return -1;
@@ -241,15 +280,16 @@ extern "C" int m4_net_peer_ip4_input(struct pbuf *p, struct netif *inp)
     if (inp != &ppp_netif) {
         return 0;
     }
-    const u16_t len = pbuf_copy_partial(p, datagram, p->tot_len, 0);
+    // the headers only: the payload is copied on a match
+    const u16_t len = pbuf_copy_partial(p, datagram, IP_HLEN_MAX + UDP_HLEN, 0);
     if (len < IP_HLEN) {
         return 0;
     }
     const struct ip_hdr *iphdr = (const struct ip_hdr *)datagram;
     const u16_t header_len = IPH_HL_BYTES(iphdr);
     const u16_t total_len = lwip_ntohs(IPH_LEN(iphdr));
-    if (IPH_PROTO(iphdr) != IP_PROTO_UDP || header_len < IP_HLEN || total_len > len ||
-        total_len < header_len + UDP_HLEN || (lwip_ntohs(IPH_OFFSET(iphdr)) & (IP_MF | IP_OFFMASK)) != 0) {
+    if (IPH_PROTO(iphdr) != IP_PROTO_UDP || header_len < IP_HLEN || total_len > p->tot_len ||
+        total_len < header_len + UDP_HLEN || header_len + UDP_HLEN > len || (lwip_ntohs(IPH_OFFSET(iphdr)) & (IP_MF | IP_OFFMASK)) != 0) {
         return 0;
     }
     ip4_addr_t dest;
@@ -259,7 +299,9 @@ extern "C" int m4_net_peer_ip4_input(struct pbuf *p, struct netif *inp)
     for (const Relay &relay : relays) {
         if (relay.kind == RelayKind::UdpGroupToHost && relay.host_fd >= 0 &&
             ip4_addr_eq(&relay.group, &dest) && relay.m4_side_port == dest_port) {
-            send(relay.host_fd, datagram + header_len + UDP_HLEN, total_len - header_len - UDP_HLEN, SEND_FLAGS);
+            const u16_t payload = pbuf_copy_partial(p, datagram, u16_t(total_len - header_len - UDP_HLEN),
+                                                    u16_t(header_len + UDP_HLEN));
+            send(relay.host_fd, datagram, payload, SEND_FLAGS);
             pbuf_free(p);
             return 1;
         }
@@ -416,8 +458,9 @@ static void link_from_host(TcpLink &link)
         link.to_m4.append(buf, size_t(n));
         link_push_to_m4(link);
     } else if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
-        link_push_to_m4(link);
-        link_close(link);   // tcp_close sends what lwIP queued, then FIN
+        // tcp_close sends what lwIP queued, then FIN; with M4 data not yet written to the host
+        // (the receive window not fully reopened) lwIP sends RST instead
+        link_close(link);
     }
 }
 
@@ -427,6 +470,9 @@ static void sweep_links()
     for (size_t i = 0; i < links.size();) {
         TcpLink &link = *links[i];
         if (link.m4_closed && (link.to_host.empty() || link.host_fd < 0)) {
+            link_close(link);
+        }
+        if (link.host_gone && (link.to_m4.empty() || link.pcb == nullptr)) {
             link_close(link);
         }
         if (link.host_fd < 0) {
@@ -484,7 +530,9 @@ static u32_t ppp_output(ppp_pcb *, const void *data, u32_t len, void *)
     }
     // non-blocking: a stalled M4 loses frames rather than stalling the peer
     const ssize_t n = send(ppp_fd, data, len, SEND_FLAGS);
-    return n < 0 ? 0 : u32_t(n);
+    const u32_t sent = n < 0 ? 0 : u32_t(n);
+    ppp_bytes_dropped += len - sent;
+    return sent;
 }
 
 static void ppp_status(ppp_pcb *, int err_code, void *)
@@ -502,9 +550,13 @@ static void ppp_status(ppp_pcb *, int err_code, void *)
         relays_down();
     }
     printf("m4_net_peer: PPP down\n");
+    if (ppp_bytes_dropped != 0) {
+        printf("m4_net_peer: %u bytes to the M4 dropped (socket full)\n", unsigned(ppp_bytes_dropped));
+        ppp_bytes_dropped = 0;
+    }
 }
 
-// the M4 process went away, or a new connection replaced it
+// the M4 process went away, or a restarted one connected
 static void drop_m4_connection()
 {
     if (ppp_fd < 0) {
@@ -525,11 +577,51 @@ static void accept_m4()
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
     set_nonblocking(fd);
     set_nosigpipe(fd);
-    if (waiting_fd >= 0) {
-        close(waiting_fd);
+    if (ppp_fd < 0 && waiting_fd < 0) {
+        waiting_fd = fd;   // no session to protect
+        return;
     }
-    waiting_fd = fd;
-    drop_m4_connection();
+    if (candidate_fd >= 0) {
+        close(candidate_fd);
+    }
+    candidate_fd = fd;
+    candidate_since_ms = sys_now();
+}
+
+static void close_candidate(const char *why)
+{
+    printf("m4_net_peer: closed a new connection on the PPP port: %s\n", why);
+    close(candidate_fd);
+    candidate_fd = -1;
+}
+
+// a PPPoS stream starts with a flag (0x7E) or, within 100 ms of the sender's start, the address (0xFF)
+static void check_candidate(bool readable)
+{
+    if (candidate_fd < 0) {
+        return;
+    }
+    if (!readable) {
+        if (sys_now() - candidate_since_ms > CANDIDATE_TIMEOUT_MS) {
+            close_candidate("silent");
+        }
+        return;
+    }
+    uint8_t first;
+    const ssize_t n = recv(candidate_fd, &first, 1, MSG_PEEK);
+    if (n == 1 && (first == 0x7E || first == 0xFF)) {
+        // the M4 restarted while its old connection stayed open
+        if (waiting_fd >= 0) {
+            close(waiting_fd);
+        }
+        waiting_fd = candidate_fd;
+        candidate_fd = -1;
+        drop_m4_connection();
+    } else if (n == 1) {
+        close_candidate("not PPP");
+    } else if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+        close_candidate("closed");
+    }
 }
 
 static void read_m4()
@@ -580,6 +672,13 @@ int main(int argc, char **argv)
         } else if (ok && strcmp(argv[i], "--relay") == 0) {
             Relay relay {};
             ok = parse_relay(value, relay);
+            for (const Relay &other : relays) {
+                // one lwIP PCB per peer port
+                if (ok && relay.kind == RelayKind::UdpToHost && other.kind == RelayKind::UdpToHost &&
+                    other.m4_side_port == relay.m4_side_port) {
+                    ok = false;
+                }
+            }
             relays.push_back(relay);
         } else {
             ok = false;
@@ -628,10 +727,12 @@ int main(int argc, char **argv)
 
     while (!terminate_requested) {
         std::vector<struct pollfd> fds;
-        std::vector<Relay *> relay_of;      // per pollfd past the first two: the relay, or null for a link
+        std::vector<Relay *> relay_of;      // per pollfd from first_relay: the relay, or null for a link
         std::vector<TcpLink *> link_of;
         fds.push_back({listen_fd, POLLIN, 0});
         fds.push_back({ppp_fd, POLLIN, 0});   // a negative fd is ignored
+        fds.push_back({candidate_fd, POLLIN, 0});
+        const size_t first_relay = fds.size();
         for (Relay &relay : relays) {
             // a TCP listener is served only while PPP is up: connections wait in its backlog
             if (relay.kind != RelayKind::TcpFromHost || ppp_up) {
@@ -641,6 +742,9 @@ int main(int argc, char **argv)
             }
         }
         for (TcpLink *link : links) {
+            if (link->host_gone) {
+                continue;   // its fd would report POLLHUP every pass
+            }
             short events = 0;
             // read the host only while lwIP can take it: the rest stays in the host socket
             if (link->connected && link->pcb != nullptr && link->to_m4.empty()) {
@@ -655,6 +759,7 @@ int main(int argc, char **argv)
         }
 
         const int ready = poll(fds.data(), nfds_t(fds.size()), POLL_MS);
+        check_candidate(ready > 0 && fds[2].revents != 0);
         if (ready > 0) {
             if (fds[1].revents != 0 && ppp_fd >= 0) {
                 read_m4();
@@ -662,13 +767,13 @@ int main(int argc, char **argv)
             if (fds[0].revents & POLLIN) {
                 accept_m4();
             }
-            for (size_t i = 2; i < fds.size(); i++) {
+            for (size_t i = first_relay; i < fds.size(); i++) {
                 const short revents = fds[i].revents;
                 if (revents == 0) {
                     continue;
                 }
-                if (relay_of[i - 2] != nullptr) {
-                    Relay &relay = *relay_of[i - 2];
+                if (relay_of[i - first_relay] != nullptr) {
+                    Relay &relay = *relay_of[i - first_relay];
                     if (relay.kind == RelayKind::TcpFromHost) {
                         tcp_relay_accept(relay);
                     } else {
@@ -676,7 +781,7 @@ int main(int argc, char **argv)
                     }
                     continue;
                 }
-                TcpLink &link = *link_of[i - 2];
+                TcpLink &link = *link_of[i - first_relay];
                 if (link.host_fd < 0) {
                     continue;   // closed earlier in this pass (PPP went down)
                 }
@@ -684,7 +789,11 @@ int main(int argc, char **argv)
                     link_flush_to_host(link);
                 }
                 if (link.host_fd >= 0 && link.pcb != nullptr && (revents & (POLLIN | POLLHUP | POLLERR))) {
-                    link_from_host(link);
+                    if (link.to_m4.empty()) {
+                        link_from_host(link);
+                    } else {
+                        link.host_gone = true;   // closed by sweep_links() once the held data is sent
+                    }
                 }
             }
         }
@@ -700,6 +809,9 @@ int main(int argc, char **argv)
     }
     if (waiting_fd >= 0) {
         close(waiting_fd);
+    }
+    if (candidate_fd >= 0) {
+        close(candidate_fd);
     }
     if (ppp_fd >= 0) {
         close(ppp_fd);
