@@ -83,6 +83,9 @@ void AP_ScriptingM4::init()
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
     _inject_seen = _inject.get();   // a value saved before this boot is not a request
 #endif
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    _network_wanted = AP::network().is_enabled_param();
+#endif
     const uint32_t now_ms = AP_HAL::millis();
     _stats_start_ms = now_ms;
     _channel = NEW_NOTHROW CubePilotFW::Channel();
@@ -103,6 +106,17 @@ void AP_ScriptingM4::init()
         go_off("no host thread");
     }
 }
+
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+void AP_ScriptingM4::init_network_only()
+{
+    if (!AP::network().is_enabled_param()) {
+        return;
+    }
+    set_lua_permitted(false);
+    init();
+}
+#endif
 
 void AP_ScriptingM4::doorbell_isr(uint8_t group)
 {
@@ -331,7 +345,7 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @LoggerMessage: M4ST
 // @Description: Scripting M4 supervisor, once per second (M4 scripting builds)
 // @Field: TimeUS: Time since system startup
-// @Field: St: supervisor state (0 held, 1 starting, 2 running, 3 restarting, 4 off)
+// @Field: St: supervisor state (0 held, 1 starting, 2 running, 3 restarting, 4 off, 5 backoff: networking builds, before a restart)
 // @Field: HB: M4 heartbeat counter
 // @Field: Ses: M4 peer header session
 // @Field: Rst: restarts used
@@ -378,6 +392,13 @@ void AP_ScriptingM4::supervise(uint32_t now_ms)
     case State::Running:
         check_running(now_ms);
         break;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    case State::Backoff:
+        if (_net_restart.due(now_ms)) {
+            grant_restart();
+        }
+        break;
+#endif
     case State::Held:
     case State::Off:
         break;
@@ -420,8 +441,9 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
             _m4_fault_count = view.faultCount;
         }
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-        _net_region_clear.session_started(view.faultCount);
+        _net_region_clear.session_started(view);
         _confirmed_grant.store(_restart_grants + 1U, std::memory_order_release);
+        _net_restart.session_started(now_ms);
 #endif
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
         _m4_heartbeat_ms = now_ms;
@@ -445,6 +467,13 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
     const uint32_t timeout_ms = _state == State::Starting ? ScriptingM4::START_TIMEOUT_MS
                                                           : PLATFORM_RESTART_TIMEOUT_MS;
     if (platform_timeout_ms() - _state_start_timeout_ms > timeout_ms) {
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        // a lockup: no software restart reaches an M4 with its interrupts off, and a WWDG2
+        // timeout would reset the whole chip (RCC_GCR WW2RSC)
+        if (network_wanted()) {
+            GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Net: M4 lockup, off until reboot");
+        }
+#endif
         go_off("not responding");
     }
 }
@@ -473,7 +502,7 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
             char reason[40];
             fault_reason(view, reason, sizeof(reason));
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-            _net_region_clear.fault_seen(view.faultCount);
+            _net_region_clear.fault_seen(view);
 #endif
             failure(reason);
             return;
@@ -518,7 +547,7 @@ bool AP_ScriptingM4::report_start_fault()
     char reason[40];
     fault_reason(view, reason, sizeof(reason));
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-    _net_region_clear.fault_seen(view.faultCount);
+    _net_region_clear.fault_seen(view);
 #endif
     failure(reason);
     return true;
@@ -533,6 +562,12 @@ void AP_ScriptingM4::failure(const char *reason)
 {
     GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: M4 %s", reason);
     const bool carry_request = _start_fault.take_held();
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    if (network_wanted()) {
+        network_failure(carry_request);
+        return;
+    }
+#endif
     if (_restarts_used >= restart_limit()) {
         go_off("fault limit");
         return;
@@ -547,6 +582,43 @@ void AP_ScriptingM4::failure(const char *reason)
         _server.set_stopped(true);
     }
 }
+
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+/*
+  a fault, stall or protocol error while the M4 runs the network: the whole M4 restarts after a
+  backoff, forever. Each fault is still charged to SCR_M4_RST_MAX; at the limit Lua stays off
+  until reboot and the network keeps restarting
+ */
+void AP_ScriptingM4::network_failure(bool carry_request)
+{
+    if (_restarts_used >= restart_limit()) {
+        if (_lua_permitted && !_lua_off_until_reboot) {
+            GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: M4 fault limit, Lua off");
+        }
+        _lua_off_until_reboot = true;
+    } else {
+        _restarts_used++;
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 restarting (%u/%u)",
+                      unsigned(_restarts_used), unsigned(restart_limit()));
+    }
+    // a stop asked while a start fault was pending (as in failure())
+    if (carry_request && lua_can_run() && take_run_request(0) == ScriptingM4::RunAction::Stop) {
+        _server.set_stopped(true);
+    }
+    store_lua_permit();
+    _net_restart.fault(AP_HAL::millis());
+    GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Net: M4 fault, restarting network (%u)", unsigned(_net_restart.count()));
+    _restart_requested = false;   // a fault during a requested restart is a fault
+    // stop and restart requests wait in AP_Scripting's flags, as while restarting
+    enter(State::Backoff, AP_HAL::millis());
+}
+
+void AP_ScriptingM4::store_lua_permit()
+{
+    const bool permitted = lua_can_run() && !_server.stopped();
+    ScriptingM4::supervisor_block(_shared)->reserved[ScriptingM4::LUA_PERMIT_SLOT].store(permitted ? 1U : 0U);
+}
+#endif
 
 // a restart for the M4, a fault's or a request's: the grant count is its own, so requested restarts
 // spend none of SCR_M4_RST_MAX (_restarts_used)
@@ -578,6 +650,13 @@ void AP_ScriptingM4::run_control(uint32_t now_ms)
     if (_start_fault.holds_requests()) {
         return;
     }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // Lua held since boot (SCR_ENABLE 0) or off until reboot (fault limit): as in-process, where
+    // no scripting thread runs to take a request
+    if (!lua_can_run()) {
+        return;
+    }
+#endif
     const ScriptingM4::RunAction action = take_run_request(now_ms - _state_start_ms);
     if (action != ScriptingM4::RunAction::None) {
         request_restart(action == ScriptingM4::RunAction::Stop);
@@ -609,6 +688,10 @@ ScriptingM4::RunAction AP_ScriptingM4::take_run_request(uint32_t running_ms)
 void AP_ScriptingM4::request_restart(bool stopped)
 {
     _server.set_stopped(stopped);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the whole M4 restarts, the network with it: a stopped session starts no Lua thread
+    store_lua_permit();
+#endif
     _restart_requested = true;
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
     // SCR_M4_INJECT 12 marks the next grant for a fault restart only
@@ -644,6 +727,16 @@ bool AP_ScriptingM4::arming_checks(size_t buflen, char *buffer) const
         hal.util->snprintf(buffer, buflen, "Scripting core not running");
         return false;
     }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    if (_lua_off_until_reboot) {
+        hal.util->snprintf(buffer, buflen, "Scripting: M4 fault limit, Lua off");
+        return false;
+    }
+    if (_state == State::Running && _server.stopped()) {
+        // stopped: no Lua thread runs to report its empty script list started
+        return true;
+    }
+#endif
     if (_state != State::Running) {
         // (re)starting: the server still holds the previous session
         hal.util->snprintf(buffer, buflen, "Scripting: M4 scripts not started");

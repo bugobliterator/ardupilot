@@ -129,6 +129,10 @@ static void inject_fault(FaultKind kind)
         }
         _exit(0);
     case FaultKind::Lockup: {
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        // the network threads would take the restart signal: ignore it in every thread
+        ignore_restart_signal();
+#endif
         sigset_t restart;
         sigemptyset(&restart);
         sigaddset(&restart, SIGUSR1);
@@ -217,7 +221,12 @@ int main(int argc, char **argv)
 #endif
                               };
     service.init(channel, window, call_link, platform);
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // the M7 holds Lua (SCR_ENABLE 0, scripts stopped, fault limit): the network runs alone
+    if (block->reserved[LUA_PERMIT_SLOT].load() == 1 && !lua_port_start(call_link)) {
+#else
     if (!lua_port_start(call_link)) {
+#endif
         fprintf(stderr, "scripting_m4: no Lua thread\n");
         return 1;
     }

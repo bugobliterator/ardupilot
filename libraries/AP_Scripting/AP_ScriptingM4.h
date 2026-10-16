@@ -13,6 +13,7 @@
 #include "AP_ScriptingM4_StartFault.h"
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
 #include "AP_ScriptingM4_NetRegionClear.h"
+#include "AP_ScriptingM4_NetRestart.h"
 #include <atomic>
 #endif
 
@@ -38,10 +39,19 @@ public:
         Running = 2,
         Restarting = 3,
         Off = 4,          // until reboot
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        Backoff = 5,      // the network's restart waits out its backoff (NetRestart)
+#endif
     };
 
     // start the M4 and the host thread; called once from AP_Scripting::init()
     void init();
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // whether the M4 starts the Lua thread (SCR_ENABLE); before init()
+    void set_lua_permitted(bool permitted) { _lua_permitted = permitted; }
+    // SCR_ENABLE 0: the M4 still starts for NET_ENABLE, with Lua held; called instead of init()
+    void init_network_only();
+#endif
     // the core state, the last script error (as the in-process checks), then
     // whether this session's scripts have started
     bool arming_checks(size_t buflen, char *buffer) const;
@@ -97,6 +107,14 @@ private:
     void request_restart(bool stopped);
     void enter(State state, uint32_t now_ms);
     uint8_t restart_limit() const;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // NET_ENABLE at init(): faults restart the whole M4 with backoff, forever
+    bool network_wanted() const { return _network_wanted; }
+    void network_failure(bool carry_request);
+    bool lua_can_run() const { return _lua_permitted && !_lua_off_until_reboot; }
+    // SupervisorBlock LUA_PERMIT_SLOT for the next M4 start
+    void store_lua_permit();
+#endif
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
     void send_fault_inject();
 #endif
@@ -131,6 +149,10 @@ private:
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // whether the next grant may clear the network region
     ScriptingM4::NetRegionClear _net_region_clear;
+    ScriptingM4::NetRestart _net_restart;
+    bool _network_wanted;
+    bool _lua_permitted = true;          // SCR_ENABLE at boot
+    bool _lua_off_until_reboot;          // the fault limit took Lua's permit
 #endif
     ScriptingM4::RunControl _run_control;
     uint32_t _m4_session;             // M4 peer header session being served
