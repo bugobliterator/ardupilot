@@ -403,6 +403,54 @@ struct FakeThreadStats {
     uint64_t read(uint32_t now, bool &reset) { return read_thread_cycles(clock, now, reset); }
 };
 
+// the bench's binding_bench.lua: 416 synchronous calls back to back once a second, each pass
+// charged 41 us (the bench's M4ST.CPU / Req) with a 145 us round trip. The 10 ms bucket carries
+// the first 370 calls unpaced (10000 - 200 us of credit at 41 - 14.5 us per call); the 2 ms one
+// paused from call 68
+TEST(ScriptingM4ServeWait, OneSecondCallBurstIsPacedOnlyPastTheBucket)
+{
+    ServeDutyCap cap;
+    uint32_t now = 0;
+    int first_pause = -1;
+    for (int call = 0; call < 416; call++) {
+        uint32_t wait = cap.wait_us(now);
+        if (wait != 0 && first_pause < 0) {
+            first_pause = call;
+        }
+        while (wait != 0) {
+            now += wait;
+            wait = cap.wait_us(now);
+        }
+        cap.pass_started(now);
+        cap.charge(41U);
+        now += 145U;
+    }
+    EXPECT_EQ(first_pause, 370);
+}
+
+// a pass that a duty-cap pause waited for runs, although the pause's own wake (10 us) is charged
+// before it: the host decides before it charges (fails if pass_after_wake() charges first)
+TEST(ScriptingM4ServeWait, PassRunsRightAfterAPause)
+{
+    ServeDutyCap cap;
+    uint32_t now = 1000;
+    EXPECT_EQ(cap.wait_us(now), 0U);
+    cap.charge(uint32_t(ServeDutyCap::BURST_US) + 3000U);   // a pass that ran the credit to -3000
+    uint32_t wait = cap.wait_us(now);
+    ASSERT_NE(wait, 0U);
+    while (wait != 0) {
+        now += wait;
+        wait = cap.wait_us(now);
+    }
+    EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::RESUME_US));
+    uint32_t charged = 0;
+    EXPECT_TRUE(pass_after_wake(cap, now, [&]() { cap.charge(10U); charged += 10U; }));
+    EXPECT_EQ(charged, 10U);   // the wake is still charged, in full
+    EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::RESUME_US) - 10);
+    // the next wake then waits for the charge to be paid back
+    EXPECT_NE(cap.wait_us(now), 0U);
+}
+
 // the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading, a pass, a
 // reading, overhead, sleep. Readings come from FakeThreadStats; returns the CPU charged and the
 // CPU used. reset_every: a reset in every pass (0: none). marks_best: Util::thread_info's fix

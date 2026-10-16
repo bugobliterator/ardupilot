@@ -179,15 +179,14 @@ void AP_ScriptingM4::host_thread()
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
-        charge_cpu(false);   // ChibiOS: the wait, the wake and the switch before this pass
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
         // the M4 asks for the image at every start: a value set before a start acts on it
         _server.set_refuse_bindings(_inject.get() == INJECT_REFUSE_BINDINGS);
 #endif
         // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
-        // runs every platform_wait_us()) serves nothing
-        if (_duty_cap.wait_us(_woke_us) == 0) {
-            _duty_cap.pass_started(_woke_us);
+        // runs every platform_wait_us()) serves nothing. ChibiOS: the wait, the wake and the
+        // switch before this pass are charged after the decision
+        if (ScriptingM4::pass_after_wake(_duty_cap, _woke_us, [this]() { charge_cpu(false); })) {
             last = serve();
         }
         const uint32_t now_ms = AP_HAL::millis();

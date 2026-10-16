@@ -25,7 +25,9 @@ namespace ScriptingM4 {
 class ServeDutyCap {
 public:
     static constexpr uint32_t SHARE_PERCENT = 10;
-    static constexpr int32_t BURST_US = 2000;
+    // 10 ms of CPU: a script's burst of a few hundred synchronous calls once a second runs
+    // unpaced; the share holds over a 100 ms horizon and in the long run
+    static constexpr int32_t BURST_US = 10000;
     // a pass is at most MAX_SERVE_US plus one frame: start one only with that much credit
     static constexpr int32_t RESUME_US = 200;
     // the deepest debt that is paid down by pausing alone
@@ -99,6 +101,20 @@ private:
     uint32_t _pass_us = 0;
     bool _started = false;
 };
+
+// the host after a wait: whether its pass may serve is decided before the wait's own wake and
+// switch are charged (charge_wake), so the pass a duty-cap pause waited for runs; that charge
+// lands on the next wait
+template <typename ChargeWake>
+inline bool pass_after_wake(ServeDutyCap &cap, uint32_t woke_us, ChargeWake charge_wake)
+{
+    const bool may_serve = cap.wait_us(woke_us) == 0;
+    charge_wake();
+    if (may_serve) {
+        cap.pass_started(woke_us);
+    }
+    return may_serve;
+}
 
 // CPU time to charge for the interval between two readings of the thread's CPU clock. When
 // the clock was reset in between (statistics cleared), or went backwards, the interval's wall
