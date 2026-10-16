@@ -147,10 +147,6 @@ static void inject_fault(FaultKind kind)
         }
         _exit(0);
     case FaultKind::Lockup: {
-#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-        // the network threads would take the restart signal: ignore it in every thread
-        ignore_restart_signal();
-#endif
         sigset_t restart;
         sigemptyset(&restart);
         sigaddset(&restart, SIGUSR1);
