@@ -88,6 +88,8 @@ def _add_image_target(bld):
         # targets; a test program's use of 'ap' then clears dronecan_libs'
         # tmp_use_objects and the vehicle library is archived without DroneCAN
         bld.targets = 'cubeframework,' + bld.targets + ',scripting_m4_image'
+        if bld.env.NETWORKING_M4 and bld.env.BOARD_CLASS != 'ChibiOS':
+            bld.targets += ',m4_net_peer'
 
 
 def _chibios_image(bld):
@@ -164,3 +166,17 @@ def _sitl_program(bld):
                                              CUBEFRAMEWORK],
                 defines=['__CORTEX_M=4', 'AP_LUA_MAX_NUMBER_TEXT=100'] + network_defines, cxxflags=CF_CXXFLAGS,
                 cflags=['-Wno-error'], linkflags=['-pthread'], use=network_use)
+    if bld.env.NETWORKING_M4:
+        _sitl_ppp_peer(bld)
+
+
+def _sitl_ppp_peer(bld):
+    '''bin/m4_net_peer: the host side of the SITL M4 process's PPP link, with its own lwIP build'''
+    peer_dir = NET_M4_DIR + '/sitl_peer'
+    lwip = [node.path_from(bld.srcnode) for pattern in ['core/*.c', 'core/ipv4/*.c', 'netif/ppp/*.c']
+            for node in bld.srcnode.ant_glob('%s/%s' % (LWIP_DIR, pattern))]
+    bld.program(target='bin/m4_net_peer', name='m4_net_peer',
+                source=lwip + [peer_dir + '/m4_net_peer.cpp'],
+                includes=[peer_dir, LWIP_DIR + '/include'],
+                cflags=['-Wno-error', '-Wno-implicit-fallthrough', '-Wno-parentheses-equality'],
+                cxxflags=['-Wno-error'], use=[])
