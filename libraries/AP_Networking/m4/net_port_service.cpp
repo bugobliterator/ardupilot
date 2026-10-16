@@ -21,7 +21,8 @@ namespace {
 // NetM4::PortConfig::type (AP_Networking::NetworkPortType)
 enum PortType : uint8_t { PORT_NONE = 0, UDP_CLIENT = 1, UDP_SERVER = 2, TCP_CLIENT = 3, TCP_SERVER = 4 };
 
-const uint32_t RETRY_MS = 1000;
+const uint32_t RETRY_MS = 1000;          // a failed socket set up again; a TCP connect polled
+const uint32_t UDP_PEER_TIMEOUT_MS = 3000;   // a UDP server answers another sender after this silence
 const uint8_t MAX_DATAGRAMS_PER_PASS = 16;   // per port and direction: a flood cannot hold the thread
 const uint32_t DOORBELL_WAIT_MS = 2;
 
@@ -33,8 +34,9 @@ struct PortState {
     uint8_t pending[MAX_RECORD];
     uint16_t pending_len, pending_sent;
     uint32_t next_try_ms;
-    sockaddr_in to;       // UDP client: the destination; UDP server: the last sender
+    sockaddr_in to;       // UDP client: the destination; UDP server: its peer
     bool have_to;
+    uint32_t peer_heard_ms;   // UDP server: the peer's last datagram
     bool send_to;         // UDP: sendto() (broadcast, multicast, server), else send() on a connected socket
     uint32_t rx_dropped;
     uint32_t tx_dropped;
@@ -139,7 +141,7 @@ void udp_send(PortState &port)
         if (port.pending_len == 0) {
             const int32_t len = port.tx.read_record(port.pending, sizeof(port.pending));
             if (len == RECORD_DROPPED) {
-                port.tx_dropped++;   // longer than MAX_RECORD; the ring counts it too
+                port.tx_dropped++;   // longer than pending (MAX_RECORD today: then RECORD_BAD instead)
                 continue;
             }
             if (len == RECORD_BAD) {
@@ -171,23 +173,48 @@ void udp_send(PortState &port)
     }
 }
 
-// whole datagrams into the RX ring; with no room for one, it is read and dropped
-void udp_receive(PortState &port, bool server)
+bool same_sender(const sockaddr_in &a, const sockaddr_in &b)
+{
+    return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+
+// a UDP server keeps answering its peer, as the M7's port loop: another sender takes over only
+// once the peer has been silent for UDP_PEER_TIMEOUT_MS
+void track_udp_peer(PortState &port, const sockaddr_in &from, uint32_t now_ms)
+{
+    if (port.have_to && !same_sender(from, port.to) && now_ms - port.peer_heard_ms < UDP_PEER_TIMEOUT_MS) {
+        return;
+    }
+    port.to = from;
+    port.have_to = true;
+    port.peer_heard_ms = now_ms;
+}
+
+// whole datagrams into the RX ring; with no room for one, it is read and dropped. A datagram over
+// sizeof(datagram) is delivered cut, the bytes past it counted as dropped
+void udp_receive(PortState &port, bool server, uint32_t now_ms)
 {
     for (uint8_t i = 0; i < MAX_DATAGRAMS_PER_PASS; i++) {
         sockaddr_in from {};
-        socklen_t from_len = sizeof(from);
-        const int len = lwip_recvfrom(port.sock, datagram, sizeof(datagram), 0, reinterpret_cast<sockaddr *>(&from), &from_len);
-        if (len <= 0) {
+        iovec part { datagram, sizeof(datagram) };
+        msghdr message {};
+        message.msg_name = &from;
+        message.msg_namelen = sizeof(from);
+        message.msg_iov = &part;
+        message.msg_iovlen = 1;
+        // the datagram's whole length, MSG_TRUNC when it did not fit
+        const int whole = lwip_recvmsg(port.sock, &message, 0);
+        if (whole <= 0) {
             return;
         }
+        const uint32_t len = uint32_t(whole) < sizeof(datagram) ? uint32_t(whole) : uint32_t(sizeof(datagram));
+        port.rx_dropped += uint32_t(whole) - len;
         port.connected = true;
         if (server) {
-            port.to = from;
-            port.have_to = true;
+            track_udp_peer(port, from, now_ms);
         }
-        if (port.rx.space() < uint32_t(len) || port.rx.write(datagram, uint32_t(len)) != uint32_t(len)) {
-            port.rx_dropped += uint32_t(len);
+        if (port.rx.space() < len || port.rx.write(datagram, len) != len) {
+            port.rx_dropped += len;
         }
     }
 }
@@ -236,7 +263,11 @@ void tcp_client(PortState &port, const PortConfig &cfg, uint32_t now_ms)
         }
     }
     if (!port.connected) {
-        // non-blocking: in progress until lwIP answers EISCONN
+        // non-blocking, asked again every RETRY_MS: EINPROGRESS, then EALREADY until lwIP answers
+        // EISCONN; anything else (refused, reset) closes the socket for a new one
+        if (!due(port, now_ms)) {
+            return;
+        }
         const sockaddr_in to = address_of(cfg.ip, cfg.port);
         const int ret = lwip_connect(port.sock, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
         const int err = ret == 0 ? 0 : last_errno();
@@ -244,7 +275,9 @@ void tcp_client(PortState &port, const PortConfig &cfg, uint32_t now_ms)
             port.connected = true;
             port.pending_len = 0;
             port.pending_sent = 0;
-        } else if (err != EINPROGRESS && err != EALREADY) {
+        } else if (err == EINPROGRESS || err == EALREADY) {
+            port.next_try_ms = now_ms + RETRY_MS;
+        } else {
             retry_later(port, now_ms);
         }
         return;
@@ -311,7 +344,7 @@ void service_port(PortState &port, const PortConfig &cfg, uint32_t now_ms)
             }
         }
         udp_send(port);
-        udp_receive(port, cfg.type == UDP_SERVER);
+        udp_receive(port, cfg.type == UDP_SERVER, now_ms);
         return;
     case TCP_CLIENT:
         tcp_client(port, cfg, now_ms);
