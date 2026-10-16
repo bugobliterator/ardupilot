@@ -22286,7 +22286,7 @@ RTL_ALT_M 111
                 slow_requests += m.SlowReq
                 slow_max = max(slow_max, m.SlowMax)
                 slow_cpu_max = max(slow_cpu_max, m.SlowCPU)
-                slow_refused += m.SlowRef
+                slow_refused += m.Deny
                 if row_cpu is not None:
                     # SITL charges passes only: the charged CPU is inside the bracket WallBusy times
                     if row_cpu > m.WallBusy + 2:
@@ -22319,9 +22319,9 @@ RTL_ALT_M 111
                       (slow_cpu_max, len(capped_rows), capped_rows))
         if slow_cpu_max < 2000:
             raise NotAchievedException("no heavy worker frame (%u us): the fs:crc32 loop did not run" % slow_cpu_max)
-        self.progress("M4 attack: %u heavy calls refused (M4HP.SlowRef)" % slow_refused)
+        self.progress("M4 attack: %u heavy calls refused (M4HP.Deny)" % slow_refused)
         if slow_refused == 0:
-            raise NotAchievedException("M4HP.SlowRef is 0: no heavy call refused")
+            raise NotAchievedException("M4HP.Deny is 0: no heavy call refused")
         if len(capped_rows) < 5:
             raise NotAchievedException("the cap paused %u rows: the worker's CPU is not charged" % len(capped_rows))
         if sum(capped_rows) / len(capped_rows) < 50:
