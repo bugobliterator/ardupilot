@@ -22210,12 +22210,13 @@ RTL_ALT_M 111
         # thread statistics the duty cap charges
         # m4_sys_heavy.lua reads @SYS/tasks.txt as fast as it can (slow worker frames) and tries
         # fs:crc32("@SYS/threads.txt"), which is refused as well
-        # m4_sys_attack.lua loops fs:crc32 over a 2 MB file while SCR_USER1 is 1: the slow worker's
-        # CPU, charged to the duty cap, pauses it to its share
+        # m4_sys_attack.lua loops fs:crc32 over a 12 MB file while SCR_USER1 is 1: the slow worker's
+        # CPU, charged to the duty cap, pauses it to its share. One frame is over 50 ms of CPU, so
+        # the debt goes beyond the floor and further fs:crc32 calls are refused until it is paid down
         self.install_test_script_context(["m4_loop.lua", "m4_sys_threads.lua", "m4_sys_heavy.lua", "m4_sys_attack.lua"])
         big_file = self.installed_script_path("m4_big.bin")
         with open(big_file, "wb") as f:
-            f.write(os.urandom(2 * 1024 * 1024))
+            f.write(os.urandom(12 * 1024 * 1024))
         self.reboot_sitl()
         self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
         self.wait_statustext(r"M4 loop 2$", regex=True, check_context=True, timeout=30)
@@ -22244,7 +22245,12 @@ RTL_ALT_M 111
         self.set_parameter("SCR_USER1", 1)
         self.wait_statustext(r"M4 attack crc32 \d+", regex=True, check_context=True, timeout=10)
         self.delay_sim_time(15, reason="M4 fs:crc32 loop")
+        text = self.wait_statustext(r"M4 attack crc32 \d+ refused \d+", regex=True, timeout=10)
         self.set_parameter("SCR_USER1", 0)
+        attack_calls, attack_refused = [int(n) for n in re.findall(r"\d+", text.text.split("crc32")[1])]
+        self.progress("M4 attack: %u passes, %u fs:crc32 calls refused" % (attack_calls, attack_refused))
+        if attack_refused == 0:
+            raise NotAchievedException("no fs:crc32 call refused with the duty-cap debt beyond 50 ms: %s" % text.text)
         self.assert_mode("LOITER")
         if not self.armed():
             raise NotAchievedException("disarmed during the M4 fs:crc32 loop")
@@ -22260,6 +22266,7 @@ RTL_ALT_M 111
         stats_resets = 0
         slow_requests = 0
         slow_max = 0
+        slow_refused = 0
         row_cpu = None   # M4ST.CPU of the row M4HP follows (log_supervisor() writes them in turn)
         cpu_over_wall = 0
         cpu_over_cap = []
@@ -22279,6 +22286,7 @@ RTL_ALT_M 111
                 slow_requests += m.SlowReq
                 slow_max = max(slow_max, m.SlowMax)
                 slow_cpu_max = max(slow_cpu_max, m.SlowCPU)
+                slow_refused += m.SlowRef
                 if row_cpu is not None:
                     # SITL charges passes only: the charged CPU is inside the bracket WallBusy times
                     if row_cpu > m.WallBusy + 2:
@@ -22311,6 +22319,9 @@ RTL_ALT_M 111
                       (slow_cpu_max, len(capped_rows), capped_rows))
         if slow_cpu_max < 2000:
             raise NotAchievedException("no heavy worker frame (%u us): the fs:crc32 loop did not run" % slow_cpu_max)
+        self.progress("M4 attack: %u heavy calls refused (M4HP.SlowRef)" % slow_refused)
+        if slow_refused == 0:
+            raise NotAchievedException("M4HP.SlowRef is 0: no heavy call refused")
         if len(capped_rows) < 5:
             raise NotAchievedException("the cap paused %u rows: the worker's CPU is not charged" % len(capped_rows))
         if sum(capped_rows) / len(capped_rows) < 50:
