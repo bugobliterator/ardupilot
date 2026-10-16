@@ -22217,6 +22217,7 @@ RTL_ALT_M 111
     M4_PPP_PORT = 15770
     M4_UDP_CLIENT_PORT = 14560
     M4_UDP_SERVER_PORT = 14570
+    M4_UDP_RELAY_PORT = 15764       # m4_net_peer's host side of the peer's M4_UDP_CLIENT_PORT
     M4_TCP_SERVER_PORT = 5763       # NET_P2 as a TCP server on the M4's address
     M4_TCP_RELAY_PORT = 15763       # m4_net_peer's host side of that TCP server
 
@@ -22265,6 +22266,7 @@ RTL_ALT_M 111
             self.set_parameters(parameters)
             if relays is not None:
                 self.m4_net_peer_drain(peer)   # what it printed for the boot before
+            self.context_clear_collection("STATUSTEXT")
             self.reboot_sitl()
             if relays is None:
                 self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
@@ -22569,14 +22571,14 @@ RTL_ALT_M 111
         return {"NET_P2_TYPE": 4, "NET_P2_PROTOCOL": 2, "NET_P2_PORT": self.M4_TCP_SERVER_PORT}
 
     def m4_udp_relay(self):
-        return "udp-to-host:%u:%u" % (self.M4_UDP_CLIENT_PORT, self.M4_UDP_CLIENT_PORT)
+        return "udp-to-host:%u:%u" % (self.M4_UDP_CLIENT_PORT, self.M4_UDP_RELAY_PORT)
 
     def m4_tcp_relay(self):
         return "tcp-from-host:%u:%u" % (self.M4_TCP_RELAY_PORT, self.M4_TCP_SERVER_PORT)
 
     def m4_heartbeat_link(self):
         '''a GCS link on the host side of the peer's UDP relay, once it hears a HEARTBEAT from NET_P1'''
-        link = mavutil.mavlink_connection("udpin:127.0.0.1:%u" % self.M4_UDP_CLIENT_PORT, source_system=250)
+        link = mavutil.mavlink_connection("udpin:127.0.0.1:%u" % self.M4_UDP_RELAY_PORT, source_system=250)
         if link.wait_heartbeat(timeout=30) is None:
             link.close()
             raise NotAchievedException("no HEARTBEAT on the M4 UDP port")
@@ -22644,6 +22646,7 @@ RTL_ALT_M 111
         self.context_push()
         peer = None
         link = None
+        tcp = None
         stop = None
         try:
             peer = self.m4_network_context(
@@ -22654,6 +22657,7 @@ RTL_ALT_M 111
             self.wait_ready_to_arm()
             self.takeoff(10, mode="LOITER")
             self.set_rc(3, 1500)
+            start = self.mav.location()
             figures = []
             for n, delay in enumerate([1, 2, 4, 8], start=1):
                 # a marker request on the TCP port right before the fault: its answer may come before
@@ -22662,26 +22666,40 @@ RTL_ALT_M 111
                 marker = "SCR_USER%u" % n
                 tcp.mav.param_request_read_send(1, 1, marker.encode(), -1)
                 restarting = self.m4_inject(1, r"Net: M4 fault, restarting network \(%u\)$" % n)[0]
+                answered = False
+                while True:
+                    m = tcp.recv_match(type="PARAM_VALUE", blocking=False)
+                    if m is None:
+                        break
+                    answered = answered or m.param_id == marker
+                self.progress("restart %u: marker answered before the fault: %s" % (n, answered))
+                tcp.close()
+                tcp = None
                 up = self.wait_statustext("Net: M4 up, ppp0 %s" % self.M4_IP, check_context=True,
                                           timeout=delay + 30, wallclock_timeout=True)
+                # receipt times: a loaded host shortens or lengthens these by the autotest's own delays
                 restart_s = up._timestamp - restarting._timestamp
-                if restart_s < 0.8 * delay:
+                if restart_s < 0.8 * delay or restart_s > 1.5 * delay + 3:
                     raise NotAchievedException("restart %u after %.1f s, backoff %u s" % (n, restart_s, delay))
                 gap = self.m4_heartbeat_gap(arrivals, restarting._timestamp, up._timestamp, timeout=30)
-                tcp.close()
                 tcp = self.m4_tcp_link()
                 deadline = time.time() + 3
                 while time.time() < deadline:
                     m = tcp.recv_match(type="PARAM_VALUE", blocking=True, timeout=0.5)
                     if m is not None and m.param_id == marker:
-                        tcp.close()
                         raise NotAchievedException("restart %u replayed a reply from before the fault" % n)
                 tcp.close()
+                tcp = None
                 self.progress("restart %u: %.1f s to Net: M4 up, HEARTBEAT gap %.1f s" % (n, restart_s, gap))
                 figures.append((delay, restart_s, gap))
                 self.assert_mode("LOITER")
                 if not self.armed():
                     raise NotAchievedException("disarmed by a network restart")
+                altitude = self.get_altitude(relative=True)
+                drift = self.get_distance(start, self.mav.location())
+                self.progress("restart %u: altitude %.1f m, %.1f m from the takeoff point" % (n, altitude, drift))
+                if abs(altitude - 10) > 2 or drift >= 5:
+                    raise NotAchievedException("restart %u: altitude %.1f m, drift %.1f m" % (n, altitude, drift))
             self.progress("backoff s, fault to Net: M4 up s, HEARTBEAT gap s: %s" %
                           ", ".join("%u %.1f %.1f" % f for f in figures))
             self.do_RTL()
@@ -22691,6 +22709,8 @@ RTL_ALT_M 111
                 watcher.join(5)
             if link is not None:
                 link.close()
+            if tcp is not None:
+                tcp.close()
             if peer is not None:
                 self.m4_close_peer(peer)
             os.environ.pop('SCRIPTING_M4_PPP', None)
@@ -26680,6 +26700,8 @@ return update, 1000
             "ScriptingM4MidAutoFaults": "Requires --enable-scripting-m4 SITL build",
             "NetworkM4Status": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
             "NetworkM4InboundFlood": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
+            "NetworkM4RestartBackoff": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
+            "NetworkM4Commands": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
             "NetworkM4Ports": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
             "NetworkM4Restart": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
             "NetworkM4ScriptingOff": "Requires --enable-scripting-m4 --enable-networking-m4 SITL build",
