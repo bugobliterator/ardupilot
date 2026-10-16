@@ -52,30 +52,34 @@ local commands = {
   {"ALT_HOLD", MAV_CMD_DO_SET_MODE, {p1 = CUSTOM_MODE, p2 = 2}},
   {"STABILIZE", MAV_CMD_DO_SET_MODE, {p1 = CUSTOM_MODE, p2 = 0}},
 }
-local results = {}
-for i, command in ipairs(commands) do
-  results[i] = tostring(gcs:run_command_int(command[2], command[3]))
-  gcs:send_text(6, "M4 renode " .. command[1] .. " " .. results[i])
-  if command[1] == "ALT_HOLD" then
-    gcs:send_text(6, "M4 renode mode " .. tostring(vehicle:get_mode()))
-  end
-end
-gcs:send_text(6, "M4 renode commands " .. table.concat(results, " "))
-local labels = "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O"
-local fmt, units = string.rep("f", 15), string.rep("-", 15)
-local ok, err = pcall(logger.write, logger, "M4RL", labels, fmt, units, units,
-                      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
-gcs:send_text(ok and 6 or 3, ok and "M4 renode logger done" or ("M4 renode logger FAIL " .. tostring(err)))
-logger:log_file_content("/APM/m4_content.txt")   -- not a script: only this call queues it
-logger:log_file_content("/APM/LOGS/LASTLOG.TXT")
-gcs:send_text(6, "M4 renode file content done")
 local MAVLINK_MSG_ID_NAMED_VALUE_FLOAT = 251
 local function send_named_value()
   local payload = string.pack("<I4fc10", millis():toint(), 42.5, "M4RENODE")   -- c10 pads the name with zeros
   gcs:send_text(6, "M4 renode send_chan " .. tostring(mavlink:send_chan(1, MAVLINK_MSG_ID_NAMED_VALUE_FLOAT, payload)))
   return send_named_value, 1000
 end
-return send_named_value()
+local function run_calls()
+  local results = {}
+  for i, command in ipairs(commands) do
+    results[i] = tostring(gcs:run_command_int(command[2], command[3]))
+    gcs:send_text(6, "M4 renode " .. command[1] .. " " .. results[i])
+    if command[1] == "ALT_HOLD" then
+      gcs:send_text(6, "M4 renode mode " .. tostring(vehicle:get_mode()))
+    end
+  end
+  gcs:send_text(6, "M4 renode commands " .. table.concat(results, " "))
+  local labels = "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O"
+  local fmt, units = string.rep("f", 15), string.rep("-", 15)
+  local ok, err = pcall(logger.write, logger, "M4RL", labels, fmt, units, units,
+                        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+  gcs:send_text(ok and 6 or 3, ok and "M4 renode logger done" or ("M4 renode logger FAIL " .. tostring(err)))
+  logger:log_file_content("/APM/m4_content.txt")   -- not a script: only this call queues it
+  logger:log_file_content("/APM/LOGS/LASTLOG.TXT")
+  gcs:send_text(6, "M4 renode file content done")
+  return send_named_value()
+end
+-- the board's DataFlash log opens after boot: a logger:write before it is dropped, so start later
+return run_calls, 3000
 '''
 
 # PeerHeader::Half of the M4 (CubeFramework PeerHeader.h)
