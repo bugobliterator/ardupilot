@@ -24034,20 +24034,23 @@ RTL_ALT_M 111
         })
         self.install_test_modules_context()
         self.m4_install_tree_mavlink_module_context()
-        self.install_test_scripts_context([
-            "scripting_test.lua",
-            "scripting_require_test_2.lua",
-            "math.lua",
-            "strings.lua",
-            "mavlink_test.lua",
-        ])
+        scripts = ["scripting_test.lua", "scripting_require_test_2.lua", "math.lua", "strings.lua", "mavlink_test.lua"]
+        texts = ["Internal tests passed", "Require test 2 passed", "Math tests passed", "String tests passed",
+                 "Received heartbeat from"]
+        if self.networking_m4_build():
+            # networking builds give Lua about 110 KB, plain builds 184 KB: math.lua and strings.lua run out
+            # of memory beside the others (ScriptingM4Scripts runs math.lua there on its own)
+            self.progress("skipping math.lua and strings.lua on a networking build: out of memory at 110 KB")
+            for script, text in (("math.lua", "Math tests passed"), ("strings.lua", "String tests passed")):
+                scripts.remove(script)
+                texts.remove(text)
+        self.install_test_scripts_context(scripts)
         self.context_collect('STATUSTEXT')
         self.context_collect('NAMED_VALUE_FLOAT')
         self.reboot_sitl()
-        self.wait_statustext(r"Scripting: started on M4 \(5 scripts, heap \d+KB\)", regex=True,
+        self.wait_statustext(r"Scripting: started on M4 \(%u scripts, heap \d+KB\)" % len(scripts), regex=True,
                              check_context=True, timeout=30)
-        for text in ["Internal tests passed", "Require test 2 passed", "Math tests passed", "String tests passed",
-                     "Received heartbeat from"]:
+        for text in texts:
             self.wait_m4_script_text(text, timeout=120)
         self.assert_received_message_field_values("NAMED_VALUE_FLOAT", {"name": "test"}, check_context=True)
         # stopped as a context pop stops it, with SIM_SPEEDUP 100 in the same batch: SITL counts the
