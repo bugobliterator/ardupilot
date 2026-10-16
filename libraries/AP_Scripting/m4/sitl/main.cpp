@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +36,8 @@ static char **self_argv;
 static pid_t parent;
 static uint32_t restart_grant_at_start;
 static LuaLink call_link;   // not `link`: <unistd.h> declares link()
+static M4Service service;
+static pthread_mutex_t service_mutex = PTHREAD_MUTEX_INITIALIZER;   // M4Platform::lock
 
 static void sleep_ms(long ms)
 {
@@ -57,6 +60,21 @@ static uint32_t millis_now()
 static uint32_t cycles_now()
 {
     return uint32_t(now_us());   // one "cycle" per microsecond
+}
+
+static void lock_service()
+{
+    pthread_mutex_lock(&service_mutex);
+}
+
+static void unlock_service()
+{
+    pthread_mutex_unlock(&service_mutex);
+}
+
+static bool forward_posted()
+{
+    return service.forward_posted();
 }
 
 // SIG_IGN survives execv and discards pending copies: a SIGUSR1 racing the
@@ -193,10 +211,10 @@ int main(int argc, char **argv)
         inject_fault(FaultKind::HardFault);
     }
 
-    static M4Service service;
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, lua_port_wake };
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, lua_port_wake, lock_service,
+                                unlock_service };
     service.init(channel, window, call_link, platform);
-    if (!lua_port_start(call_link)) {
+    if (!lua_port_start(call_link, forward_posted)) {
         fprintf(stderr, "scripting_m4: no Lua thread\n");
         return 1;
     }

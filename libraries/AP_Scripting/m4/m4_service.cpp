@@ -34,6 +34,30 @@ void M4Service::init(Channel &channel, uint8_t *window, LuaLink &link, const M4P
 
 void M4Service::step()
 {
+    // a reply is drained under the lock forward_posted() holds from send to Sent: it is never
+    // seen before its call is Sent and dropped as stale
+    _platform.lock();
+    step_locked();
+    _platform.unlock();
+}
+
+bool M4Service::forward_posted()
+{
+    _platform.lock();
+    if (_ready && _link->state.load() == LuaLink::Posted) {
+        if (!_call_timed) {
+            _call_timed = true;
+            _call_posted_ms = _platform.millis();
+        }
+        forward_call();
+    }
+    const bool sent = _link->state.load() != LuaLink::Posted;
+    _platform.unlock();
+    return sent;
+}
+
+void M4Service::step_locked()
+{
     drain();
     const uint32_t now_ms = _platform.millis();
     const uint8_t state = _link->state.load();

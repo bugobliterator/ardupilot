@@ -19,6 +19,7 @@
 using namespace ScriptingM4;
 
 static LuaLink *lua_link;
+static bool (*service_forward_posted)();
 static pthread_mutex_t done_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t done_cond = PTHREAD_COND_INITIALIZER;
 
@@ -38,6 +39,8 @@ int32_t ScriptingM4::port_call(const uint8_t *request, uint16_t request_len, uin
     memcpy(link.request, request, request_len);
     link.request_len = request_len;
     link.state.store(LuaLink::Posted);
+    // sent from here when the service could; otherwise its next step (1 ms poll) sends it
+    (void)service_forward_posted();
     // the service completes every posted call within CALL_TIMEOUT_MS of posting
     pthread_mutex_lock(&done_mutex);
     while (link.state.load() != LuaLink::Done) {
@@ -190,9 +193,10 @@ static void *lua_thread(void *)
     lua_main();
 }
 
-bool lua_port_start(LuaLink &link)
+bool lua_port_start(LuaLink &link, bool (*forward_posted)())
 {
     lua_link = &link;
+    service_forward_posted = forward_posted;
     // the restart and Off signal (SIGUSR1) is the service thread's alone, as the restart
     // doorbell interrupts only the service on the M4: a Lua thread that took it would
     // restart a locked-up service. The mask is inherited, so the thread never has it unblocked.

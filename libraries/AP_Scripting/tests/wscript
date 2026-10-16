@@ -2,3 +2,8 @@
 
 def build(bld):
     bld.ap_find_tests(use='ap')
+    # test_scripting_m4_service compiles the M4 runtime's service, which includes its
+    # AP_Scripting headers by bare name as the M4 image does
+    if bld.env.HAS_GTEST and 'AP_SCRIPTING_M4_ENABLED=1' in bld.env.DEFINES:
+        tg = bld.get_tgen_by_name('tests/test_scripting_m4_service')
+        tg.includes = list(tg.to_list(tg.includes)) + [bld.srcnode.find_dir('libraries/AP_Scripting').abspath()]

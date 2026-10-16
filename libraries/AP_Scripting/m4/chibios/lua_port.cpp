@@ -51,6 +51,7 @@ static bool m7_time_available __attribute__((section(".bss.m4lua")));
 static THD_WORKING_AREA(lua_wa, 2048);
 static LuaLink *lua_link;
 static binary_semaphore_t *service_wake;
+static bool (*service_forward_posted)();
 static binary_semaphore_t lua_done;
 static uint32_t micros_last_cycles;
 static uint64_t micros_cycles;
@@ -79,7 +80,10 @@ static void sys_call(struct port_extctx *ctx)
     memcpy(link.request, reinterpret_cast<const void *>(uintptr_t(request)), request_len);
     link.request_len = uint16_t(request_len);
     link.state.store(LuaLink::Posted);
-    chBSemSignal(service_wake);
+    // sent from here when the service could; otherwise the service's next step sends it
+    if (!service_forward_posted()) {
+        chBSemSignal(service_wake);
+    }
     // the service completes every posted call; sent ones within CALL_TIMEOUT_MS
     while (link.state.load() != LuaLink::Done) {
         (void)chBSemWaitTimeout(&lua_done, TIME_MS2I(10));
@@ -340,10 +344,11 @@ static THD_FUNCTION(lua_thread, arg)
                            uint32_t(uintptr_t(&lua_stack[sizeof(lua_stack)])));
 }
 
-void lua_port_start(LuaLink &link, binary_semaphore_t &wake)
+void lua_port_start(LuaLink &link, binary_semaphore_t &wake, bool (*forward_posted)())
 {
     lua_link = &link;
     service_wake = &wake;
+    service_forward_posted = forward_posted;
     m7_counter_running = m7_counter_started();
     m7_time_available = m7_counter_running;
     chBSemObjectInit(&lua_done, true);

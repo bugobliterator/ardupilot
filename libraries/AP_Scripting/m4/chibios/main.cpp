@@ -28,6 +28,7 @@ static Channel channel;
 static M4Service service;
 static binary_semaphore_t doorbell;   // also wakes the service for a posted Lua call
 static LuaLink call_link;   // not `link`: <unistd.h> declares link()
+static mutex_t service_mutex;   // M4Platform::lock: the service and the Lua thread's SVC
 
 static uint8_t *shared_window()
 {
@@ -145,6 +146,21 @@ static uint32_t millis_now()
 static uint32_t cycles_now()
 {
     return DWT->CYCCNT;   // enabled by the ARMv7-M port_init()
+}
+
+static void lock_service()
+{
+    chMtxLock(&service_mutex);
+}
+
+static void unlock_service()
+{
+    chMtxUnlock(&service_mutex);
+}
+
+static bool forward_posted()
+{
+    return service.forward_posted();
 }
 
 // faults the service performs; the Lua thread's own are in lua_port.cpp
@@ -272,6 +288,7 @@ int main(void)
     // with PORT_USE_SYSCALL, port_init() enabled the MPU with PRIVDEFENA: back to the map above
     mpu_setup();
     chBSemObjectInit(&doorbell, true);
+    chMtxObjectInit(&service_mutex);
 
     uint8_t *const window = shared_window();
     SupervisorBlock *const block = supervisor_block(window);
@@ -297,9 +314,9 @@ int main(void)
     }
 
     const M4Platform platform { millis_now, cycles_now, AP_SCRIPTING_M4_CORE_CLOCK_HZ / 1000000U,
-                                inject_fault, lua_port_wake };
+                                inject_fault, lua_port_wake, lock_service, unlock_service };
     service.init(channel, window, call_link, platform);
-    lua_port_start(call_link, doorbell);
+    lua_port_start(call_link, doorbell, forward_posted);
     while (true) {
         if (block->run_permit.load() != 1) {
             m4_park_forever();

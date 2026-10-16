@@ -5,7 +5,9 @@
   (ChibiOS image or SITL process): drains the M7's messages, forwards the
   Lua thread's calls (posted on a LuaLink) once the M7 is Ready, times them
   per method, reports the times once per second, carries out fault
-  injection and beats the M4 heartbeat. step() never blocks.
+  injection and beats the M4 heartbeat. step() never blocks. The Lua
+  thread sends its own call with forward_posted() when it can; the
+  platform's lock serialises that with step(), the ring's other producer.
  */
 
 #include <atomic>
@@ -40,13 +42,19 @@ struct M4Platform {
     uint32_t cycles_per_us;
     void (*inject_fault)(FaultKind kind);   // HardFault, MemManage, Stall, Lockup
     void (*wake_lua)();                     // the call on the LuaLink is Done
+    // one mutex around the service state and the TX ring (priority inheritance on the M4)
+    void (*lock)();
+    void (*unlock)();
 };
 
 class M4Service {
 public:
     void init(CubePilotFW::Channel &channel, uint8_t *window, LuaLink &link, const M4Platform &platform);
-    // one pass; never blocks
+    // one pass; waits only for the lock
     void step();
+    // the Lua thread, after posting: sends the call itself when the M7 is Ready and the ring
+    // has room. False if it is still Posted: the service's next step sends it
+    bool forward_posted();
 
 private:
     struct MethodStats {
@@ -66,6 +74,7 @@ private:
     static void clear(MethodStats &slot);
     bool send_row(const StatsRow &row);
 
+    void step_locked();
     void drain();
     void handle(const uint8_t *buf, uint16_t len);
     void handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header);
