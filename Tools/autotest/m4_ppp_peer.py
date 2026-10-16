@@ -28,6 +28,7 @@ ECHO_REQ = 9
 ECHO_REPLY = 10
 
 IPCP_ADDRESS = 3
+MAX_PENDING = 65536    # bytes without a flag byte: not PPP, start again
 
 
 def _fcs_table():
@@ -126,6 +127,8 @@ class M4PPPPeer(object):
             if not data:
                 return
             pending += data
+            if len(pending) > MAX_PENDING and b'\x7e' not in pending:
+                pending.clear()
             while True:
                 end = pending.find(b'\x7e')
                 if end < 0:
@@ -147,6 +150,8 @@ class M4PPPPeer(object):
                 frame = frame[:-2]
                 if frame[:2] == b'\xff\x03':
                     frame = frame[2:]
+                if not frame:
+                    continue
                 if frame[0] & 1:
                     protocol, payload = frame[0], frame[1:]
                 else:
@@ -171,8 +176,9 @@ class M4PPPPeer(object):
             self._send_control(PPP_LCP, CONF_REQ, self._next_ident(), b'')
             for protocol, payload in self._frames(conn):
                 if protocol == PPP_LCP:
-                    lcp_open = self._lcp(payload) or lcp_open
-                    if lcp_open and not ipcp_acked:
+                    if self._lcp(payload) and not lcp_open:
+                        # LCP is open: ask for our address once
+                        lcp_open = True
                         self._send_control(PPP_IPCP, CONF_REQ, self._next_ident(),
                                            bytes([IPCP_ADDRESS, 6]) + self.our_ip)
                 elif protocol == PPP_IPCP:

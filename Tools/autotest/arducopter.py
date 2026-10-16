@@ -22201,7 +22201,7 @@ RTL_ALT_M 111
 
     M4_PEER_IP = "10.0.14.1"
     M4_IP = "10.0.14.2"
-    M4_PPP_PORT = 5770
+    M4_PPP_PORT = 5799     # not 5760 + 10 * n (+0..2): a SITL instance's SERIAL ports
     M4_UDP_CLIENT_PORT = 14560
     M4_UDP_SERVER_PORT = 14570
 
@@ -22297,6 +22297,7 @@ RTL_ALT_M 111
             if before == 0:
                 raise NotAchievedException("no MAVLink from the M4's UDP client port")
             self.context_clear_collection("STATUSTEXT")
+            peer.take_udp()
             payload = bytes(range(256)) * 4
             sent = 0
             deadline = time.time() + 15
@@ -22306,6 +22307,13 @@ RTL_ALT_M 111
                     sent += 1
                 self.drain_mav()
             self.progress("flooded the M4's UDP server port with %u datagrams of 1000 bytes" % sent)
+            # the flood reached NET_P2: the server took the flooder as its peer, and the M7's MAVLink
+            # on NET_P2 answers it from the server's port
+            replies = [d for d in peer.take_udp()
+                       if d[0] == self.M4_UDP_SERVER_PORT and d[1] == self.M4_UDP_SERVER_PORT + 1 and d[2][:1] == b'\xfd']
+            self.progress("MAVLink datagrams from NET_P2 to the flooder: %u" % len(replies))
+            if len(replies) == 0:
+                raise NotAchievedException("no MAVLink from the M4's UDP server port: the flood did not reach it")
             for m in self.context_collection("STATUSTEXT"):
                 if "Scripting: M4" in m.text or m.text.startswith("NET: IP"):
                     raise NotAchievedException("M4 flood gave '%s'" % m.text)
