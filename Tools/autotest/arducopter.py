@@ -7,16 +7,19 @@ AP_FLAKE8_CLEAN
 from __future__ import annotations
 
 import copy
+import ctypes
 import glob
 import hashlib
 import logging
 import math
+import mmap
 import os
 import pathlib
 import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -19623,6 +19626,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingM4MidAutoFaults,
             self.NetworkM4Status,
             self.NetworkM4InboundFlood,
+            self.NetworkM4RestartBackoff,
             self.UTMGlobalPosition,
         ])
         return ret
@@ -22455,10 +22459,11 @@ RTL_ALT_M 111
                     raise NotAchievedException("PPP reconnect gave '%s'" % m.text)
             if len(self.m4_mavlink_datagrams(peer, 5)) == 0:
                 raise NotAchievedException("no MAVLink from the M4's UDP client port after the reconnect")
-            # an M4 that is off for good keeps its session: only the status heartbeat stops
+            # a locked-up M4 turns the network off until reboot, and its addresses go
             self.context_clear_collection("STATUSTEXT")
-            self.set_parameter("SCR_M4_INJECT", 1)
-            self.wait_statustext("Scripting: M4 fault limit, off until reboot", check_context=True, timeout=30)
+            self.set_parameter("SCR_M4_INJECT", 4)
+            self.wait_statustext("Scripting: M4 fault limit, Lua off", check_context=True, timeout=30)
+            self.wait_statustext("Net: M4 lockup, off until reboot", check_context=True, timeout=30)
             self.wait_statustext("NET: IP      0.0.0.0", check_context=True, timeout=10)
         finally:
             if peer is not None:
@@ -22505,6 +22510,160 @@ RTL_ALT_M 111
             for m in self.context_collection("STATUSTEXT"):
                 if "Scripting: M4" in m.text:
                     raise NotAchievedException("after the M4 flood: '%s'" % m.text)
+        finally:
+            if peer is not None:
+                peer.close()
+            os.environ.pop('SCRIPTING_M4_PPP', None)
+            self.context_pop()
+        self.reboot_sitl()
+
+    # the SITL M4 window on networking builds (AP_ScriptingM4_Layout.h, AP_Networking_M4_Layout.h), after
+    # the POSIX segment's semaphore page (CubeFramework CUBEFW_POSIX_DATA_OFFSET)
+    M4_SHM_WINDOW_OFFSET = 4096
+    M4_SUPERVISOR_OFFSET = 16352           # SupervisorBlock: the Channel region (16 KB) less its 32 B
+    M4_LUA_PERMIT_OFFSET = 16352 + 16      # SupervisorBlock.reserved[1] (LUA_PERMIT_SLOT)
+    M4_STATUS_MAGIC_OFFSET = 16384 + 4     # NetM4::Region: StatusBlock.seq, then StatusFields.magic
+    M4_GENERATION_OFFSET = 16384 + 128     # RegionHeader.generation, after the 128 B status block
+
+    def m4_window_words(self):
+        '''the Lua permit and the network region's generation, read from the M7 SITL's shared memory
+        (/cfm4lua_<pid>); the generation moves only when the M7 clears the region'''
+        libc = ctypes.CDLL(None, use_errno=True)
+        fd = libc.shm_open(("/cfm4lua_%d" % self.sitl.pid).encode(), os.O_RDONLY)
+        if fd < 0:
+            raise NotAchievedException("shm_open: errno %d" % ctypes.get_errno())
+        try:
+            with mmap.mmap(fd, self.M4_SHM_WINDOW_OFFSET + 32768, mmap.MAP_SHARED, mmap.PROT_READ) as segment:
+                def word(offset):
+                    return struct.unpack_from("<I", segment, self.M4_SHM_WINDOW_OFFSET + offset)[0]
+                if word(self.M4_SUPERVISOR_OFFSET) != 0x5350344D or word(self.M4_STATUS_MAGIC_OFFSET) != 0x5453344E:
+                    raise NotAchievedException("no supervisor block or network status at the expected offsets")
+                return word(self.M4_LUA_PERMIT_OFFSET), word(self.M4_GENERATION_OFFSET)
+        finally:
+            os.close(fd)
+
+    def m4_assert_window(self, lua_permit, generation, what):
+        got = self.m4_window_words()
+        self.progress("%s: Lua permit %u, region generation %u" % (what, got[0], got[1]))
+        if got != (lua_permit, generation):
+            raise NotAchievedException("%s: Lua permit %u, region generation %u; expected %u, %u" %
+                                       (what, got[0], got[1], lua_permit, generation))
+
+    def m4_network_back(self, peer, what):
+        '''the M7 announces the M4's PPP address again and the M4's UDP client port sends'''
+        self.wait_statustext("Net: M4 up, ppp0 %s" % self.M4_IP, check_context=True, timeout=60)
+        if len(self.m4_mavlink_datagrams(peer, 5)) == 0:
+            raise NotAchievedException("no MAVLink from the M4's UDP client port after %s" % what)
+
+    def m4_inject(self, kind, *texts):
+        '''SCR_M4_INJECT kind, then the texts in order'''
+        self.context_clear_collection("STATUSTEXT")
+        self.set_parameter("SCR_M4_INJECT", kind)
+        got = [self.wait_statustext(text, regex=True, check_context=True, timeout=60) for text in texts]
+        self.set_parameter("SCR_M4_INJECT", 0)
+        return got
+
+    def m4_assert_no_lua(self, seconds, what):
+        self.context_clear_collection("STATUSTEXT")
+        self.delay_sim_time(seconds, reason=what)
+        for m in self.context_collection("STATUSTEXT"):
+            if m.text.startswith("M4 loop"):
+                raise NotAchievedException("Lua ran %s: '%s'" % (what, m.text))
+
+    def NetworkM4RestartBackoff(self):
+        '''on a networking build every M4 fault restarts the whole M4 after a backoff, forever: the network comes back
+        after every restart kind, Lua turns off at the fault limit, and a lockup turns the network off until reboot'''
+        self.context_push()
+        peer = None
+        try:
+            self.install_test_script_context("m4_loop.lua")
+            peer = self.m4_network_context(dict(self.m4_udp_client_parameters(), SCR_M4_RST_MAX=4, LOG_DISARMED=1))
+            self.m4_network_back(peer, "the start")
+            self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+            # the start cleared the region once
+            self.m4_assert_window(1, 1, "started")
+
+            # two faults in a row: the restarts wait 1 s, then 2 s; a faulted M4 has the region cleared
+            gaps = []
+            for n in (1, 2):
+                fault, restarting, restarted = self.m4_inject(
+                    1, r"Scripting: M4 signal \d+ addr=0x",
+                    r"Net: M4 fault, restarting network \(%u\)$" % n,
+                    r"Scripting: M4 restarted \(%u/4\)$" % n)
+                gaps.append(restarted._timestamp - restarting._timestamp)
+                self.m4_network_back(peer, "fault %u" % n)
+                self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+                self.m4_assert_window(1, 1 + n, "after fault %u" % n)
+            self.progress("fault restarts came %.1f s and %.1f s after their texts" % tuple(gaps))
+            if gaps[0] < 0.95 or gaps[1] < 1.95 or gaps[1] < gaps[0] + 0.5:
+                raise NotAchievedException("backoff gaps %s, expected 1 s then 2 s" % gaps)
+
+            # requested restarts restart the whole M4, without a region clear; a stop holds Lua
+            self.context_clear_collection("STATUSTEXT")
+            self.run_cmd(mavutil.mavlink.MAV_CMD_SCRIPTING, p1=mavutil.mavlink.SCRIPTING_CMD_STOP_AND_RESTART)
+            self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
+            self.m4_network_back(peer, "a requested restart")
+            self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+            self.m4_assert_window(1, 3, "after a requested restart")
+            self.context_clear_collection("STATUSTEXT")
+            self.run_cmd(mavutil.mavlink.MAV_CMD_SCRIPTING, p1=mavutil.mavlink.SCRIPTING_CMD_STOP)
+            self.wait_statustext("Scripting: stopped", check_context=True, timeout=10)
+            self.m4_network_back(peer, "a stop")
+            self.m4_assert_window(0, 3, "stopped")
+            self.m4_assert_no_lua(5, "after a stop")
+            # a stopped session lists no script, as in-process: the vehicle arms
+            self.wait_ready_to_arm(timeout=30)
+            self.context_clear_collection("STATUSTEXT")
+            self.run_cmd(mavutil.mavlink.MAV_CMD_SCRIPTING, p1=mavutil.mavlink.SCRIPTING_CMD_STOP_AND_RESTART)
+            self.wait_statustext("Scripting: restarted", check_context=True, timeout=10)
+            self.m4_network_back(peer, "a start after the stop")
+            self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+            self.m4_assert_window(1, 3, "started again")
+            for m in self.context_collection("STATUSTEXT"):
+                if m.text.startswith("Net: M4 fault"):
+                    raise NotAchievedException("a requested restart gave '%s'" % m.text)
+
+            # a lost heartbeat and protocol errors: the M4 may still run, so the region stays
+            for kind, used, reason in ((3, 3, "heartbeat lost"), (5, 4, "protocol errors")):
+                self.m4_inject(kind, r"Scripting: M4 %s$" % reason,
+                               r"Scripting: M4 restarting \(%u/4\)$" % used,
+                               r"Net: M4 fault, restarting network \(%u\)$" % used)
+                self.m4_network_back(peer, reason)
+                self.wait_m4_script_text(r"M4 loop 2$", timeout=30)
+                self.m4_assert_window(1, 3, "after %s" % reason)
+
+            # the fault limit: Lua off until reboot, the network keeps restarting. The faulted M4 waits out
+            # its backoff (16 s) parked, so its status heartbeat stops and the M7 drops its addresses
+            address_gone = self.m4_inject(
+                1, r"Scripting: M4 fault limit, Lua off$", r"Net: M4 fault, restarting network \(5\)$",
+                r"NET: IP      0\.0\.0\.0$")[2]
+            restarted = self.wait_statustext(r"Scripting: M4 restarted \(4/4\)$", regex=True, check_context=True,
+                                             timeout=60)
+            if restarted._timestamp - address_gone._timestamp < 5:
+                raise NotAchievedException("the addresses went only at the restart, not while the M4 was parked")
+            self.m4_network_back(peer, "the fault limit")
+            self.m4_assert_window(0, 4, "Lua off")
+            self.m4_assert_no_lua(5, "after the fault limit")
+            self.assert_prearm_failure("Scripting: M4 fault limit, Lua off", other_prearm_failures_fatal=False)
+            # requests no longer restart the M4
+            self.context_clear_collection("STATUSTEXT")
+            self.run_cmd(mavutil.mavlink.MAV_CMD_SCRIPTING, p1=mavutil.mavlink.SCRIPTING_CMD_STOP_AND_RESTART)
+            self.delay_sim_time(5, reason="a restart request with Lua off")
+            for m in self.context_collection("STATUSTEXT"):
+                if m.text.startswith("Net: M4") or m.text.startswith("Scripting:"):
+                    raise NotAchievedException("a restart request with Lua off gave '%s'" % m.text)
+
+            # a lockup: the restart is never answered, the network is off until reboot
+            self.m4_inject(4, r"Scripting: M4 heartbeat lost$", r"Net: M4 fault, restarting network \(6\)$",
+                           r"Net: M4 lockup, off until reboot$", r"Scripting: M4 not responding, off until reboot$",
+                           r"NET: IP      0\.0\.0\.0$")
+            if len(self.m4_mavlink_datagrams(peer, 5)) != 0:
+                raise NotAchievedException("MAVLink from the M4's UDP client port after the lockup")
+
+            states = set(row.St for row in self.m4_log_rows("M4ST"))
+            self.progress("M4ST states: %s" % sorted(states))
+            if not {2, 4, 5}.issubset(states):
+                raise NotAchievedException("M4ST states %s: expected running, off and backoff" % sorted(states))
         finally:
             if peer is not None:
                 peer.close()
