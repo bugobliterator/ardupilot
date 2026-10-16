@@ -421,6 +421,7 @@ static void link_from_host(TcpLink &link)
     }
 }
 
+// the only place a link is freed: the main loop holds link pointers across callbacks that close links
 static void sweep_links()
 {
     for (size_t i = 0; i < links.size();) {
@@ -438,13 +439,12 @@ static void sweep_links()
     }
 }
 
+// closes every link; sweep_links() frees them
 static void close_links()
 {
     for (TcpLink *link : links) {
         link_close(*link);
-        delete link;
     }
-    links.clear();
 }
 
 // the relays' lwIP PCBs live for one PPP session
@@ -677,6 +677,9 @@ int main(int argc, char **argv)
                     continue;
                 }
                 TcpLink &link = *link_of[i - 2];
+                if (link.host_fd < 0) {
+                    continue;   // closed earlier in this pass (PPP went down)
+                }
                 if (revents & POLLOUT) {
                     link_flush_to_host(link);
                 }
@@ -691,6 +694,7 @@ int main(int argc, char **argv)
     }
 
     close_links();
+    sweep_links();
     for (Relay &relay : relays) {
         close(relay.host_fd);
     }
