@@ -1,6 +1,7 @@
 #include "net_sys_arch.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 #include <time.h>
 
@@ -212,8 +213,16 @@ bool os_thread_start(const char *name, int priority, void (*fn)(void *), void *a
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    // the SITL M4's restart signal (SIGUSR1) is its service thread's alone, as the restart
+    // doorbell interrupts only the service on the M4: a new thread inherits the mask blocking it
+    sigset_t restart;
+    sigset_t previous;
+    sigemptyset(&restart);
+    sigaddset(&restart, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &restart, &previous);
     pthread_t thread;
     const bool started = pthread_create(&thread, &attr, thread_entry, start) == 0;
+    pthread_sigmask(SIG_SETMASK, &previous, nullptr);
     pthread_attr_destroy(&attr);
     return started;
 }
