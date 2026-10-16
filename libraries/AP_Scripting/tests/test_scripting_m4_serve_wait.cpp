@@ -140,16 +140,63 @@ TEST(ScriptingM4ServeWait, LongPassesKeepTheShare)
     EXPECT_GT(passes, 150U);
 }
 
-// one pass of 1 s: serving waits about 10 s, the whole of it charged
-TEST(ScriptingM4ServeWait, OneSecondPassIsChargedInFull)
+// the pause after one frame of frame_us CPU, charged as it ends
+static uint32_t pause_after_frame(uint32_t frame_us)
 {
     ServeDutyCap cap;
     EXPECT_EQ(cap.wait_us(0U), 0U);
-    cap.charge(1000000U);
-    const uint32_t wait = cap.wait_us(1000000U);
-    EXPECT_GE(wait, 8900000U);
-    EXPECT_NE(cap.wait_us(1000000U + wait - 10U), 0U);
-    EXPECT_EQ(cap.wait_us(1000000U + wait), 0U);
+    cap.charge(frame_us);
+    const uint32_t wait = cap.wait_us(frame_us);
+    EXPECT_NE(cap.wait_us(frame_us + wait - 10U), 0U);
+    EXPECT_EQ(cap.wait_us(frame_us + wait), 0U);
+    return wait;
+}
+
+// one frame of 150 ms or 1 s on the worker: the debt is floored, so serving pauses at most
+// about 0.5 s, not 10x the frame, and the M4's next call is served inside its timeout
+TEST(ScriptingM4ServeWait, LongFramePausesAtMostHalfASecond)
+{
+    EXPECT_LE(ServeDutyCap::MAX_PAUSE_US, 510000U);
+    for (const uint32_t frame_us : { 150000U, 1000000U }) {
+        const uint32_t wait = pause_after_frame(frame_us);
+        EXPECT_LE(wait, ServeDutyCap::MAX_PAUSE_US) << frame_us;
+        EXPECT_GE(wait, ServeDutyCap::MAX_PAUSE_US - 10U) << frame_us;   // floored, not forgiven
+    }
+}
+
+// a frame within the floor is charged in full, as before
+TEST(ScriptingM4ServeWait, FrameWithinTheFloorIsChargedInFull)
+{
+    const int64_t frame_us = 50000;
+    const int64_t credit = ServeDutyCap::BURST_US - frame_us + frame_us / 10;   // charged, then refilled for the frame
+    ASSERT_GT(credit, -ServeDutyCap::MAX_DEBT_US);
+    EXPECT_EQ(int64_t(pause_after_frame(uint32_t(frame_us))), (ServeDutyCap::RESUME_US - credit) * 10);
+}
+
+// back-to-back frames longer than the floor: each pauses about 0.5 s, so the share is above
+// SHARE_PERCENT (the floor forgives the rest) but every pause stays within the bound
+TEST(ScriptingM4ServeWait, BackToBackLongFramesStayWithinThePause)
+{
+    ServeDutyCap cap;
+    uint32_t now = 0;
+    EXPECT_EQ(cap.wait_us(now), 0U);
+    cap.charge(150000U);   // the first frame, on the starting burst
+    now += 150000U;
+    const uint32_t start = now;
+    uint64_t busy = 0;
+    for (uint32_t frame = 0; frame < 100; frame++) {
+        const uint32_t wait = cap.wait_us(now);
+        ASSERT_LE(wait, ServeDutyCap::MAX_PAUSE_US);
+        ASSERT_GE(wait, ServeDutyCap::MAX_PAUSE_US - 10U);
+        now += wait;
+        ASSERT_EQ(cap.wait_us(now), 0U);
+        cap.charge(150000U);
+        busy += 150000U;
+        now += 150000U;
+    }
+    const uint64_t ppm = busy * 1000000U / (now - start);
+    EXPECT_LE(ppm, 150000U * uint64_t(1000000U) / (150000U + ServeDutyCap::MAX_PAUSE_US - 10U));
+    EXPECT_GT(ppm, ServeDutyCap::SHARE_PERCENT * 10000U);
 }
 
 // a flood: back-to-back passes of 200 us, across a clock wrap

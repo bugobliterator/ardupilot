@@ -9,8 +9,10 @@ namespace ScriptingM4 {
 /*
   Token bucket on the host thread's CPU time. Credit accrues at SHARE_PERCENT
   of elapsed wall time up to BURST_US; each pass is charged in full for the
-  CPU time it used, so credit goes negative by that much. While credit is
-  below RESUME_US the host serves nothing, however many frames are pending.
+  CPU time it used, so credit goes negative by that much; once the time the
+  pass took has earned its credit, debt beyond MAX_DEBT_US is forgiven. While
+  credit is below RESUME_US the host serves nothing, however many frames are
+  pending.
   Time a binding spends blocked (a semaphore, the SD card) yields the CPU to
   other threads and is not charged; a binding that spins is.
  */
@@ -20,16 +22,26 @@ public:
     static constexpr int32_t BURST_US = 2000;
     // a pass is at most MAX_SERVE_US plus one frame: start one only with that much credit
     static constexpr int32_t RESUME_US = 200;
+    // debt is floored here so that one long frame (fs:crc32 of a large file on the worker)
+    // pauses serving for at most about 0.5 s, well inside the M4's call timeout; frames up to
+    // about this long still keep the share
+    static constexpr int32_t MAX_DEBT_US = 50000;
 
     void charge(uint32_t busy_us)
     {
         _credit_us -= busy_us;
     }
 
+    // the longest the cap pauses serving, however long the frame charged before it
+    static constexpr uint32_t MAX_PAUSE_US = uint32_t(RESUME_US + MAX_DEBT_US) * (100U / SHARE_PERCENT);
+
     // 0 when a pass may start now, else the microseconds until it may
     uint32_t wait_us(uint32_t now_us)
     {
         refill(now_us);
+        if (_credit_us < -MAX_DEBT_US) {
+            _credit_us = -MAX_DEBT_US;
+        }
         if (_credit_us >= RESUME_US) {
             return 0;
         }

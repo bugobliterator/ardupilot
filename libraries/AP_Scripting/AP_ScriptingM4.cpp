@@ -255,6 +255,8 @@ void AP_ScriptingM4::worker_thread()
     }
 }
 
+static_assert(ScriptingM4::ServeDutyCap::MAX_PAUSE_US <= ScriptingM4::CALL_TIMEOUT_MS * 1000U * 3U / 5U,
+              "a duty-cap pause leaves the M4's next call time to be served");
 static_assert(ScriptingM4Remote::METHOD_FAST_LANE == ScriptingM4::METHOD_FLAG_FAST_LANE, "one fast-lane flag");
 
 bool AP_ScriptingM4::on_fast_lane(const uint8_t *buf, uint16_t len) const
