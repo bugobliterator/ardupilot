@@ -10,6 +10,7 @@
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
 #include "AP_ScriptingM4_Layout.h"
+#include "AP_ScriptingM4_Remote.h"
 #include "AP_ScriptingM4_Rpc.h"
 #include "AP_Scripting.h"
 
@@ -100,6 +101,14 @@ void AP_ScriptingM4::init()
     // above the I/O-class threads (io 58, storage/log_io 59, UART/net 60) so a call is not queued
     // behind logging; below every vehicle-timing thread (I2C 176 and up). The duty cap bounds
     // the CPU share a flooding M4 can take from those threads
+    // the slow worker first: the host hands it every frame the fast lane does not serve. It runs
+    // the heavy bindings (files, @SYS, logs, parameter names) at io priority - 1, below io 58,
+    // storage/log_io 59 and UART/net 60, with the stack the host ran them with
+    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ScriptingM4::worker_thread, void),
+                                      "ScriptingM4W", 8192, AP_HAL::Scheduler::PRIORITY_IO, -1)) {
+        go_off("no worker thread");
+        return;
+    }
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ScriptingM4::host_thread, void),
                                       "ScriptingM4", 8192, AP_HAL::Scheduler::PRIORITY_UART, 1)) {
         go_off("no host thread");
@@ -125,6 +134,11 @@ void AP_ScriptingM4::host_thread()
             if (off_ms - _stats_start_ms >= 1000) {
                 log_supervisor(off_ms, off_ms - _stats_start_ms);
                 _stats_start_ms = off_ms;
+                _host_busy_us = 0;
+                _host_cpu_us = 0;
+                _pass_cpu_max_us = 0;
+                _slow_requests = 0;
+                _slow_max_us = 0;
             }
             hal.scheduler->delay(100);
             continue;
@@ -161,7 +175,7 @@ void AP_ScriptingM4::host_thread()
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
-        start_pass_cpu();
+        charge_cpu(false);   // ChibiOS: the wait, the wake and the switch before this pass
 #if AP_SCRIPTING_M4_FAULT_INJECTION_ENABLED
         // the M4 asks for the image at every start: a value set before a start acts on it
         _server.set_refuse_bindings(_inject.get() == INJECT_REFUSE_BINDINGS);
@@ -187,7 +201,7 @@ void AP_ScriptingM4::host_thread()
         if (busy_us > LONG_PASS_US) {
             _long_passes++;
         }
-        _pass_cpu_max_us = MAX(_pass_cpu_max_us, charge_pass_cpu());
+        charge_cpu(true);
         if (now_ms - _stats_start_ms >= 1000) {
             log_supervisor(now_ms, now_ms - _stats_start_ms);
             _stats_start_ms = now_ms;
@@ -199,34 +213,64 @@ void AP_ScriptingM4::host_thread()
             _host_cpu_us = 0;
             _long_passes = 0;
             _pass_cpu_max_us = 0;
-            _cpu_clock_resets = 0;
+            _slow_requests = 0;
+            _slow_max_us = 0;
         }
     }
 }
 
-// the duty cap charges the CPU time of each pass, from here to charge_pass_cpu(). Waits and
-// pauses between passes sleep on ChibiOS and are not charged (SITL's delays spin on the clock)
-void AP_ScriptingM4::start_pass_cpu()
-{
-    if (platform_thread_cpu_us(_pass_start_cpu_us)) {
-        _cpu_clock_resets++;   // during the wait: nothing of it is charged
-    }
-    _pass_start_wall_us = AP_HAL::micros();
-}
-
-// charge the duty cap the CPU time this pass used; returns it
-uint32_t AP_ScriptingM4::charge_pass_cpu()
+// charge the duty cap the host's CPU since its previous reading (HostCpuCharge); at a pass end
+// that is the pass, the largest of which M4HP logs
+void AP_ScriptingM4::charge_cpu(bool pass_end)
 {
     uint64_t cpu_us;
     const bool reset = platform_thread_cpu_us(cpu_us);
-    if (reset || cpu_us < _pass_start_cpu_us) {
-        _cpu_clock_resets++;
-    }
-    const uint32_t used_us = ScriptingM4::interval_cpu_us(_pass_start_cpu_us, cpu_us, reset,
-                                                          AP_HAL::micros() - _pass_start_wall_us);
+    const uint32_t wall_us = AP_HAL::micros();
+    const uint32_t used_us = pass_end ? _cpu_charge.pass_end(cpu_us, reset, wall_us) :
+                                        _cpu_charge.pass_start(cpu_us, reset, wall_us);
     _host_cpu_us += used_us;
     _duty_cap.charge(used_us);
-    return used_us;
+    if (pass_end) {
+        _pass_cpu_max_us = MAX(_pass_cpu_max_us, used_us);
+    }
+}
+
+// the slow worker: one frame at a time, handed over by the host, which waits until it is served
+void AP_ScriptingM4::worker_thread()
+{
+    while (true) {
+        IGNORE_RETURN(_worker_request.wait_blocking());
+        handle_message(_rx_frame, _worker_len);
+        _worker_done.signal();
+    }
+}
+
+bool AP_ScriptingM4::on_fast_lane(const uint8_t *buf, uint16_t len) const
+{
+    ScriptingM4::MsgHeader header;
+    if (!ScriptingM4::parse_header(buf, len, header)) {
+        return true;   // a protocol error, counted by handle_message()
+    }
+    uint16_t method = 0;
+    const MsgType type = MsgType(header.type);
+    if (type == MsgType::Call || type == MsgType::Notify) {
+        ScriptingM4::CallHeader call;
+        memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(CallHeader)
+        method = call.method;
+    }
+    const bool binding_fast = method >= ScriptingM4::FIRST_BINDING_METHOD &&
+                              (ScriptingM4Remote::method_flags(method) & ScriptingM4Remote::METHOD_FAST_LANE) != 0;
+    return ScriptingM4::serve_on_fast_lane(type, method, binding_fast);
+}
+
+void AP_ScriptingM4::serve_on_worker(uint16_t len)
+{
+    const uint32_t start_us = AP_HAL::micros();
+    _worker_len = len;
+    _worker_request.signal();
+    IGNORE_RETURN(_worker_done.wait_blocking());
+    _slow_requests++;
+    _slow_max_us = MAX(_slow_max_us, AP_HAL::micros() - start_us);
 }
 
 // listening: the ring was empty with the asleep flag set, so the M4 rings for its next frame
@@ -269,7 +313,11 @@ AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
             _protocol_errors++;
             return ServeResult::Stuck;
         }
-        handle_message(_rx_frame, len);
+        if (on_fast_lane(_rx_frame, len)) {
+            handle_message(_rx_frame, len);
+        } else {
+            serve_on_worker(len);
+        }
         if (AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
             return ServeResult::Busy;
         }
@@ -422,13 +470,15 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     // @LoggerMessage: M4HP
     // @Description: Scripting M4 host thread passes, once per second (M4 scripting builds)
     // @Field: TimeUS: Time since system startup
-    // @Field: PassMax: the largest CPU time of one host pass in the last second, in microseconds
-    // @Field: WallBusy: host thread wall time in the last second, per mille of the M7 (an upper bound of its CPU that thread statistics do not feed)
-    // @Field: StatsReset: thread statistics resets seen in the last second (a pass with one is charged its wall time)
-    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset", "s---", "F---", "QIHH",
-                                AP_HAL::micros64(), _pass_cpu_max_us,
+    // @Field: PassMax: the largest CPU time of one fast-lane pass in the last second, in microseconds (what the duty cap charges)
+    // @Field: WallBusy: host thread wall time from wake to the end of each pass in the last second, per mille (thread statistics do not feed it; preemption and waits on the slow worker count, the switch around a pass does not)
+    // @Field: StatsReset: thread statistics resets seen in the last second (an interval with one is charged its wall time)
+    // @Field: SlowReq: frames the slow worker served in the last second
+    // @Field: SlowMax: the longest of them, wall time in microseconds
+    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax", "s-----", "F-----",
+                                "QIHHHI", AP_HAL::micros64(), _pass_cpu_max_us,
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
-                                _cpu_clock_resets);
+                                _cpu_charge.take_resets(), _slow_requests, _slow_max_us);
 #endif
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {

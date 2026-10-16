@@ -63,8 +63,12 @@ private:
 #endif
 
     void host_thread();
+    void worker_thread();
     void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
+    bool on_fast_lane(const uint8_t *buf, uint16_t len) const;
+    void serve_on_worker(uint16_t len);
+    void charge_cpu(bool pass_end);
     void handle_message(const uint8_t *buf, uint16_t len);
     void handle_call(const uint8_t *buf, uint16_t len, const ScriptingM4::MsgHeader &header, uint32_t start_us);
     void send_ready(uint32_t now_ms);
@@ -95,8 +99,6 @@ private:
     // CPU time this thread has used, in microseconds; true when the clock was reset (statistics
     // cleared) since the previous call, so the difference to that reading is not the CPU used
     bool platform_thread_cpu_us(uint64_t &cpu_us);
-    void start_pass_cpu();
-    uint32_t charge_pass_cpu();
     // the clock the start and restart timeouts count: the vehicle's on ChibiOS, wall-clock time in
     // SITL, where the M4 process runs on wall-clock time whatever SIM_SPEEDUP is
     uint32_t platform_timeout_ms() const;
@@ -142,12 +144,20 @@ private:
     uint32_t _host_cpu_us;             // host thread CPU time, what the duty cap charges
     uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
     uint32_t _pass_cpu_max_us;         // the largest CPU time of one pass
-    uint16_t _cpu_clock_resets;        // thread statistics resets seen
-    uint64_t _pass_start_cpu_us;       // the CPU clock when this pass started
-    uint32_t _pass_start_wall_us;      // and the wall clock
+    uint16_t _slow_requests;           // frames the slow worker served
+    uint32_t _slow_max_us;             // the longest of them, wall time
     bool _summary_enabled;
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ScriptingM4::ServeDutyCap _duty_cap;
+    // ChibiOS charges all the host's CPU (its waits sleep); SITL only its passes (its waits spin)
+    ScriptingM4::HostCpuCharge _cpu_charge { CONFIG_HAL_BOARD != HAL_BOARD_SITL };
+
+    // the slow worker, below the I/O threads, serves the frames the fast lane does not
+    // (serve_on_fast_lane()): the host hands it one frame (_rx_frame) and waits for it, so the
+    // M4 sees its replies in order and only one of the two threads runs the server at a time
+    HAL_BinarySemaphore _worker_request;
+    HAL_BinarySemaphore _worker_done;
+    uint16_t _worker_len;
 
     struct {
         uint32_t count;           // calls timed since the last summary

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdint.h>
+#include "AP_ScriptingM4_Files.h"
+#include "AP_ScriptingM4_Rpc.h"
 
 namespace ScriptingM4 {
 
@@ -74,6 +76,124 @@ inline uint32_t interval_cpu_us(uint64_t start_us, uint64_t end_us, bool reset, 
     }
     const uint64_t used = end_us - start_us;
     return used > UINT32_MAX ? UINT32_MAX : uint32_t(used);
+}
+
+/*
+  The M7 thread-statistics clock (ChibiOS CH_DBG_STATISTICS) as the host thread reads it about
+  itself: cumulative cycles of its finished slices, the cycle its running slice started on, and
+  best. ChibiOS only ever lowers best to a slice's length, so the host keeps it at 0; a reset
+  (chTMObjectInit() from another thread, or Util::thread_info() on this one) sets it to all ones.
+ */
+struct ThreadStatsClock {
+    uint64_t cumulative;
+    uint32_t last;
+    uint32_t best;
+};
+
+// one reading, in cycles; reset tells whether the clock was reset since the previous reading.
+// It clears best again: the caller writes the clock back
+inline uint64_t read_thread_cycles(ThreadStatsClock &clock, uint32_t now, bool &reset)
+{
+    reset = clock.best != 0;
+    clock.best = 0;
+    return clock.cumulative + uint32_t(now - clock.last);
+}
+
+/*
+  What the duty cap charges for the host's CPU, from readings of its CPU clock at the start and
+  the end of each pass. charges_waits (ChibiOS, where waits sleep): all CPU since the previous
+  reading, so the wake, the switch and the bookkeeping around a pass are charged too. Otherwise
+  (SITL, whose waits spin on the simulated clock): each pass only. An interval with a reset is
+  charged its wall time; the first reading only starts the clock.
+ */
+class HostCpuCharge {
+public:
+    explicit HostCpuCharge(bool charges_waits) : _charges_waits(charges_waits) {}
+
+    uint32_t pass_start(uint64_t cpu_us, bool reset, uint32_t wall_us)
+    {
+        if (!_started) {
+            _started = true;
+            latch(cpu_us, wall_us);
+            return 0;
+        }
+        uint32_t used_us = 0;
+        if (_charges_waits) {
+            used_us = interval(cpu_us, reset, wall_us);
+        } else if (reset || cpu_us < _cpu_us) {
+            _resets++;
+        }
+        latch(cpu_us, wall_us);
+        return used_us;
+    }
+
+    uint32_t pass_end(uint64_t cpu_us, bool reset, uint32_t wall_us)
+    {
+        const uint32_t used_us = _started ? interval(cpu_us, reset, wall_us) : 0;
+        _started = true;
+        latch(cpu_us, wall_us);
+        return used_us;
+    }
+
+    // resets seen since the last call
+    uint16_t take_resets()
+    {
+        const uint16_t resets = _resets;
+        _resets = 0;
+        return resets;
+    }
+
+private:
+    uint32_t interval(uint64_t cpu_us, bool reset, uint32_t wall_us)
+    {
+        if (reset || cpu_us < _cpu_us) {
+            _resets++;
+        }
+        return interval_cpu_us(_cpu_us, cpu_us, reset, wall_us - _wall_us);
+    }
+
+    void latch(uint64_t cpu_us, uint32_t wall_us)
+    {
+        _cpu_us = cpu_us;
+        _wall_us = wall_us;
+    }
+
+    const bool _charges_waits;
+    bool _started = false;
+    uint64_t _cpu_us = 0;
+    uint32_t _wall_us = 0;
+    uint16_t _resets = 0;
+};
+
+/*
+  Which thread serves a frame. The host's fast lane, above the I/O threads, takes only what does
+  fixed work with no file, storage, SD or bus access: the generated methods marked so
+  (gen-bindings -r METHOD_FAST_LANE, binding_fast here), m4:noop, m4:run_stats and the Stats
+  rows. Everything else, unclassified methods included, goes to the slow worker below the I/O
+  threads. A frame that is no M4 request is a protocol error, counted on the fast lane.
+ */
+inline bool serve_on_fast_lane(MsgType type, uint16_t method, bool binding_fast)
+{
+    if (type != MsgType::Call && type != MsgType::Notify) {
+        return true;
+    }
+    if (method >= FIRST_BINDING_METHOD) {
+        return binding_fast;
+    }
+    return method == uint16_t(SystemMethod::Noop) || method == uint16_t(SystemMethod::RunStats);
+}
+
+// a call whose string arguments are filesystem paths (gen-bindings -r METHOD_PATH_ARGS: fs:crc32,
+// fs:stat): each must pass the check m4:fs_open makes, so no M4 call reaches @SYS/threads.txt
+inline bool path_arguments_allowed(const RpcValue *values, uint8_t argc)
+{
+    for (uint8_t i = 0; i < argc; i++) {
+        if (values[i].tag == ValueTag::String &&
+            check_script_path(values[i].string, values[i].length, PathUse::Read) != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 enum class HostWait { DutyCap, Doorbell, Backoff, Timeout };

@@ -2999,6 +2999,8 @@ enum remote_kind {                    // ScriptingM4::BindingKind
 // ScriptingM4Remote::METHOD_*; the quota class (ScriptingM4::QuotaClass) is the high nibble
 #define METHOD_WRITES_SELF 0x01
 #define METHOD_QUOTA_FALSE 0x02
+#define METHOD_FAST_LANE   0x04
+#define METHOD_PATH_ARGS   0x08
 
 enum remote_quota {                   // ScriptingM4::QuotaClass
   QUOTA_NONE    = 0,
@@ -3087,6 +3089,26 @@ static const char *remote_dot_access[] = {
   "lua_get_CAN_device", "lua_get_CAN_device2", "lua_mavlink_init", "lua_mavlink_register_rx_msgid",
   "lua_mavlink_send_chan", "lua_mavlink_receive_chan", "lua_mavlink_block_command", "AP_Logger_Write",
   NULL };
+// singletons whose generated methods and fields the M7 host may serve on its fast lane, above the
+// I/O threads: fixed work, no file, storage, SD or bus access. A method also needs no string
+// argument (caller-sized data), no quota and no replacement. Every other method, and every
+// manual function but those in remote_fast_manual[], is served by the slow worker below them
+static const char *remote_fast_types[] = {
+  "AP_AHRS", "AP_Airspeed", "AP_Baro", "AP_BattMonitor", "AP_Button", "AP_EFI", "AP_ESC_Telem", "AP_GPS",
+  "AP_InertialSensor", "AP_Notify", "AP_OpticalFlow", "AP_Proximity", "AP_Relay", "AP_RPM",
+  "AP_Servo_Telem", "AP_TemperatureSensor", "AP_Terrain", "AP_Vehicle", "AP_VisualOdom", "AP_Winch",
+  "Compass", "RangeFinder", "RC_Channels", "SRV_Channels", "AC_PosControl", "AC_PrecLand", "AC_Fence",
+  "AP_Follow", "AP_Mount", "QuadPlane", "Sub", "ScriptingLED",
+  NULL };
+static const char *remote_fast_manual[] = { "lua_millis", "lua_micros", NULL };
+// methods of those types that stay on the slow worker: they can write storage
+static const char *remote_slow_methods[] = {
+  "AP_AHRS:set_home",                // the vehicle saves home with the mission
+  "RC_Channels:run_aux_function",    // any auxiliary function: saving a waypoint, resetting the mission, ...
+  NULL };
+static int remote_slow_method_matched[sizeof(remote_slow_methods) / sizeof(remote_slow_methods[0])];
+// singletons whose string arguments are filesystem paths: the M7 checks them as m4:fs_open does
+static const char *remote_path_types[] = { "AP_Filesystem", NULL };
 // methods whose M7 function is a port of its own (AP_ScriptingM4_Manual*.cpp) in place of the
 // generated one: what an M4 script must not make the M7 do that the generated code does
 struct remote_replacement {
@@ -3549,6 +3571,34 @@ static void remote_add_method(int id, int type, char *function, const char *depe
   }
 }
 
+static int remote_has_string_argument(const struct method *method) {
+  for (const struct argument *arg = method->arguments; arg != NULL; arg = arg->next) {
+    if (arg->type.type == TYPE_STRING) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+// METHOD_FAST_LANE and METHOD_PATH_ARGS of a generated method: M7 only, not in the contract
+static int remote_lane_flags(const struct userdata *node, const struct method *method, int quota_flags,
+                             const char *replacement) {
+  for (int i = 0; remote_slow_methods[i] != NULL; i++) {
+    const char *colon = strchr(remote_slow_methods[i], ':');
+    if ((strncmp(remote_slow_methods[i], node->name, (size_t)(colon - remote_slow_methods[i])) == 0) &&
+        (node->name[colon - remote_slow_methods[i]] == 0) && (strcmp(colon + 1, method->name) == 0)) {
+      remote_slow_method_matched[i] = TRUE;
+      return 0;
+    }
+  }
+  const int strings = remote_has_string_argument(method);
+  int flags = (strings && remote_in_list(remote_path_types, node->name)) ? METHOD_PATH_ARGS : 0;
+  if (!strings && (quota_flags == 0) && (replacement == NULL) && remote_in_list(remote_fast_types, node->name)) {
+    flags |= METHOD_FAST_LANE;
+  }
+  return flags;
+}
+
 static int remote_quota_flags(const struct userdata *node, const struct method *method) {
   for (int i = 0; remote_quotas[i].type != NULL; i++) {
     const struct remote_quota_entry *quota = &remote_quotas[i];
@@ -3616,8 +3666,9 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
                                              remote_format("%s_%s", node->sanitized_name, method->sanitized_name);
       const int row_flags = self_flags | ((remote_wrapper_of(function) != NULL) ? ROW_M4_WRAPPER : 0);
       const int row = remote_add_row(method->rename ? method->rename : method->name, id, row_flags, type_id);
-      remote_add_method(id, type_id, function, method->dependency, method_flags | remote_quota_flags(node, method),
-                        row);
+      const int quota_flags = remote_quota_flags(node, method);
+      remote_add_method(id, type_id, function, method->dependency,
+                        method_flags | quota_flags | remote_lane_flags(node, method, quota_flags, replacement), row);
       if (replacement != NULL) {
         remote_hash_string(replacement);   // an image whose M7 runs another function is another contract
       }
@@ -3637,7 +3688,8 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
         }
       } else if ((alias->type == ALIAS_TYPE_MANUAL) && remote_in_list(remote_ready_manual, alias->name)) {
         const int row = remote_add_row(alias->alias, id, remote_manual_flags(kind, alias), type_id);
-        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency, 0, row);
+        remote_add_method(id, type_id, remote_sanitize(alias->name), alias->dependency,
+                          remote_in_list(remote_fast_manual, alias->name) ? METHOD_FAST_LANE : 0, row);
       }
     }
     for (struct userdata_field *field = node->fields; field != NULL; field = field->next) {
@@ -3663,8 +3715,10 @@ static void remote_collect_type(struct userdata *node, enum remote_kind kind) {
       } else {
         const int id = REMOTE_FIRST_METHOD + remote_next_id++;
         const int row = remote_add_row(field->rename ? field->rename : field->name, id, self_flags, type_id);
+        const int field_lane = (field->type.type != TYPE_STRING) && remote_in_list(remote_fast_types, node->name) ?
+                               METHOD_FAST_LANE : 0;
         remote_add_method(id, type_id, remote_format("%s_%s", node->sanitized_name, field->name),
-                          field->dependency, method_flags, row);
+                          field->dependency, method_flags | field_lane, row);
       }
       remote_hash_string(field->name);
       remote_hash_type(&field->type);
@@ -3764,6 +3818,20 @@ static void remote_collect(void) {
   if (parsed_globals != NULL) {
     remote_collect_type(parsed_globals, REMOTE_GLOBAL);
   }
+  for (const char *const *name = remote_fast_types; *name != NULL; name++) {
+    int found = FALSE;
+    for (const struct userdata *node = parsed_singletons; node != NULL; node = node->next) {
+      found |= strcmp(node->name, *name) == 0;
+    }
+    if (!found) {
+      error(ERROR_GENERAL, "remote: fast lane type %s is no singleton in the description", *name);
+    }
+  }
+  for (const char *const *name = remote_fast_manual; *name != NULL; name++) {
+    if (!remote_in_list(remote_ready_manual, *name)) {
+      error(ERROR_GENERAL, "remote: fast lane manual %s is not in remote_ready_manual", *name);
+    }
+  }
   remote_check_declared(remote_blob_userdata);
   remote_check_declared(remote_local_userdata);
   remote_check_declared(remote_handle_ap_objects);
@@ -3792,6 +3860,11 @@ static void remote_collect(void) {
   for (const struct remote_hidden *hidden = remote_hidden_members; hidden->type != NULL; hidden++) {
     if (!remote_kind_is_wire(remote_types[remote_type_id(hidden->type) - 1].kind)) {
       error(ERROR_GENERAL, "remote: hidden member %s.%s of a type that is no blob", hidden->type, hidden->member);
+    }
+  }
+  for (int i = 0; remote_slow_methods[i] != NULL; i++) {
+    if (!remote_slow_method_matched[i]) {
+      error(ERROR_GENERAL, "remote: slow method %s matches no method", remote_slow_methods[i]);
     }
   }
   for (int i = 0; remote_quotas[i].type != NULL; i++) {

@@ -165,6 +165,8 @@ static const uint32_t CAN_BUFFER_WAIT_MS = 30;
 // method flags (gen-bindings -r); the high nibble is the ScriptingM4::QuotaClass
 static const uint8_t METHOD_WRITES_SELF = 0x01;   // the reply ends with the updated self blob
 static const uint8_t METHOD_QUOTA_FALSE = 0x02;   // over its quota the call returns false, else it is dropped
+static const uint8_t METHOD_FAST_LANE = 0x04;     // the host serves it itself (AP_ScriptingM4_ServeWait.h)
+static const uint8_t METHOD_PATH_ARGS = 0x08;     // its string arguments are paths, checked as m4:fs_open's
 
 struct RemoteCall {
     // set once by the server

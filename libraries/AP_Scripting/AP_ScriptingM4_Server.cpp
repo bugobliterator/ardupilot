@@ -10,6 +10,7 @@
 #include "AP_Scripting.h"
 #include "AP_ScriptingM4_Bindings.h"
 #include "AP_ScriptingM4_Placement.h"
+#include "AP_ScriptingM4_ServeWait.h"
 // the Lua core calls lua_get_modules_path() with C linkage
 extern "C" {
 #include "lua_common_defs.h"
@@ -521,6 +522,9 @@ ReplyStatus AP_ScriptingM4_Server::binding_call(uint16_t method, const RpcValue 
                                                 RpcWriter &results, uint8_t &error_arg)
 {
     const uint8_t flags = ScriptingM4Remote::method_flags(method);
+    if ((flags & ScriptingM4Remote::METHOD_PATH_ARGS) != 0 && !ScriptingM4::path_arguments_allowed(values, argc)) {
+        return ReplyStatus::Ok;   // no results: nil, as when the file does not open
+    }
     _call.now_ms = AP_HAL::millis();
     if (!_quota.allow(QuotaClass(flags >> 4), _call.now_ms)) {
         if ((flags & ScriptingM4Remote::METHOD_QUOTA_FALSE) != 0) {

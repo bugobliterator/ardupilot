@@ -62,6 +62,33 @@ class GenBindingsRemote(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIsNotNone(binding_hash)
 
+    def method_flags(self, name):
+        '''{(type id, row name): method flags} of a generated description'''
+        work = os.path.join(self.tmp, name)
+        with open(os.path.join(work, 'remote_tables.cpp')) as f:
+            tables = f.read()
+        with open(os.path.join(work, 'remote_dispatch.cpp')) as f:
+            dispatch = f.read()
+        flags = [int(v, 16) for v in re.findall(r'0x([0-9a-f]{2})',
+                 re.search(r'remote_method_flags\[[^]]*\] = \{(.*?)\};', dispatch, re.S).group(1))]
+        rows = re.findall(r'\{ "([^"]+)", (\d+), 0x[0-9a-f]{2}, (\d+) \}', tables)
+        return {(int(t), n): flags[int(m) - 64] for n, m, t in rows}
+
+    def test_fast_lane_and_path_flags(self):
+        # METHOD_FAST_LANE 0x04 and METHOD_PATH_ARGS 0x08 are M7-only: the contract stays the same
+        code, output, binding_hash = self.generate('lanes', [])
+        self.assertEqual(code, 0, output)
+        flags = self.method_flags('lanes')
+        by_name = {}
+        for (_, row), value in flags.items():
+            by_name.setdefault(row, set()).add(value)
+        self.assertTrue(all(v & 0x04 for v in by_name['millis']))
+        self.assertTrue(all(v & 0x04 for v in by_name['get_location']))   # ahrs and others
+        self.assertTrue(all(v & 0x08 and not v & 0x04 for v in by_name['crc32']))   # fs:crc32
+        self.assertTrue(all(not v & 0x04 for v in by_name['set_home']))    # ahrs: storage
+        self.assertTrue(all(not v & 0x04 for v in by_name['run_aux_function']))
+        self.assertTrue(all(not v & 0x04 for v in by_name['set_and_save']))   # param: quota, string
+
     def test_unlisted_userdata(self):
         self.assert_refused('userdata', ["userdata FooState field value float'skip_check read write"],
                             'remote: FooState is in no remote list')

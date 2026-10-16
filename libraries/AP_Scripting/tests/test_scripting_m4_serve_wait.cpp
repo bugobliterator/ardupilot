@@ -242,4 +242,197 @@ TEST(ScriptingM4ServeWait, UnflaggedResetWouldUnderCharge)
     EXPECT_EQ(interval_cpu_us(10U, 150U, true, 300U), 300U);
 }
 
+// a ChibiOS thread's statistics clock (os/rt/src/chtm.c), in microseconds for clarity: the slice
+// chain at a switch, chTMObjectInit() from another thread, and Util::thread_info() on the thread
+struct FakeThreadStats {
+    ThreadStatsClock clock { 0, 0, UINT32_MAX };   // chTMObjectInit() at thread creation
+    void switch_in(uint32_t now) { clock.last = now; }
+    void switch_out(uint32_t now)
+    {
+        const uint32_t slice = now - clock.last;
+        clock.cumulative += slice;
+        if (slice < clock.best) {
+            clock.best = slice;
+        }
+    }
+    void reset_from_other_thread() { clock = ThreadStatsClock { 0, 0, UINT32_MAX }; }
+    // Util::thread_info() on this thread: cumulative only, and best since that fix
+    void reset_from_this_thread(bool marks_best)
+    {
+        clock.cumulative = 0;
+        if (marks_best) {
+            clock.best = UINT32_MAX;
+        }
+    }
+    uint64_t read(uint32_t now, bool &reset) { return read_thread_cycles(clock, now, reset); }
+};
+
+// the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading, a pass, a
+// reading, overhead, sleep. Readings come from FakeThreadStats; returns the CPU charged and the
+// CPU used. reset_every: a reset in every pass (0: none). marks_best: Util::thread_info's fix
+struct HostModel {
+    FakeThreadStats stats;
+    HostCpuCharge charge { true };
+    uint64_t charged = 0;
+    uint64_t used = 0;
+    uint32_t now = 1000;
+
+    void iteration(uint32_t wake_overhead, uint32_t pass, uint32_t sleep_overhead, uint32_t sleep,
+                   int reset_kind, bool marks_best = true)
+    {
+        stats.switch_in(now);
+        now += wake_overhead;
+        bool reset;
+        uint64_t cpu = stats.read(now, reset);
+        charged += charge.pass_start(cpu, reset, now);
+        now += pass / 2;
+        if (reset_kind == 1) {
+            stats.reset_from_this_thread(marks_best);   // the pass generated @SYS/threads.txt itself
+        }
+        now += pass - pass / 2;
+        cpu = stats.read(now, reset);
+        charged += charge.pass_end(cpu, reset, now);
+        now += sleep_overhead;
+        stats.switch_out(now);
+        used += wake_overhead + pass + sleep_overhead;
+        if (reset_kind == 2) {
+            stats.reset_from_other_thread();   // a GCS read while the host sleeps
+        }
+        now += sleep;
+    }
+};
+
+// no reset: everything the thread ran is charged, the wake and switch overhead around each pass
+// included, and nothing more (fails if read_thread_cycles() stops keeping best at 0)
+TEST(ScriptingM4ServeWait, ChibiOSChargesAllHostCpu)
+{
+    HostModel host;
+    host.iteration(5, 20, 4, 500, 0);   // the first reading only starts the clock
+    const uint64_t used_before = host.used;
+    for (int i = 0; i < 100; i++) {
+        host.iteration(5, 20, 4, 500, 0);
+    }
+    // the first iteration charged its pass only (20 us): its reading started the clock
+    EXPECT_EQ(host.charged - 20U, host.used - used_before);
+    EXPECT_EQ(host.charge.take_resets(), 0U);
+}
+
+// SITL charges passes only: the overhead around them is not charged
+TEST(ScriptingM4ServeWait, PassOnlyChargeLeavesOutOverhead)
+{
+    FakeThreadStats stats;
+    HostCpuCharge charge { false };
+    uint32_t now = 1000;
+    uint64_t charged = 0;
+    bool reset;
+    for (int i = 0; i < 10; i++) {
+        stats.switch_in(now);
+        now += 5;
+        charged += charge.pass_start(stats.read(now, reset), reset, now);
+        now += 20;
+        charged += charge.pass_end(stats.read(now, reset), reset, now);
+        now += 4;
+        stats.switch_out(now);
+        now += 500;
+    }
+    EXPECT_EQ(charged, 10U * 20U);   // the passes, none of the 9 us around each
+}
+
+// Util::thread_info() on the host (a pass that generated @SYS/threads.txt) zeroes cumulative
+// mid-pass while the pass's slice has run longer than the old cumulative: unflagged, the pass is
+// under-charged. With best marked, it is charged its wall time (fails if the reset flag is
+// ignored, or without the Util::thread_info() fix)
+TEST(ScriptingM4ServeWait, SelfResetIsCharged)
+{
+    for (const bool marks_best : { true, false }) {
+        HostModel host;
+        host.iteration(5, 20, 4, 500, 0);
+        host.stats.reset_from_other_thread();   // a small cumulative from here on
+        host.iteration(5, 20, 4, 500, 0);
+        const uint64_t charged_before = host.charged;
+        host.iteration(5, 400, 4, 500, 1, marks_best);
+        const uint64_t charged = host.charged - charged_before;
+        if (marks_best) {
+            EXPECT_GE(charged, 400U);
+        } else {
+            EXPECT_LT(charged, 400U);   // why Util::thread_info() marks best
+        }
+    }
+}
+
+// a reset by another thread while the host sleeps: flagged at the next reading, the interval
+// charged its wall time (an over-charge), never less than the host used
+TEST(ScriptingM4ServeWait, OtherThreadResetOverCharges)
+{
+    HostModel host;
+    host.iteration(5, 20, 4, 500, 0);
+    const uint64_t used_before = host.used;
+    for (int i = 0; i < 50; i++) {
+        host.iteration(5, 20, 4, 500, 2);
+    }
+    EXPECT_GE(host.charged, host.used - used_before);
+    EXPECT_EQ(host.charge.take_resets(), 49U);   // the last reset is after the last reading
+}
+
+// a flood whose every pass resets the host's own statistics (the fs:crc32("@SYS/threads.txt")
+// attack, had it not been refused): the CPU it really uses stays within the cap
+TEST(ScriptingM4ServeWait, SelfResetEveryPassKeepsTheShare)
+{
+    HostModel host;
+    ServeDutyCap cap;
+    EXPECT_EQ(cap.wait_us(host.now), 0U);
+    const uint32_t start = host.now;
+    while (host.now - start < 10000000U) {
+        const uint32_t wait = cap.wait_us(host.now);
+        if (wait != 0) {
+            host.now += wait < 10000U ? wait : 10000U;
+            continue;
+        }
+        const uint64_t before = host.charged;
+        // one pass of a varying length, as natural jitter makes it
+        host.iteration(3, 150 + (host.now % 97), 2, 0, 1);
+        cap.charge(uint32_t(host.charged - before));
+    }
+    const uint64_t ppm = host.used * 1000000U / (host.now - start);
+    EXPECT_LE(ppm, ServeDutyCap::SHARE_PERCENT * 10000U + (300U + ServeDutyCap::BURST_US) * uint64_t(1000000U) / 10000000U);
+}
+
+// the lanes: only frames that do fixed work run above the I/O threads
+TEST(ScriptingM4ServeWait, FastLaneTakesOnlyBoundedFrames)
+{
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::Call, FIRST_BINDING_METHOD + 3, true));
+    EXPECT_FALSE(serve_on_fast_lane(MsgType::Call, FIRST_BINDING_METHOD + 3, false));
+    EXPECT_FALSE(serve_on_fast_lane(MsgType::Notify, FIRST_BINDING_METHOD + 3, false));
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::Notify, uint16_t(SystemMethod::Noop), false));
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::Notify, uint16_t(SystemMethod::RunStats), false));
+    for (const SystemMethod slow : { SystemMethod::FsOpen, SystemMethod::FsRead, SystemMethod::FsDir,
+                                     SystemMethod::ReadScript, SystemMethod::ListScript, SystemMethod::Print,
+                                     SystemMethod::RuntimeText, SystemMethod::Release, SystemMethod::Bindings,
+                                     SystemMethod::Config, SystemMethod::ScriptError }) {
+        EXPECT_FALSE(serve_on_fast_lane(MsgType::Call, uint16_t(slow), true));
+    }
+    EXPECT_FALSE(serve_on_fast_lane(MsgType::Call, 60, true));   // no system method yet: the worker
+    EXPECT_TRUE(serve_on_fast_lane(MsgType::Stats, 0, false));
+}
+
+// fs:crc32 and fs:stat: their paths are checked as m4:fs_open's
+TEST(ScriptingM4ServeWait, PathArgumentsAreChecked)
+{
+    RpcValue values[2] {};
+    values[0].tag = ValueTag::String;
+    values[1].tag = ValueTag::Integer;
+    const char *refused[] = { "@SYS/threads.txt", "/@SYS/threads.txt", "../x", "" };
+    for (const char *path : refused) {
+        values[0].string = path;
+        values[0].length = uint16_t(strlen(path));
+        EXPECT_FALSE(path_arguments_allowed(values, 2)) << path;
+    }
+    const char *allowed[] = { "@SYS/tasks.txt", "/APM/scripts/x.lua", "@ROMFS/scripts/x.lua" };
+    for (const char *path : allowed) {
+        values[0].string = path;
+        values[0].length = uint16_t(strlen(path));
+        EXPECT_TRUE(path_arguments_allowed(values, 2)) << path;
+    }
+}
+
 AP_GTEST_MAIN()

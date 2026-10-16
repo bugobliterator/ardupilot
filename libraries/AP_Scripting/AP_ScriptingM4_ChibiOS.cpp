@@ -13,6 +13,7 @@
 #include <CubePilotFW/PeerHeader.h>
 #include <CubePilotFW/pal/HSEM.h>
 #include "AP_ScriptingM4_Layout.h"
+#include "AP_ScriptingM4_ServeWait.h"
 
 #if !defined(STM32H757xx)
 #error "M4 scripting needs a dual-core STM32H757"
@@ -28,6 +29,9 @@ static const uint8_t HSEM_IRQ_PRIORITY = 12;
 static_assert(APM_UART_PRIORITY + 1 > APM_STORAGE_PRIORITY && APM_UART_PRIORITY + 1 > APM_IO_PRIORITY &&
               APM_UART_PRIORITY + 1 > APM_NET_PRIORITY && APM_UART_PRIORITY + 1 < APM_I2C_PRIORITY,
               "the M4 host thread sits above the I/O threads and below vehicle timing");
+static_assert(APM_IO_PRIORITY - 1 < APM_IO_PRIORITY && APM_IO_PRIORITY - 1 < APM_STORAGE_PRIORITY &&
+              APM_IO_PRIORITY - 1 < APM_UART_PRIORITY && APM_IO_PRIORITY - 1 > LOWPRIO,
+              "the M4 slow worker sits below the I/O threads");
 
 bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
 {
@@ -115,17 +119,15 @@ uint32_t AP_ScriptingM4::platform_wait_us() const
 
 bool AP_ScriptingM4::platform_thread_cpu_us(uint64_t &cpu_us)
 {
+    // a reset of this thread's statistics sets best to all ones: chTMObjectInit() from a thread
+    // reading @SYS/threads.txt, or Util::thread_info() on this thread. The M4 cannot reach that
+    // file (check_script_path(), fs:* path arguments); a reset anyway is charged its wall time
     chSysLock();
     thread_t *self = chThdGetSelfX();
-    // reading @SYS/threads.txt from another thread resets this thread's statistics
-    // (chTMObjectInit): best becomes all ones. best is kept 0 here (no slice is shorter, so
-    // ChibiOS never changes it), which marks a reset. The M4 cannot open the file
-    // (check_script_path()), and nothing on this thread generates it, so this thread never
-    // resets its own statistics
-    const bool reset = self->stats.best != 0;
-    self->stats.best = 0;
-    // the running slice is not in cumulative yet: stats.last holds the cycle it started on
-    const rttime_t cycles = self->stats.cumulative + rtcnt_t(chSysGetRealtimeCounterX() - self->stats.last);
+    ScriptingM4::ThreadStatsClock clock { self->stats.cumulative, self->stats.last, self->stats.best };
+    bool reset;
+    const uint64_t cycles = ScriptingM4::read_thread_cycles(clock, chSysGetRealtimeCounterX(), reset);
+    self->stats.best = clock.best;
     chSysUnlock();
     cpu_us = cycles / (HAL_EXPECTED_SYSCLOCK / 1000000U);
     return reset;
