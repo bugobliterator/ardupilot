@@ -528,8 +528,8 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     // @Field: SlowReq: frames the slow worker served in the last second
     // @Field: SlowMax: the longest of them, wall time in microseconds
     // @Field: SlowCPU: the largest CPU time of one of them, in microseconds (charged to the duty cap with the host's)
-    // @Field: SlowRef: binding calls for the slow worker refused unrun in the last second, the duty cap's debt being beyond 50 ms
-    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax,SlowCPU,SlowRef", "s-------",
+    // @Field: Deny: binding calls for the slow worker refused unrun in the last second, the duty cap's debt being beyond 50 ms
+    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax,SlowCPU,Deny", "s-------",
                                 "F-------", "QIHHIIII", AP_HAL::micros64(), _pass_cpu_max_us,
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
