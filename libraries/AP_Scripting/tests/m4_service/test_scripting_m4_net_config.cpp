@@ -2,6 +2,7 @@
 #include <string.h>
 #include "m4_service.h"
 #include <AP_ScriptingM4_Layout.h>
+#include <CubePilotFW/PeerHeader.h>
 
 // the M4 service asks the M7 for NET_* once it is Ready, again every second until answered,
 // takes the first answer of its session only, and asks again in the next session
@@ -108,6 +109,50 @@ TEST(ScriptingM4NetConfig, AskedUntilAnsweredOncePerSession)
     service.step();
     EXPECT_EQ(configs_taken, 2U);
     EXPECT_EQ(config_taken.ports[0].port, 14580U);
+}
+
+// the system contract chain of AP_ScriptingM4_Rpc.h, with or without the Lua permit slot term
+static uint32_t contract(bool with_permit)
+{
+    struct Info {
+        uint16_t id;
+        const char *name;
+        MethodKind kind;
+    };
+    static const Info table[] = {
+#define TEST_METHOD_INFO(id, symbol, name, kind) { id, name, MethodKind::kind },
+        SCRIPTING_M4_SYSTEM_METHODS(TEST_METHOD_INFO)
+#undef TEST_METHOD_INFO
+    };
+    uint32_t hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, FNV_OFFSET);
+    hash = fnv1a_word(sizeof(NetM4::Config), hash);
+    hash = fnv1a_word(NetM4::STATUS_LAYOUT_VERSION, hash);
+    if (with_permit) {
+        hash = fnv1a_word(LUA_PERMIT_SLOT, hash);
+    }
+    hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,
+           fnv1a_word(MAX_FRAME, fnv1a_word(sizeof(CallHeader), fnv1a_word(sizeof(ReplyHeader), hash))))));
+    for (int i = int(sizeof(table) / sizeof(table[0])) - 1; i >= 0; i--) {
+        hash = fnv1a_string(table[i].name, fnv1a_word((uint32_t(table[i].id) << 1) | uint32_t(table[i].kind), hash));
+    }
+    return fnv1a_word(BINDING_HASH, hash);
+}
+
+// an M4 image built before the Lua permit ignores reserved[LUA_PERMIT_SLOT] and would start Lua
+// the M7 holds: its contract differs only by the permit term, and the networking M7 refuses it
+TEST(ScriptingM4NetConfig, ImageWithoutThePermitIsRefused)
+{
+    namespace PeerHeader = CubePilotFW::PeerHeader;
+    ASSERT_EQ(contract(true), CONTRACT_HASH);
+    ASSERT_NE(contract(false), CONTRACT_HASH);
+    alignas(64) static uint8_t headers[CHANNEL_WINDOW_SIZE];
+    PeerHeader::View view {};
+    PeerHeader::publish(headers, PeerHeader::Core::M4, PROTOCOL_VERSION, contract(false), 0);
+    EXPECT_EQ(PeerHeader::readPeer(headers, PeerHeader::Core::M7, PROTOCOL_VERSION, CONTRACT_HASH, &view),
+              PeerHeader::Status::Mismatch);
+    PeerHeader::publish(headers, PeerHeader::Core::M4, PROTOCOL_VERSION, contract(true), 0);
+    EXPECT_EQ(PeerHeader::readPeer(headers, PeerHeader::Core::M7, PROTOCOL_VERSION, CONTRACT_HASH, &view),
+              PeerHeader::Status::Compatible);
 }
 
 AP_GTEST_MAIN()
