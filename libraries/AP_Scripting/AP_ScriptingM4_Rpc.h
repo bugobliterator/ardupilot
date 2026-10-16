@@ -567,10 +567,11 @@ constexpr uint32_t fnv1a_string(const char *text, uint32_t hash)
 }
 
 // the contract of both images: protocol version, frame layout and the method table; on
-// networking builds the Channel's size and the NetConfig layout too
+// networking builds the Channel's size, the NetConfig layout and the status block's meaning too
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
 #define SCRIPTING_M4_WINDOW_TERM(inner) \
-    fnv1a_word(sizeof(NetM4::Config), fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, inner))
+    fnv1a_word(NetM4::STATUS_LAYOUT_VERSION, \
+               fnv1a_word(sizeof(NetM4::Config), fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, inner)))
 #else
 #define SCRIPTING_M4_WINDOW_TERM(inner) inner
 #endif
