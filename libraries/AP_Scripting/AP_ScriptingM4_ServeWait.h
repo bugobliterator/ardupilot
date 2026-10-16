@@ -14,10 +14,13 @@ namespace ScriptingM4 {
   Time a binding spends blocked (a semaphore, the SD card) yields the CPU to
   other threads and is not charged; a binding that spins is.
   One long worker frame (fs:crc32 of a large file) can leave a debt that
-  would pause serving past the M4's call timeout. Below -MAX_DEBT_US the debt
-  stays, but a pass is still allowed every MAX_PAUSE_US, in which the host
-  refuses binding calls for the slow worker (refuses_slow_bindings()): cheap
-  calls are answered, heavy ones fail until the debt is paid down.
+  would pause serving past the M4's call timeout. The debt stays, but a pass
+  is allowed at the latest MAX_PAUSE_US after the previous one started; while
+  the debt is beyond MAX_DEBT_US the host refuses binding calls for the slow
+  worker in it (refuses_slow_bindings()): cheap calls are answered, heavy ones
+  fail until the debt is paid down. Passes this allows early cost at most
+  MAX_SERVE_US plus one frame each and no debt is forgiven, so the long-run
+  share holds.
  */
 class ServeDutyCap {
 public:
@@ -43,13 +46,15 @@ public:
         if (_credit_us >= RESUME_US) {
             return 0;
         }
+        // a pass at the latest MAX_PAUSE_US after the previous one started, however deep the debt;
+        // the debt stays, and while it is beyond MAX_DEBT_US such a pass refuses heavy calls
+        const uint32_t since_us = now_us - _pass_us;
+        const uint32_t pass_due_us = since_us >= MAX_PAUSE_US ? 0 : MAX_PAUSE_US - since_us;
         if (refuses_slow_bindings()) {
-            // a debt pass: one every MAX_PAUSE_US since the previous pass started
-            const uint32_t since_us = now_us - _pass_us;
-            return since_us >= MAX_PAUSE_US ? 0 : MAX_PAUSE_US - since_us;
+            return pass_due_us;
         }
-        // at most MAX_PAUSE_US
-        return uint32_t((RESUME_US - _credit_us) * int64_t(TIME_PER_CREDIT));
+        const uint32_t credit_due_us = uint32_t((RESUME_US - _credit_us) * int64_t(TIME_PER_CREDIT));   // <= MAX_PAUSE_US
+        return credit_due_us < pass_due_us ? credit_due_us : pass_due_us;
     }
 
     // the host starts a pass, wait_us() having returned 0

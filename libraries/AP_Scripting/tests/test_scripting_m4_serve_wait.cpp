@@ -153,7 +153,7 @@ TEST(ScriptingM4ServeWait, OneSecondPassIsChargedInFull)
     EXPECT_TRUE(cap.refuses_slow_bindings());
     EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::BURST_US) - 1000000 + 100000);
     cap.pass_started(1000000U);
-    EXPECT_EQ(cap.wait_us(1000000U), ServeDutyCap::MAX_PAUSE_US);
+    EXPECT_EQ(cap.wait_us(1000000U), uint32_t(ServeDutyCap::MAX_PAUSE_US));
 }
 
 /*
@@ -172,13 +172,19 @@ static void serve_fast_lane_after(uint32_t frame_us)
     uint64_t fast_passes = 0;
     uint64_t fast_cpu = 0;
     const uint32_t start = now;
+    uint32_t last_pass = now - frame_us;
+    uint32_t last_pass_us = frame_us;   // how long the previous pass ran
     while (now - start < 30000000U) {
         const uint32_t wait = cap.wait_us(now);
-        ASSERT_LE(wait, ServeDutyCap::MAX_PAUSE_US) << frame_us;
+        ASSERT_LE(wait, uint32_t(ServeDutyCap::MAX_PAUSE_US)) << frame_us;
         if (wait != 0) {
-            now += wait;
+            now += wait < 10000U ? wait : 10000U;   // the host supervises in between
             continue;
         }
+        // from one pass to the next, the frame itself aside
+        ASSERT_LE(now - last_pass, last_pass_us + ServeDutyCap::MAX_PAUSE_US) << frame_us;
+        last_pass = now;
+        last_pass_us = 50U;
         cap.pass_started(now);
         cap.charge(50U);
         fast_cpu += 50U;
@@ -213,7 +219,7 @@ static uint64_t heavy_loop_share_ppm(uint32_t frame_us, uint64_t duration_us, ui
     const uint32_t start = now;
     while (now - start < duration_us) {
         const uint32_t wait = cap.wait_us(now);
-        EXPECT_LE(wait, ServeDutyCap::MAX_PAUSE_US);
+        EXPECT_LE(wait, uint32_t(ServeDutyCap::MAX_PAUSE_US));
         if (wait != 0) {
             now += wait;
             continue;
@@ -245,6 +251,19 @@ TEST(ScriptingM4ServeWait, RepeatedLongWorkerFramesKeepTheShare)
     EXPECT_GT(ppm, ServeDutyCap::SHARE_PERCENT * 10000U * 9U / 10U);
     EXPECT_LE(run, 11U);
     EXPECT_GT(refused, run * 10U);   // a debt pass about every 0.5 s while the debt is deep
+}
+
+// frames between MAX_DEBT_US and twice that: the early passes the cap allows run some of them in
+// debt, but none is forgiven, so the share still holds
+TEST(ScriptingM4ServeWait, MidLengthWorkerFramesKeepTheShare)
+{
+    for (const uint32_t frame_us : { 60000U, 90000U, 150000U }) {
+        uint32_t run, refused;
+        const uint64_t duration = 100000000U;
+        const uint64_t ppm = heavy_loop_share_ppm(frame_us, duration, run, refused);
+        EXPECT_LE(ppm, ServeDutyCap::SHARE_PERCENT * 10000U + (frame_us + 50U + ServeDutyCap::MAX_DEBT_US + ServeDutyCap::BURST_US) * uint64_t(1000000U) / duration) << frame_us;
+        EXPECT_GT(ppm, ServeDutyCap::SHARE_PERCENT * 10000U * 9U / 10U) << frame_us;
+    }
 }
 
 // frames within MAX_DEBT_US are paid down by pausing alone: none is refused, the share holds
@@ -340,6 +359,7 @@ TEST(ScriptingM4ServeWait, StatisticsResetEveryPassKeepsTheShare)
             elapsed += wait < 10000U ? wait : 10000U;
             continue;
         }
+        cap.pass_started(uint32_t(elapsed));
         const uint64_t start = 5000000U;   // the clock at the pass start
         const uint64_t end = 150U;         // reset part way through, 150 us more after it
         elapsed += 300U;
@@ -504,6 +524,7 @@ TEST(ScriptingM4ServeWait, SelfResetEveryPassKeepsTheShare)
             host.now += wait < 10000U ? wait : 10000U;
             continue;
         }
+        cap.pass_started(host.now);
         const uint64_t before = host.charged;
         // one pass of a varying length, as natural jitter makes it
         host.iteration(3, 150 + (host.now % 97), 2, 0, 1);
@@ -559,6 +580,7 @@ TEST(ScriptingM4ServeWait, WorkerCpuIsCharged)
                 now += wait < 10000U ? wait : 10000U;
                 continue;
             }
+            cap.pass_started(now);
             cap.charge(50U);   // the host's pass: the hand-off
             IGNORE_RETURN(worker.pass_start(worker_clock, false, now));
             worker_clock += 40000U;
