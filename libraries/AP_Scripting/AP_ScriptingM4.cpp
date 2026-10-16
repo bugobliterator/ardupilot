@@ -458,7 +458,7 @@ void AP_ScriptingM4::log_rpc_stats(const uint8_t *buf)
 // @Field: Lost: M4 calls without a reply since the previous row
 // @Field: QHit: M4 calls refused by their quota since the previous row: binding calls, print, the M4's statustexts and script error texts, its file writes, write opens and removes (FileIo), MAVLink sends (MavTx), log rows (Log) and OSD calls (Osd, OsdFrame) (over quota, texts and void calls are dropped, boolean calls return false)
 // @Field: Cap: pauses the host's duty cap (10 % of the M7's CPU) forced in the last second
-// @Field: CPU: host thread CPU time in the last second, per mille of the M7 (what the duty cap charges)
+// @Field: CPU: host thread and slow worker CPU time in the last second, per mille of the M7 (what the duty cap charges)
 // @Field: Lng: host passes over 50 ms of wall time in the last second (blocked in a binding, or preempted)
 void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
