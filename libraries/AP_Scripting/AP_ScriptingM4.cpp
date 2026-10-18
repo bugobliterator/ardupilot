@@ -317,6 +317,12 @@ bool AP_ScriptingM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
     if (call.method < FIRST_BINDING_METHOD) {
         return false;
     }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // a session started without Lua gets no reply: handle_message() counts the protocol error
+    if (network_wanted() && !_lua_permit.serves(MsgType(header.type))) {
+        return false;
+    }
+#endif
     _requests++;
     _session_calls++;
     _slow_refused++;
@@ -392,6 +398,13 @@ void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
         return;
     }
     _requests++;
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // a session started with Lua held has no Lua thread: a Lua call from it is a protocol error
+    if (network_wanted() && !_lua_permit.serves(MsgType(header.type))) {
+        _protocol_errors++;
+        return;
+    }
+#endif
     switch (MsgType(header.type)) {
     case MsgType::Call:
     case MsgType::Notify:
@@ -843,6 +856,7 @@ void AP_ScriptingM4::network_failure(bool carry_request)
 void AP_ScriptingM4::store_lua_permit()
 {
     const bool permitted = lua_can_run() && !_server.stopped();
+    _lua_permit.store_next(permitted);
     ScriptingM4::supervisor_block(_shared)->reserved[ScriptingM4::LUA_PERMIT_SLOT].store(permitted ? 1U : 0U);
 }
 #endif
@@ -860,6 +874,7 @@ void AP_ScriptingM4::grant_restart()
     if (_net_region_clear.take_clear()) {
         AP::network().m4_region_reset(_shared + ScriptingM4::RING_REGION_OFFSET);
     }
+    _lua_permit.session_granted();
 #endif
     // the M4 acts on a restart doorbell only once the grant has changed: store it first
     ScriptingM4::supervisor_block(_shared)->restart_grant.store(_restart_grants);

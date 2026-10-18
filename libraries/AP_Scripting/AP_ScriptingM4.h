@@ -13,6 +13,7 @@
 #include "AP_ScriptingM4_ServeWait.h"
 #include "AP_ScriptingM4_StartFault.h"
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include "AP_ScriptingM4_LuaPermit.h"
 #include "AP_ScriptingM4_NetRegionClear.h"
 #include "AP_ScriptingM4_NetRestart.h"
 #include <atomic>
@@ -172,6 +173,7 @@ private:
     bool _network_wanted;
     bool _lua_permitted = true;          // SCR_ENABLE at boot
     bool _lua_off_until_reboot;          // the fault limit took Lua's permit
+    ScriptingM4::LuaPermit _lua_permit;  // the M7's copy of the session's LUA_PERMIT_SLOT
 #endif
     ScriptingM4::RunControl _run_control;
     uint32_t _m4_session;             // M4 peer header session being served

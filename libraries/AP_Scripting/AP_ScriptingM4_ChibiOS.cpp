@@ -83,6 +83,7 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
     block->run_permit.store(1);
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     store_lua_permit();
+    _lua_permit.session_granted();
 #endif
     block->restart_grant.store(0);
     block->fault_after_publish_grant.store(0);
