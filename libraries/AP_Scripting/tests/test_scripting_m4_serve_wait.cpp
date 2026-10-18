@@ -767,19 +767,107 @@ TEST(ScriptingM4ServeWait, RefusalTextsNeedRefusals)
     EXPECT_EQ(notice.update(16000, 0), Text::None);
 }
 
-// a burst of Stats rows ahead of a call never ends the pass on time: the call is served in it
-TEST(ScriptingM4ServeWait, StatsRowsDoNotEndAPass)
+// frames as the M4 sends them
+struct Frame {
+    uint8_t bytes[sizeof(StatsMsg)];
+    uint16_t len;
+};
+static Frame stats_frame()
 {
+    Frame f {};
     StatsMsg stats {};
     fill_header(stats.header, MsgType::Stats, sizeof(stats), 1);
+    memcpy(f.bytes, &stats, sizeof(stats));
+    f.len = sizeof(stats);
+    return f;
+}
+static Frame call_frame(MsgType type, uint16_t method)
+{
+    Frame f {};
     CallHeader call {};
-    fill_header(call.header, MsgType::Call, sizeof(call), 2);
-    CallHeader notify {};
-    fill_header(notify.header, MsgType::Notify, sizeof(notify), 3);
-    EXPECT_FALSE(frame_ends_pass_on_time(reinterpret_cast<const uint8_t *>(&stats), sizeof(stats)));
-    EXPECT_TRUE(frame_ends_pass_on_time(reinterpret_cast<const uint8_t *>(&call), sizeof(call)));
-    EXPECT_TRUE(frame_ends_pass_on_time(reinterpret_cast<const uint8_t *>(&notify), sizeof(notify)));
-    EXPECT_TRUE(frame_ends_pass_on_time(nullptr, 0));
+    fill_header(call.header, type, sizeof(call), 2);
+    call.method = method;
+    memcpy(f.bytes, &call, sizeof(call));
+    f.len = sizeof(call);
+    return f;
+}
+
+// serve()'s pass with SITL's 833 us simulated step per frame (every frame takes the pass past
+// MAX_SERVE_US): the frames served before the pass ends
+static size_t frames_in_one_pass(const std::vector<Frame> &queue)
+{
+    const uint32_t MAX_SERVE_US = 200;
+    uint32_t elapsed_us = 0;
+    uint8_t exempt_in_pass = 0;
+    size_t served = 0;
+    for (const Frame &f : queue) {
+        if (served == 32) {   // MAX_REQUESTS_PER_WAKE
+            break;
+        }
+        served++;
+        elapsed_us += 833;
+        if (frame_ends_pass_on_time(f.bytes, f.len, exempt_in_pass) && elapsed_us > MAX_SERVE_US) {
+            break;
+        }
+    }
+    return served;
+}
+
+static const uint16_t BINDING = FIRST_BINDING_METHOD;
+
+// the M4 between scripts: m4:run_stats, then m4:release, then the next script's call; with the
+// debt deep a pass is due only every 0.5 s, so the call must be served in this pass
+TEST(ScriptingM4ServeWait, SystemNotifiesAheadOfACallDoNotEndThePass)
+{
+    const std::vector<Frame> queue { call_frame(MsgType::Notify, uint16_t(SystemMethod::RunStats)),
+                                     call_frame(MsgType::Notify, uint16_t(SystemMethod::Release)),
+                                     call_frame(MsgType::Call, BINDING) };
+    EXPECT_EQ(frames_in_one_pass(queue), 3U);
+}
+
+// the once-a-second Stats burst (10 rows) and a release ahead of a call: served in one pass
+TEST(ScriptingM4ServeWait, StatsBurstAheadOfACallDoesNotEndThePass)
+{
+    std::vector<Frame> queue(10, stats_frame());
+    queue.push_back(call_frame(MsgType::Notify, uint16_t(SystemMethod::Release)));
+    queue.push_back(call_frame(MsgType::Call, BINDING));
+    queue.push_back(call_frame(MsgType::Call, BINDING + 1));   // the pass ends after the call
+    EXPECT_EQ(frames_in_one_pass(queue), 12U);
+}
+
+// more exempt frames than MAX_EXEMPT_PER_PASS (a faulty M4): the pass still ends, at the first
+// frame beyond the cap
+TEST(ScriptingM4ServeWait, ExemptFramesAreCappedPerPass)
+{
+    const std::vector<Frame> queue(32, stats_frame());
+    EXPECT_EQ(frames_in_one_pass(queue), size_t(MAX_EXEMPT_PER_PASS) + 1U);
+    std::vector<Frame> noops(32, call_frame(MsgType::Notify, uint16_t(SystemMethod::Noop)));
+    EXPECT_EQ(frames_in_one_pass(noops), size_t(MAX_EXEMPT_PER_PASS) + 1U);
+}
+
+// a binding Notify, a Call, another system Notify and a frame that does not parse end a pass
+// as before; a Stats-typed frame of the wrong length is not a Stats row
+TEST(ScriptingM4ServeWait, OtherFramesEndAPass)
+{
+    const Frame frames[] = {
+        call_frame(MsgType::Notify, BINDING),
+        call_frame(MsgType::Call, BINDING),
+        call_frame(MsgType::Call, uint16_t(SystemMethod::RunStats)),
+        call_frame(MsgType::Notify, uint16_t(SystemMethod::Config)),
+    };
+    for (const Frame &f : frames) {
+        uint8_t exempt_in_pass = 0;
+        EXPECT_TRUE(frame_ends_pass_on_time(f.bytes, f.len, exempt_in_pass));
+        EXPECT_EQ(exempt_in_pass, 0U);
+    }
+    Frame short_stats = stats_frame();
+    short_stats.len = sizeof(MsgHeader) + 4;
+    uint8_t exempt_in_pass = 0;
+    EXPECT_FALSE(frame_exempt_from_pass_time(short_stats.bytes, short_stats.len));
+    EXPECT_TRUE(frame_ends_pass_on_time(short_stats.bytes, short_stats.len, exempt_in_pass));
+    EXPECT_TRUE(frame_ends_pass_on_time(nullptr, 0, exempt_in_pass));
+    EXPECT_FALSE(frames_in_one_pass(std::vector<Frame> { call_frame(MsgType::Notify, BINDING),
+                                                        call_frame(MsgType::Call, BINDING) }) == 2U);
 }
 
 AP_GTEST_MAIN()

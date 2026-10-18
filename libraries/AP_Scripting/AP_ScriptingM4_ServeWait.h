@@ -19,8 +19,9 @@ namespace ScriptingM4 {
   the debt is beyond MAX_DEBT_US the host refuses binding calls for the slow
   worker in it (refuses_slow_bindings()): cheap calls are answered, heavy ones
   fail until the debt is paid down. Passes this allows early cost at most
-  MAX_SERVE_US plus one frame each and no debt is forgiven, so the long-run
-  share holds.
+  MAX_SERVE_US plus one frame each, plus up to MAX_EXEMPT_PER_PASS frames that
+  do not end a pass (frame_ends_pass_on_time()), and no debt is forgiven, so the
+  long-run share holds.
  */
 struct ServeDutyCapTestAccess;
 
@@ -30,7 +31,8 @@ public:
     // 10 ms of CPU: a script's burst of a few hundred synchronous calls once a second runs
     // unpaced; the share holds over a 100 ms horizon and in the long run
     static constexpr int32_t BURST_US = 10000;
-    // a pass is at most MAX_SERVE_US plus one frame: start one only with that much credit
+    // a pass is at most MAX_SERVE_US plus one frame (and up to MAX_EXEMPT_PER_PASS small frames
+    // that do not end it): start one only with that much credit
     static constexpr int32_t RESUME_US = 200;
     // the deepest debt that is paid down by pausing alone
     static constexpr int32_t MAX_DEBT_US = 50000;
@@ -110,13 +112,43 @@ private:
     bool _started = false;
 };
 
-// whether the pass may end on time after this frame. The M4's Stats rows (a log row each, a burst
-// once a second) do not end it: a call queued behind them would otherwise wait for later passes,
-// 0.5 s each while the duty-cap debt is deep, and outlast the M4's call timeout. The pass still
-// ends on MAX_REQUESTS_PER_WAKE frames, and their CPU is charged
-inline bool frame_ends_pass_on_time(const uint8_t *buf, uint16_t len)
+// the M4 runtime's own small frames, which it queues ahead of binding calls: its Stats rows (a log
+// row each, a burst once a second) and its system Notifies m4:noop, m4:run_stats and m4:release.
+// A call queued behind them would otherwise wait for later passes, 0.5 s each while the duty-cap
+// debt is deep, and outlast the M4's call timeout
+inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
 {
-    return len == 0 || MsgType(buf[0]) != MsgType::Stats;
+    MsgHeader header;
+    if (!parse_header(buf, len, header)) {
+        return false;
+    }
+    if (MsgType(header.type) == MsgType::Stats) {
+        return true;
+    }
+    if (MsgType(header.type) != MsgType::Notify) {
+        return false;
+    }
+    CallHeader call;
+    memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(CallHeader)
+    return call.method == uint16_t(SystemMethod::Noop) || call.method == uint16_t(SystemMethod::RunStats) ||
+           call.method == uint16_t(SystemMethod::Release);
+}
+
+// exempt frames per pass: the M4's legitimate burst is at most 10 Stats rows a second (8 methods,
+// m4:other, m4:sysother) plus one m4:run_stats and one m4:release between scripts. More of them,
+// e.g. forged by a faulty M4, end the pass as any other frame; all are charged
+static const uint8_t MAX_EXEMPT_PER_PASS = 12;
+
+// whether the pass may end on time after this frame (a frame past MAX_SERVE_US that is not exempt,
+// or exempt beyond MAX_EXEMPT_PER_PASS in this pass). exempt_in_pass starts at 0 for each pass;
+// the pass still ends at MAX_REQUESTS_PER_WAKE frames
+inline bool frame_ends_pass_on_time(const uint8_t *buf, uint16_t len, uint8_t &exempt_in_pass)
+{
+    if (exempt_in_pass < MAX_EXEMPT_PER_PASS && frame_exempt_from_pass_time(buf, len)) {
+        exempt_in_pass++;
+        return false;
+    }
+    return true;
 }
 
 // what the user is told about duty-cap refusals, from the count refused in each second: one
