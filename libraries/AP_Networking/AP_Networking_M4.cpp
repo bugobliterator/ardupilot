@@ -8,6 +8,7 @@
 #include <AP_HAL/utility/Socket.h>
 #include <AP_Scripting/AP_Scripting.h>
 #include <GCS_MAVLink/GCS.h>
+#include <AP_Logger/AP_Logger.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
 #include <hal.h>   // __CORTEX_M, for HSEM.h
 #include <CubePilotFW/pal/HSEM.h>
@@ -406,6 +407,41 @@ void AP_Networking_M4::update()
         GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Net: M4 up, ppp0 %s",
                       SocketAPM::inet_addr_to_str(status.ip, ipstr, sizeof(ipstr)));
     }
+    const uint32_t now_ms = AP_HAL::millis();
+    if (now_ms - last_log_ms >= 1000) {
+        last_log_ms = now_ms;
+        log_counters();
+    }
+}
+
+// @LoggerMessage: NETM
+// @Description: M4 network proxy counters, once per second (networking-on-M4 builds); totals since boot
+// @Field: TimeUS: Time since system startup
+// @Field: Ses: M4 session (restart grant) the ports run under
+// @Field: Held: 1 while the ports wait for an M4 session to be confirmed
+// @Field: PDrop: port bytes dropped at session changes
+// @Field: SRxD: bytes the M4 queued before its session was attached, dropped
+// @Field: TxDs: times a TX ring was found desynced (the M4 resyncs it)
+// @Field: DB: doorbells rung to the M4
+void AP_Networking_M4::log_counters()
+{
+#if HAL_LOGGING_ENABLED
+    uint32_t session, port_dropped, session_rx_dropped, tx_desyncs, doorbells;
+    bool held;
+    {
+        WITH_SEMAPHORE(frontend._m4_sem);
+        session = frontend._m4_attached_session;
+        held = frontend._m4_held;
+        port_dropped = frontend._m4_bytes_dropped;
+        session_rx_dropped = frontend._m4_session_rx_dropped;
+        tx_desyncs = frontend._m4_tx_desyncs;
+        doorbells = frontend._m4_doorbells;
+    }
+    AP::logger().WriteStreaming("NETM", "TimeUS,Ses,Held,PDrop,SRxD,TxDs,DB",
+                                "s--bb--", "F--00--", "QIBIIII",
+                                AP_HAL::micros64(), session, uint8_t(held), port_dropped,
+                                session_rx_dropped, tx_desyncs, doorbells);
+#endif
 }
 
 #endif  // AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED

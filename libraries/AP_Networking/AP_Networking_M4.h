@@ -57,6 +57,8 @@ public:
 
 private:
     NetM4::StatusTracker tracker;
+    uint32_t last_log_ms;
+    void log_counters();
 };
 
 #endif  // AP_NETWORKING_ENABLED && AP_NETWORKING_M4_ENABLED
