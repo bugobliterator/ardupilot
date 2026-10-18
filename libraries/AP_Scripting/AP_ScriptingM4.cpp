@@ -534,6 +534,18 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
                                 uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
                                 _slow_max_us, _slow_cpu_max_us, _slow_refused);
 #endif
+    switch (_refusal_notice.update(now_ms, _slow_refused)) {
+    case ScriptingM4::RefusalNotice::Text::Refused:
+        // within one 50-character STATUSTEXT
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 calls refused, M7 duty cap %u/s",
+                      unsigned(MIN(_slow_refused, 99999U)));
+        break;
+    case ScriptingM4::RefusalNotice::Text::ServedAgain:
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 calls served again");
+        break;
+    case ScriptingM4::RefusalNotice::Text::None:
+        break;
+    }
     _m4_calls_lost = 0;
     if (!_summary_enabled || _state != State::Running || now_ms - _last_summary_ms < 10000) {
         return;

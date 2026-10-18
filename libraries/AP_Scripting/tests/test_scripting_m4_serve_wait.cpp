@@ -1,4 +1,5 @@
 #include <AP_gtest.h>
+#include <vector>
 #include <AP_Scripting/AP_Scripting_config.h>
 #include <AP_Scripting/AP_ScriptingM4_ServeWait.h>
 #if AP_SCRIPTING_M4_ENABLED
@@ -725,6 +726,45 @@ TEST(ScriptingM4ServeWait, PathArgumentsAreChecked)
         values[0].length = uint16_t(strlen(path));
         EXPECT_TRUE(path_arguments_allowed(values, 2)) << path;
     }
+}
+
+// refusals in every second for 12 s: a "refused" text at 0, 5 and 10 s only; then quiet: one
+// "served again" once 5 s pass without a refusal, and nothing after it
+TEST(ScriptingM4ServeWait, RefusalTextsAreRateLimited)
+{
+    typedef RefusalNotice::Text Text;
+    RefusalNotice notice;
+    std::vector<uint32_t> refused_at;
+    std::vector<uint32_t> served_at;
+    for (uint32_t now = 1000; now <= 30000; now += 1000) {
+        const uint32_t refused = now <= 12000 ? 14U : 0U;
+        const Text text = notice.update(now, refused);
+        if (text == Text::Refused) {
+            refused_at.push_back(now);
+        } else if (text == Text::ServedAgain) {
+            served_at.push_back(now);
+        }
+    }
+    EXPECT_EQ(refused_at, (std::vector<uint32_t> { 1000, 6000, 11000 }));
+    EXPECT_EQ(served_at, (std::vector<uint32_t> { 17000 }));
+}
+
+// a gap shorter than NOTICE_MS between refusals is not "served again"; normal runs say nothing
+TEST(ScriptingM4ServeWait, RefusalTextsNeedRefusals)
+{
+    typedef RefusalNotice::Text Text;
+    RefusalNotice quiet;
+    for (uint32_t now = 1000; now <= 60000; now += 1000) {
+        EXPECT_EQ(quiet.update(now, 0), Text::None) << now;
+    }
+    RefusalNotice notice;
+    EXPECT_EQ(notice.update(1000, 3), Text::Refused);
+    EXPECT_EQ(notice.update(2000, 0), Text::None);
+    EXPECT_EQ(notice.update(5000, 0), Text::None);
+    EXPECT_EQ(notice.update(6000, 2), Text::Refused);   // 5 s after the last text
+    EXPECT_EQ(notice.update(10000, 0), Text::None);
+    EXPECT_EQ(notice.update(11000, 0), Text::ServedAgain);
+    EXPECT_EQ(notice.update(16000, 0), Text::None);
 }
 
 AP_GTEST_MAIN()

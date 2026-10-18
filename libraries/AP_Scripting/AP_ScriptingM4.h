@@ -158,6 +158,7 @@ private:
     uint32_t _slow_max_us;             // the longest of them, wall time
     uint32_t _slow_cpu_max_us;         // the most CPU one of them used
     uint32_t _slow_refused;            // binding calls for the worker refused unrun: duty-cap debt too deep
+    ScriptingM4::RefusalNotice _refusal_notice;   // GCS texts about those refusals
     bool _summary_enabled;
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ScriptingM4::ServeDutyCap _duty_cap;

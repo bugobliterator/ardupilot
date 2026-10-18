@@ -110,6 +110,38 @@ private:
     bool _started = false;
 };
 
+// what the user is told about duty-cap refusals, from the count refused in each second: one
+// "refused" text at most every NOTICE_MS while they continue, then one "served again" once a
+// whole NOTICE_MS has passed without one
+class RefusalNotice {
+public:
+    enum class Text { None, Refused, ServedAgain };
+    static constexpr uint32_t NOTICE_MS = 5000;
+
+    Text update(uint32_t now_ms, uint32_t refused_in_last_second)
+    {
+        if (refused_in_last_second != 0) {
+            _last_refusal_ms = now_ms;
+            if (!_told || now_ms - _told_ms >= NOTICE_MS) {
+                _told = true;
+                _told_ms = now_ms;
+                return Text::Refused;
+            }
+            return Text::None;
+        }
+        if (_told && now_ms - _last_refusal_ms >= NOTICE_MS) {
+            _told = false;
+            return Text::ServedAgain;
+        }
+        return Text::None;
+    }
+
+private:
+    bool _told = false;
+    uint32_t _told_ms = 0;
+    uint32_t _last_refusal_ms = 0;
+};
+
 // the host after a wait: whether its pass may serve is decided before the wait's own wake and
 // switch are charged (charge_wake), so the pass a duty-cap pause waited for runs; that charge
 // lands on the next wait
