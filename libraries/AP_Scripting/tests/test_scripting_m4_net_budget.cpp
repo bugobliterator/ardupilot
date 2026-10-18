@@ -26,6 +26,25 @@ TEST(ScriptingM4NetBudget, ProtocolErrorsWithoutLuaAreTheNetworks)
     EXPECT_TRUE(charges_lua_budget(NetFailure::ProtocolErrors, true));
 }
 
+TEST(ScriptingM4NetBudget, NoFailureOfASessionWithoutLuaCounts)
+{
+    // scripts stopped: the M4 runs the network alone, and lwIP faults restart it
+    uint8_t used = 1;
+    const uint8_t limit = 2;
+    const NetFailure causes[] = {NetFailure::Fault, NetFailure::HeartbeatLost, NetFailure::ProtocolErrors,
+                                 NetFailure::NetworkStalled};
+    for (int i = 0; i < 10; i++) {
+        for (NetFailure cause : causes) {
+            EXPECT_FALSE(charges_lua_budget(cause, false));
+            EXPECT_FALSE(spend_lua_restart(used, limit, charges_lua_budget(cause, false)));   // no "Lua off"
+        }
+    }
+    EXPECT_EQ(used, 1U);
+    // the scripts start again: a fault of that session counts
+    EXPECT_FALSE(spend_lua_restart(used, limit, charges_lua_budget(NetFailure::Fault, true)));
+    EXPECT_EQ(used, 2U);
+}
+
 TEST(ScriptingM4NetBudget, LuaFaultsStillCountToTheLimit)
 {
     uint8_t used = 0;

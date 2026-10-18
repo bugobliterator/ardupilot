@@ -2,9 +2,9 @@
 
 /*
   SCR_M4_RST_MAX on networking builds: every M4 failure restarts the whole M4 with backoff, but
-  only failures that can be Lua's spend Lua's restart budget. A network stall, and protocol
-  errors from a session that ran without Lua, are the network's: a flaky link never turns Lua
-  off. C++11, no ArduPilot dependencies (host unit tests).
+  only failures that can be Lua's spend Lua's restart budget. Every failure of a session that
+  ran without Lua, and every network stall, is the network's: a flaky link never turns Lua off.
+  C++11, no ArduPilot dependencies (host unit tests).
  */
 
 #include <stdint.h>
@@ -20,13 +20,7 @@ enum class NetFailure : uint8_t {
 
 inline bool charges_lua_budget(NetFailure failure, bool session_lua_permitted)
 {
-    if (failure == NetFailure::NetworkStalled) {
-        return false;
-    }
-    if (failure == NetFailure::ProtocolErrors && !session_lua_permitted) {
-        return false;
-    }
-    return true;
+    return session_lua_permitted && failure != NetFailure::NetworkStalled;
 }
 
 // a network failure's charge on SCR_M4_RST_MAX (used of limit): true when Lua goes off until
