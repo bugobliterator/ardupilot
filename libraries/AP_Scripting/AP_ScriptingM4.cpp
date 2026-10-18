@@ -768,13 +768,17 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
         uint32_t status_heartbeat = 0;
         const bool read = AP::network().m4_status_heartbeat(m4_session(), status_heartbeat);
         if (_net_stall.stalled(read, status_heartbeat, platform_timeout_ms())) {
-            failure("network stalled");
+            failure("network stalled", ScriptingM4::NetFailure::NetworkStalled);
             return;
         }
     }
 #endif
     if (_protocol_errors >= PROTOCOL_ERROR_LIMIT) {
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+        failure("protocol errors", ScriptingM4::NetFailure::ProtocolErrors);
+#else
         failure("protocol errors");
+#endif
         return;
     }
     if (_session_calls == 0 && now_ms - _ready_sent_ms >= READY_REPEAT_MS) {
@@ -813,7 +817,7 @@ void AP_ScriptingM4::failure(const char *reason)
     const bool carry_request = _start_fault.take_held();
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     if (network_wanted()) {
-        network_failure(carry_request);
+        network_failure(carry_request, ScriptingM4::NetFailure::Fault);
         return;
     }
 #endif
@@ -833,20 +837,31 @@ void AP_ScriptingM4::failure(const char *reason)
 }
 
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+void AP_ScriptingM4::failure(const char *reason, ScriptingM4::NetFailure cause)
+{
+    if (!network_wanted()) {
+        failure(reason);
+        return;
+    }
+    GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: M4 %s", reason);
+    network_failure(_start_fault.take_held(), cause);
+}
+
 /*
   a fault, stall or protocol error while the M4 runs the network: the whole M4 restarts after a
-  backoff, forever. Each fault is still charged to SCR_M4_RST_MAX; at the limit Lua stays off
-  until reboot and the network keeps restarting
+  backoff, forever. A failure that can be Lua's is charged to SCR_M4_RST_MAX; at the limit Lua
+  stays off until reboot and the network keeps restarting. Network-only failures are not charged
  */
-void AP_ScriptingM4::network_failure(bool carry_request)
+void AP_ScriptingM4::network_failure(bool carry_request, ScriptingM4::NetFailure cause)
 {
-    if (_restarts_used >= restart_limit()) {
+    const uint8_t used = _restarts_used;
+    const bool charged = ScriptingM4::charges_lua_budget(cause, _lua_permit.session_permitted());
+    if (ScriptingM4::spend_lua_restart(_restarts_used, restart_limit(), charged)) {
         if (_lua_permitted && !_lua_off_until_reboot) {
             GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Scripting: M4 fault limit, Lua off");
         }
         _lua_off_until_reboot = true;
-    } else {
-        _restarts_used++;
+    } else if (_restarts_used != used) {
         // with Lua held since boot the Net: texts report the restart
         if (_lua_permitted) {
             GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Scripting: M4 restarting (%u/%u)",

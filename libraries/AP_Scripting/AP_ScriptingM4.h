@@ -14,6 +14,7 @@
 #include "AP_ScriptingM4_StartFault.h"
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
 #include "AP_ScriptingM4_LuaPermit.h"
+#include "AP_ScriptingM4_NetBudget.h"
 #include "AP_ScriptingM4_NetRegionClear.h"
 #include "AP_ScriptingM4_NetRestart.h"
 #include "AP_ScriptingM4_NetStall.h"
@@ -128,7 +129,9 @@ private:
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // NET_ENABLE at init(): faults restart the whole M4 with backoff, forever
     bool network_wanted() const { return _network_wanted; }
-    void network_failure(bool carry_request);
+    // cause: whether the failure spends SCR_M4_RST_MAX (AP_ScriptingM4_NetBudget.h)
+    void network_failure(bool carry_request, ScriptingM4::NetFailure cause);
+    void failure(const char *reason, ScriptingM4::NetFailure cause);
     bool lua_can_run() const { return _lua_permitted && !_lua_off_until_reboot; }
     // SupervisorBlock LUA_PERMIT_SLOT for the next M4 start
     void store_lua_permit();
