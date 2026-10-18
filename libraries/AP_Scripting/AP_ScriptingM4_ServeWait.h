@@ -22,6 +22,8 @@ namespace ScriptingM4 {
   MAX_SERVE_US plus one frame each and no debt is forgiven, so the long-run
   share holds.
  */
+struct ServeDutyCapTestAccess;
+
 class ServeDutyCap {
 public:
     static constexpr uint32_t SHARE_PERCENT = 10;
@@ -59,12 +61,6 @@ public:
         return credit_due_us < pass_due_us ? credit_due_us : pass_due_us;
     }
 
-    // the host starts a pass, wait_us() having returned 0
-    void pass_started(uint32_t now_us)
-    {
-        _pass_us = now_us;
-    }
-
     // the debt is too deep to run binding calls on the slow worker: they are refused unrun
     bool refuses_slow_bindings() const
     {
@@ -74,6 +70,18 @@ public:
     int64_t credit_us() const { return _credit_us; }
 
 private:
+    // a pass starts only through pass_after_wake(), so the host cannot charge its wake before
+    // deciding (the unit tests' simulators start passes through ServeDutyCapTestAccess)
+    template <typename ChargeWake>
+    friend bool pass_after_wake(ServeDutyCap &cap, uint32_t woke_us, ChargeWake charge_wake);
+    friend struct ServeDutyCapTestAccess;
+
+    // the host starts a pass, wait_us() having returned 0
+    void pass_started(uint32_t now_us)
+    {
+        _pass_us = now_us;
+    }
+
     static_assert(100U % SHARE_PERCENT == 0, "whole microseconds of time per microsecond of credit");
     static constexpr uint32_t TIME_PER_CREDIT = 100U / SHARE_PERCENT;
 

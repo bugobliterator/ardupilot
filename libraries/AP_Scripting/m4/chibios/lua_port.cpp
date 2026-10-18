@@ -132,7 +132,8 @@ enum class OutsideRegister : uint8_t {
 // the registers are fixed here: no caller can pass an address
 static uint32_t read_outside_regions(OutsideRegister reg)
 {
-    const volatile uint32_t *address;
+    // no default: -Wswitch flags a register without a case
+    const volatile uint32_t *address = nullptr;
     switch (reg) {
     case OutsideRegister::Tim5Count:
         address = &TIM5->CNT;
@@ -144,7 +145,6 @@ static uint32_t read_outside_regions(OutsideRegister reg)
         address = &TIM5->ARR;
         break;
     case OutsideRegister::RccC1Apb1L:
-    default:
         address = &RCC_C1->APB1LENR;
         break;
     }
@@ -379,7 +379,7 @@ void lua_port_start(LuaLink &link, binary_semaphore_t &wake, bool (*forward_post
     m7_time_available = m7_counter_running;
     chBSemObjectInit(&lua_done, true);
     // below the service (the main thread, NORMALPRIO): the heartbeat waits for Lua only for the
-// service mutex, held for one forward_call() with priority inheritance
+    // service mutex, held for one forward_call() with priority inheritance
     chThdCreateStatic(lua_wa, sizeof(lua_wa), NORMALPRIO - 1, lua_thread, nullptr);
 }
 

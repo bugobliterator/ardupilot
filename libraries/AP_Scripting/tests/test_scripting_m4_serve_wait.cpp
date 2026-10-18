@@ -13,6 +13,11 @@ const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 using namespace ScriptingM4;
 
+// the simulators below stand in for the host loop and start passes themselves
+struct ScriptingM4::ServeDutyCapTestAccess {
+    static void pass_started(ServeDutyCap &cap, uint32_t now_us) { cap.pass_started(now_us); }
+};
+
 // plain SITL builds tests as C++11, where EXPECT_* binding a static constexpr member by reference
 // needs a definition: such members are compared through a cast
 
@@ -109,7 +114,7 @@ static uint64_t simulate_share_ppm(uint32_t pass_us, uint32_t cpu_us, uint32_t g
             elapsed += wait < max_pause_us ? wait : max_pause_us;
             continue;
         }
-        cap.pass_started(now);
+        ServeDutyCapTestAccess::pass_started(cap, now);
         elapsed += pass_us;
         busy += cpu_us;
         cap.charge(cpu_us);
@@ -147,12 +152,12 @@ TEST(ScriptingM4ServeWait, OneSecondPassIsChargedInFull)
 {
     ServeDutyCap cap;
     EXPECT_EQ(cap.wait_us(0U), 0U);
-    cap.pass_started(0U);
+    ServeDutyCapTestAccess::pass_started(cap, 0U);
     cap.charge(1000000U);
     EXPECT_EQ(cap.wait_us(1000000U), 0U);   // a second since the pass started: a debt pass
     EXPECT_TRUE(cap.refuses_slow_bindings());
     EXPECT_EQ(cap.credit_us(), int64_t(ServeDutyCap::BURST_US) - 1000000 + 100000);
-    cap.pass_started(1000000U);
+    ServeDutyCapTestAccess::pass_started(cap, 1000000U);
     EXPECT_EQ(cap.wait_us(1000000U), uint32_t(ServeDutyCap::MAX_PAUSE_US));
 }
 
@@ -166,7 +171,7 @@ static void serve_fast_lane_after(uint32_t frame_us)
     ServeDutyCap cap;
     uint32_t now = 1000U;
     ASSERT_EQ(cap.wait_us(now), 0U);
-    cap.pass_started(now);
+    ServeDutyCapTestAccess::pass_started(cap, now);
     cap.charge(frame_us);
     now += frame_us;
     uint64_t fast_passes = 0;
@@ -185,7 +190,7 @@ static void serve_fast_lane_after(uint32_t frame_us)
         ASSERT_LE(now - last_pass, last_pass_us + ServeDutyCap::MAX_PAUSE_US) << frame_us;
         last_pass = now;
         last_pass_us = 50U;
-        cap.pass_started(now);
+        ServeDutyCapTestAccess::pass_started(cap, now);
         cap.charge(50U);
         fast_cpu += 50U;
         fast_passes++;
@@ -224,7 +229,7 @@ static uint64_t heavy_loop_share_ppm(uint32_t frame_us, uint64_t duration_us, ui
             now += wait;
             continue;
         }
-        cap.pass_started(now);
+        ServeDutyCapTestAccess::pass_started(cap, now);
         if (cap.refuses_slow_bindings()) {
             cap.charge(30U);
             used += 30U;
@@ -359,7 +364,7 @@ TEST(ScriptingM4ServeWait, StatisticsResetEveryPassKeepsTheShare)
             elapsed += wait < 10000U ? wait : 10000U;
             continue;
         }
-        cap.pass_started(uint32_t(elapsed));
+        ServeDutyCapTestAccess::pass_started(cap, uint32_t(elapsed));
         const uint64_t start = 5000000U;   // the clock at the pass start
         const uint64_t end = 150U;         // reset part way through, 150 us more after it
         elapsed += 300U;
@@ -421,7 +426,7 @@ TEST(ScriptingM4ServeWait, OneSecondCallBurstIsPacedOnlyPastTheBucket)
             now += wait;
             wait = cap.wait_us(now);
         }
-        cap.pass_started(now);
+        ServeDutyCapTestAccess::pass_started(cap, now);
         cap.charge(41U);
         now += 145U;
     }
@@ -572,7 +577,7 @@ TEST(ScriptingM4ServeWait, SelfResetEveryPassKeepsTheShare)
             host.now += wait < 10000U ? wait : 10000U;
             continue;
         }
-        cap.pass_started(host.now);
+        ServeDutyCapTestAccess::pass_started(cap, host.now);
         const uint64_t before = host.charged;
         // one pass of a varying length, as natural jitter makes it
         host.iteration(3, 150 + (host.now % 97), 2, 0, 1);
@@ -628,7 +633,7 @@ TEST(ScriptingM4ServeWait, WorkerCpuIsCharged)
                 now += wait < 10000U ? wait : 10000U;
                 continue;
             }
-            cap.pass_started(now);
+            ServeDutyCapTestAccess::pass_started(cap, now);
             cap.charge(50U);   // the host's pass: the hand-off
             IGNORE_RETURN(worker.pass_start(worker_clock, false, now));
             worker_clock += 40000U;
