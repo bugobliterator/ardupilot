@@ -24515,8 +24515,10 @@ RTL_ALT_M 111
         stopped_session = self.m4_log_rows("M4ST")[-1].Ses
         self.context_clear_collection("STATUSTEXT")
         self.set_parameter("SCR_M4_INJECT", 1)
-        restarted = self.wait_statustext(r"Scripting: M4 restarted \(2/2\)", regex=True, check_context=True,
-                                         timeout=30)
+        # with NET_ENABLE 1 a fault of a session without Lua is the network's: it spends no restart
+        network_m4 = self.networking_m4_build() and self.get_parameter("NET_ENABLE") == 1
+        restarted = self.wait_statustext(r"Scripting: M4 restarted \(%u/2\)" % (1 if network_m4 else 2),
+                                         regex=True, check_context=True, timeout=30)
         self.delay_sim_time(3, reason="a stopped session runs no script")
         # after the fault restart: no script text, no start, and no further M4 text (a fault, an off)
         texts = [m.text for m in self.context_collection("STATUSTEXT")]
