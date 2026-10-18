@@ -20,6 +20,7 @@
 #include <CubePilotFW/PeerHeader.h>
 #include <CubePilotFW/pal/Posix.h>
 #include <CubePilotFW/pal/PosixChannel.h>
+#include <atomic>
 #include "AP_ScriptingM4_Layout.h"
 
 extern char **environ;
@@ -57,6 +58,21 @@ static bool m4_binary_path(char *path, size_t len)
 }
 
 // a SITL reboot re-executes this process with the same pid: the M4 process of
+// the block publish_sim_time() writes, once the window is set up
+static std::atomic<ScriptingM4::SupervisorBlock *> sim_time_block;
+
+// the M4 process is on wall time, this M7 on simulated time: the M4 times its calls on this
+// clock (SITL_TIME_SLOT) so that a pause of the duty cap plus a worker frame, both simulated
+// time, cannot outlast CALL_TIMEOUT_MS on a host running behind real time. The timer thread
+// publishes it, so it advances while the host thread waits on the slow worker too
+void AP_ScriptingM4::publish_sim_time()
+{
+    ScriptingM4::SupervisorBlock *block = sim_time_block.load();
+    if (block != nullptr) {
+        block->reserved[ScriptingM4::SITL_TIME_SLOT].store(MAX(AP_HAL::millis(), 1U));   // 0: not published
+    }
+}
+
 // the previous run is still our child and still holds the M4 core lock
 static void kill_stale_m4(ScriptingM4::SupervisorBlock *block)
 {
@@ -99,6 +115,13 @@ bool AP_ScriptingM4::platform_start(char *reason, size_t reason_len)
         return false;
     }
     PeerHeader::publish(_shared, PeerHeader::Core::M7, ScriptingM4::PROTOCOL_VERSION, ScriptingM4::CONTRACT_HASH, 0);
+    sim_time_block.store(block);
+    publish_sim_time();   // before the M4 process starts: it never sees the slot 0
+    static bool timer_registered;
+    if (!timer_registered) {
+        timer_registered = true;
+        hal.scheduler->register_timer_process(FUNCTOR_BIND_MEMBER(&AP_ScriptingM4::publish_sim_time, void));
+    }
     return spawn_m4(reason, reason_len);
 }
 
