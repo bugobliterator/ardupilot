@@ -22243,11 +22243,24 @@ RTL_ALT_M 111
         if reads == 0 or crc_tries == 0 or crc_refused != crc_tries:
             raise NotAchievedException("M4 heavy frames: %s" % text.text)
         # the attack window: fs:crc32 of the large file in a loop
+        texts_before_attack = len(self.context_collection("STATUSTEXT"))
+        attack_start = self.get_sim_time_cached()
         self.set_parameter("SCR_USER1", 1)
         self.wait_statustext(r"M4 attack crc32 \d+", regex=True, check_context=True, timeout=10)
         self.delay_sim_time(15, reason="M4 fs:crc32 loop")
         text = self.wait_statustext(r"M4 attack crc32 \d+ refused \d+", regex=True, timeout=10)
         self.set_parameter("SCR_USER1", 0)
+        attack_seconds = self.get_sim_time_cached() - attack_start
+        # the user is told about refusals: one text at most every 5 s while they continue, then one
+        # once they have stopped for 5 s
+        self.wait_statustext("Scripting: M4 calls served again", check_context=True, timeout=30)
+        refusal_texts = [m.text for m in self.context_collection("STATUSTEXT")[texts_before_attack:]
+                         if re.match(r"Scripting: M4 calls refused, M7 duty cap \d+/s$", m.text)]
+        self.progress("M4 attack: %u refusal texts in %.0f s: %s" % (len(refusal_texts), attack_seconds, refusal_texts))
+        if not refusal_texts:
+            raise NotAchievedException("no duty-cap refusal text during the M4 fs:crc32 loop")
+        if len(refusal_texts) > 2 + int(attack_seconds / 5):
+            raise NotAchievedException("%u refusal texts in %.0f s: not rate-limited" % (len(refusal_texts), attack_seconds))
         attack_calls, attack_refused = [int(n) for n in re.findall(r"\d+", text.text.split("crc32")[1])]
         self.progress("M4 attack: %u passes, %u fs:crc32 calls refused" % (attack_calls, attack_refused))
         if attack_refused == 0:
@@ -24126,6 +24139,10 @@ RTL_ALT_M 111
         if max(flood) <= 2 * max(before):
             raise NotAchievedException("M4ST Req %u/s in the flood, %u/s before: no flood reached the M7" %
                                        (max(flood), max(before)))
+        # nothing here goes deep into the duty cap's debt: no refusal text
+        refusal_texts = [m.text for m in self.context_collection("STATUSTEXT") if "M4 calls refused" in m.text]
+        if refusal_texts:
+            raise NotAchievedException("duty-cap refusal texts without heavy calls: %s" % refusal_texts)
         self.context_pop()
         self.reboot_sitl()
 
