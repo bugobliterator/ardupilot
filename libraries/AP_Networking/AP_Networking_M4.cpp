@@ -48,7 +48,11 @@ bool AP_Networking::m4_config(NetM4::Config &out) const
 #if AP_NETWORKING_REGISTER_PORT_ENABLED
     for (uint8_t i = 0; i < ARRAY_SIZE(ports) && i < ARRAY_SIZE(config.ports); i++) {
         const auto &port = ports[i];
-        const int32_t type = int32_t(port.type_param.get());
+        // the type the port was opened with at boot (NET_Pn_TYPE needs a reboot): the M7 end
+        // frames by it (m4_io_update()), so a later M4 session must too. A port without
+        // buffers has no M7 end
+        const int32_t type = (port.readbuffer == nullptr || port.writebuffer == nullptr)
+                             ? int32_t(NetworkPortType::NONE) : int32_t(port.type);
         const int32_t number = port.port.get();
         if (type < int32_t(NetworkPortType::NONE) || type > int32_t(NetworkPortType::TCP_SERVER) ||
             number < 0 || number > UINT16_MAX) {
@@ -56,8 +60,8 @@ bool AP_Networking::m4_config(NetM4::Config &out) const
             return false;
         }
         config.ports[i].type = uint8_t(type);
-        config.ports[i].packetise = (port.type_param == NetworkPortType::UDP_CLIENT ||
-                                     port.type_param == NetworkPortType::UDP_SERVER) ? 1 : 0;
+        config.ports[i].packetise = (type == int32_t(NetworkPortType::UDP_CLIENT) ||
+                                     type == int32_t(NetworkPortType::UDP_SERVER)) ? 1 : 0;
         config.ports[i].port = uint16_t(number);
         config.ports[i].ip = port.ip.get_uint32();
     }

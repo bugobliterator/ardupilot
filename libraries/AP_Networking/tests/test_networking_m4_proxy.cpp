@@ -286,6 +286,12 @@ struct NetM4TestAccess {
     static uint32_t session_rx_dropped(AP_Networking &net) { return net._m4_session_rx_dropped; }
     static uint32_t tx_desyncs(AP_Networking &net) { return net._m4_tx_desyncs; }
     static bool held(AP_Networking &net) { return net._m4_held; }
+    static void set_enabled(AP_Networking &net, bool enabled) { net.param.enabled.set(enabled ? 1 : 0); }
+    // NET_Pn_TYPE values: 0 none, 1 UDP client, 2 UDP server, 3 TCP client
+    static void set_type_param(AP_Networking &net, uint8_t i, uint8_t type)
+    {
+        net.ports[i].type_param.set(AP_Networking::NetworkPortType(type));
+    }
     static uint32_t attached_session(AP_Networking &net) { return net._m4_attached_session; }
 };
 
@@ -514,6 +520,31 @@ TEST(NetM4Proxy, GrantLandingDuringAPassNeverRunsItUnheld)
     EXPECT_EQ(NetM4TestAccess::attached_session(net), 0U);
     EXPECT_EQ(tcp.available(), 0U);
     EXPECT_EQ(old_rx.space(), PORT_RING_DATA - sizeof(old_bytes));   // not drained
+}
+
+TEST(NetM4Proxy, ConfigKeepsThePortTypesOfTheBoot)
+{
+    const uint8_t NONE = 0, UDP_CLIENT = 1, UDP_SERVER = 2, TCP_CLIENT = 3;
+    AP_Networking &net = started(0);   // opened at boot: NET_P1 UDP client, NET_P2 TCP client, NET_P3 none
+    NetM4TestAccess::set_enabled(net, true);
+    // NET_Pn_TYPE changed without a reboot; the next M4 session asks for its config
+    NetM4TestAccess::set_type_param(net, 0, TCP_CLIENT);
+    NetM4TestAccess::set_type_param(net, 1, UDP_CLIENT);
+    NetM4TestAccess::set_type_param(net, 2, UDP_SERVER);
+    NetM4::Config config {};
+    ASSERT_TRUE(net.m4_config(config));
+    // the framing the M7 ends fixed at boot: records on NET_P1, a byte stream on NET_P2
+    EXPECT_EQ(unsigned(config.ports[0].type), unsigned(UDP_CLIENT));
+    EXPECT_EQ(unsigned(config.ports[0].packetise), 1U);
+    EXPECT_EQ(unsigned(config.ports[1].type), unsigned(TCP_CLIENT));
+    EXPECT_EQ(unsigned(config.ports[1].packetise), 0U);
+    // a port with no M7 buffers gets no M4 socket
+    EXPECT_EQ(unsigned(config.ports[2].type), unsigned(NONE));
+    EXPECT_EQ(unsigned(config.ports[2].packetise), 0U);
+    for (uint8_t i = 0; i < 3; i++) {
+        NetM4TestAccess::set_type_param(net, i, NONE);
+    }
+    NetM4TestAccess::set_enabled(net, false);
 }
 
 #endif  // AP_NETWORKING_M4_ENABLED
