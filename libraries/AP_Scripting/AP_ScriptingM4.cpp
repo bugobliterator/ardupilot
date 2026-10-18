@@ -676,6 +676,7 @@ void AP_ScriptingM4::check_started(uint32_t now_ms)
         _net_region_clear.session_started(view);
         _confirmed_grant.store(_restart_grants + 1U, std::memory_order_release);
         _net_restart.session_started(now_ms);
+        _net_stall.session_started();
 #endif
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
         _m4_heartbeat_ms = now_ms;
@@ -761,6 +762,17 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
         }
         return;
     }
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    if (network_wanted()) {
+        // wall-clock in SITL, as the M4 writes its status
+        uint32_t status_heartbeat = 0;
+        const bool read = AP::network().m4_status_heartbeat(m4_session(), status_heartbeat);
+        if (_net_stall.stalled(read, status_heartbeat, platform_timeout_ms())) {
+            failure("network stalled");
+            return;
+        }
+    }
+#endif
     if (_protocol_errors >= PROTOCOL_ERROR_LIMIT) {
         failure("protocol errors");
         return;

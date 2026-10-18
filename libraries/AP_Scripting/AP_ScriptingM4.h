@@ -16,6 +16,7 @@
 #include "AP_ScriptingM4_LuaPermit.h"
 #include "AP_ScriptingM4_NetRegionClear.h"
 #include "AP_ScriptingM4_NetRestart.h"
+#include "AP_ScriptingM4_NetStall.h"
 #include <atomic>
 #endif
 
@@ -170,6 +171,7 @@ private:
     // whether the next grant may clear the network region
     ScriptingM4::NetRegionClear _net_region_clear;
     ScriptingM4::NetRestart _net_restart;
+    ScriptingM4::NetStall _net_stall;
     bool _network_wanted;
     bool _lua_permitted = true;          // SCR_ENABLE at boot
     bool _lua_off_until_reboot;          // the fault limit took Lua's permit
