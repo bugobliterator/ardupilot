@@ -213,6 +213,8 @@ public:
     // the scripting supervisor's current M4 grant, and whether the M4 confirmed running it
     static uint32_t m4_session();
     static bool m4_session_confirmed(uint32_t session);
+    // the status block's heartbeat when it holds a whole status of session (scripting supervisor)
+    bool m4_status_heartbeat(uint32_t session, uint32_t &heartbeat);
 
     // the NET_P ports' bytes through the rings; IO thread
     void m4_io_update();

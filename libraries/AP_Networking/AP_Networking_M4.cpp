@@ -339,6 +339,17 @@ uint8_t AP_Networking::m4_track_status(NetM4::StatusTracker &tracker, NetM4::Sta
     return NetM4::track_status(tracker, _m4_region->status, m4_session(), AP_HAL::millis(), out);
 }
 
+bool AP_Networking::m4_status_heartbeat(uint32_t session, uint32_t &heartbeat)
+{
+    WITH_SEMAPHORE(_m4_sem);
+    NetM4::StatusFields status;
+    if (_m4_region == nullptr || !NetM4::read_status(_m4_region->status, status) || status.session != session) {
+        return false;
+    }
+    heartbeat = status.heartbeat;
+    return true;
+}
+
 uint32_t AP_Networking::m4_queued_bytes_for_test()
 {
     WITH_SEMAPHORE(_m4_sem);
