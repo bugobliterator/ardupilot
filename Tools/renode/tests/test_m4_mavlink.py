@@ -237,10 +237,15 @@ def test_m4_mavlink_test(start_m4lua, tmp_path):  # noqa: F811
     commands = [text for text in run.texts if text.startswith('M4 renode commands ')][0].split()[3:]
     print('run_command_int results (arm, forced arm, forced disarm, ALT_HOLD, STABILIZE): %s' % commands, flush=True)
     # each handler ran: arming stops at its checks (MAV_RESULT_FAILED) or arms (MAV_RESULT_ACCEPTED);
-    # under Renode the forced arm stops at the mandatory gyro and EKF checks. The forced disarm and both
-    # mode changes run to the end (MAV_RESULT_ACCEPTED). nil would be a refused or malformed call
+    # under Renode the forced arm stops at the mandatory gyro and EKF checks unless they have passed
+    # by then. The forced disarm and ALT_HOLD run to the end (MAV_RESULT_ACCEPTED). STABILIZE too,
+    # unless the forced arm went through: with no RC the vehicle is then in RC failsafe, which
+    # refuses it (MAV_RESULT_FAILED). nil would be a refused or malformed call
     assert commands[0] in ('0', '4') and commands[1] in ('0', '4'), 'run_command_int results %s' % commands
-    assert commands[2:] == ['0', '0', '0'], 'run_command_int results %s' % commands
+    assert commands[2:4] == ['0', '0'], 'run_command_int results %s' % commands
+    assert commands[4] == '0' or (commands[1] == '0' and commands[4] == '4' and
+                                  any('in RC failsafe' in text for text in run.texts)), \
+        'run_command_int results %s' % commands
     # the ALT_HOLD handler ran: a custom mode lost on the way would give STABILIZE (0), also accepted
     modes = [text for text in run.texts if text.startswith('M4 renode mode ')]
     assert modes == ['M4 renode mode 2'], 'mode after the ALT_HOLD command: %s' % modes
