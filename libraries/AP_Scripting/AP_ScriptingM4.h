@@ -189,7 +189,6 @@ private:
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
     int _m4_pid;
     bool spawn_m4(char *reason, size_t reason_len);
-    void publish_sim_time();   // timer thread: SupervisorBlock SITL_TIME_SLOT
 #endif
 
     static AP_ScriptingM4 *_singleton;

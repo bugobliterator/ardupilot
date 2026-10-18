@@ -50,10 +50,6 @@ static_assert(sizeof(SupervisorBlock) == SUPERVISOR_BLOCK_SIZE, "supervisor bloc
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "shared words must be lock-free");
 static_assert(CHANNEL_WINDOW_SIZE % 32 == 0, "the Channel window and the block stay 32-byte aligned");
 
-// SITL only (ChibiOS leaves it 0): SupervisorBlock.reserved[SITL_TIME_SLOT] is the M7's
-// AP_HAL::millis(), its simulated time, which the M4 process times its calls on
-static const uint8_t SITL_TIME_SLOT = 1;
-
 inline SupervisorBlock *supervisor_block(uint8_t *window)
 {
     return reinterpret_cast<SupervisorBlock *>(reinterpret_cast<uintptr_t>(window) + CHANNEL_WINDOW_SIZE);

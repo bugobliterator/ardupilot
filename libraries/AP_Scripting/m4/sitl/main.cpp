@@ -52,16 +52,8 @@ static uint64_t now_us()
     return uint64_t(ts.tv_sec) * 1000000U + uint64_t(ts.tv_nsec) / 1000U;
 }
 
-// the service's clock, which times the calls out: the M7's simulated milliseconds as it publishes
-// them (SITL_TIME_SLOT), as on the board where both cores share one clock; wall time until then
 static uint32_t millis_now()
 {
-    if (window != nullptr) {
-        const uint32_t m7_ms = supervisor_block(window)->reserved[SITL_TIME_SLOT].load();
-        if (m7_ms != 0) {
-            return m7_ms;
-        }
-    }
     return uint32_t(now_us() / 1000U);
 }
 
