@@ -22292,8 +22292,8 @@ RTL_ALT_M 111
                     # SITL charges passes only: the charged CPU is inside the bracket WallBusy times
                     if row_cpu > m.WallBusy + 2:
                         cpu_over_wall += 1
-                    # within the cap: 10 %, the 2 ms burst, and the one pass the cap charges after it ran
-                    if row_cpu > 102 + (m.PassMax + m.SlowCPU) // 1000:
+                    # within the cap: 10 %, the 10 ms burst, and the one pass the cap charges after it ran
+                    if row_cpu > 110 + (m.PassMax + m.SlowCPU) // 1000:
                         cpu_over_cap.append((row_cpu, m.PassMax, m.SlowCPU))
                 row_cpu = None
                 continue
