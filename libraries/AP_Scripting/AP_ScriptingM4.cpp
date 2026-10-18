@@ -361,7 +361,7 @@ AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
         } else if (!_duty_cap.refuses_slow_bindings() || !refuse_slow_binding(_rx_frame, len)) {
             serve_on_worker(len);
         }
-        if (AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
+        if (ScriptingM4::frame_ends_pass_on_time(_rx_frame, len) && AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
             return ServeResult::Busy;
         }
     }

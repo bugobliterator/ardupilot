@@ -110,6 +110,15 @@ private:
     bool _started = false;
 };
 
+// whether the pass may end on time after this frame. The M4's Stats rows (a log row each, a burst
+// once a second) do not end it: a call queued behind them would otherwise wait for later passes,
+// 0.5 s each while the duty-cap debt is deep, and outlast the M4's call timeout. The pass still
+// ends on MAX_REQUESTS_PER_WAKE frames, and their CPU is charged
+inline bool frame_ends_pass_on_time(const uint8_t *buf, uint16_t len)
+{
+    return len == 0 || MsgType(buf[0]) != MsgType::Stats;
+}
+
 // what the user is told about duty-cap refusals, from the count refused in each second: one
 // "refused" text at most every NOTICE_MS while they continue, then one "served again" once a
 // whole NOTICE_MS has passed without one

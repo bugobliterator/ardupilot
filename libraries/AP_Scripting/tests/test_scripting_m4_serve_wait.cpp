@@ -767,4 +767,19 @@ TEST(ScriptingM4ServeWait, RefusalTextsNeedRefusals)
     EXPECT_EQ(notice.update(16000, 0), Text::None);
 }
 
+// a burst of Stats rows ahead of a call never ends the pass on time: the call is served in it
+TEST(ScriptingM4ServeWait, StatsRowsDoNotEndAPass)
+{
+    StatsMsg stats {};
+    fill_header(stats.header, MsgType::Stats, sizeof(stats), 1);
+    CallHeader call {};
+    fill_header(call.header, MsgType::Call, sizeof(call), 2);
+    CallHeader notify {};
+    fill_header(notify.header, MsgType::Notify, sizeof(notify), 3);
+    EXPECT_FALSE(frame_ends_pass_on_time(reinterpret_cast<const uint8_t *>(&stats), sizeof(stats)));
+    EXPECT_TRUE(frame_ends_pass_on_time(reinterpret_cast<const uint8_t *>(&call), sizeof(call)));
+    EXPECT_TRUE(frame_ends_pass_on_time(reinterpret_cast<const uint8_t *>(&notify), sizeof(notify)));
+    EXPECT_TRUE(frame_ends_pass_on_time(nullptr, 0));
+}
+
 AP_GTEST_MAIN()
