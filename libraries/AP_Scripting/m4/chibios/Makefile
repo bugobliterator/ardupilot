@@ -135,7 +135,8 @@ $(M4_MATH_OBJECTS): CPPOPT += -fsingle-precision-constant -fno-math-errno \
 
 $(BUILDDIR)/$(PROJECT).elf: $(LUA_RAM_LISTS)
 
-# fails (and removes the image) unless each symbol exists and lies in ram0
+# fails (and removes the image) unless each symbol exists and lies in ram0. The addresses are
+# compared as strings: awk reads a hex address such as 300138e0 as a number in exponent form
 all: $(BUILDDIR)/privileged_symbols.ok
 $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	@$(TRGT)nm -C '$<' | awk -v wanted_list='$(PRIVILEGED_SYMBOLS)' ' \
@@ -150,7 +151,7 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	            if (!(name in found)) { print "scripting_m4: " name " not found"; status = 1; continue } \
 	            count = split(found[name], addresses, " "); \
 	            for (i = 1; i <= count; i++) { \
-	                if (addresses[i] < privileged_base || addresses[i] >= lua_base) { \
+	                if ("x" addresses[i] < "x" privileged_base || "x" addresses[i] >= "x" lua_base) { \
 	                    print "scripting_m4: " name " at 0x" addresses[i] " is not in privileged RAM"; status = 1 \
 	                } \
 	            } \
