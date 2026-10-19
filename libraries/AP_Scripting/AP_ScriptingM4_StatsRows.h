@@ -10,6 +10,11 @@
 
 namespace ScriptingM4 {
 
+// Stats rows the M4 sends per one-second window: one for each of the STATS_REPORTED methods with
+// the most round-trip time, then m4:other and m4:sysother
+static const uint8_t STATS_REPORTED = 8;
+static const uint8_t STATS_ROWS_PER_WINDOW = STATS_REPORTED + 2;
+
 struct StatsRow {
     uint16_t method;
     uint32_t count;

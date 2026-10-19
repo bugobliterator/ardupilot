@@ -1,8 +1,11 @@
 #pragma once
 
+#include <errno.h>
 #include <stdint.h>
 #include "AP_ScriptingM4_Files.h"
+#include "AP_ScriptingM4_Objects.h"
 #include "AP_ScriptingM4_Rpc.h"
+#include "AP_ScriptingM4_StatsRows.h"
 
 namespace ScriptingM4 {
 
@@ -134,10 +137,18 @@ inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
            call.method == uint16_t(SystemMethod::Release);
 }
 
-// exempt frames per pass: the M4's legitimate burst is at most 10 Stats rows a second (8 methods,
-// m4:other, m4:sysother) plus one m4:run_stats and one m4:release between scripts. More of them,
-// e.g. forged by a faulty M4, end the pass as any other frame; all are charged
-static const uint8_t MAX_EXEMPT_PER_PASS = 12;
+// exempt frames per pass: the M4's legitimate worst case ahead of a call is one window's Stats rows,
+// one m4:run_stats and one flush of its release queue (ObjectPool::SLOTS handles, MAX_VALUES per
+// m4:release). More of them, e.g. forged by a faulty M4, end the pass as any other frame; all are
+// charged
+static const uint8_t MAX_RELEASES_PER_FLUSH = (ObjectPool::SLOTS + MAX_VALUES - 1) / MAX_VALUES;
+static const uint8_t MAX_EXEMPT_PER_PASS = STATS_ROWS_PER_WINDOW + 1 + MAX_RELEASES_PER_FLUSH;
+static_assert(MAX_EXEMPT_PER_PASS == 15, "10 Stats rows, m4:run_stats and 4 m4:release");
+
+// a pass of the host thread: at most MAX_REQUESTS_PER_WAKE frames, ending once MAX_SERVE_US have
+// passed since the wake after a frame that may end it
+static const uint8_t MAX_REQUESTS_PER_WAKE = 32;
+static const uint32_t MAX_SERVE_US = 200;
 
 // whether the pass may end on time after this frame (a frame past MAX_SERVE_US that is not exempt,
 // or exempt beyond MAX_EXEMPT_PER_PASS in this pass). exempt_in_pass starts at 0 for each pass;
@@ -149,6 +160,36 @@ inline bool frame_ends_pass_on_time(const uint8_t *buf, uint16_t len, uint8_t &e
         return false;
     }
     return true;
+}
+
+enum class PassEnd : uint8_t {
+    Idle,           // the ring is empty
+    Busy,           // a limit ran out with a frame just served; more may remain
+    ReceiveError,   // the ring returned an error other than empty: the frame stays queued
+};
+
+// the host's serve loop: receive(frame, len) -> 0, -EAGAIN or another -errno; serve(len) handles
+// the frame just received into frame; elapsed_us() is the time since the wake
+template <typename Receive, typename Serve, typename Elapsed>
+inline PassEnd serve_pass(const uint8_t *frame, Receive receive, Serve serve, Elapsed elapsed_us)
+{
+    // an empty ring is Idle whatever the time; Busy means a limit ran out with a frame just served
+    uint8_t exempt_in_pass = 0;
+    for (uint8_t i = 0; i < MAX_REQUESTS_PER_WAKE; i++) {
+        uint16_t len = 0;
+        const int ret = receive(len);
+        if (ret == -EAGAIN) {
+            return PassEnd::Idle;
+        }
+        if (ret != 0) {
+            return PassEnd::ReceiveError;
+        }
+        serve(len);
+        if (frame_ends_pass_on_time(frame, len, exempt_in_pass) && elapsed_us() > MAX_SERVE_US) {
+            return PassEnd::Busy;
+        }
+    }
+    return PassEnd::Busy;
 }
 
 // what the user is told about duty-cap refusals, from the count refused in each second: one

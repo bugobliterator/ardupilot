@@ -68,7 +68,6 @@ private:
     // STATS_REPORTED with the most round-trip time get a Stats row each, the rest one
     // m4:other row (spec §11: SRPC, top methods by total time)
     static const uint8_t STATS_SLOTS = 32;
-    static const uint8_t STATS_REPORTED = 8;
 
     static StatsRow row_of(const MethodStats &slot);
     static void clear(MethodStats &slot);

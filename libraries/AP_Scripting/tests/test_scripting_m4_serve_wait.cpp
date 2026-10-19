@@ -792,24 +792,29 @@ static Frame call_frame(MsgType type, uint16_t method)
     return f;
 }
 
-// serve()'s pass with SITL's 833 us simulated step per frame (every frame takes the pass past
-// MAX_SERVE_US): the frames served before the pass ends
+// one pass of serve_pass(), serve()'s own loop, over a queue of frames, with SITL's 833 us
+// simulated step per frame (every frame takes the pass past MAX_SERVE_US): the frames served
 static size_t frames_in_one_pass(const std::vector<Frame> &queue)
 {
-    const uint32_t MAX_SERVE_US = 200;
-    uint32_t elapsed_us = 0;
-    uint8_t exempt_in_pass = 0;
+    uint8_t frame[MAX_FRAME];
+    size_t next = 0;
     size_t served = 0;
-    for (const Frame &f : queue) {
-        if (served == 32) {   // MAX_REQUESTS_PER_WAKE
-            break;
-        }
-        served++;
-        elapsed_us += 833;
-        if (frame_ends_pass_on_time(f.bytes, f.len, exempt_in_pass) && elapsed_us > MAX_SERVE_US) {
-            break;
-        }
-    }
+    uint32_t elapsed_us = 0;
+    serve_pass(frame,
+               [&](uint16_t &len) {
+                   if (next == queue.size()) {
+                       return -EAGAIN;
+                   }
+                   memcpy(frame, queue[next].bytes, queue[next].len);
+                   len = queue[next].len;
+                   next++;
+                   return 0;
+               },
+               [&](uint16_t) {
+                   served++;
+                   elapsed_us += 833;
+               },
+               [&]() { return elapsed_us; });
     return served;
 }
 
@@ -833,6 +838,41 @@ TEST(ScriptingM4ServeWait, StatsBurstAheadOfACallDoesNotEndThePass)
     queue.push_back(call_frame(MsgType::Call, BINDING));
     queue.push_back(call_frame(MsgType::Call, BINDING + 1));   // the pass ends after the call
     EXPECT_EQ(frames_in_one_pass(queue), 12U);
+}
+
+// the M4's worst case ahead of a call: a window's Stats rows, m4:run_stats and a release queue
+// flushed in 4 batches; all served in the pass with the call
+TEST(ScriptingM4ServeWait, WorstCaseExemptFramesAheadOfACall)
+{
+    std::vector<Frame> queue(STATS_ROWS_PER_WINDOW, stats_frame());
+    queue.push_back(call_frame(MsgType::Notify, uint16_t(SystemMethod::RunStats)));
+    for (uint8_t i = 0; i < MAX_RELEASES_PER_FLUSH; i++) {
+        queue.push_back(call_frame(MsgType::Notify, uint16_t(SystemMethod::Release)));
+    }
+    queue.push_back(call_frame(MsgType::Call, BINDING));
+    queue.push_back(call_frame(MsgType::Call, BINDING + 1));
+    EXPECT_EQ(frames_in_one_pass(queue), queue.size() - 1);
+    EXPECT_EQ(queue.size() - 1, size_t(MAX_EXEMPT_PER_PASS) + 1U);
+}
+
+// a pass ends at MAX_REQUESTS_PER_WAKE frames even when none is past MAX_SERVE_US, and an empty
+// ring ends it at once
+TEST(ScriptingM4ServeWait, PassEndsAtTheFrameLimit)
+{
+    uint8_t frame[MAX_FRAME];
+    const Frame call = call_frame(MsgType::Call, BINDING);
+    size_t served = 0;
+    const PassEnd end = serve_pass(frame,
+                                   [&](uint16_t &len) {
+                                       memcpy(frame, call.bytes, call.len);
+                                       len = call.len;
+                                       return 0;
+                                   },
+                                   [&](uint16_t) { served++; },
+                                   []() { return uint32_t(0); });
+    EXPECT_EQ(end, PassEnd::Busy);
+    EXPECT_EQ(served, size_t(MAX_REQUESTS_PER_WAKE));
+    EXPECT_EQ(frames_in_one_pass(std::vector<Frame> {}), 0U);
 }
 
 // more exempt frames than MAX_EXEMPT_PER_PASS (a faulty M4): the pass still ends, at the first
@@ -866,8 +906,8 @@ TEST(ScriptingM4ServeWait, OtherFramesEndAPass)
     EXPECT_FALSE(frame_exempt_from_pass_time(short_stats.bytes, short_stats.len));
     EXPECT_TRUE(frame_ends_pass_on_time(short_stats.bytes, short_stats.len, exempt_in_pass));
     EXPECT_TRUE(frame_ends_pass_on_time(nullptr, 0, exempt_in_pass));
-    EXPECT_FALSE(frames_in_one_pass(std::vector<Frame> { call_frame(MsgType::Notify, BINDING),
-                                                        call_frame(MsgType::Call, BINDING) }) == 2U);
+    EXPECT_EQ(frames_in_one_pass(std::vector<Frame> { call_frame(MsgType::Notify, BINDING),
+                                                     call_frame(MsgType::Call, BINDING) }), 1U);
 }
 
 AP_GTEST_MAIN()

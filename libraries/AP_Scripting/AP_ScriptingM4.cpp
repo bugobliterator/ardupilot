@@ -23,8 +23,6 @@ namespace PeerHeader = CubePilotFW::PeerHeader;
 using ScriptingM4::MsgType;
 
 // one wake serves at most this many requests or this long (spec §7)
-static const uint8_t MAX_REQUESTS_PER_WAKE = 32;
-static const uint32_t MAX_SERVE_US = 200;
 // after a pass that hit either limit with frames left: a flooding M4 gets one pass per pause
 static const uint32_t SERVE_BACKOFF_US = 500;
 // a pass this long in wall time is counted (M4ST.Long): blocked in a binding, or preempted
@@ -344,28 +342,26 @@ AP_ScriptingM4::ServeResult AP_ScriptingM4::serve()
     if (_state != State::Running) {
         return ServeResult::Stuck;   // frames from before a (re)start are dropped by the re-handshake
     }
-    // an empty ring is Idle whatever the time; Busy means a limit ran out with a frame just served
-    uint8_t exempt_in_pass = 0;
-    for (uint8_t i = 0; i < MAX_REQUESTS_PER_WAKE; i++) {
-        uint16_t len = 0;
-        const int ret = _channel->receive(_rx_frame, sizeof(_rx_frame), &len);
-        if (ret == -EAGAIN) {
-            return ServeResult::Idle;
-        }
-        if (ret != 0) {
-            // -EBADMSG: corrupt or desynchronised ring; -EMSGSIZE: an oversized frame stays queued
-            _protocol_errors++;
-            return ServeResult::Stuck;
-        }
-        if (on_fast_lane(_rx_frame, len)) {
-            handle_message(_rx_frame, len);
-        } else if (!_duty_cap.refuses_slow_bindings() || !refuse_slow_binding(_rx_frame, len)) {
-            serve_on_worker(len);
-        }
-        if (ScriptingM4::frame_ends_pass_on_time(_rx_frame, len, exempt_in_pass) &&
-            AP_HAL::micros() - _woke_us > MAX_SERVE_US) {
-            return ServeResult::Busy;
-        }
+    const ScriptingM4::PassEnd end = ScriptingM4::serve_pass(
+        _rx_frame,
+        [this](uint16_t &len) { return _channel->receive(_rx_frame, sizeof(_rx_frame), &len); },
+        [this](uint16_t len) {
+            if (on_fast_lane(_rx_frame, len)) {
+                handle_message(_rx_frame, len);
+            } else if (!_duty_cap.refuses_slow_bindings() || !refuse_slow_binding(_rx_frame, len)) {
+                serve_on_worker(len);
+            }
+        },
+        [this]() { return AP_HAL::micros() - _woke_us; });
+    switch (end) {
+    case ScriptingM4::PassEnd::Idle:
+        return ServeResult::Idle;
+    case ScriptingM4::PassEnd::ReceiveError:
+        // -EBADMSG: corrupt or desynchronised ring; -EMSGSIZE: an oversized frame stays queued
+        _protocol_errors++;
+        return ServeResult::Stuck;
+    case ScriptingM4::PassEnd::Busy:
+        break;
     }
     return ServeResult::Busy;
 }
