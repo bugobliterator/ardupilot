@@ -438,6 +438,25 @@ TEST(ScriptingM4ServeWait, OneSecondCallBurstIsPacedOnlyPastTheBucket)
     EXPECT_EQ(first_pause, 370);
 }
 
+// the refusal cliff of one worker call: from RESUME_US of credit, a call of C us is followed by a
+// pass forced MAX_PAUSE_US after the call's pass started; it refuses worker bindings when the
+// credit is then below -MAX_DEBT_US, i.e. C > RESUME_US + MAX_PAUSE_US / 10 + MAX_DEBT_US (100.4 ms)
+TEST(ScriptingM4ServeWait, RefusalCliffOfOneWorkerCall)
+{
+    for (const uint32_t call_us : { 100000U, 101000U }) {
+        ServeDutyCap cap;
+        const uint32_t start = 1000;
+        EXPECT_EQ(cap.wait_us(start), 0U);
+        cap.charge(uint32_t(ServeDutyCap::BURST_US - ServeDutyCap::RESUME_US));
+        ASSERT_EQ(cap.credit_us(), int64_t(ServeDutyCap::RESUME_US));
+        ServeDutyCapTestAccess::pass_started(cap, start);
+        cap.charge(call_us);
+        const uint32_t forced = start + uint32_t(ServeDutyCap::MAX_PAUSE_US);
+        EXPECT_EQ(cap.wait_us(forced), 0U) << call_us;   // the forced pass is due
+        EXPECT_EQ(cap.refuses_slow_bindings(), call_us > 100400U) << call_us;
+    }
+}
+
 // a pass that a duty-cap pause waited for runs, although the pause's own wake (10 us) is charged
 // before it: the host decides before it charges (fails if pass_after_wake() charges first)
 TEST(ScriptingM4ServeWait, PassRunsRightAfterAPause)
