@@ -55,9 +55,11 @@ private:
         ExpandingString *str;
     } file[max_open_file];
 
-    // open(), close(), read() and lseek() can run on several threads (scripting, logging, MAVFTP):
-    // the slots are taken and used under this; the contents are built outside it
+    // open() and close() can run on several threads (scripting, logging, MAVFTP): a slot is
+    // claimed, published and freed under this; the contents are built outside it. read() and
+    // lseek() take no lock: an fd is used only by its owner after its open() returned
     HAL_Semaphore sem;
+    friend struct AP_FilesystemSysTestAccess;
 };
 
 #endif  // AP_FILESYSTEM_SYS_ENABLED

@@ -199,7 +199,8 @@ int AP_Filesystem_Sys::close(int fd)
 
 int32_t AP_Filesystem_Sys::read(int fd, void *buf, uint32_t count)
 {
-    WITH_SEMAPHORE(sem);
+    // no lock: an fd is used only after its open() returned, by its owner; open() and close()
+    // serialise the slot claims (a 2 MB @SYS/flash.bin crc32 makes 32768 reads)
     if (fd < 0 || fd >= max_open_file || !file[fd].open) {
         errno = EBADF;
         return -1;
@@ -214,7 +215,7 @@ int32_t AP_Filesystem_Sys::read(int fd, void *buf, uint32_t count)
 
 int32_t AP_Filesystem_Sys::lseek(int fd, int32_t offset, int seek_from)
 {
-    WITH_SEMAPHORE(sem);
+    // no lock, as read()
     if (fd < 0 || fd >= max_open_file || !file[fd].open) {
         errno = EBADF;
         return -1;
