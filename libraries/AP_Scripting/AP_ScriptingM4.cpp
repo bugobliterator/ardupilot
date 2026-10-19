@@ -521,7 +521,7 @@ void AP_ScriptingM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     // @Field: TimeUS: Time since system startup
     // @Field: PassMax: the largest CPU time of one fast-lane pass in the last second, in microseconds (what the duty cap charges)
     // @Field: WallBusy: host thread wall time from wake to the end of each pass in the last second, per mille (thread statistics do not feed it; preemption and waits on the slow worker count, the switch around a pass does not)
-    // @Field: StatsReset: thread statistics resets seen in the last second, host and slow worker (an interval with one is charged its wall time)
+    // @Field: StatsReset: thread statistics resets seen in the last second, host and slow worker (an interval with one is charged the CPU since the reset plus 200 us, at most its wall time)
     // @Field: SlowReq: frames the slow worker served in the last second
     // @Field: SlowMax: the longest of them, wall time in microseconds
     // @Field: SlowCPU: the largest CPU time of one of them, in microseconds (charged to the duty cap with the host's)

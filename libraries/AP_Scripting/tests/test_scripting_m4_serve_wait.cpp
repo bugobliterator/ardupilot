@@ -340,8 +340,12 @@ TEST(ScriptingM4ServeWait, IntervalCpuFromClockReadings)
 {
     EXPECT_EQ(interval_cpu_us(1000U, 1250U, false, 400U), 250U);
     EXPECT_EQ(interval_cpu_us(1000U, 1000U, false, 400U), 0U);
-    EXPECT_EQ(interval_cpu_us(1000U, 1250U, true, 400U), 400U);      // reset seen: the wall time
-    EXPECT_EQ(interval_cpu_us(5000000U, 300U, false, 400U), 400U);   // went back: the wall time
+    // reset seen, or the clock went back: the reading since the reset plus RESET_ALLOWANCE_US,
+    // at most the wall time
+    EXPECT_EQ(interval_cpu_us(1000U, 1250U, true, 400U), 400U);
+    EXPECT_EQ(interval_cpu_us(1000U, 50U, true, 10000U), 50U + RESET_ALLOWANCE_US);
+    EXPECT_EQ(interval_cpu_us(5000000U, 300U, false, 400U), 400U);
+    EXPECT_EQ(interval_cpu_us(5000000U, 300U, false, 10000U), 300U + RESET_ALLOWANCE_US);
     EXPECT_EQ(interval_cpu_us(0U, uint64_t(UINT32_MAX) + 10U, false, 400U), UINT32_MAX);
 }
 
@@ -551,8 +555,8 @@ TEST(ScriptingM4ServeWait, SelfResetIsCharged)
 }
 
 // a reset by another thread while the host sleeps: flagged at the next reading, the interval
-// charged its wall time (an over-charge), never less than the host used
-TEST(ScriptingM4ServeWait, OtherThreadResetOverCharges)
+// charged the reading plus RESET_ALLOWANCE_US: never less than the host used, nor the whole sleep
+TEST(ScriptingM4ServeWait, OtherThreadResetChargesTheReading)
 {
     HostModel host;
     host.iteration(5, 20, 4, 500, 0);
@@ -561,7 +565,66 @@ TEST(ScriptingM4ServeWait, OtherThreadResetOverCharges)
         host.iteration(5, 20, 4, 500, 2);
     }
     EXPECT_GE(host.charged, host.used - used_before);
+    EXPECT_LE(host.charged, host.used - used_before + 49U * RESET_ALLOWANCE_US);
     EXPECT_EQ(host.charge.take_resets(), 49U);   // the last reset is after the last reading
+}
+
+// a GCS @SYS/threads.txt read during the host's 10 ms doorbell sleep: the next reading charges
+// the CPU since the reset plus the allowance, not the sleep, so the duty cap keeps its burst and
+// the bench's once-a-second call burst still runs its first 360 calls unpaced
+TEST(ScriptingM4ServeWait, ResetDuringASleepKeepsTheBurst)
+{
+    HostModel host;
+    host.iteration(5, 20, 4, 10000, 0);
+    host.iteration(5, 20, 4, 10000, 2);   // reset in this sleep
+    const uint64_t charged_before = host.charged;
+    const uint64_t used_before = host.used;
+    host.iteration(5, 20, 4, 10000, 0);
+    const uint64_t charged = host.charged - charged_before;
+    const uint64_t used = host.used - used_before;
+    EXPECT_LE(charged, used + RESET_ALLOWANCE_US);
+    EXPECT_LT(charged, 1000U);   // not the 10 ms sleep
+    ServeDutyCap cap;
+    uint32_t now = 0;
+    EXPECT_EQ(cap.wait_us(now), 0U);
+    cap.charge(uint32_t(charged));
+    int first_pause = -1;
+    for (int call = 0; call < 416 && first_pause < 0; call++) {
+        if (cap.wait_us(now) != 0) {
+            first_pause = call;
+        }
+        cap.charge(41U);
+        now += 145U;
+    }
+    EXPECT_GE(first_pause, 360);
+}
+
+// a reset in the middle of a pass while the host is off the CPU for 2 ms (blocked on the slow
+// worker, the resetting thread above it): the pass is charged its CPU plus the allowance, not 2 ms
+TEST(ScriptingM4ServeWait, ResetMidPassChargesThePassCpu)
+{
+    FakeThreadStats stats;
+    HostCpuCharge charge { true };
+    uint32_t now = 1000;
+    bool reset;
+    stats.switch_in(now);
+    (void)charge.pass_start(stats.read(now, reset), reset, now);   // starts the clock
+    now += 100;
+    stats.switch_out(now);
+    now += 500;   // asleep
+    stats.switch_in(now);
+    now += 5;
+    (void)charge.pass_start(stats.read(now, reset), reset, now);
+    now += 100;   // the pass up to the hand-off to the worker
+    stats.switch_out(now);
+    stats.reset_from_other_thread();
+    now += 2000;   // off the CPU
+    stats.switch_in(now);
+    now += 100;   // the rest of the pass
+    const uint32_t pass_charge = charge.pass_end(stats.read(now, reset), reset, now);
+    EXPECT_TRUE(reset);
+    EXPECT_GE(pass_charge, 100U);
+    EXPECT_LE(pass_charge, 200U + RESET_ALLOWANCE_US);
 }
 
 // a flood whose every pass resets the host's own statistics (the fs:crc32("@SYS/threads.txt")

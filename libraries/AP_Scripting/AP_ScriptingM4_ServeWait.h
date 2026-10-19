@@ -238,13 +238,24 @@ inline bool pass_after_wake(ServeDutyCap &cap, uint32_t woke_us, ChargeWake char
     return may_serve;
 }
 
-// CPU time to charge for the interval between two readings of the thread's CPU clock. When
-// the clock was reset in between (statistics cleared), or went backwards, the interval's wall
-// time is charged: the thread cannot have used more, so a reset at worst over-charges
+// CPU charged on top of the reading after a statistics reset, for the part of the interval
+// before it: another thread can reset the clock only while this one is off the CPU (asleep, or
+// blocked in a pass), and before that it ran at most one pass's start (a pass is started only with
+// RESUME_US of credit, see ServeDutyCap)
+static const uint32_t RESET_ALLOWANCE_US = uint32_t(ServeDutyCap::RESUME_US);
+
+// CPU time to charge for the interval between two readings of the thread's CPU clock. When the
+// clock was reset in between (statistics cleared), or went backwards, the end reading is the CPU
+// used since the reset: that plus RESET_ALLOWANCE_US is charged, at most the interval's wall time.
+// Charging the wall time instead would charge a whole 10 ms sleep for a GCS @SYS/threads.txt read
+// and empty the duty cap's burst. The M4 cannot reset the clock (path_arguments_allowed(),
+// check_script_path()); a reset from the GCS under-charges by at most what ran before it beyond
+// the allowance
 inline uint32_t interval_cpu_us(uint64_t start_us, uint64_t end_us, bool reset, uint32_t wall_us)
 {
     if (reset || end_us < start_us) {
-        return wall_us;
+        const uint64_t bound = end_us + RESET_ALLOWANCE_US;
+        return bound < wall_us ? uint32_t(bound) : wall_us;
     }
     const uint64_t used = end_us - start_us;
     return used > UINT32_MAX ? UINT32_MAX : uint32_t(used);
@@ -276,7 +287,7 @@ inline uint64_t read_thread_cycles(ThreadStatsClock &clock, uint32_t now, bool &
   the end of each pass. charges_waits (ChibiOS, where waits sleep): all CPU since the previous
   reading, so the wake, the switch and the bookkeeping around a pass are charged too. Otherwise
   (SITL, whose waits spin on the simulated clock): each pass only. An interval with a reset is
-  charged its wall time; the first reading only starts the clock.
+  charged as interval_cpu_us() says; the first reading only starts the clock.
  */
 class HostCpuCharge {
 public:

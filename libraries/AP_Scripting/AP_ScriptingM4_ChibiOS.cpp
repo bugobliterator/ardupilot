@@ -134,7 +134,8 @@ bool AP_ScriptingM4::platform_thread_cpu_us(uint64_t &cpu_us)
 {
     // a reset of this thread's statistics sets best to all ones: chTMObjectInit() from a thread
     // reading @SYS/threads.txt, or Util::thread_info() on this thread. The M4 cannot reach that
-    // file (check_script_path(), fs:* path arguments); a reset anyway is charged its wall time
+    // file (check_script_path(), fs:* path arguments); an interval with a reset is charged the CPU
+    // since it plus RESET_ALLOWANCE_US (interval_cpu_us())
     chSysLock();
     thread_t *self = chThdGetSelfX();
     ScriptingM4::ThreadStatsClock clock { self->stats.cumulative, self->stats.last, self->stats.best };
