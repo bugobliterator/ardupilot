@@ -19,6 +19,8 @@
 
 #include "AP_Filesystem_config.h"
 
+#include <AP_HAL/Semaphores.h>
+
 #if AP_FILESYSTEM_SYS_ENABLED
 
 class ExpandingString;
@@ -48,9 +50,14 @@ private:
 
     struct rfile {
         bool open;
+        bool claimed;       // taken by an open() still building its contents
         uint32_t file_ofs;
         ExpandingString *str;
     } file[max_open_file];
+
+    // open(), close(), read() and lseek() can run on several threads (scripting, logging, MAVFTP):
+    // the slots are taken and used under this; the contents are built outside it
+    HAL_Semaphore sem;
 };
 
 #endif  // AP_FILESYSTEM_SYS_ENABLED

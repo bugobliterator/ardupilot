@@ -75,53 +75,57 @@ int AP_Filesystem_Sys::open(const char *fname, int flags, bool allow_absolute_pa
         errno = EROFS;
         return -1;
     }
-    uint8_t idx;
-    for (idx=0; idx<max_open_file; idx++) {
-        if (!file[idx].open) {
-            break;
-        }
-    }
-    if (idx == max_open_file) {
-        errno = ENFILE;
+    // This ensure that whenever new sys file is added its also added to list above
+    int8_t pos = file_in_sysfs(fname);
+    if (pos < 0) {
+        errno = ENOENT;
         return -1;
     }
-    struct rfile &r = file[idx];
-    r.str = NEW_NOTHROW ExpandingString;
-    if (r.str == nullptr) {
+    uint8_t idx;
+    {
+        WITH_SEMAPHORE(sem);
+        for (idx=0; idx<max_open_file; idx++) {
+            if (!file[idx].open && !file[idx].claimed) {
+                break;
+            }
+        }
+        if (idx == max_open_file) {
+            errno = ENFILE;
+            return -1;
+        }
+        file[idx].claimed = true;
+    }
+    // the contents are built into our own string, outside the lock: a long build (task_info())
+    // does not hold other threads' reads
+    ExpandingString *str = NEW_NOTHROW ExpandingString;
+    if (str == nullptr) {
+        WITH_SEMAPHORE(sem);
+        file[idx].claimed = false;
         errno = ENOMEM;
         return -1;
     }
 
-    // This ensure that whenever new sys file is added its also added to list above
-    int8_t pos = file_in_sysfs(fname);
-    if (pos < 0) {
-        delete r.str;
-        r.str = nullptr;
-        errno = ENOENT;
-        return -1;
-    }
-
     if (strcmp(fname, "threads.txt") == 0) {
-        hal.util->thread_info(*r.str);
+        hal.util->thread_info(*str);
     }
 #if AP_SCHEDULER_ENABLED
     if (strcmp(fname, "tasks.txt") == 0) {
-        AP::scheduler().task_info(*r.str);
+        AP::scheduler().task_info(*str);
     }
 #endif
     if (strcmp(fname, "dma.txt") == 0) {
-        hal.util->dma_info(*r.str);
+        hal.util->dma_info(*str);
     }
     if (strcmp(fname, "memory.txt") == 0) {
-        hal.util->mem_info(*r.str);
+        hal.util->mem_info(*str);
     }
 #if HAL_UART_STATS_ENABLED
     if (strcmp(fname, "uarts.txt") == 0) {
-        hal.util->uart_info(*r.str);
+        hal.util->uart_info(*str);
     }
 #endif
     if (strcmp(fname, "timers.txt") == 0) {
-        hal.util->timer_info(*r.str);
+        hal.util->timer_info(*str);
     }
 #if HAL_NUM_CAN_IFACES > 0
     int8_t can_stats_num = -1;
@@ -132,18 +136,18 @@ int AP_Filesystem_Sys::open(const char *fname, int flags, bool allow_absolute_pa
     }
     if (can_stats_num != -1 && can_stats_num < HAL_NUM_CAN_IFACES) {
         if (hal.can[can_stats_num] != nullptr) {
-            hal.can[can_stats_num]->get_stats(*r.str);
+            hal.can[can_stats_num]->get_stats(*str);
         }
     }
 #endif
     if (strcmp(fname, "persistent.parm") == 0) {
-        hal.util->load_persistent_params(*r.str);
+        hal.util->load_persistent_params(*str);
     }
 #if AP_CRASHDUMP_FLASH_ENABLED
     if (strcmp(fname, "crash_dump.bin") == 0) {
         void *ptr = hal.util->last_crash_dump_ptr();
         if (ptr != nullptr) {
-            r.str->set_buffer((char*)ptr, hal.util->last_crash_dump_size(), hal.util->last_crash_dump_size());
+            str->set_buffer((char*)ptr, hal.util->last_crash_dump_size(), hal.util->last_crash_dump_size());
         }
     }
 #endif
@@ -153,30 +157,35 @@ int AP_Filesystem_Sys::open(const char *fname, int flags, bool allow_absolute_pa
         void *ptr = nullptr;
         size_t size = 0;
         if (hal.storage->get_storage_ptr(ptr, size)) {
-            r.str->set_buffer((char*)ptr, size, size);
+            str->set_buffer((char*)ptr, size, size);
         }
     }
 #if AP_FILESYSTEM_SYS_FLASH_ENABLED
     if (strcmp(fname, "flash.bin") == 0) {
         void *ptr = (void*)0x08000000;
         const size_t size = HAL_PROGRAM_SIZE_LIMIT_KB*1024;
-        r.str->set_buffer((char*)ptr, size, size);
+        str->set_buffer((char*)ptr, size, size);
     }
 #endif
     
-    if (r.str->get_length() == 0) {
-        errno = r.str->has_failed_allocation()?ENOMEM:ENOENT;
-        delete r.str;
-        r.str = nullptr;
+    if (str->get_length() == 0) {
+        errno = str->has_failed_allocation()?ENOMEM:ENOENT;
+        delete str;
+        WITH_SEMAPHORE(sem);
+        file[idx].claimed = false;
         return -1;
     }
-    r.file_ofs = 0;
-    r.open = true;
+    WITH_SEMAPHORE(sem);
+    file[idx].str = str;
+    file[idx].file_ofs = 0;
+    file[idx].open = true;
+    file[idx].claimed = false;
     return idx;
 }
 
 int AP_Filesystem_Sys::close(int fd)
 {
+    WITH_SEMAPHORE(sem);
     if (fd < 0 || fd >= max_open_file || !file[fd].open) {
         errno = EBADF;
         return -1;
@@ -190,6 +199,7 @@ int AP_Filesystem_Sys::close(int fd)
 
 int32_t AP_Filesystem_Sys::read(int fd, void *buf, uint32_t count)
 {
+    WITH_SEMAPHORE(sem);
     if (fd < 0 || fd >= max_open_file || !file[fd].open) {
         errno = EBADF;
         return -1;
@@ -204,6 +214,7 @@ int32_t AP_Filesystem_Sys::read(int fd, void *buf, uint32_t count)
 
 int32_t AP_Filesystem_Sys::lseek(int fd, int32_t offset, int seek_from)
 {
+    WITH_SEMAPHORE(sem);
     if (fd < 0 || fd >= max_open_file || !file[fd].open) {
         errno = EBADF;
         return -1;
