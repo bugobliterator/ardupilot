@@ -19605,6 +19605,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.ScriptingBindingStats,
             self.ScriptingM4Containment,
             self.ScriptingM4FloodCap,
+            self.ScriptingM4SysArmCycles,
             self.ScriptingM4Scripts,
             self.ScriptingM4Checksums,
             self.ScriptingM4Bindings,
@@ -22194,6 +22195,33 @@ RTL_ALT_M 111
         self.set_parameter("SCR_M4_INJECT", 4)
         self.wait_statustext("Scripting: M4 heartbeat lost", check_context=True, timeout=10)
         self.wait_statustext("Scripting: M4 not responding, off until reboot", check_context=True, timeout=10)
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ScriptingM4SysArmCycles(self):
+        '''an M4 script reading @SYS files while the vehicle arms and disarms 20 times'''
+        # each arming makes the logger open the at-arm @SYS files on its own thread while the slow
+        # worker opens @SYS/tasks.txt for m4_sys_heavy.lua: both take AP_Filesystem_Sys's file slots
+        self.context_push()
+        self.set_parameter("SIM_SPEEDUP", 1)   # the M4 process runs on wall-clock time
+        self.context_collect("STATUSTEXT")
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "LOG_DISARMED": 0,
+        })
+        self.install_test_script_context(["m4_loop.lua", "m4_sys_heavy.lua"])
+        self.reboot_sitl()
+        self.wait_statustext("Scripting: M4 started", check_context=True, timeout=30)
+        self.wait_statustext(r"M4 heavy \d+ crc", regex=True, check_context=True, timeout=30)
+        self.wait_ready_to_arm()
+        for cycle in range(20):
+            self.arm_vehicle()
+            self.delay_sim_time(1, reason="at-arm @SYS logging")
+            self.disarm_vehicle()
+            self.progress("arm cycle %u done" % cycle)
+        # the M7 and the M4 script are still running: a new count after the cycles
+        text = self.wait_statustext(r"M4 heavy \d+ crc", regex=True, timeout=10)
+        self.progress("M4 after the arm cycles: %s" % text.text)
         self.context_pop()
         self.reboot_sitl()
 
