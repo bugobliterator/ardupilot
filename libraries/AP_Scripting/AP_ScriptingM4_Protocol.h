@@ -171,7 +171,7 @@ inline bool fault_on_stacking(uint32_t cfsr)
 static const uint32_t LUA_STACK_OVERFLOW_REACH = 1024;
 
 // the reason of an M4 image fault record: "MemManage PC=0x081D047C", or for a fault on stacking
-// "MemManage on stacking SP=0x30007F60 CFSR=0x00000093", then " (Lua stack overflow)" when that
+// "MemManage on stacking SP=0x30007F60 CFSR=0x00000092", then " (Lua stack overflow)" when that
 // SP is in the Lua stack guard or just below it
 inline void fault_reason_text(char *text, size_t text_len, uint32_t cfsr, uint32_t hfsr, uint32_t pc, uint32_t lr)
 {

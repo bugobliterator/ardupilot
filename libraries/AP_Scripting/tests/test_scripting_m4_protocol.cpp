@@ -62,7 +62,7 @@ TEST(ScriptingM4Protocol, FaultNames)
 
 TEST(ScriptingM4Protocol, FaultOnStacking)
 {
-    EXPECT_TRUE(fault_on_stacking(0x00000093));    // MSTKERR | MMARVALID | DACCVIOL
+    EXPECT_TRUE(fault_on_stacking(0x00000092));    // MMARVALID | MSTKERR | DACCVIOL
     EXPECT_TRUE(fault_on_stacking(0x00000010));    // MSTKERR
     EXPECT_TRUE(fault_on_stacking(0x00001000));    // STKERR
     EXPECT_FALSE(fault_on_stacking(0x00000082));   // DACCVIOL | MMARVALID
@@ -73,16 +73,16 @@ TEST(ScriptingM4Protocol, FaultReasonText)
 {
     char text[80];
     // a Lua stack overflow: the exception frame went below the Lua stack guard
-    fault_reason_text(text, sizeof(text), 0x93, 0, 0, 0x30007F60);
-    EXPECT_STREQ(text, "MemManage on stacking SP=0x30007F60 CFSR=0x00000093 (Lua stack overflow)");
+    fault_reason_text(text, sizeof(text), 0x92, 0, 0, 0x30007F60);
+    EXPECT_STREQ(text, "MemManage on stacking SP=0x30007F60 CFSR=0x00000092 (Lua stack overflow)");
     // in the guard itself
-    fault_reason_text(text, sizeof(text), 0x93, 0, 0, 0x30008000);
-    EXPECT_STREQ(text, "MemManage on stacking SP=0x30008000 CFSR=0x00000093 (Lua stack overflow)");
+    fault_reason_text(text, sizeof(text), 0x92, 0, 0, 0x30008000);
+    EXPECT_STREQ(text, "MemManage on stacking SP=0x30008000 CFSR=0x00000092 (Lua stack overflow)");
     // a stacking fault with an SP elsewhere: no overflow suffix
-    fault_reason_text(text, sizeof(text), 0x93, 0, 0, 0x3000A000);
-    EXPECT_STREQ(text, "MemManage on stacking SP=0x3000A000 CFSR=0x00000093");
-    fault_reason_text(text, sizeof(text), 0x93, 0, 0, 0x30008020);   // just above the guard
-    EXPECT_STREQ(text, "MemManage on stacking SP=0x30008020 CFSR=0x00000093");
+    fault_reason_text(text, sizeof(text), 0x92, 0, 0, 0x3000A000);
+    EXPECT_STREQ(text, "MemManage on stacking SP=0x3000A000 CFSR=0x00000092");
+    fault_reason_text(text, sizeof(text), 0x92, 0, 0, 0x30008020);   // just above the guard
+    EXPECT_STREQ(text, "MemManage on stacking SP=0x30008020 CFSR=0x00000092");
     fault_reason_text(text, sizeof(text), 0x10, 0, 0, 0x300007E0);   // the exception stack
     EXPECT_STREQ(text, "MemManage on stacking SP=0x300007E0 CFSR=0x00000010");
     fault_reason_text(text, sizeof(text), 0x1000, 0, 0, 0x30007F60);
