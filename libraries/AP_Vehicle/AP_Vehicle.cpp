@@ -311,6 +311,12 @@ const AP_Param::GroupInfo AP_Vehicle::var_info[] = {
     AP_SUBGROUPINFO(native_modules, "MOD_", 34, AP_Vehicle, AP_Module::Runtime),
 #endif
 
+#if AP_MODULE_ENABLED && AP_MODULE_M4_ENABLED
+    // @Group: MOD_M4_
+    // @Path: ../AP_ModuleM4/AP_ModuleM4.cpp
+    AP_SUBGROUPINFO(module_m4, "MOD_M4_", 60, AP_Vehicle, AP_ModuleM4),
+#endif
+
     AP_GROUPEND
 };
 
