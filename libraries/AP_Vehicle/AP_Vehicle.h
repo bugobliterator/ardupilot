@@ -78,6 +78,7 @@
 #include <AP_Module/AP_Module_config.h>
 #if AP_MODULE_ENABLED
 #include <AP_Module/Runtime.h>
+#include <AP_ModuleM4/AP_ModuleM4.h>
 #endif
 #if AP_MODULE_ENABLED && !AP_SCRIPTING_LUA_ENABLED && AP_SCRIPTING_SERIALDEVICE_ENABLED
 #include <AP_Scripting/AP_Scripting_SerialDevice.h>
@@ -519,6 +520,9 @@ protected:
 
 #if AP_MODULE_ENABLED
     AP_Module::Runtime native_modules;
+#if AP_MODULE_M4_ENABLED
+    AP_ModuleM4 module_m4;
+#endif
 #endif
 
 #if AP_MODULE_ENABLED && !AP_SCRIPTING_LUA_ENABLED && AP_SCRIPTING_SERIALDEVICE_ENABLED
