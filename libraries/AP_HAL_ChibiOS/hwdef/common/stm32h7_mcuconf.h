@@ -76,6 +76,24 @@
 #define STM32_NOCACHE_MPU_REGION_1_BASE     0x38000000U
 #define STM32_NOCACHE_MPU_REGION_1_SIZE     MPU_RASR_SIZE_64K
 
+#if defined(AP_MODULE_M4_ENABLED) && AP_MODULE_M4_ENABLED
+// the window shared with the Cortex-M4 (placement chosen in AP_ModuleM4_Placement.h):
+// non-cacheable and shareable, from early init
+#include "../../../AP_ModuleM4/AP_ModuleM4_Placement.h"
+#if AP_MODULE_M4_WINDOW_BASE == 0x30040000U
+#define STM32_NOCACHE_MPU_REGION_2          MPU_REGION_4
+#define STM32_NOCACHE_MPU_REGION_2_BASE     AP_MODULE_M4_WINDOW_BASE
+#define STM32_NOCACHE_MPU_REGION_2_SIZE     MPU_RASR_SIZE(AP_MODULE_M4_WINDOW_MPU_SIZE)
+#define STM32_NOCACHE_MPU_REGION_2_ATTR     (MPU_RASR_ATTR_NON_CACHEABLE | MPU_RASR_ATTR_S)
+#elif AP_MODULE_M4_WINDOW_BASE == 0x38000000U
+// SRAM4 is already non-cacheable through region 1; make it shareable
+#define STM32_NOCACHE_MPU_REGION_1_ATTR     (MPU_RASR_ATTR_NON_CACHEABLE | MPU_RASR_ATTR_S)
+#else
+#error "the M4 window must be SRAM3 or SRAM4"
+#endif
+#define STM32_NOCACHE_MPU_EARLY_ENABLE      TRUE
+#endif
+
 /*
  * PWR system settings.
  * Reading STM32 Reference Manual is required, settings in PWR_CR3 are
