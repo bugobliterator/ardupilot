@@ -26,6 +26,11 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _rx_stalled = false;
     _call_timed = false;
     compute_crc_self_check();
+    // a CRC that disagrees with zlib would fail every ring frame: fault before the first beat,
+    // so the M7 reports it as a start fault rather than this session running on bad CRCs
+    if (!_crc_self_check.passed()) {
+        _platform.inject_fault(FaultKind::HardFault);
+    }
 }
 
 void M4Service::compute_crc_self_check()
