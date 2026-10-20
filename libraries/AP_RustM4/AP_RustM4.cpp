@@ -290,8 +290,14 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
     case MsgType::Stats:
         log_rpc_stats(buf);
         return;
+    case MsgType::BindingCall:
+    case MsgType::SystemCall:
+        return;   // not served yet: a SystemCall Noop notify is dropped unserved
     case MsgType::FaultInject:
     case MsgType::Ready:
+    case MsgType::BindingReply:
+    case MsgType::SystemReply:
+    case MsgType::Control:
         _protocol_errors++;   // M7 -> M4 only
         return;
     }
