@@ -9,6 +9,7 @@ import operator
 import os
 import re
 import signal
+import subprocess
 import time
 
 from pymavlink import mavextra
@@ -7448,6 +7449,41 @@ return update()
         self.context_pop()
         self.reboot_sitl()
 
+    def rust_m4_build(self):
+        '''true when the SITL build was configured with --enable-rust-m4 (it builds bin/rust_m4)'''
+        return os.path.exists(os.path.join(self.rootdir(), 'build', 'sitl', 'bin', 'rust_m4'))
+
+    def RustM4Boot(self):
+        '''Rust on the M4 (SITL two-process): the M4 process starts, beats and restarts on kill'''
+        if not self.rust_m4_build():
+            raise NotAchievedException('needs a --enable-rust-m4 SITL build')
+        self.context_push()
+        self.context_collect('STATUSTEXT')
+        self.set_parameters({'RUST_ENABLE': 1, 'RUST_M4_RST_MAX': 3})
+        self.reboot_sitl()
+        self.wait_text(r'Rust: started on M4 \(0 modules, M4 RAM 224KB\)', regex=True, check_context=True, timeout=30)
+        # the M4 process dies: the supervisor restarts it with a new session
+        m4 = subprocess.run(['pgrep', '-P', str(self.sitl.pid), '-f', 'rust_m4'], capture_output=True, text=True)
+        pids = [int(p) for p in m4.stdout.split()]
+        if len(pids) != 1:
+            raise NotAchievedException('expected one rust_m4 child, found %s' % pids)
+        os.kill(pids[0], signal.SIGKILL)
+        fault = r'Rust: M4 fault \(process exit\), restarting \(1/3\)'
+        self.wait_text(fault, regex=True, check_context=True, timeout=30)
+
+        # the collection holds the first session's start text too: look only after the fault
+        def started_after_fault():
+            texts = [m.text for m in self.context_collection('STATUSTEXT')]
+            after = max(i for (i, t) in enumerate(texts) if re.match(fault, t)) + 1
+            return any(t.startswith('Rust: started on M4 (') for t in texts[after:])
+        tstart = self.get_sim_time()
+        while not started_after_fault():
+            if self.get_sim_time_cached() - tstart > 30:
+                raise NotAchievedException('M4 did not start again after the kill')
+            self.delay_sim_time(0.5, reason='the M4 to start again')
+        self.context_pop()
+        self.reboot_sitl()
+
     def UniversalAutoLandScript(self):
         '''Test UniversalAutoLandScript'''
         applet_script = "UniversalAutoLand.lua"
@@ -10985,6 +11021,7 @@ return update()
             self.AerobaticsScripting_rust,
             self.AerobaticsScripting_rust_mission,
             self.AerobaticsScripting_rust_mission_control,
+            self.RustM4Boot,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
             self.SagetechMXS,
@@ -11424,6 +11461,7 @@ return update()
             "InteractTest": "requires user interaction",
             "ClimbThrottleSaturation": "requires https://github.com/ArduPilot/ardupilot/pull/27106 to pass",
             "SoaringClimbRate": "very bad sink rate",
+            "RustM4Boot": "Requires --enable-rust-m4 SITL build",
         }
         if not self.mavproxy_ftp_module_has_command("crccmp"):
             # added to MAVProxy in 328d7de20 (2026-07-27) and not in any
