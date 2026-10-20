@@ -38,7 +38,8 @@ public:
     // the module thread, after posting: sends the call itself when the M7 is Ready and the ring
     // has room. False if it is still Posted: the service's next step sends it
     bool forward_posted();
-    // the platform CRC's results of this session, computed at init()
+    // the platform CRC's results of this session, computed at init(), which faults (HardFault)
+    // when they are not zlib's
     const CrcSelfCheck &crc_self_check() const { return _crc_self_check; }
 
 private:
