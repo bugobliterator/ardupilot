@@ -2,9 +2,9 @@
 
 /*
   SCR_M4_RST_MAX on networking builds: every M4 failure restarts the whole M4 with backoff, but
-  only failures that can be Lua's spend Lua's restart budget: a network thread's fault, a network
-  stall and every failure of a session whose Lua was not live are the network's: a flaky link never
-  turns Lua off.
+  only failures that can be Lua's spend Lua's restart budget. A network thread's fault, a network
+  stall and every failure of a session whose Lua was not live are the network's, so a flaky link
+  never turns Lua off.
   C++11, no ArduPilot dependencies (host unit tests).
  */
 
@@ -13,7 +13,7 @@
 namespace ScriptingM4 {
 
 enum class NetFailure : uint8_t {
-    Fault,            // a recorded M4 fault or a process exit: Lua's or the network's
+    Fault,            // a recorded M4 fault of the Lua thread or of an unknown origin, or a process exit
     NetworkFault,     // a recorded fault of a network thread, the service or an interrupt (FaultOrigin::Network)
     HeartbeatLost,    // the service thread stopped
     ProtocolErrors,
