@@ -14,6 +14,7 @@ from pathlib import Path
 
 import bindings
 import contracts
+import m4_binding
 
 ROOT = Path(__file__).resolve().parents[1]
 TYPES = {
@@ -33,7 +34,9 @@ def identifier(name):
 
 
 def generate(spec, binding_spec=None):
-    if binding_spec is None:
+    # the M4 policy names bindings of the full catalogue only, not of a test selection
+    full_catalogue = binding_spec is None
+    if full_catalogue:
         binding_spec = bindings.specification()
     if type(spec['version']) is not int or not 0 < spec['version'] <= 0xFFFFFFFF:
         raise ValueError('invalid ABI version')
@@ -107,6 +110,8 @@ def generate(spec, binding_spec=None):
                'sdk/abi.json': json.dumps(contract, indent=2) + '\n'}
     outputs.update(bindings.emit(binding_spec))
     outputs.update(contracts.emit(binding_spec, notice))
+    if full_catalogue:
+        outputs.update(m4_binding.emit(binding_spec, contracts.describe(binding_spec)))
     binding_names = contracts.binding_names(binding_spec)
     for name, content in outputs.items():
         if name.endswith('.rs'):

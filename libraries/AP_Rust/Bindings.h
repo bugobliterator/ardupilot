@@ -17,5 +17,16 @@ int32_t binding_dispatch(void *context, BindingId id, const uint8_t *input, uint
                          uint8_t *output, uint32_t output_size);
 int32_t binding_math_dispatch(BindingId id, const uint8_t *input, uint32_t input_size,
                               uint8_t *output, uint32_t output_size);
+// M4 builds: the bindings the Cortex-M4 answers itself (BindingLocal_generated.cpp)
+bool binding_is_local(uint32_t id);
+bool binding_local_wire(uint32_t id, uint32_t &input_size, uint32_t &output_size);
+int32_t binding_local_dispatch(uint32_t id, const uint8_t *input, uint32_t input_size, uint8_t *output,
+                               uint32_t output_size);
+struct LocalImport {
+    uint64_t hash;
+    uint32_t id;
+};
+extern const LocalImport M4_LOCAL_IMPORTS[];
+extern const uint32_t M4_LOCAL_IMPORT_COUNT;
 }
 #endif
