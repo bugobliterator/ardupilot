@@ -223,6 +223,11 @@ every pause-at-a-breakpoint into a reboot).
   sources addressed by ArduPilot's logical `GPIO(n)` numbers. They feed the
   physical pads selected by the hwdef and therefore traverse the normal STM32
   SYSCFG/EXTI path used by AP_RPM and AP_WheelEncoder.
+- `platforms/stm32h757_m4.repl` — optional Cortex-M4 overlay (`cpu2`, own NVIC
+  and DWT) loaded by `run.py --m4-elf` and the dual-core tests.
+- `peripherals/stm32/AP_STM32H7_HSEM.cs` — RM0399 hardware semaphores with
+  per-core interrupts.
+- `tests/dual_core/` — bare-metal M7/M4 stub images for the dual-core tests.
 - `peripherals/stm32/AP_STM32H7_Ethernet.cs` — preserves the receive-buffer
   address that STM32H7 hardware leaves in RDES0 when the DWC DMA writes receive
   status, and maps STM32's no-source-replacement setting onto the model's MAC0
@@ -444,6 +449,52 @@ and launcher control endpoint remain on TCP because those integrations do not
 currently provide compatible Unix-socket transports. The graphical launcher
 automatically chooses another free monitor port when its preferred port is
 occupied or still in TCP `TIME_WAIT` after a previous run.
+
+### Dual-core STM32H757
+
+H757 boards (CubeOrangePlus) run single-core by default. `--m4-elf` adds the
+Cortex-M4 (`platforms/stm32h757_m4.repl`), writes the M4 image into flash at
+its ELF load address and holds the M4 until the M7 sets `RCC_GCR.BOOT_C2`
+(the `BCM4=0` option-byte behaviour). The M4 then starts from that address.
+Both cores run serially with a 100 us quantum.
+`--m4-elf` needs a board whose hwdef reserves the M4 area with
+`FLASH_RESERVE_END_KB` (CubeOrangePlus-M4Lua); run.py also sets the flash
+controller's `BOOT4_CUR` from the ELF.
+
+    Tools/renode/run.py CubeOrangePlus-M4Lua --m4-elf build/CubeOrangePlus-M4Lua/bin/scripting_m4.elf
+
+The M4 has its own NVIC and DWT; it sees the rest of the bus as the M7 does.
+The option bytes the M7 checks before releasing the M4 are modelled read-only:
+`OPTSR_CUR` reports `BCM4=0` and `BOOT4_CUR` the M4 boot address.
+Not modelled: TCM privacy, the 0x10000000 D2 SRAM aliases, peripheral
+interrupts to the M4, and option-byte programming. `AP_STM32H7_HSEM` provides the
+semaphores and their HSEM1/HSEM2 interrupts. `tests/test_dual_core.py` covers
+hold and release, the HSEM, and a CubeFramework boot handshake
+(`CUBEFRAMEWORK_DIR=/path/to/CubeFramework`). `tests/test_m4_containment.py`
+boots the CubeOrangePlus-M4Lua Copter firmware with its M4 scripting image,
+injects faults on the M4 and checks that the M7 restarts it up to the
+`SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
+
+`tests/test_m4_fault_reports.py` covers the fault reports the containment tests do not reach: a
+restarted M4 that faults right after it publishes its header, alone and with a STOP taken before its
+heartbeat times out, and a fault inside an M4 interrupt handler, which parks the M4. The three take
+about 5 minutes together; a failing one may wait out its 15-minute script timeout.
+
+`tests/test_m4_flight.py` flies the CubeOrangePlus-M4Lua Copter against the physics sidecar, as
+the CubeOrangePlus QuadPlane flight does. Its three flights are opt-in, as together they take about
+half an hour: set `M4_RENODE_FLIGHTS=1` to run them.
+
+- `test_m4_flight_harness`: a forced arm from the GCS, a short AUTO mission (take off, one waypoint,
+  land at home) and a script running on the M4 throughout (about 8 minutes).
+- `test_m4_mission_flight`: `m4_mission_flight.lua` arms the vehicle, holds a LOITER_UNLIM and moves
+  the mission on; its binding calls are checked against the SRPC log rows (about 10 minutes).
+- `test_m4_faults_mid_auto`: M4 faults while the vehicle holds in AUTO; the scripts reload, then
+  scripting turns off at the fault limit and the mission lands (about 12 to 15 minutes).
+
+They need the variant build and `build/sitl/tool/renode-physics` (`./waf --targets tool/renode-physics`
+on a SITL configuration, or `M4LUA_PHYSICS`). Renode flies about 4 to 5 times slower than real time.
+
+    M4_RENODE_FLIGHTS=1 python -m pytest Tools/renode/tests/test_m4_flight.py
 
 ### Graphical launcher
 
