@@ -1,7 +1,7 @@
 -- M4 networking tests: a small HTTP server. GET / gives a fixed page with this session's
 -- request count, GET /file sends this script with sendfile. With SCR_DEBUG_OPTS 2 each run's
 -- "Lua: Time: ... Mem: ..." text gives the Lua heap in use (no collectgarbage() in scripts)
-local PARAM_TABLE_KEY = 94
+local PARAM_TABLE_KEY = 97
 assert(param:add_table(PARAM_TABLE_KEY, "MHT_", 1), "could not add MHT_ table")
 assert(param:add_param(PARAM_TABLE_KEY, 1, "PORT", 8081), "could not add MHT_PORT")
 local port = math.floor(Parameter("MHT_PORT"):get())
