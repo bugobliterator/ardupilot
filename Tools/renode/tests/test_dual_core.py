@@ -24,8 +24,7 @@ TEST_START = 'dual-core test start'
 # not include, so they fail to compile; compiling every include of the board
 # script would also exceed the 60 s fixture timeout.
 PLATFORM_PERIPHERALS = ['AP_STM32_IWDG', 'AP_STM32H7_FlashController', 'AP_STM32_ADC_v3', 'AP_STM32G4_DMA',
-                        'AP_STM32H7_PWR',
-                        'AP_STM32H7_RCC', 'AP_STM32H7_HSEM', 'AP_NVIC_RettobaseFix', 'AP_DWT',
+                        'AP_STM32H7_PWR', 'AP_STM32H7_RCC', 'AP_STM32H7_HSEM', 'AP_NVIC_RettobaseFix', 'AP_DWT',
                         'AP_STM32H7_SDMMC', 'AP_STM32_OTG']
 
 
