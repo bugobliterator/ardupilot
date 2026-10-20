@@ -29,14 +29,19 @@ M4Service service;
 pthread_mutex_t service_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::atomic<uint32_t> lua_wakes;
 const auto epoch = std::chrono::steady_clock::now();
+// a test moves the service's clocks on: round trips take fake_cycles (1 cycle per us), and
+// millis_ahead skips to the next Stats window
+std::atomic<uint32_t> fake_cycles;
+std::atomic<uint32_t> millis_ahead;
 
 uint32_t millis_now()
 {
-    return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - epoch).count());
+    return millis_ahead.load() +
+           uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - epoch).count());
 }
 uint32_t cycles_now()
 {
-    return 0;
+    return fake_cycles.load();
 }
 void inject_fault(FaultKind)
 {
@@ -292,6 +297,80 @@ TEST(ScriptingM4Service, LuaThreadAndServiceShareTheRing)
     EXPECT_GT(calls, 1000U);
     EXPECT_GT(stats_rows, 0U);
     EXPECT_EQ(replies.load(), calls);
+}
+
+// one window with more binding methods than STATS_REPORTED: the busiest have their own rows, the
+// rest fold into m4:other and the system methods into m4:sysother, and every call is counted once
+TEST(ScriptingM4Service, BusyWindowFoldsTheQuietestMethodsIntoOther)
+{
+    start();
+    send_ready();
+    service.step();
+    const uint8_t BINDING_METHODS = 14;
+    const uint32_t CALLS_EACH = 2;
+    uint32_t calls = 0;
+    auto round_trip = [&](uint16_t method, uint32_t round_trip_us) {
+        post_call(method);
+        ASSERT_TRUE(service.forward_posted());
+        CallHeader call;
+        ASSERT_TRUE(m7_receive_call(call));
+        fake_cycles += round_trip_us;
+        m7_reply(call.header.seq);
+        service.step();
+        ASSERT_EQ(call_link.state.load(), LuaLink::Done);
+        call_link.state.store(LuaLink::Idle);
+        calls++;
+    };
+    // binding method i takes 100 * (i + 1) us per call: totals all differ, the ranking is fixed
+    for (uint8_t i = 0; i < BINDING_METHODS; i++) {
+        for (uint32_t n = 0; n < CALLS_EACH; n++) {
+            round_trip(BINDING + i, 100 * (i + 1));
+        }
+    }
+    // two system methods, quicker than any binding
+    round_trip(uint16_t(SystemMethod::ListScript), 10);
+    round_trip(uint16_t(SystemMethod::ReadScript), 20);
+
+    millis_ahead += 1000;
+    service.step();
+    StatsMsg rows[STATS_ROWS_PER_WINDOW + 1];
+    uint8_t row_count = 0;
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    while (m7.receive(frame, sizeof(frame), &len) == 0) {
+        MsgHeader header;
+        ASSERT_TRUE(parse_header(frame, len, header));
+        ASSERT_EQ(MsgType(header.type), MsgType::Stats);
+        ASSERT_LT(row_count, STATS_ROWS_PER_WINDOW + 1);
+        memcpy(&rows[row_count++], frame, sizeof(StatsMsg));
+    }
+    ASSERT_EQ(row_count, STATS_ROWS_PER_WINDOW);
+    // the STATS_REPORTED largest totals, largest first
+    for (uint8_t r = 0; r < STATS_REPORTED; r++) {
+        const uint8_t i = BINDING_METHODS - 1 - r;
+        EXPECT_EQ(rows[r].method, BINDING + i);
+        EXPECT_EQ(rows[r].count, CALLS_EACH);
+        EXPECT_EQ(rows[r].total_us, CALLS_EACH * 100 * (i + 1));
+    }
+    // the 6 quietest binding methods in m4:other
+    const StatsMsg &other = rows[STATS_REPORTED];
+    EXPECT_EQ(other.method, uint16_t(SystemMethod::Other));
+    EXPECT_STREQ(other.name, "m4:other");
+    const uint8_t folded = BINDING_METHODS - STATS_REPORTED;
+    EXPECT_EQ(other.count, folded * CALLS_EACH);
+    EXPECT_EQ(other.total_us, CALLS_EACH * 100 * (folded * (folded + 1) / 2));
+    // the system calls in m4:sysother, never in m4:other
+    const StatsMsg &system_other = rows[STATS_REPORTED + 1];
+    EXPECT_EQ(system_other.method, uint16_t(SystemMethod::SystemOther));
+    EXPECT_STREQ(system_other.name, "m4:sysother");
+    EXPECT_EQ(system_other.count, 2U);
+    EXPECT_EQ(system_other.total_us, 30U);
+    uint32_t counted = 0;
+    for (uint8_t r = 0; r < row_count; r++) {
+        counted += rows[r].count;
+    }
+    EXPECT_EQ(counted, calls);
+    fake_cycles = 0;
 }
 
 #endif  // AP_SCRIPTING_M4_ENABLED
