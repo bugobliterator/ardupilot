@@ -4,3 +4,10 @@
 
 def build(bld):
     bld.ap_find_tests(use='ap')
+    if not bld.env.HAS_GTEST:
+        return
+    try:
+        tg = bld.get_tgen_by_name('tests/test_module_m4_local_math')
+    except Exception:
+        return   # not a Rust-enabled SITL configuration
+    tg.source = tg.to_list(tg.source) + [bld.bldnode.find_or_declare('libraries/AP_Module/BindingLocal_generated.cpp')]
