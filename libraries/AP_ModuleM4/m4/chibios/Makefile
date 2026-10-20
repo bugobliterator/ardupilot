@@ -49,6 +49,19 @@ CPPSRC = $(ALLCPPSRC) \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/PeerHeader.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/pal/HSEM.cpp
+# the local set the M4 answers itself: AP_Math through wrappers (m4/local), the generated math
+# adapters and the generated local dispatch
+M4_LOCAL_SOURCES = m4_math_ap_math.cpp m4_math_vector3.cpp m4_math_matrix3.cpp m4_math_quaternion.cpp
+CPPSRC += $(addprefix $(M4DIR)/local/,$(M4_LOCAL_SOURCES)) \
+          $(M4_GENERATED_ROOT)/AP_Module/BindingMath_generated.cpp \
+          $(M4_GENERATED_ROOT)/AP_Module/BindingLocal_generated.cpp
+# linker GC roots: the local set stays in the image before the SVC layer calls it
+M4_LOCAL_ROOTS = _ZN7AP_Rust16binding_is_localEm _ZN7AP_Rust18binding_local_wireEmRmS0_ \
+                 _ZN7AP_Rust22binding_local_dispatchEmPKhmPhm _ZN7AP_Rust16M4_LOCAL_IMPORTSE \
+                 _ZN7AP_Rust21M4_LOCAL_IMPORT_COUNTE
+comma := ,
+space := $(subst ,, )
+USE_LDOPT := $(USE_LDOPT),$(subst $(space),$(comma),$(strip $(patsubst %,--undefined=%,$(M4_LOCAL_ROOTS))))
 ASMSRC = $(ALLASMSRC)
 ASMXSRC = $(ALLXASMSRC)
 # rules.mk sorts INCDIR, so $(AP_ROOT)/libraries would come before the shim and shadow it: the
@@ -77,6 +90,12 @@ PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link
 RULESPATH = $(CHIBIOS)/os/common/startup/ARMCMx/compilers/GCC/mk
 include $(RULESPATH)/arm-none-eabi.mk
 include $(RULESPATH)/rules.mk
+
+# objects that compile AP_Math take the M7's flags for it (Tools/ardupilotwaf/boards.py,
+# chibios.py): float literals, and sqrtf without an errno call; the M7's warning set for the
+# AP_Math sources. CPPFLAGS reads CPPOPT when a recipe runs (rules.mk)
+M4_MATH_OBJECTS = $(addprefix $(OBJDIR)/,$(M4_LOCAL_SOURCES:.cpp=.o) BindingMath_generated.o BindingLocal_generated.o)
+$(M4_MATH_OBJECTS): CPPOPT += -fsingle-precision-constant -fno-math-errno -Wno-unused-parameter -Wno-unknown-pragmas
 
 # fails (and removes the image) unless each symbol exists and lies in ram0, below the module
 # area, and unless the kernel's core allocator is absent (it would hand out module area RAM).
@@ -121,7 +140,10 @@ $(BUILDDIR)/no_board_headers.ok: $(BUILDDIR)/$(PROJECT).elf
 # allocate from memcore, a heap, a pool or the factory: those hand out module area RAM.
 PRIVILEGED_OBJECTS = $(OBJS)
 CHIBIOS_OBJECTS = $(addprefix $(OBJDIR)/,$(notdir $(ALLCSRC:.c=.o) $(ALLCPPSRC:.cpp=.o) $(ALLASMSRC:.s=.o) $(ALLXASMSRC:.S=.o)))
-PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen
+# the float libm the local set calls (fmod: AP_Math.cpp's wrap_2PI(double), which no local id
+# reaches and the linker drops; the image's f64 audit finds it if it is ever linked)
+PRIVILEGED_LIBM = acosf asinf atan2f ceilf cosf expf floorf fmodf logf powf roundf sinf tanf fmod
+PRIVILEGED_LIBC = memcpy memmove memset memcmp strcmp strncmp strlen $(PRIVILEGED_LIBM)
 all: $(BUILDDIR)/privileged_imports.ok
 $(BUILDDIR)/privileged_imports.ok: $(BUILDDIR)/$(PROJECT).elf
 	@{ $(TRGT)nm -A -g --defined-only $(PRIVILEGED_OBJECTS) | sed 's/^/D /'; \
