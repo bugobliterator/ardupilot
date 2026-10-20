@@ -535,6 +535,70 @@ def make_firmware_binary(source, destination, app_base=None, flash_size=None,
     return destination
 
 
+M4_PLATFORM = 'stm32h757_m4.repl'
+
+
+def elf_load_segments(path):
+    '''Return the ELF32 file bytes and (p_paddr, p_offset, p_filesz) of each loadable segment with data.'''
+    data = Path(path).read_bytes()
+    if data[:4] != b'\x7fELF' or data[4] != 1 or data[5] != 1:
+        raise ValueError('%s is not a little-endian ELF32 file' % path)
+    phoff, = struct.unpack_from('<I', data, 28)
+    phentsize, phnum = struct.unpack_from('<HH', data, 42)
+    segments = []
+    for index in range(phnum):
+        p_type, p_offset, _vaddr, p_paddr, p_filesz = struct.unpack_from(
+            '<IIIII', data, phoff + index * phentsize)
+        if p_type == 1 and p_filesz:
+            segments.append((p_paddr, p_offset, p_filesz))
+    if not segments:
+        raise ValueError('%s has no loadable data' % path)
+    return data, segments
+
+
+def elf_load_base(path):
+    '''Lowest physical address of a loadable ELF32 segment that carries file data.'''
+    return min(paddr for paddr, _offset, _size in elf_load_segments(path)[1])
+
+
+def make_elf_binary(source, destination):
+    '''Write the loadable segments of an ELF32 file, gaps filled with 0xff, starting at its load base.'''
+    data, segments = elf_load_segments(source)
+    base = min(paddr for paddr, _offset, _size in segments)
+    image = bytearray(b'\xff' * (max(paddr + size for paddr, _offset, size in segments) - base))
+    for paddr, offset, size in segments:
+        image[paddr - base:paddr - base + size] = data[offset:offset + size]
+    Path(destination).write_bytes(image)
+    return destination
+
+
+def m4_image_placement_error(m4_base, m4_size, app_flash_end, flash_size):
+    '''Why an M4 image cannot load at m4_base, or None. It must sit after the M7
+    application's flash region (which FLASH_RESERVE_END_KB ends, keeping the
+    crash log clear) and inside flash.'''
+    flash_end = 0x08000000 + flash_size
+    if m4_base < app_flash_end:
+        return ('M4 image at 0x%08X is inside the application flash region (ends 0x%08X); '
+                'reserve it with FLASH_RESERVE_END_KB' % (m4_base, app_flash_end))
+    if m4_base + m4_size > flash_end:
+        return 'M4 image 0x%08X..0x%08X runs past the end of flash (0x%08X)' % (
+            m4_base, m4_base + m4_size, flash_end)
+    return None
+
+
+def m4_monitor_commands(root, boot_address):
+    '''Load the H757 Cortex-M4 overlay; the M4 stays halted until RCC_GCR.BOOT_C2.'''
+    return [
+        'machine LoadPlatformDescription @%s' % (root / 'Tools' / 'renode' / 'platforms' / M4_PLATFORM),
+        'sysbus.rcc Cm4BootAddress 0x%08X' % boot_address,
+        'sysbus.flashController Cm4BootAddress 0x%08X' % boot_address,
+        'cpu2 PerformanceInMips 150',
+        'machine SetSerialExecution true',
+        # Cross-core doorbells cost up to a quantum; 10 ms would dominate every RPC.
+        'emulation SetGlobalQuantum "0.0001"',
+    ]
+
+
 def make_bootloader_binary(source, destination):
     '''Convert an ELF, raw BIN, or Intel HEX bootloader to a flash overlay.'''
     try:
@@ -726,6 +790,8 @@ def main():
              '(default: build/<board>/bin/<vehicle>)')
     parser.add_argument('--bootloader',
                         help='bootloader ELF, BIN, or HEX to execute before the firmware')
+    parser.add_argument('--m4-elf', metavar='ELF',
+                        help='STM32H757 only: Cortex-M4 image, held until the M7 sets RCC_GCR.BOOT_C2')
     parser.add_argument('--hold-bootloader', action='store_true',
                         help='keep an H7 bootloader running until an upload or '
                              'reboot command')
@@ -1056,6 +1122,22 @@ def main():
                      (bootloader, bootloader_address, bootloader_end - 1,
                       generated['app_base']))
         overlay_flash_image(flash_img, bootloader_bin, bootloader_offset)
+    m4_boot_address = None
+    if args.m4_elf:
+        if generated['family'] != 'h757':
+            parser.error('--m4-elf requires an STM32H757 board')
+        m4_elf = Path(args.m4_elf).expanduser()
+        try:
+            m4_boot_address = elf_load_base(m4_elf)
+            m4_bin = make_elf_binary(m4_elf, outdir / 'current-m4.bin')
+        except (OSError, ValueError) as error:
+            sys.exit('bad --m4-elf: %s' % error)
+        error = m4_image_placement_error(m4_boot_address, m4_bin.stat().st_size,
+                                         generated['app_flash_end'], flash_size)
+        if error:
+            sys.exit(error)
+        m4_offset = m4_boot_address - 0x08000000
+        overlay_flash_image(flash_img, m4_bin, m4_offset)
     initial_loads = [
         'sysbus LoadBinary @%s 0x08000000' % flash_img,
         'sysbus LoadBinary @%s 0x%08X' % (mcu_id_bin, generated['uid_address']),
@@ -1141,6 +1223,8 @@ def main():
         commands.append('$mcu_svd=@%s' % data_files['svd'].resolve())
     commands += pre_vars + [
                 'include @%s' % generated['resc']] + initial_loads
+    if m4_boot_address is not None:
+        commands += m4_monitor_commands(root, m4_boot_address)
     if args.hold_bootloader:
         # Match an application-requested reboot into the bootloader.
         commands.append('sysbus WriteDoubleWord 0x58004050 0xB0070001')

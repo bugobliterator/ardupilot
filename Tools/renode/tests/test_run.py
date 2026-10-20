@@ -183,3 +183,57 @@ def test_convert_hex_firmware_ignores_bootloader(tmp_path):
         source, destination, APP_BASE, FLASH_SIZE)
 
     assert destination.read_bytes() == b'\x01\x02\x03'
+
+
+def test_elf_load_base_uses_lowest_loaded_segment(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dual_core_images
+    try:
+        elf = dual_core_images.build('probe_m4', tmp_path)
+    except FileNotFoundError as error:
+        pytest.skip(str(error))
+    assert renode_run.elf_load_base(elf) == 0x081E0000
+
+
+def test_make_elf_binary_skips_empty_ram_sections(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import dual_core_images
+    try:
+        elf = dual_core_images.build('probe_m4', tmp_path)
+    except FileNotFoundError as error:
+        pytest.skip(str(error))
+    image = renode_run.make_elf_binary(elf, tmp_path / 'm4.bin').read_bytes()
+    assert 0 < len(image) < 0x1000
+    assert struct.unpack_from('<I', image, 0)[0] >> 24 == 0x38
+
+
+def test_elf_load_base_rejects_non_elf(tmp_path):
+    source = tmp_path / 'image.bin'
+    source.write_bytes(bytes(64))
+    with pytest.raises(ValueError):
+        renode_run.elf_load_base(source)
+
+
+def test_m4_monitor_commands():
+    commands = renode_run.m4_monitor_commands(Path('/repo'), 0x081E0000)
+    assert commands[0] == 'machine LoadPlatformDescription @/repo/Tools/renode/platforms/stm32h757_m4.repl'
+    assert 'sysbus.rcc Cm4BootAddress 0x081E0000' in commands
+    assert 'sysbus.flashController Cm4BootAddress 0x081E0000' in commands
+    assert 'machine SetSerialExecution true' in commands
+    assert 'emulation SetGlobalQuantum "0.0001"' in commands
+
+
+def test_m4_image_placement_error():
+    end = 0x081C0000
+    assert renode_run.m4_image_placement_error(0x081C0000, 0x40000, end, 0x200000) is None
+    assert 'application flash region' in renode_run.m4_image_placement_error(0x081A0000, 0x1000, end, 0x200000)
+    assert 'past the end of flash' in renode_run.m4_image_placement_error(0x081F0000, 0x20000, end, 0x200000)
+
+
+def test_generate_reports_app_flash_end(tmp_path):
+    import gen_board
+    root = MODULE_PATH.parents[2]
+    generated = gen_board.generate(root, 'CubeOrangePlus-SimOnHardWare-M4Module', tmp_path / 'generated', None, 5762, tmp_path)
+    assert generated['app_flash_end'] == 0x081C0000
+    generated = gen_board.generate(root, 'CubeOrangePlus', tmp_path / 'stock', None, 5762, tmp_path)
+    assert generated['app_flash_end'] == 0x08200000

@@ -1,0 +1,50 @@
+// Cortex-M4 (CPU2) of the STM32H747/H757. Load after stm32h743_base.repl:
+//   machine LoadPlatformDescription @Tools/renode/platforms/stm32h757_m4.repl
+// Needs AP_STM32H7_RCC, AP_STM32H7_HSEM, AP_NVIC_RettobaseFix and AP_DWT
+// (included by scripts/ardupilot_h743.resc).
+//  - cpu2 shares the M7's bus except its own PPB (nvic2, dwt2). Not modelled:
+//    the M7-private ITCM/DTCM stay visible to cpu2, the 0x10000000 D2 SRAM
+//    aliases are absent, and peripheral interrupts reach only the M7 NVIC
+//    (the M4 owns no peripherals in v1).
+//  - SysTick and DWT run at 200 MHz: CubeOrangePlus HCLK (sys_ck 400 MHz, D1HPRE /2).
+//  - cpu2 is held (BCM4=0 behaviour) until RCC_GCR.BOOT_C2; AP_STM32H7_RCC
+//    then starts it from Cm4BootAddress (BOOT_CM4_ADD0, default 0x08100000)
+//    and halts it again on every system reset.
+//  - "cortex-m4", not "cortex-m4f": tlib maps cortex-m4f to the Cortex-M7
+//    CPUID. cortex-m4 reports 0x410FC240 and has the VFPv4 FPU.
+cpu2: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4"
+    cpuId: 1
+    nvic: nvic2
+    numberOfMPURegions: 8
+    init:
+        IsHalted true
+
+nvic2: IRQControllers.NVIC @ sysbus new Bus.BusPointRegistration {
+        address: 0xE000E000;
+        cpu: cpu2
+    }
+    systickFrequency: 200000000
+    priorityMask: 0xF0
+    -> cpu2@0
+
+// ICSR.RETTOBASE for ChibiOS on the M4 (see AP_NVIC_RettobaseFix.cs)
+nvicFix2: Miscellaneous.AP_NVIC_RettobaseFix @ sysbus 0x60000004
+    nvic: nvic2
+
+// CYCCNT for the M4 (RPC round-trip timing, spec §11)
+dwt2: Miscellaneous.AP_DWT @ sysbus new Bus.BusPointRegistration {
+        address: 0xE0001000;
+        cpu: cpu2
+    }
+    cpu: cpu2
+    frequency: 200000000
+
+rcc:
+    Cpu2: cpu2
+    Nvic2: nvic2
+    Dwt2: dwt2
+
+hsem:
+    Cpu2: cpu2
+    C2IRQ -> nvic2@126

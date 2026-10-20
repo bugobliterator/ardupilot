@@ -1,0 +1,157 @@
+--- a/src/Emulator/Cores/tlib/arch/arm/cpu.h
++++ b/src/Emulator/Cores/tlib/arch/arm/cpu.h
+@@ -372,6 +372,9 @@
+         uint32_t has_trustzone;
+         uint32_t ltpsize;
+         uint32_t vpr;
++        uint32_t mpu_privileged_default_map_enabled; /* MPU_CTRL.PRIVDEFENA */
++        uint32_t bus_fault_address;                  /* BFAR */
++        uint32_t precise_bus_fault_pending;          /* next EXCP_DATA_ABORT is a precise BusFault */
+     } v7m;
+ 
+     /* PMSAv8 MPUs */
+--- a/src/Emulator/Cores/tlib/arch/arm/helper.c
++++ b/src/Emulator/Cores/tlib/arch/arm/helper.c
+@@ -1273,6 +1273,13 @@
+             tlib_nvic_set_pending_irq(env->secure ? BANKED_SECURE_EXCP(ARMV7M_EXCP_MEM) : ARMV7M_EXCP_MEM);
+             return;
+         case EXCP_DATA_ABORT:
++            if(env->v7m.precise_bus_fault_pending) {
++                env->v7m.precise_bus_fault_pending = 0;
++                /* CFSR.BFSR: BFARVALID (bit 15) | PRECISERR (bit 9) */
++                env->v7m.fault_status[env->secure] |= (1u << 15) | (1u << 9);
++                tlib_nvic_set_pending_irq(ARMV7M_EXCP_BUS);
++                return;
++            }
+             /* ACK faulting address and set Data acces violation */
+             env->v7m.fault_status[env->secure] |= MEM_FAULT_MMARVALID | MEM_FAULT_DACCVIOL;
+             tlib_nvic_set_pending_irq(env->secure ? BANKED_SECURE_EXCP(ARMV7M_EXCP_MEM) : ARMV7M_EXCP_MEM);
+@@ -2105,7 +2112,11 @@
+             } else {
+                 background_result = pmsav7_check_default_mapping(address, prot, access_type);
+             }
+-        } else if(!is_user) {
++        } else if(!is_user
++#ifdef TARGET_PROTO_ARM_M
++                  && env->v7m.mpu_privileged_default_map_enabled
++#endif
++        ) {
+             background_result = cortexm_check_default_mapping(address, prot, access_type);
+         } else {
+             background_result = TRANSLATE_FAIL;
+@@ -2728,6 +2739,23 @@
+     int idau_sau_allowed_permissions = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+ 
+     int ret;
++#ifdef TARGET_PROTO_ARM_M
++    /* PPB: the MPU never applies (ARMv7-M B3.5.1); unprivileged data accesses
++     * BusFault (B3.2.2). Unprivileged STIR (CCR.USERSETMPEND) and ITM TPR are not modelled. */
++    if(!env->v7m.has_trustzone && address >= 0xE0000000u && address <= 0xE00FFFFFu &&
++       access_type != ACCESS_INST_FETCH) {
++        if(!is_user || no_page_fault) {
++            *phys_ptr = address;
++            *prot = PAGE_READ | PAGE_WRITE;
++            *page_size = TARGET_PAGE_SIZE;
++            return TRANSLATE_SUCCESS;
++        }
++        env->v7m.bus_fault_address = address;
++        env->v7m.precise_bus_fault_pending = 1;
++        env->exception_index = EXCP_DATA_ABORT;
++        return TRANSLATE_FAIL;
++    }
++#endif
+ #ifdef TARGET_PROTO_ARM_M
+     /* TrustZone: Security attribution happens here */
+     if(env->v7m.has_trustzone) {
+--- a/src/Emulator/Cores/tlib/arch/arm/arch_exports.c
++++ b/src/Emulator/Cores/tlib/arch/arm/arch_exports.c
+@@ -312,7 +312,24 @@
+ }
+ 
+ EXC_VOID_1(tlib_set_secure_fault_status, uint32_t, value)
++
++void tlib_set_mpu_privileged_default_map(int32_t enabled)
++{
++    if(!!enabled != !!cpu->v7m.mpu_privileged_default_map_enabled) {
++        cpu->v7m.mpu_privileged_default_map_enabled = !!enabled;
++        tlb_flush(cpu, 1, false);
++    }
++}
+ 
++EXC_VOID_1(tlib_set_mpu_privileged_default_map, int32_t, enabled)
++
++uint32_t tlib_get_bus_fault_address()
++{
++    return cpu->v7m.bus_fault_address;
++}
++
++EXC_INT_0(uint32_t, tlib_get_bus_fault_address)
++
+ uint32_t tlib_is_mpu_enabled()
+ {
+     return cpu->cp15.c1_sys & 0x1;
+--- a/src/Emulator/Cores/tlib/arch/arm/arch_exports.h
++++ b/src/Emulator/Cores/tlib/arch/arm/arch_exports.h
+@@ -38,6 +38,8 @@
+ uint32_t tlib_get_memory_fault_address(bool secure);
+ uint32_t tlib_get_secure_fault_status();
+ void tlib_set_secure_fault_status(uint32_t value);
++void tlib_set_mpu_privileged_default_map(int32_t enabled);
++uint32_t tlib_get_bus_fault_address(void);
+ uint32_t tlib_get_secure_fault_address(void);
+ void tlib_enable_mpu(int32_t enabled);
+ void tlib_set_mpu_region_base_address(uint32_t value);
+--- a/src/Emulator/Cores/Arm-M/CortexM.cs
++++ b/src/Emulator/Cores/Arm-M/CortexM.cs
+@@ -418,8 +418,18 @@
+             set
+             {
+                 tlibEnableMpu(value ? 1 : 0);
++            }
++        }
++
++        public bool MPUPrivilegedDefaultMapEnabled
++        {
++            set
++            {
++                tlibSetMpuPrivilegedDefaultMap(value ? 1 : 0);
+             }
+         }
++
++        public uint BusFaultAddress => tlibGetBusFaultAddress();
+ 
+         public UInt32 MPURegionBaseAddress
+         {
+@@ -1141,7 +1151,13 @@
+ 
+         [Import]
+         private readonly Func<int> tlibIsMpuEnabled;
++
++        [Import]
++        private readonly Action<int> tlibSetMpuPrivilegedDefaultMap;
+ 
++        [Import]
++        private readonly Func<uint> tlibGetBusFaultAddress;
++
+         [Import(Name = "tlib_set_register_value_32_non_secure")]
+         private readonly Action<int, uint> SetRegisterValue32NonSecure;
+ 
+--- a/src/Emulator/Cores/Arm-M/NVIC.cs
++++ b/src/Emulator/Cores/Arm-M/NVIC.cs
+@@ -521,6 +521,8 @@
+                 return 0b0111;
+             case Registers.MemoryFaultAddress:
+                 return GetTrustZoneBankedRegisterValue(isSecure, () => cpu.MemoryFaultAddress, () => cpu.MemoryFaultAddressNonSecure);
++            case Registers.BusFaultAddress:
++                return cpu.BusFaultAddress;
+             default:
+                 lock(RegisterCollection)
+                 {
+@@ -1173,6 +1175,7 @@
+                 {
+                     this.cpu.MPUEnabled = (value & 0x1) != 0x0;
+                 }
++                this.cpu.MPUPrivilegedDefaultMapEnabled = (value & 0x4) != 0x0;
+                 mpuControlRegister = value;
+                 break;
+             case RegistersV7.RegionNumber: // MPU_RNR
