@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <CubePilotFW/Channel.h>
+#include <AP_RustM4_Crc32.h>
 #include <AP_RustM4_Protocol.h>
 #include <AP_RustM4_StatsRows.h>
 #include "module_link.h"
@@ -37,6 +38,8 @@ public:
     // the module thread, after posting: sends the call itself when the M7 is Ready and the ring
     // has room. False if it is still Posted: the service's next step sends it
     bool forward_posted();
+    // the platform CRC's results of this session, computed at init()
+    const CrcSelfCheck &crc_self_check() const { return _crc_self_check; }
 
 private:
     // one Stats frame; name is logged by the M7, never trusted
@@ -49,6 +52,7 @@ private:
     void forward_call();
     void complete(int32_t result);
     void corrupt_tx_ring();
+    void compute_crc_self_check();
 
     CubePilotFW::Channel *_channel;
     uint8_t *_window;
@@ -61,6 +65,7 @@ private:
     bool _ready;
     bool _call_timed;           // _call_posted_ms belongs to the current call
     bool _rx_stalled;
+    CrcSelfCheck _crc_self_check;
     uint8_t _rx[MAX_FRAME];
 };
 
