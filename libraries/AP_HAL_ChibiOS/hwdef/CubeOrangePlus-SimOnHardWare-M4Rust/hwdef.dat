@@ -1,6 +1,6 @@
 # CubeOrangePlus Simulation-on-Hardware with native Rust modules on the Cortex-M4 (experimental).
 # Addresses: libraries/AP_RustM4/AP_RustM4_Placement.h
-# Gate form: in-process Rust on the M7 until the M4 runtime replaces it.
+# M4 form: the M7 serves modules running on the Cortex-M4
 
 include ../CubeOrangePlus-SimOnHardWare/hwdef.dat
 
@@ -12,12 +12,14 @@ FLASH_RESERVE_END_KB 256
 env USE_ALT_RAM_MAP 1
 
 # build the M4 image and the CubeFramework transport (Tools/ardupilotwaf/cubeframework.py,
-# which also defines AP_CUBEFRAMEWORK_ENABLED); the M7 still runs Rust in-process until
-# AP_RUST_M4_ENABLED is set
+# which also defines AP_CUBEFRAMEWORK_ENABLED)
 env RUST_M4 1
 
 define AP_SCRIPTING_LUA_ENABLED 0
 define AP_SCRIPTING_RUST_ENABLED 1
+define AP_RUST_M4_ENABLED 1
+# modules run on the M4: no executable memory on the M7
+define HAL_EXECUTABLE_MEMORY_ENABLED 0
 
 # per-thread CPU time (ChibiOS statistics): the M4 host thread's duty cap charges it
 define HAL_ENABLE_THREAD_STATISTICS 1
