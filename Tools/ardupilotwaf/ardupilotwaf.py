@@ -130,6 +130,7 @@ COMMON_VEHICLE_DEPENDENT_LIBRARIES = [
     'AP_RCMapper',
     'AP_MultiHeap',
     'AP_Module',
+    'AP_ModuleM4',
     'AP_Follow',
     'AP_GroundEffect',
 ]
