@@ -44,6 +44,7 @@ CSRC = $(ALLCSRC)
 CPPSRC = $(ALLCPPSRC) \
          $(CONFDIR)/main.cpp \
          $(CONFDIR)/fault.cpp \
+         $(CONFDIR)/crc_port.cpp \
          $(M4DIR)/m4_service.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
@@ -77,7 +78,8 @@ CPPWARN = -Wall -Wextra -Wundef
 # as Tools/renode/tests/dual_core_images.py does). PORT_USE_SYSCALL: the
 # unprivileged module thread. ARDUPILOT_BUILD as the M7's build. Fault injection
 # (MOD_M4_INJECT) is on in every M4 build.
-UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DAP_MODULE_M4_FAULT_INJECTION_ENABLED=1
+UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DAP_MODULE_M4_FAULT_INJECTION_ENABLED=1 \
+        -DCF_PAL_CRC32_EXTERNAL
 UADEFS = -DCORE_CM4 -DSTM32H757xx
 UINCDIR =
 ULIBDIR =
@@ -169,4 +171,12 @@ $(BUILDDIR)/privileged_imports.ok: $(BUILDDIR)/$(PROJECT).elf
 	        } \
 	        exit status \
 	    }' || { rm -f '$<'; exit 1; }
+	@touch '$@'
+
+# fails (and removes the image) if a software CRC-32 is linked: CRC-32 runs on the CRC unit
+# (crc_port.cpp), which also defines CubeFramework's cubefw_pal_crc32
+all: $(BUILDDIR)/software_crc_absent.ok
+$(BUILDDIR)/software_crc_absent.ok: $(BUILDDIR)/$(PROJECT).elf
+	@! $(TRGT)nm -C '$<' | grep -E 'crc32_software|crc_crc32|crc32_table|crc_table|kNibble' || { echo "module_m4: software CRC in the M4 image"; rm -f '$<'; exit 1; }
+	@$(TRGT)nm '$<' | grep -q ' T cubefw_pal_crc32$$' || { echo "module_m4: cubefw_pal_crc32 is not the unit's"; rm -f '$<'; exit 1; }
 	@touch '$@'

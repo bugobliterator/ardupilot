@@ -25,6 +25,29 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _ready = false;
     _rx_stalled = false;
     _call_timed = false;
+    compute_crc_self_check();
+}
+
+void M4Service::compute_crc_self_check()
+{
+    Crc32 crc;
+    crc32_begin(crc);
+    crc32_feed(crc, reinterpret_cast<const uint8_t *>("123456789"), 9);
+    _crc_self_check.short_check = crc32_finish(crc);
+    uint8_t pattern[256];
+    crc32_begin(crc);
+    for (uint32_t offset = 0; offset < 2048U; offset += uint32_t(sizeof(pattern))) {
+        for (uint32_t i = 0; i < sizeof(pattern); i++) {
+            pattern[i] = uint8_t((offset + i) * 7U + 3U);
+        }
+        // one chunk in two pieces: a continued feed and the tail-byte path are both exercised
+        const uint32_t odd = offset == 768U ? 233U : uint32_t(sizeof(pattern));
+        crc32_feed(crc, pattern, odd);
+        if (odd != sizeof(pattern)) {
+            crc32_feed(crc, pattern + odd, uint32_t(sizeof(pattern)) - odd);
+        }
+    }
+    _crc_self_check.pattern_check = crc32_finish(crc);
 }
 
 void M4Service::step()
