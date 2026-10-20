@@ -5,6 +5,15 @@ Starts Renode with the M7 firmware and the M4 image, connects MAVLink and the
 Renode monitor, and waits for STATUSTEXTs. Functional only: Renode is not
 cycle-accurate.
 
+start_m4 is a pytest fixture: a test takes it as a parameter and calls it for
+each run, which returns an M4Run:
+
+  from m4_module_harness import start_m4  # noqa: F401
+
+  def test_boots(start_m4):
+      run = start_m4()
+      assert run.wait_m4_started().startswith('Module: started on M4 (')
+
 Needs RENODE and a CubeOrangePlus-SimOnHardWare-M4Module build:
   ./waf configure --board CubeOrangePlus-SimOnHardWare-M4Module && ./waf plane
 """
@@ -22,8 +31,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import fat_image  # noqa: E402
 from launch import MonitorClient  # noqa: E402
-from pymavlink import mavutil  # noqa: E402
+from pymavlink import mavftp, mavutil  # noqa: E402
 from test_mission import (check_process, log_tail, set_parameter,  # noqa: E402
                           stop_process_group, unused_tcp_port)
 
@@ -40,6 +50,7 @@ STEP_TIMEOUT = 300     # wall seconds: Renode runs both cores well below real ti
 TEST_DEADLINE = 2700   # wall seconds for a whole test: a wait without its own bound fails the test instead of hanging
 START_TIMEOUT = 120    # wall seconds from MAVLink connect to "Module: started on M4" (11-17 s seen)
 M4_PC = r'PC=0x081[C-F][0-9A-F]{4}'
+UPLOAD_TIMEOUT = 600   # wall seconds for a file upload
 
 
 class M4Run:
@@ -152,7 +163,8 @@ class M4Run:
             self.mav.recv_match(blocking=True, timeout=1)
 
     def wait_m4_started(self):
-        '''The M7 released the M4 (BOOT_C2, cpu2 running) and the M4 published its peer header.'''
+        '''The M7 released the M4 (BOOT_C2, cpu2 running) and the M4 published its peer header.
+        Returns the start text ("Module: started on M4 (...)"), which this wait consumes.'''
         started = time.monotonic()
         text = self.wait_text(r'Module: (started on M4|M4 .*off until reboot)', timeout=START_TIMEOUT)
         print('M4 start text %.0f s after connect' % (time.monotonic() - started), flush=True)
@@ -161,6 +173,7 @@ class M4Run:
         assert self.read_word(RCC_GCR) & BOOT_C2, 'RCC_GCR.BOOT_C2 not set'
         assert self.read_word(M7_PEER_MAGIC) == PEER_MAGIC, 'M7 peer header not published'
         assert self.read_word(M4_PEER_MAGIC) == PEER_MAGIC, 'M4 peer header not published'
+        return text
 
     def set(self, name, value):
         set_parameter(self.mav, self.process, self.log_path, name, value)
@@ -199,12 +212,89 @@ class M4Run:
         # the arm command reports "Arm: ...", the periodic disarmed check "PreArm: ..."
         self.wait_text(r'^(Pre)?Arm: ' + re.escape(prearm_text))
         heartbeat = self.recv('HEARTBEAT')
-        assert not heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED, 'armed with scripting off'
+        assert not heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED, 'armed with the M4 off'
+
+
+def remote_file_sizes(ftp, directory):
+    '''{name: size} of the files in a board directory, as their FAT directory entries give them.'''
+    ftp.list_result = []
+    ftp.cmd_list([directory])
+    return {entry.name: entry.size_b for entry in ftp.list_result if not entry.is_dir}
+
+
+def make_directories(ftp, directory):
+    '''Creates a board directory and its parents; one that exists already is fine.'''
+    parts = directory.split('/')
+    for end in range(1, len(parts) + 1):
+        ftp.cmd_mkdir(['/'.join(parts[:end])])
+        ftp.process_ftp_reply('CreateDirectory', timeout=60)
+
+
+def upload_files(run, files):
+    '''Copies (local path, board directory) pairs to the board's SD card over MAVLink FTP.'''
+    ftp = mavftp.MAVFTP(run.mav, run.mav.target_system, run.mav.target_component)
+    expected = {}
+    for source, directory in files:
+        if directory not in expected:
+            make_directories(ftp, directory)
+            expected[directory] = {}
+        finished = []   # the put's callback: the length once every block is acknowledged, None on failure
+        ret = ftp.cmd_put([str(source), directory + '/' + source.name], callback=finished.append)
+        assert ret.error_code == 0, 'put %s: %s' % (source, ret)
+        deadline = time.monotonic() + UPLOAD_TIMEOUT
+        while not finished:
+            assert time.monotonic() < deadline, 'upload of %s did not finish' % source
+            ftp.process_ftp_reply('CreateFile', timeout=60)
+        assert finished == [source.stat().st_size], 'upload of %s failed: %s' % (source, finished)
+        expected[directory][source.name] = source.stat().st_size
+    # the board writes a file's size into its directory entry when the FTP session ends;
+    # process_ftp_reply() returns after 1.2 s without a reply, so a stalled Renode can
+    # leave that TerminateSession unprocessed, and a stop then leaves an empty file:
+    # end the session until the sizes show
+    for directory, wanted in expected.items():
+        deadline = time.monotonic() + UPLOAD_TIMEOUT
+        while True:
+            sizes = remote_file_sizes(ftp, directory)
+            if all(sizes.get(name) == size for name, size in wanted.items()):
+                break
+            assert time.monotonic() < deadline, '%s on the board holds %s, expected %s' % (directory, sizes, wanted)
+            ftp.cmd_cancel()
+
+
+def stop_and_read_log(run, directory):
+    '''Stops Renode, which closes the board's logs, and returns the newest DataFlash log of its SD card image.'''
+    run.stop()
+    logs = fat_image.extract_files(run.sdcard_image, '/APM/LOGS', '*.BIN', directory)
+    assert logs, 'no DataFlash log on the SD card'
+    return max(logs, key=lambda log: log.name)
+
+
+def wait_all(run, patterns, timeout, failure=None):
+    '''Each pattern matches a STATUSTEXT received after the last wait_text() match, in any order.
+    A text matching the failure pattern ends the wait at once.'''
+    start = run.next_text
+    pending = [re.compile(pattern) for pattern in patterns]
+    failure = re.compile(failure) if failure else None
+    deadline = time.monotonic() + timeout
+    while True:
+        run.check()
+        if failure:
+            failed = [text for text in run.texts[start:] if failure.search(text)]
+            if failed:
+                raise RuntimeError('failure text %s; waiting for %s' % (failed[0], [regex.pattern for regex in pending]))
+        pending = [regex for regex in pending if not any(regex.search(text) for text in run.texts[start:])]
+        if not pending:
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError('timed out waiting for %s; last texts %s' %
+                               ([regex.pattern for regex in pending], run.texts[-15:]))
+        run.mav.recv_match(blocking=True, timeout=1)
 
 
 @pytest.fixture
 def start_m4(tmp_path):
-    '''Starts Renode runs that share one board state directory (flash, so parameters persist).'''
+    '''Starts Renode runs that share one board state directory (flash, so parameters persist).
+    Tests take it as a parameter; start_m4(extra_args=(), extra_check=None) returns an M4Run.'''
     renode = os.environ.get('RENODE')
     elf = Path(os.environ.get('M4MODULE_ELF', BUILD / 'arduplane'))
     m4_elf = Path(os.environ.get('M4MODULE_M4_ELF', BUILD / 'module_m4.elf'))
