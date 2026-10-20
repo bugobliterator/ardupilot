@@ -81,6 +81,17 @@ SECTIONS
 
 INCLUDE rules_code.ld
 
+/* MOD_M4_INJECT 17's built-in module (m4_selftest.cpp): its code and constants, its RX range */
+SECTIONS
+{
+    .m4_selftest : ALIGN(32)
+    {
+        __m4_selftest_start__ = .;
+        KEEP(*(.m4_selftest.text .m4_selftest.rodata))
+        __m4_selftest_end__ = .;
+    } > flash0
+}
+
 INCLUDE rules_data.ld
 INCLUDE rules_memory.ld
 
