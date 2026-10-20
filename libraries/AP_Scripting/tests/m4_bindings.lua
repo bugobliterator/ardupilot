@@ -6,11 +6,16 @@
 -- Location run on the M4 itself (fields, operators, constructors, math): those calls
 -- are not counted, so one that went remote would break that total. Location's five
 -- state rows (change_alt_frame, get_alt_m, get_vector_from_origin_NEU*) stay remote
--- and are counted. The first step waits until the load-time calls have their own
--- window. Runs unchanged in-process (no M4 needed for the checks).
+-- and are counted. millis() and micros() have count lines but are not in the total:
+-- the ChibiOS M4 reads the M7's clock itself (one remote millis() at most), so SRPC
+-- logs some, none or all of them; the tests leave their rows out of the sum. The first step
+-- waits until the load-time calls have their own window. Runs unchanged in-process
+-- (no M4 needed for the checks).
 
 local counts = {}
 local order = {}
+-- counted, but not in the total
+local CLOCK_CALLS = { ["global:millis"] = true, ["global:micros"] = true }
 
 local function count(name, n)
   if not counts[name] then
@@ -242,7 +247,9 @@ local function report()
   count("gcs:send_text", #order + 2)   -- the count lines, the total and the pass
   local total = 0
   for _, name in ipairs(order) do
-    total = total + counts[name]
+    if not CLOCK_CALLS[name] then
+      total = total + counts[name]
+    end
   end
   for _, name in ipairs(order) do
     gcs:send_text(6, string.format("M4 count %s %d", name, counts[name]))
