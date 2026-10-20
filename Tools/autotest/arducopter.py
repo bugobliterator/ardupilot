@@ -22713,8 +22713,10 @@ RTL_ALT_M 111
             if totals.get(name, 0) > n:
                 raise NotAchievedException("SRPC %s: %u calls logged, script made %u" % (name, totals.get(name, 0), n))
         # and every binding call is logged once: the binding rows and m4:other add up to the
-        # script's total (the M4 runtime's own m4:* calls and print are not the script's)
+        # script's total (the M4 runtime's own m4:* calls and print are not the script's). The
+        # total leaves out millis() and micros(), which a hardware M4 reads itself: so do these rows
         logged = self.m4_binding_calls_logged(totals)
+        logged -= totals.get("global:millis", 0) + totals.get("global:micros", 0)
         self.progress("SRPC binding calls logged %u, script made %u" % (logged, script_total))
         if logged != script_total:
             raise NotAchievedException("SRPC binding calls: %u logged, script made %u (%s)" % (logged, script_total, totals))

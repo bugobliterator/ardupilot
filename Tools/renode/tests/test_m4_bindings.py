@@ -69,13 +69,12 @@ def test_m4_generated_bindings(start_m4lua, tmp_path):  # noqa: F811
         assert totals.get(name, 0) <= count, \
             'SRPC %s: %u calls logged, the script made %u' % (name, totals.get(name, 0), count)
     # every binding call is logged once: the binding rows and m4:other add up to the script's
-    # total (the system rows, m4:sysother included, and print are not the script's), with the
-    # clock reads the M4 made itself replaced by its one remote millis()
+    # total (the system rows, m4:sysother included, and print are not the script's). The M4
+    # reads the clock itself but for one remote millis(); the total leaves the clock reads out
     assert totals.get('global:millis', 0) <= 1 and totals.get('global:micros', 0) == 0, totals
     logged = sum(count for name, count in totals.items()
                  if name == 'm4:other' or not (name.startswith('m4:') or name == 'global:print'))
-    script_total -= sum(expected.get(name, 0) for name in M4_CLOCK)
-    script_total += 1 if expected.get('global:millis', 0) > 0 else 0
+    logged -= sum(totals.get(name, 0) for name in M4_CLOCK)
     print('SRPC binding calls logged %u, script made %u' % (logged, script_total), flush=True)
     assert logged == script_total, 'SRPC binding calls: %u logged, the script made %u (%s)' % (
         logged, script_total, totals)
