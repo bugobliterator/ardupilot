@@ -61,4 +61,11 @@ TEST(ScriptingM4NetBudget, LuaFaultsStillCountToTheLimit)
     EXPECT_EQ(used, 2U);
 }
 
+TEST(ScriptingM4NetBudget, NetworkFaultIsNeverCharged)
+{
+    EXPECT_FALSE(charges_lua_budget(NetFailure::NetworkFault, true));
+    EXPECT_TRUE(charges_lua_budget(NetFailure::Fault, true));
+    EXPECT_FALSE(charges_lua_budget(NetFailure::Fault, false));   // Lua was not live in that session
+}
+
 AP_GTEST_MAIN()
