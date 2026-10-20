@@ -1,6 +1,7 @@
 #include "m4_service.h"
 
 #include <errno.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <CubePilotFW/PeerHeader.h>
@@ -20,6 +21,14 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     if (_platform.cycles_per_us == 0) {
         _platform.cycles_per_us = 1;
     }
+    // a new session: no names, statistics or M7 session yet
+    memset(_stats, 0, sizeof(_stats));
+    memset(&_untimed, 0, sizeof(_untimed));
+    _name_count = 0;
+    _session = 0;
+    _have_session = false;
+    _lost = 0;
+    _last_stats_ms = _platform.millis();
     _seq = 0;
     _protocol_errors = 0;
     _ready = false;
@@ -91,6 +100,9 @@ void M4Service::step_locked()
         _call_posted_ms = now_ms;
     }
     if ((state == ModuleLink::Posted || state == ModuleLink::Sent) && now_ms - _call_posted_ms > CALL_TIMEOUT_MS) {
+        if (state == ModuleLink::Sent) {
+            count_lost();   // its reply, if it still comes, is dropped by seq
+        }
         complete(-ETIMEDOUT);
     } else if (_ready && state == ModuleLink::Posted) {
         // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
@@ -102,6 +114,9 @@ void M4Service::step_locked()
         } else {
             flood();
         }
+    }
+    if (now_ms - _last_stats_ms >= 1000) {
+        send_stats(now_ms);
     }
     // a receive error other than empty leaves the frame queued: stop beating so
     // the M7 sees a stale heartbeat and restarts us, which clears the ring
@@ -135,7 +150,7 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     }
     switch (MsgType(header.type)) {
     case MsgType::Ready:
-        _ready = true;
+        handle_ready(header);
         return;
     case MsgType::FaultInject:
         handle_fault_inject(buf);
@@ -144,12 +159,8 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
         return;   // not acted on by this service yet
     case MsgType::BindingReply:
     case MsgType::SystemReply:
-        if (_link->state.load() == ModuleLink::Sent && header.seq == _call_seq) {
-            memcpy(_link->reply, buf, len);
-            complete(len);
-            return;
-        }
-        break;
+        handle_reply(buf, len, header);
+        return;
     case MsgType::Stats:
     case MsgType::BindingCall:
     case MsgType::SystemCall:
@@ -162,6 +173,13 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
 {
     FaultInjectMsg inject;
     memcpy(&inject, buf, sizeof(inject));
+    if (inject.kind == INJECT_MODULE_SELFTEST) {
+        // not a fault: the built-in check of the module thread path
+        if (_platform.start_selftest != nullptr) {
+            _platform.start_selftest();
+        }
+        return;
+    }
     if (inject.kind > FAULT_KIND_MAX) {
         return;   // before FaultKind's 8 bits truncate it
     }
@@ -196,13 +214,100 @@ void M4Service::forward_call()
         complete(-EINVAL);   // only calls go M4 -> M7 from the module thread
         return;
     }
+    // BindingCallHeader and SystemCallHeader both carry their flags at this offset
+    static_assert(offsetof(BindingCallHeader, flags) == offsetof(SystemCallHeader, flags), "flags offset");
+    uint16_t flags;
+    memcpy(&flags, _link->request + offsetof(SystemCallHeader, flags), sizeof(flags));
+    uint16_t key;
+    uint8_t reply_type;
+    if (MsgType(header.type) == MsgType::BindingCall) {
+        BindingCallHeader call;
+        memcpy(&call, _link->request, sizeof(call));
+        key = call.id < KEY_OTHER ? uint16_t(call.id) : KEY_OTHER;
+        reply_type = uint8_t(MsgType::BindingReply);
+    } else {
+        SystemCallHeader call;
+        memcpy(&call, _link->request, sizeof(call));
+        key = uint16_t(SYSTEM_KEY | call.method);
+        reply_type = uint8_t(MsgType::SystemReply);
+    }
     header.seq = ++_seq;
     memcpy(_link->request, &header, sizeof(header));
+    const uint32_t sent_cycles = _platform.cycles();
     if (_channel->send(_link->request, len) != 0) {
         return;   // ring full: the M7 is behind, try again on the next step
     }
+    if ((flags & CALL_FLAG_NOTIFY) != 0) {
+        complete(0);   // no reply
+        return;
+    }
     _call_seq = header.seq;
+    _call_session = _session;
+    _call_key = key;
+    _call_reply_type = reply_type;
+    _call_sent_cycles = sent_cycles;
     _link->state.store(ModuleLink::Sent);
+}
+
+void M4Service::handle_ready(const MsgHeader &header)
+{
+    // the M7 repeats Ready with its session in seq; a new session cannot answer this one's call
+    if (_have_session && header.seq != _session && _link->state.load() == ModuleLink::Sent) {
+        count_lost();
+        complete(-ECONNRESET);
+    }
+    _session = header.seq;
+    _have_session = true;
+    _ready = true;
+}
+
+void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header)
+{
+    // seq is never reused while this M4 runs: a reply to a call that timed out or lost its
+    // session matches no Sent call
+    if (_link->state.load() != ModuleLink::Sent || header.seq != _call_seq || _call_session != _session ||
+        header.type != _call_reply_type) {
+        _protocol_errors++;
+        return;
+    }
+    const uint32_t round_trip_us = (_platform.cycles() - _call_sent_cycles) / _platform.cycles_per_us;
+    uint32_t m7_us = 0;
+    if (MsgType(header.type) == MsgType::BindingReply) {
+        BindingReplyHeader reply;
+        memcpy(&reply, buf, sizeof(reply));
+        m7_us = reply.m7_wake_us + reply.m7_exec_us;
+    }
+    MethodStats *stats = stats_for(_call_key);
+    if (stats != nullptr) {
+        stats->round_trips.add(round_trip_us);
+        stats->total_us += round_trip_us;
+        if (m7_us > stats->m7_max_us) {
+            stats->m7_max_us = m7_us;
+        }
+    } else {
+        _untimed.count++;
+        _untimed.total_us += round_trip_us;
+        // no histogram: the percentiles of these calls are bounded by their largest
+        if (round_trip_us > _untimed.max_us) {
+            _untimed.p50_us = _untimed.p99_us = _untimed.max_us = round_trip_us;
+        }
+        if (m7_us > _untimed.m7_max_us) {
+            _untimed.m7_max_us = m7_us;
+        }
+    }
+    memcpy(_link->reply, buf, len);
+    complete(len);
+}
+
+void M4Service::count_lost()
+{
+    _lost++;
+    MethodStats *stats = stats_for(_call_key);
+    if (stats != nullptr) {
+        stats->lost++;
+    } else {
+        _untimed.lost++;
+    }
 }
 
 void M4Service::complete(int32_t result)
@@ -236,7 +341,107 @@ void M4Service::flood()
     }
 }
 
-bool M4Service::send_row(const StatsRow &row, const char *name)
+// text, terminated and truncated to size (no strncpy: not on the privileged import list)
+static uint32_t copy_text(char *name, uint32_t size, const char *text)
+{
+    uint32_t i = 0;
+    for (; text[i] != 0 && i + 1 < size; i++) {
+        name[i] = text[i];
+    }
+    name[i] = 0;
+    return i;
+}
+
+// prefix, then value in decimal; terminated, truncated to size
+static void name_with_number(char *name, uint32_t size, const char *prefix, uint32_t value)
+{
+    char digits[10];
+    uint8_t count = 0;
+    do {
+        digits[count++] = char('0' + value % 10U);
+        value /= 10U;
+    } while (value != 0);
+    uint32_t i = copy_text(name, size, prefix);
+    while (count != 0 && i + 1 < size) {
+        name[i++] = digits[--count];
+    }
+    name[i] = 0;
+}
+
+void M4Service::set_binding_name(uint32_t id, const char *name)
+{
+    if (_name_count == BINDING_NAMES || name == nullptr) {
+        return;   // later rows are named id:<n>
+    }
+    _names[_name_count].id = id;
+    copy_text(_names[_name_count].name, sizeof(_names[0].name), name);
+    _name_count++;
+}
+
+void M4Service::row_name(uint16_t key, char *name, uint32_t size) const
+{
+    if (key == KEY_OTHER) {
+        copy_text(name, size, "m4:other");
+        return;
+    }
+    if (key == KEY_SYSTEM_OTHER) {
+        copy_text(name, size, "m4:sysother");
+        return;
+    }
+    if ((key & SYSTEM_KEY) != 0) {
+        name_with_number(name, size, "sys:", key & ~SYSTEM_KEY);
+        return;
+    }
+    for (uint8_t i = 0; i < _name_count; i++) {
+        if (_names[i].id == key) {
+            copy_text(name, size, _names[i].name);
+            return;
+        }
+    }
+    name_with_number(name, size, "id:", key);
+}
+
+M4Service::MethodStats *M4Service::stats_for(uint16_t key)
+{
+    MethodStats *free_slot = nullptr;
+    for (MethodStats &slot : _stats) {
+        if (slot.used && slot.key == key) {
+            return &slot;
+        }
+        if (!slot.used && free_slot == nullptr) {
+            free_slot = &slot;
+        }
+    }
+    if (free_slot != nullptr) {
+        free_slot->used = true;
+        free_slot->key = key;
+    }
+    return free_slot;   // nullptr: every slot is busy this window, the call is not timed
+}
+
+StatsRow M4Service::row_of(const MethodStats &slot)
+{
+    StatsRow row;
+    row.method = slot.key;
+    row.count = slot.round_trips.count();
+    row.p50_us = slot.round_trips.percentile(50);
+    row.p99_us = slot.round_trips.percentile(99);
+    row.max_us = slot.round_trips.max_us();
+    row.total_us = slot.total_us;
+    row.m7_max_us = slot.m7_max_us;
+    row.lost = slot.lost;
+    return row;
+}
+
+void M4Service::clear(MethodStats &slot)
+{
+    slot.round_trips.reset();
+    slot.total_us = 0;
+    slot.m7_max_us = 0;
+    slot.lost = 0;
+}
+
+bool M4Service::send_row(const StatsRow &row)
 {
     StatsMsg stats;
     memset(&stats, 0, sizeof(stats));
@@ -249,10 +454,75 @@ bool M4Service::send_row(const StatsRow &row, const char *name)
     stats.total_us = row.total_us;
     stats.m7_max_us = row.m7_max_us;
     stats.lost = row.lost;
-    for (size_t i = 0; i + 1 < sizeof(stats.name) && name[i] != '\0'; i++) {
-        stats.name[i] = name[i];   // terminated by the memset
-    }
+    row_name(row.method, stats.name, sizeof(stats.name));
     return _channel->send(&stats, sizeof(stats)) == 0;
+}
+
+void M4Service::send_stats(uint32_t now_ms)
+{
+    // the slots with calls this window, most round-trip time first
+    uint32_t totals[STATS_SLOTS];
+    uint8_t slot_of[STATS_SLOTS];
+    uint8_t active = 0;
+    for (uint8_t i = 0; i < STATS_SLOTS; i++) {
+        MethodStats &slot = _stats[i];
+        if (!slot.used) {
+            continue;
+        }
+        if (slot.round_trips.count() == 0 && slot.lost == 0) {
+            slot.used = false;   // idle for a whole window: free the slot
+            continue;
+        }
+        totals[active] = slot.total_us;
+        slot_of[active++] = i;
+    }
+    uint8_t order[STATS_SLOTS];
+    stats_rank(totals, active, order);
+    uint8_t sent = 0;
+    for (; sent < active && sent < STATS_REPORTED; sent++) {
+        MethodStats &slot = _stats[slot_of[order[sent]]];
+        if (!send_row(row_of(slot))) {
+            return;   // ring full: this and the remaining rows wait for the next step
+        }
+        clear(slot);
+    }
+    if (sent < active || _untimed.count != 0 || _untimed.lost != 0) {
+        // the folded keys keep their totals, so the rows add up to the window's calls; system
+        // methods fold into their own row: m4:other holds binding calls only
+        StatsRow other = _untimed;
+        other.method = KEY_OTHER;
+        StatsRow system_other {};
+        system_other.method = KEY_SYSTEM_OTHER;
+        for (uint8_t i = sent; i < active; i++) {
+            const StatsRow row = row_of(_stats[slot_of[order[i]]]);
+            stats_add((row.method & SYSTEM_KEY) != 0 ? system_other : other, row);
+        }
+        // each row is cleared once sent, so a full ring repeats neither
+        if (other.count != 0 || other.lost != 0) {
+            if (!send_row(other)) {
+                return;
+            }
+            for (uint8_t i = sent; i < active; i++) {
+                MethodStats &slot = _stats[slot_of[order[i]]];
+                if ((slot.key & SYSTEM_KEY) == 0) {
+                    clear(slot);
+                }
+            }
+            memset(&_untimed, 0, sizeof(_untimed));
+        }
+        if (system_other.count != 0 || system_other.lost != 0) {
+            if (!send_row(system_other)) {
+                return;
+            }
+            for (uint8_t i = sent; i < active; i++) {
+                MethodStats &slot = _stats[slot_of[order[i]]];
+                if ((slot.key & SYSTEM_KEY) != 0) {
+                    clear(slot);
+                }
+            }
+        }
+    }
+    _last_stats_ms = now_ms;
 }
 
 void M4Service::corrupt_tx_ring()

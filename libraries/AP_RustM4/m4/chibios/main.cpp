@@ -293,7 +293,7 @@ int main(void)
     }
 
     const M4Platform platform { millis_now, cycles_now, AP_RUST_M4_CORE_CLOCK_HZ / 1000000U,
-                                inject_fault, nullptr, lock_service, unlock_service };
+                                inject_fault, nullptr, nullptr, lock_service, unlock_service };
     service.init(channel, window, call_link, platform);
     while (true) {
         if (block->run_permit.load() != 1) {

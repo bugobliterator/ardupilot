@@ -6,6 +6,18 @@ def build(bld):
     bld.ap_find_tests(use='ap')
     if not bld.env.HAS_GTEST:
         return
+    if 'AP_RUST_M4_ENABLED=1' in bld.env.DEFINES:
+        # the M4 service as the M4 image builds it: its bare-name includes and C++17 (CubeFramework)
+        try:
+            tg = bld.get_tgen_by_name('tests/test_rust_m4_service')
+        except Exception:
+            tg = None
+        if tg is not None:
+            tg.source = tg.to_list(tg.source) + [bld.srcnode.find_node('libraries/AP_RustM4/m4/m4_service.cpp')]
+            tg.includes = tg.to_list(tg.includes) + [bld.srcnode.find_dir(path).abspath() for path in
+                                                     ('libraries/AP_RustM4', 'libraries/AP_RustM4/m4')]
+            tg.cxxflags = tg.to_list(getattr(tg, 'cxxflags', [])) + ['-std=gnu++17']
+            tg.use = tg.to_list(tg.use) + ['cubeframework']
     try:
         tg = bld.get_tgen_by_name('tests/test_rust_m4_local_math')
     except Exception:

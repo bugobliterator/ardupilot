@@ -306,7 +306,8 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
 void AP_RustM4::send_ready(uint32_t now_ms)
 {
     RustM4::ReadyMsg ready;
-    RustM4::fill_header(ready.header, MsgType::Ready, sizeof(ready), 0);
+    // seq carries the session: the M4 drops a call outstanding across a session change
+    RustM4::fill_header(ready.header, MsgType::Ready, sizeof(ready), _m4_session);
     _ready_sent_ms = now_ms;
     if (_channel->send(&ready, sizeof(ready)) != 0) {
         _dropped++;

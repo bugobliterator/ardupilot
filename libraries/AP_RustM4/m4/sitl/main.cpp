@@ -205,7 +205,7 @@ int main(int argc, char **argv)
         inject_fault(FaultKind::HardFault);
     }
 
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, nullptr, lock_service,
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, nullptr, nullptr, lock_service,
                                 unlock_service };
     service.init(channel, window, call_link, platform);
     while (true) {
