@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "AP_RustM4_Placement.h"
+#include <AP_Rust/HostApi.h>
+#include <AP_Rust/BindingM4Policy_generated.h>
 
 namespace RustM4 {
 
@@ -30,8 +32,15 @@ constexpr uint32_t fnv1a_word(uint32_t word, uint32_t hash)
 // peer header contract: a mismatched M4 image is refused
 // "RS" 1: never equal to a Lua image's RPC_PROTOCOL_VERSION
 static const uint32_t PROTOCOL_VERSION = 0x52530001U;
-// the binding fingerprint and the local catalogue join it in Generator M4 Policy
-static const uint32_t CONTRACT_HASH = fnv1a_word(PROTOCOL_VERSION, FNV_OFFSET);
+constexpr uint32_t fnv1a_bytes(uint32_t hash, const uint8_t *bytes, uint32_t count)
+{
+    return count == 0 ? hash : fnv1a_bytes(fnv1a_byte(hash, bytes[0]), bytes + 1, count - 1);
+}
+static constexpr uint8_t API_FINGERPRINT[16] = AP_RUST_API_FINGERPRINT;
+// fnv1a_word(word, hash), fnv1a_bytes(hash, bytes, count): M4 Lua's argument orders
+static const uint32_t CONTRACT_HASH = fnv1a_word(AP_Rust::M4_LOCAL_CATALOGUE_HASH,
+                                                 fnv1a_bytes(fnv1a_word(PROTOCOL_VERSION, FNV_OFFSET),
+                                                             API_FINGERPRINT, 16));
 
 static const uint32_t WINDOW_SIZE = AP_RUST_M4_WINDOW_SIZE;
 static const uint32_t SUPERVISOR_BLOCK_SIZE = 32;

@@ -8,6 +8,11 @@ TEST(RustM4Layout, ProtocolNeverMatchesLua)
     EXPECT_EQ(PROTOCOL_VERSION, 0x52530001U);
 }
 
+TEST(RustM4Layout, ContractHashCoversTheCatalogue)
+{
+    EXPECT_NE(CONTRACT_HASH, fnv1a_word(PROTOCOL_VERSION, FNV_OFFSET));
+}
+
 TEST(RustM4Layout, ModuleAreaEndsAtTheWindow)
 {
     EXPECT_EQ(AP_RUST_M4_MODULE_AREA_BASE, 0x30008000U);
