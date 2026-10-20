@@ -3,9 +3,9 @@
 /*
   Privileged side of the M4 module runtime, independent of the platform
   (ChibiOS image or SITL process): drains the M7's messages, forwards the
-  module thread's call (posted on a ModuleLink) once the M7 is Ready,
-  carries out fault injection and beats the M4 heartbeat. step() never
-  blocks. The module thread sends its own call with forward_posted() when it
+  module thread's call (posted on a ModuleLink) once the M7 is Ready, times
+  the calls per BindingId and reports them once per second, carries out
+  fault injection and beats the M4 heartbeat. step() never blocks. The module thread sends its own call with forward_posted() when it
   can; the platform's lock serialises that with step(), the ring's other
   producer.
  */
@@ -15,6 +15,7 @@
 #include <AP_ModuleM4_Crc32.h>
 #include <AP_ModuleM4_Protocol.h>
 #include <AP_ModuleM4_StatsRows.h>
+#include <AP_ModuleM4_BindingHistogram.h>
 #include "module_link.h"
 
 namespace ModuleM4 {
@@ -25,6 +26,7 @@ struct M4Platform {
     uint32_t cycles_per_us;
     void (*inject_fault)(FaultKind kind);   // HardFault, MemManage, Stall, Lockup, HandlerFault
     void (*wake_module)();                  // the call on the ModuleLink is Done; may be null
+    void (*start_selftest)();               // MOD_M4_INJECT 17: the built-in thread-path check; may be null
     // one mutex around the service state and the TX ring (priority inheritance on the M4)
     void (*lock)();
     void (*unlock)();
@@ -41,10 +43,49 @@ public:
     // the platform CRC's results of this session, computed at init(), which faults (HardFault)
     // when they are not zlib's
     const CrcSelfCheck &crc_self_check() const { return _crc_self_check; }
+    // the Stats name of a remote import of this session (cleared at init()); later rows are id:<n>
+    void set_binding_name(uint32_t id, const char *name);
+    // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
+    uint32_t lost() const { return _lost; }
+    // frames from the M7 dropped as not for this M4 (wrong type, stale seq or session)
+    uint32_t protocol_errors() const { return _protocol_errors; }
+
+    // Stats keys: a BindingId below SYSTEM_KEY; a system method is SYSTEM_KEY | method
+    static const uint16_t SYSTEM_KEY = 0x8000;
+    // the folded rows, and the key of an id too large for a row of its own
+    static const uint16_t KEY_OTHER = 0x7FFF;
+    static const uint16_t KEY_SYSTEM_OTHER = 0xFFFF;
 
 private:
-    // one Stats frame; name is logged by the M7, never trusted
-    bool send_row(const StatsRow &row, const char *name);
+    struct MethodStats {
+        bool used;
+        uint16_t key;
+        BindingHistogram round_trips;
+        uint32_t total_us;
+        uint32_t m7_max_us;
+        uint32_t lost;
+    };
+    // round trips are timed per key in up to STATS_SLOTS slots per window; the STATS_REPORTED
+    // with the most round-trip time get a Stats row each, the rest fold into m4:other and
+    // m4:sysother
+    static const uint8_t STATS_SLOTS = 32;
+    // names of this session's remote imports: 64 rows of 32 B in privileged RAM
+    struct BindingName {
+        uint32_t id;
+        char name[32];
+    };
+    static const uint8_t BINDING_NAMES = 64;
+
+    static StatsRow row_of(const MethodStats &slot);
+    static void clear(MethodStats &slot);
+    // one Stats frame, named from the key; the name is logged by the M7, never trusted
+    bool send_row(const StatsRow &row);
+    void row_name(uint16_t key, char *name, uint32_t size) const;
+    MethodStats *stats_for(uint16_t key);
+    void send_stats(uint32_t now_ms);
+    void handle_ready(const MsgHeader &header);
+    void handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header);
+    void count_lost();
 
     void step_locked();
     void drain();
@@ -60,12 +101,24 @@ private:
     uint8_t *_window;
     ModuleLink *_link;
     M4Platform _platform;
-    uint32_t _seq;
+    MethodStats _stats[STATS_SLOTS];
+    StatsRow _untimed;          // calls of this window that found no free slot (the m4:other share)
+    BindingName _names[BINDING_NAMES];
+    uint8_t _name_count;
+    uint32_t _seq;              // one counter per session: calls and Stats rows
+    uint32_t _session;          // the seq of the M7's Ready: its session
     uint32_t _call_seq;
+    uint32_t _call_session;
+    uint16_t _call_key;
+    uint8_t _call_reply_type;   // MsgType the Sent call is answered with
+    uint32_t _call_sent_cycles;
+    uint32_t _last_stats_ms;
+    uint32_t _lost;
     uint32_t _call_posted_ms;   // when step() first saw the call Posted
     uint32_t _protocol_errors;  // frames from the M7 that are not a message the M4 serves
     uint32_t _flood_until_ms;
     bool _ready;
+    bool _have_session;
     bool _call_timed;           // _call_posted_ms belongs to the current call
     bool _rx_stalled;
     bool _flooding;

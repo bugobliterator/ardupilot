@@ -1,0 +1,307 @@
+#include <AP_gtest.h>
+#include <AP_ModuleM4/AP_ModuleM4_config.h>
+#if AP_MODULE_M4_ENABLED
+#include <errno.h>
+#include <pthread.h>
+#include <atomic>
+#include <chrono>
+// the M4 service as the M4 image and the SITL M4 process build it (tests/wscript adds its
+// source and the include paths its bare-name includes need)
+#include <AP_ModuleM4_Layout.h>
+#include <m4_service.h>
+
+using namespace ModuleM4;
+using CubePilotFW::Channel;
+
+// the SITL M4 process's platform feed, as m4/sitl/crc_port.cpp
+void ModuleM4::crc32_feed(Crc32 &crc, const uint8_t *data, uint32_t length)
+{
+    crc.state = crc32_software_update(crc.state, data, length);
+}
+
+namespace {
+
+// both cores' Channels on one window in this process; no doorbell is rung while neither sleeps
+alignas(32) uint8_t window[WINDOW_SIZE];
+Channel m7;
+Channel m4;
+ModuleLink call_link;   // not `link`: <unistd.h> declares link()
+M4Service service;
+pthread_mutex_t service_mutex = PTHREAD_MUTEX_INITIALIZER;
+std::atomic<uint32_t> module_wakes;
+const auto epoch = std::chrono::steady_clock::now();
+// a test moves the service's clocks on: round trips take fake_cycles (1 cycle per us), and
+// millis_ahead skips past a call timeout or to the next Stats window
+std::atomic<uint32_t> fake_cycles;
+std::atomic<uint32_t> millis_ahead;
+
+uint32_t millis_now()
+{
+    return millis_ahead.load() +
+           uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - epoch).count());
+}
+uint32_t cycles_now()
+{
+    return fake_cycles.load();
+}
+void inject_fault(FaultKind)
+{
+}
+void wake_module()
+{
+    module_wakes++;
+}
+void lock_service()
+{
+    pthread_mutex_lock(&service_mutex);
+}
+void unlock_service()
+{
+    pthread_mutex_unlock(&service_mutex);
+}
+
+const uint32_t BINDING = 431;
+
+void start()
+{
+    memset(window, 0, sizeof(window));
+    call_link.state.store(ModuleLink::Idle);
+    call_link.fault_request.store(0);
+    call_link.request_len = 0;
+    call_link.result = 0;
+    memset(call_link.request, 0, sizeof(call_link.request));
+    memset(call_link.reply, 0, sizeof(call_link.reply));
+    ASSERT_EQ(m7.init(window, CHANNEL_WINDOW_SIZE, Channel::Core::M7, DOORBELL_GROUP), 0);
+    ASSERT_EQ(m4.init(window, CHANNEL_WINDOW_SIZE, Channel::Core::M4, DOORBELL_GROUP), 0);
+    module_wakes = 0;
+    fake_cycles = 0;
+    millis_ahead = 0;
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_module, nullptr, lock_service,
+                                unlock_service };
+    service.init(m4, window, call_link, platform);
+}
+
+void send_ready(uint32_t session)
+{
+    ReadyMsg ready;
+    fill_header(ready.header, MsgType::Ready, sizeof(ready), session);
+    ASSERT_EQ(m7.send(&ready, sizeof(ready)), 0);
+}
+
+// the module thread's side: a 4 B in, 4 B out BindingCall of id, posted on the link
+void post_call(uint32_t id)
+{
+    const uint8_t input[4] = { 1, 2, 3, 4 };
+    call_link.request_len = pack_binding_call(call_link.request, MAX_FRAME, 0, 0, 0, id, input, 4, 4);
+    ASSERT_NE(call_link.request_len, 0);
+    call_link.state.store(ModuleLink::Posted);
+}
+
+// the next M4 -> M7 frame other than Stats; false if the ring holds no other
+bool m7_receive(uint8_t *frame, uint16_t &len)
+{
+    while (m7.receive(frame, MAX_FRAME, &len) == 0) {
+        MsgHeader header;
+        if (!parse_header(frame, len, header)) {
+            ADD_FAILURE() << "unparseable frame";
+            return false;
+        }
+        if (MsgType(header.type) != MsgType::Stats) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool m7_receive_call(BindingCallHeader &call)
+{
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    return m7_receive(frame, len) && parse_binding_call(frame, len, call);
+}
+
+void m7_reply(uint32_t seq, uint8_t fill)
+{
+    const uint8_t output[4] = { fill, fill, fill, fill };
+    uint8_t frame[MAX_FRAME];
+    const uint16_t len = pack_binding_reply(frame, sizeof(frame), seq, ReplyStatus::Ok, 0, output, 4, 0, 0);
+    ASSERT_NE(len, 0);
+    ASSERT_EQ(m7.send(frame, len), 0);
+}
+
+// one call served by the M7 in round_trip_us
+void round_trip(uint32_t id, uint32_t round_trip_us)
+{
+    post_call(id);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    fake_cycles += round_trip_us;
+    m7_reply(call.header.seq, 0x11);
+    service.step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    call_link.state.store(ModuleLink::Idle);
+}
+
+}  // namespace
+
+TEST(ModuleM4Service, PostedBindingCallIsSentAndCompletedBySeq)
+{
+    start();
+    send_ready(7);
+    service.step();   // takes Ready
+    post_call(BINDING);
+    EXPECT_TRUE(service.forward_posted());
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    EXPECT_EQ(call.id, BINDING);
+    EXPECT_EQ(call.in_size, 4);
+    EXPECT_EQ(call.out_size, 4);
+    const uint32_t first_seq = call.header.seq;
+    m7_reply(first_seq + 1, 0x22);   // another seq: dropped
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    m7_reply(first_seq, 0x22);
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, int32_t(sizeof(BindingReplyHeader) + 4));
+    EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x22);
+    EXPECT_EQ(module_wakes.load(), 1U);
+    // the next call takes the next sequence number
+    call_link.state.store(ModuleLink::Idle);
+    post_call(BINDING + 1);
+    EXPECT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive_call(call));
+    EXPECT_EQ(call.header.seq, first_seq + 1);
+}
+
+TEST(ModuleM4Service, LateReplyIsDroppedBySeq)
+{
+    start();
+    send_ready(7);
+    service.step();
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader first;
+    ASSERT_TRUE(m7_receive_call(first));
+    // no reply within CALL_TIMEOUT_MS
+    millis_ahead += CALL_TIMEOUT_MS + 1;
+    service.step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, -ETIMEDOUT);
+    EXPECT_EQ(service.lost(), 1U);
+    call_link.state.store(ModuleLink::Idle);
+    // the second call is Sent when the first call's reply arrives
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader second;
+    ASSERT_TRUE(m7_receive_call(second));
+    ASSERT_NE(second.header.seq, first.header.seq);
+    memset(call_link.reply, 0x55, sizeof(call_link.reply));
+    m7_reply(first.header.seq, 0x33);
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    for (uint16_t i = 0; i < sizeof(BindingReplyHeader) + 4; i++) {
+        ASSERT_EQ(call_link.reply[i], 0x55) << i;
+    }
+    EXPECT_EQ(service.lost(), 1U);
+    EXPECT_EQ(service.protocol_errors(), 1U);
+    // the second call's own reply completes it
+    m7_reply(second.header.seq, 0x44);
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x44);
+}
+
+TEST(ModuleM4Service, ReplyOfAnOlderSessionIsDropped)
+{
+    start();
+    send_ready(7);
+    service.step();
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    // a repeated Ready of the same session changes nothing
+    send_ready(7);
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    // a new session: the call cannot be answered any more
+    send_ready(8);
+    service.step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, -ECONNRESET);
+    EXPECT_EQ(service.lost(), 1U);
+    memset(call_link.reply, 0x55, sizeof(call_link.reply));
+    m7_reply(call.header.seq, 0x33);
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, -ECONNRESET);
+    EXPECT_EQ(call_link.reply[0], 0x55);
+    EXPECT_EQ(service.protocol_errors(), 1U);
+}
+
+TEST(ModuleM4Service, StatsRowsAreKeyedAndNamedByBindingId)
+{
+    start();
+    send_ready(7);
+    service.step();
+    service.set_binding_name(431, "ahrs:get_roll_rad");
+    round_trip(431, 100);
+    round_trip(431, 100);
+    round_trip(432, 50);
+    millis_ahead += 1000;
+    service.step();
+    StatsMsg rows[4];
+    uint8_t row_count = 0;
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    while (m7.receive(frame, sizeof(frame), &len) == 0) {
+        MsgHeader header;
+        ASSERT_TRUE(parse_header(frame, len, header));
+        ASSERT_EQ(MsgType(header.type), MsgType::Stats);
+        ASSERT_LT(row_count, 4);
+        memcpy(&rows[row_count++], frame, sizeof(StatsMsg));
+    }
+    ASSERT_EQ(row_count, 2);
+    // largest total first
+    EXPECT_EQ(rows[0].method, 431);
+    EXPECT_STREQ(rows[0].name, "ahrs:get_roll_rad");
+    EXPECT_EQ(rows[0].count, 2U);
+    EXPECT_EQ(rows[0].total_us, 200U);
+    EXPECT_EQ(rows[1].method, 432);
+    EXPECT_STREQ(rows[1].name, "id:432");
+    EXPECT_EQ(rows[1].count, 1U);
+    EXPECT_EQ(rows[1].total_us, 50U);
+    millis_ahead = 0;
+}
+
+TEST(ModuleM4Service, NotifyCompletesAtOnce)
+{
+    start();
+    send_ready(7);
+    service.step();
+    TextNotify text {};
+    fill_header(text.call.header, MsgType::SystemCall, sizeof(text), 0);
+    text.call.method = uint16_t(SystemMethod::Text);
+    text.call.flags = CALL_FLAG_NOTIFY;
+    text.severity = 6;
+    text.length = 2;
+    memcpy(text.text, "ok", 2);
+    memcpy(call_link.request, &text, sizeof(text));
+    call_link.request_len = sizeof(text);
+    call_link.state.store(ModuleLink::Posted);
+    EXPECT_TRUE(service.forward_posted());
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, 0);
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    ASSERT_TRUE(m7_receive(frame, len));
+    EXPECT_EQ(len, sizeof(TextNotify));
+    EXPECT_EQ(frame[0], uint8_t(MsgType::SystemCall));
+}
+
+#endif  // AP_MODULE_M4_ENABLED
+
+AP_GTEST_MAIN()
