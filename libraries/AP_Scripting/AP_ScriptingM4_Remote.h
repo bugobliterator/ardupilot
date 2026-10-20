@@ -756,6 +756,8 @@ inline uint16_t dronecan_transfer_frames(size_t length)
 }
 // broadcast()/request(): takes the transfer's frames from the Can quota; false over it
 bool can_transfer_allowed(lua_State *L, size_t length);
+// a transfer can_transfer_allowed() charged that canard then refused: its frames go back to the quota
+void can_transfer_refund(lua_State *L, size_t length);
 // request()'s node: an integer 0..127, else an argument error (in-process a float conversion)
 uint8_t dronecan_target_node(lua_State *L, int arg);
 

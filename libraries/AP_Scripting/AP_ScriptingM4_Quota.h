@@ -93,6 +93,20 @@ public:
         return true;
     }
 
+    // gives back cost units allow() took for work the M7 then refused (a DroneCAN transfer
+    // canard did not queue), up to the burst; the hits are unchanged
+    void refund(QuotaClass quota, uint16_t cost)
+    {
+        const uint8_t index = uint8_t(quota);
+        if (quota == QuotaClass::None || index >= QUOTA_CLASSES) {
+            return;
+        }
+        Bucket &bucket = _buckets[index];
+        const uint32_t cap = uint32_t(QUOTA_LIMITS[index].burst) * 1000;
+        const uint32_t refunded = bucket.millicalls + uint32_t(cost) * 1000;
+        bucket.millicalls = refunded > cap ? cap : refunded;
+    }
+
     // calls refused since the last call (M4ST QHit)
     uint32_t take_hits()
     {

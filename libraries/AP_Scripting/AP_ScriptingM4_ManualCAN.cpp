@@ -200,6 +200,10 @@ int DroneCANAccess::broadcast(lua_State *L)
 #endif
 
     bool ok = iface.broadcast(transfer);
+    if (!ok) {
+        // nothing went on the bus: the transfer costs the script no frames
+        can_transfer_refund(L, data_length);
+    }
     lua_pushboolean(L, ok);
 
     return 1;
@@ -241,6 +245,9 @@ int DroneCANAccess::request(lua_State *L)
     if (ok) {
         h->subscriber->node_id = target_node;
         ok &= iface.request(target_node, transfer);
+    }
+    if (!ok) {
+        can_transfer_refund(L, data_length);
     }
 
     lua_pushboolean(L, ok);

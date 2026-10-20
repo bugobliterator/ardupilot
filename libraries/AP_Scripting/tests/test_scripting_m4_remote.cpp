@@ -422,6 +422,16 @@ static int thing_can_charge(lua_State *L) {
     lua_pushboolean(L, can_transfer_allowed(L, length));
     return 1;
 }
+// broadcast()'s path when canard refuses the transfer after the charge
+static int thing_can_refused(lua_State *L) {
+    size_t length;
+    luaL_checklstring(L, 1, &length);
+    if (can_transfer_allowed(L, length)) {
+        can_transfer_refund(L, length);
+    }
+    lua_pushboolean(L, false);
+    return 1;
+}
 static int thing_target_node(lua_State *L) {
     lua_pushinteger(L, dronecan_target_node(L, 1));
     return 1;
@@ -1415,6 +1425,48 @@ TEST(ScriptingM4Remote, DroneCANTransfersChargeTheirFrames)
     c.args.string(payload, 7);
     ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
     EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    EXPECT_EQ(quota.take_hits(), 1U);
+}
+
+// a transfer canard refuses after its charge: the frames go back, and no hit is counted
+TEST(ScriptingM4Remote, DroneCANRefusedTransferRefundsItsFrames)
+{
+    Quota quota;
+    quota.reset(0);
+    Call c;
+    c.call.quota = &quota;
+    c.call.now_ms = 0;
+    static char payload[960];
+    memset(payload, 'x', sizeof(payload));
+    c.args.string(payload, sizeof(payload));
+    ASSERT_EQ(c.run(thing_can_refused), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);
+    EXPECT_EQ(quota.take_hits(), 0U);
+    // the bucket is full again: the 800 frames of the burst are all there
+    static char big[1000];
+    memset(big, 'x', sizeof(big));
+    for (int i = 0; i < 5; i++) {
+        c.args.string(big, sizeof(big));
+        ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+        EXPECT_EQ(c.values[0].tag, ValueTag::True) << i;      // 720 frames
+    }
+    c.args.string(payload, 80 * 7 - 2);                        // 80 frames
+    ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::True);
+    c.args.string(payload, 7);
+    ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);               // empty
+    EXPECT_EQ(quota.take_hits(), 1U);
+    // a refund never fills the bucket past its burst
+    quota.reset(0);
+    quota.refund(QuotaClass::Can, 800);
+    for (int i = 0; i < 5; i++) {
+        c.args.string(big, sizeof(big));
+        ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+    }
+    c.args.string(payload, 80 * 7 - 2 + 1);                    // 81 frames: over the burst
+    ASSERT_EQ(c.run(thing_can_charge), ReplyStatus::Ok);
+    EXPECT_EQ(c.values[0].tag, ValueTag::False);
     EXPECT_EQ(quota.take_hits(), 1U);
 }
 

@@ -191,6 +191,11 @@ bool can_transfer_allowed(lua_State *L, size_t length)
     return L->quota->allow(ScriptingM4::QuotaClass::Can, L->now_ms, dronecan_transfer_frames(length));
 }
 
+void can_transfer_refund(lua_State *L, size_t length)
+{
+    L->quota->refund(ScriptingM4::QuotaClass::Can, dronecan_transfer_frames(length));
+}
+
 bool remote_quota_allow(lua_State *L, ScriptingM4::QuotaClass quota, uint16_t cost)
 {
     // the server always sets the quota; host tests may leave it unset
