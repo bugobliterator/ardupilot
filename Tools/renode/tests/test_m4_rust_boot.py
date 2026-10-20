@@ -1,6 +1,6 @@
 # AP_FLAKE8_CLEAN
 """Renode: the M4 Rust image boots on CubeOrangePlus-SimOnHardWare-M4Rust, publishes its
-peer header and is supervised by the M7. Functional only: Renode is not cycle-accurate.
+peer header, passes its CRC self-check and is supervised by the M7. Functional only: Renode is not cycle-accurate.
 
 Needs RENODE and: ./waf configure --board CubeOrangePlus-SimOnHardWare-M4Rust && ./waf plane
 """
@@ -31,6 +31,9 @@ def test_m4_rust_boots(start_m4):  # noqa: F811
     rcc_before = run.read_word(RCC_GCR)
     run.wait_alive(30)
     assert run.read_word(RCC_GCR) == rcc_before
+    # no M4 fault, restart or stop: a failed CRC self-check faults the M4 before its first beat
+    failures = [text for text in run.texts if text.startswith('Rust: M4 ')]
+    assert not failures, failures
     # the variant's defaults.parm keeps the SimOnHardWare chain
     assert run.get('SCHED_LOOP_RATE') == 400
     assert run.get('AHRS_EKF_TYPE') == 10
