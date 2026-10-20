@@ -45,7 +45,6 @@ NAVL1_PERIOD     7
 AIRSPEED_CRUISE 24.00
 AIRSPEED_MAX    30
 ROLL_LIMIT_DEG 70.00
-# setup for scripting
 
 # desk bench
 SIM_OH_MASK 0
