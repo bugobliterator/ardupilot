@@ -2,6 +2,10 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <string.h>
+#include "AP_RustM4_ModuleTable.h"
+#include "AP_RustM4_Protocol.h"
+#include "AP_RustM4_StatsRows.h"
 
 namespace RustM4 {
 
@@ -18,8 +22,9 @@ namespace RustM4 {
   the debt is beyond MAX_DEBT_US the host refuses binding calls for the slow
   worker in it (refuses_slow_bindings()): cheap calls are answered, heavy ones
   fail until the debt is paid down. Passes this allows early cost at most
-  MAX_SERVE_US plus one frame each, and no debt is forgiven, so the long-run
-  share holds.
+  MAX_SERVE_US plus one frame each, plus up to MAX_EXEMPT_PER_PASS frames that
+  do not end a pass (frame_ends_pass_on_time()), and no debt is forgiven, so the
+  long-run share holds.
  */
 struct ServeDutyCapTestAccess;
 
@@ -29,7 +34,8 @@ public:
     // 10 ms of CPU: a module's burst of a few hundred synchronous calls once a second runs
     // unpaced; the share holds over a 100 ms horizon and in the long run
     static constexpr int32_t BURST_US = 10000;
-    // a pass is at most MAX_SERVE_US plus one frame: start one only with that much credit
+    // a pass is at most MAX_SERVE_US plus one frame (and up to MAX_EXEMPT_PER_PASS small frames
+    // that do not end it): start one only with that much credit
     static constexpr int32_t RESUME_US = 200;
     // the deepest debt that is paid down by pausing alone
     static constexpr int32_t MAX_DEBT_US = 50000;
@@ -109,10 +115,49 @@ private:
     bool _started = false;
 };
 
+// the M4 runtime's own frames, which it queues ahead of binding calls: its Stats rows (a log row
+// each, a burst once a second) and its system notifies (module texts and states, Noop). A call
+// queued behind them would otherwise wait for later passes, 0.5 s each while the duty-cap debt is
+// deep, and outlast the M4's call timeout
+inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
+{
+    MsgHeader header;
+    if (buf == nullptr || !parse_header(buf, len, header)) {
+        return false;
+    }
+    if (MsgType(header.type) == MsgType::Stats) {
+        return true;
+    }
+    if (MsgType(header.type) != MsgType::SystemCall) {
+        return false;
+    }
+    SystemCallHeader call;
+    memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(SystemCallHeader)
+    return (call.flags & CALL_FLAG_NOTIFY) != 0;
+}
+
+// exempt frames per pass: the M4's legitimate worst case ahead of a call is one window's Stats rows
+// and one notify per module. More of them, e.g. forged by a faulty M4, end the pass as any other
+// frame; all are charged
+static const uint8_t MAX_EXEMPT_PER_PASS = STATS_ROWS_PER_WINDOW + MAX_MODULES;
+static_assert(MAX_EXEMPT_PER_PASS == 18, "10 Stats rows and 8 module notifies");
+
 // a pass of the host thread: at most MAX_REQUESTS_PER_WAKE frames, ending once MAX_SERVE_US have
-// passed since the wake
+// passed since the wake after a frame that may end it
 static const uint8_t MAX_REQUESTS_PER_WAKE = 32;
 static const uint32_t MAX_SERVE_US = 200;
+
+// whether the pass may end on time after this frame (a frame past MAX_SERVE_US that is not exempt,
+// or exempt beyond MAX_EXEMPT_PER_PASS in this pass). exempt_in_pass starts at 0 for each pass;
+// the pass still ends at MAX_REQUESTS_PER_WAKE frames
+inline bool frame_ends_pass_on_time(const uint8_t *buf, uint16_t len, uint8_t &exempt_in_pass)
+{
+    if (exempt_in_pass < MAX_EXEMPT_PER_PASS && frame_exempt_from_pass_time(buf, len)) {
+        exempt_in_pass++;
+        return false;
+    }
+    return true;
+}
 
 enum class PassEnd : uint8_t {
     Idle,           // the ring is empty
@@ -120,12 +165,13 @@ enum class PassEnd : uint8_t {
     ReceiveError,   // the ring returned an error other than empty: the frame stays queued
 };
 
-// the host's serve loop: receive(len) -> 0, -EAGAIN or another -errno; serve(len) handles the
-// frame just received; elapsed_us() is the time since the wake
+// the host's serve loop: receive(len) -> 0, -EAGAIN or another -errno, the frame received into
+// frame; serve(len) handles it; elapsed_us() is the time since the wake
 template <typename Receive, typename Serve, typename Elapsed>
-inline PassEnd serve_pass(Receive receive, Serve serve, Elapsed elapsed_us)
+inline PassEnd serve_pass(const uint8_t *frame, Receive receive, Serve serve, Elapsed elapsed_us)
 {
     // an empty ring is Idle whatever the time; Busy means a limit ran out with a frame just served
+    uint8_t exempt_in_pass = 0;
     for (uint8_t i = 0; i < MAX_REQUESTS_PER_WAKE; i++) {
         uint16_t len = 0;
         const int ret = receive(len);
@@ -136,11 +182,46 @@ inline PassEnd serve_pass(Receive receive, Serve serve, Elapsed elapsed_us)
             return PassEnd::ReceiveError;
         }
         serve(len);
-        if (elapsed_us() > MAX_SERVE_US) {
+        if (frame_ends_pass_on_time(frame, len, exempt_in_pass) && elapsed_us() > MAX_SERVE_US) {
             return PassEnd::Busy;
         }
     }
     return PassEnd::Busy;
+}
+
+/*
+  Which thread serves a frame. The host's fast lane, above the I/O threads, takes only what does
+  fixed work with no file, storage, SD or bus access: binding calls whose generated M4 lane is Fast
+  (binding_fast), the Noop notify, the Stats rows, and the M7 -> M4 types, which only count a
+  protocol error. Everything else, the other system methods and frames that do not parse
+  included, goes to the slow worker below the I/O threads.
+ */
+inline bool frame_on_fast_lane(const uint8_t *buf, uint16_t len, bool (*binding_fast)(uint32_t id))
+{
+    MsgHeader header;
+    if (!parse_header(buf, len, header)) {
+        return false;
+    }
+    switch (MsgType(header.type)) {
+    case MsgType::Stats:
+    case MsgType::FaultInject:
+    case MsgType::Ready:
+    case MsgType::BindingReply:
+    case MsgType::SystemReply:
+    case MsgType::Control:
+        return true;
+    case MsgType::BindingCall: {
+        BindingCallHeader call;
+        memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(BindingCallHeader)
+        return binding_fast(call.id);
+    }
+    case MsgType::SystemCall: {
+        SystemCallHeader call;
+        memcpy(&call, buf, sizeof(call));
+        return call.method == uint16_t(SystemMethod::Noop);
+    }
+    }
+    return false;
 }
 
 // what the user is told about duty-cap refusals, from the count refused in each second: one

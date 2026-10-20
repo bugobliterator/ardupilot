@@ -94,7 +94,17 @@ void AP_RustM4::init(const AP_Rust::Runtime::Config &config)
         return;
     }
     enter(State::Starting, now_ms);
-    // binding calls will run vehicle code on this thread. Above the I/O-class threads (io 58,
+    // the slow worker first: the host hands it every frame the fast lane does not serve. It runs
+    // the heavy bindings (files, logs, parameters, mission, texts) below io 58, storage/log_io 59,
+    // UART/net 60 and the io - 1 threads (OA path planner, mount POI); its CPU is charged to the
+    // duty cap too
+    if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_RustM4::worker_thread, void),
+                                      "RustM4W", 8192, AP_HAL::Scheduler::PRIORITY_IO,
+                                      RustM4::WORKER_PRIORITY_OFFSET)) {
+        go_off("no worker thread");
+        return;
+    }
+    // binding calls run vehicle code on this thread. Above the I/O-class threads (io 58,
     // storage/log_io 59, UART/net 60) so a call is not queued behind logging; below every
     // vehicle-timing thread (I2C 176 and up). The duty cap bounds the CPU share a flooding M4
     // can take from those threads
@@ -141,6 +151,10 @@ void AP_RustM4::host_thread()
                 _host_busy_us = 0;
                 _host_cpu_us = 0;
                 _pass_cpu_max_us = 0;
+                _slow_requests = 0;
+                _slow_max_us = 0;
+                _slow_cpu_max_us = 0;
+                _slow_refused = 0;
             }
             hal.scheduler->delay(100);
             continue;
@@ -210,6 +224,10 @@ void AP_RustM4::host_thread()
             _host_cpu_us = 0;
             _long_passes = 0;
             _pass_cpu_max_us = 0;
+            _slow_requests = 0;
+            _slow_max_us = 0;
+            _slow_cpu_max_us = 0;
+            _slow_refused = 0;
         }
     }
 }
@@ -228,6 +246,57 @@ void AP_RustM4::charge_cpu(bool pass_end)
     if (pass_end) {
         _pass_cpu_max_us = MAX(_pass_cpu_max_us, used_us);
     }
+}
+
+// the slow worker: one frame at a time, handed over by the host, which waits until it is served.
+// The CPU the frame used goes to the host, which charges it to the duty cap
+void AP_RustM4::worker_thread()
+{
+    while (true) {
+        IGNORE_RETURN(_worker_request.wait_blocking());
+        uint64_t cpu_us;
+        bool reset = platform_thread_cpu_us(cpu_us);
+        IGNORE_RETURN(_worker_cpu_charge.pass_start(cpu_us, reset, AP_HAL::micros()));
+        handle_message(_rx_frame, _worker_len);
+        reset = platform_thread_cpu_us(cpu_us);
+        _worker_used_us = _worker_cpu_charge.pass_end(cpu_us, reset, AP_HAL::micros());
+        _worker_done.signal();
+    }
+}
+
+void AP_RustM4::serve_on_worker(uint16_t len)
+{
+    const uint32_t start_us = AP_HAL::micros();
+    _worker_len = len;
+    _worker_request.signal();
+    IGNORE_RETURN(_worker_done.wait_blocking());
+    _slow_requests++;
+    _slow_max_us = MAX(_slow_max_us, AP_HAL::micros() - start_us);
+    // the worker's CPU counts against the same share as the host's: a module looping a heavy
+    // binding is paused like a flooding one
+    _host_cpu_us += _worker_used_us;
+    _duty_cap.charge(_worker_used_us);
+    _slow_cpu_max_us = MAX(_slow_cpu_max_us, _worker_used_us);
+}
+
+/*
+  In a pass the duty cap allows while its debt is beyond MAX_DEBT_US: a binding call that would go
+  to the slow worker is not run but answered BUSY at once. False for anything else (system calls,
+  which do bounded work per frame, and frames that do not parse), which the worker serves as usual
+ */
+bool AP_RustM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
+{
+    RustM4::BindingCallHeader call;
+    if (!RustM4::parse_binding_call(buf, len, call)) {
+        return false;
+    }
+    _requests++;
+    _session_calls++;
+    _slow_refused++;
+    send_frame(_tx_frame, RustM4::pack_binding_reply(_tx_frame, sizeof(_tx_frame), call.header.seq,
+                                                     RustM4::ReplyStatus::Ok, RustM4::STATUS_BUSY, nullptr, 0,
+                                                     _wake_latency_us, 0));
+    return true;
 }
 
 static_assert(RustM4::ServeDutyCap::MAX_PAUSE_US <= RustM4::CALL_TIMEOUT_MS * 1000U * 3U / 5U,
@@ -262,8 +331,15 @@ AP_RustM4::ServeResult AP_RustM4::serve()
         return ServeResult::Stuck;   // frames from before a (re)start are dropped by the re-handshake
     }
     const RustM4::PassEnd end = RustM4::serve_pass(
+        _rx_frame,
         [this](uint16_t &len) { return _channel->receive(_rx_frame, sizeof(_rx_frame), &len); },
-        [this](uint16_t len) { handle_message(_rx_frame, len); },
+        [this](uint16_t len) {
+            if (_server.frame_on_fast_lane(_rx_frame, len)) {
+                handle_message(_rx_frame, len);
+            } else if (!_duty_cap.refuses_slow_bindings() || !refuse_slow_binding(_rx_frame, len)) {
+                serve_on_worker(len);
+            }
+        },
         [this]() { return AP_HAL::micros() - _woke_us; });
     switch (end) {
     case RustM4::PassEnd::Idle:
@@ -291,9 +367,10 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
         log_rpc_stats(buf);
         return;
     case MsgType::BindingCall:
-        return;   // not served yet
+        serve_binding(buf, len);
+        return;
     case MsgType::SystemCall:
-        send_module_text(buf, len);   // the other system methods are not served yet
+        serve_system(buf, len);
         return;
     case MsgType::FaultInject:
     case MsgType::Ready:
@@ -302,6 +379,53 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
     case MsgType::Control:
         _protocol_errors++;   // M7 -> M4 only
         return;
+    }
+}
+
+void AP_RustM4::serve_binding(const uint8_t *buf, uint16_t len)
+{
+    _session_calls++;
+    const uint16_t reply_len = _server.serve_binding(buf, len, _tx_frame, sizeof(_tx_frame), AP_HAL::millis());
+    if (reply_len >= sizeof(RustM4::BindingReplyHeader)) {
+        RustM4::BindingReplyHeader reply;
+        memcpy(&reply, _tx_frame, sizeof(reply));
+        reply.m7_wake_us = _wake_latency_us;
+        memcpy(_tx_frame, &reply, sizeof(reply));
+    }
+    send_frame(_tx_frame, reply_len);
+}
+
+// system calls: a module's text notify; a call of a method this M7 does not serve is answered
+// UnknownMethod at once, so the M4 does not wait for its timeout
+void AP_RustM4::serve_system(const uint8_t *buf, uint16_t len)
+{
+    RustM4::SystemCallHeader call;
+    memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(SystemCallHeader)
+    if ((call.flags & RustM4::CALL_FLAG_NOTIFY) != 0) {
+        if (call.method == uint16_t(RustM4::SystemMethod::Text)) {
+            send_module_text(buf, len);
+        }
+        return;
+    }
+    _session_calls++;
+    RustM4::SystemReplyHeader reply {};
+    RustM4::fill_header(reply.header, MsgType::SystemReply, sizeof(reply), call.header.seq);
+    reply.method = call.method;
+    reply.transport = uint8_t(RustM4::ReplyStatus::UnknownMethod);
+    reply.result = -ENOSYS;
+    memcpy(_tx_frame, &reply, sizeof(reply));
+    send_frame(_tx_frame, sizeof(reply));
+}
+
+// a reply to the M4; len 0 (it did not pack) sends nothing
+void AP_RustM4::send_frame(const uint8_t *buf, uint16_t len)
+{
+    if (len == 0) {
+        _dropped++;
+        return;
+    }
+    if (_channel->send(buf, len) != 0) {
+        _dropped++;   // the M4 times the call out
     }
 }
 
@@ -393,30 +517,49 @@ void AP_RustM4::log_rpc_stats(const uint8_t *buf)
 // @Field: PErr: protocol errors in the last second
 // @Field: Drop: frames dropped because the M4's ring was full
 // @Field: Lost: M4 calls without a reply since the previous row
+// @Field: QHit: binding calls refused by their quota since the previous row (answered OK unrun: a bool result reads false)
 // @Field: Cap: pauses the host's duty cap (10 % of the M7's CPU) forced in the last second
-// @Field: CPU: host thread CPU time in the last second, per mille of the M7 (what the duty cap charges)
+// @Field: CPU: host thread and slow worker CPU time in the last second, per mille of the M7 (what the duty cap charges)
 // @Field: Lng: host passes over 50 ms of wall time in the last second (blocked in a binding, or preempted)
 void AP_RustM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED
-    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,Cap,CPU,Lng",
-                                "s-------------", "F-------------", "QBIIBIIIHHIHHH",
+    AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Cap,CPU,Lng",
+                                "s--------------", "F--------------", "QBIIBIIIHHIIHHH",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
-                                _protocol_errors, _dropped, _m4_calls_lost, _duty_cap_hits,
+                                _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits(),
+                                _duty_cap_hits,
                                 uint16_t(MIN(_host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 _long_passes);
     // @LoggerMessage: M4HP
     // @Description: Rust M4 host thread passes, once per second (M4 builds)
     // @Field: TimeUS: Time since system startup
-    // @Field: PassMax: the largest CPU time of one pass in the last second, in microseconds (what the duty cap charges)
-    // @Field: WallBusy: host thread wall time from wake to the end of each pass in the last second, per mille (thread statistics do not feed it; preemption counts, the switch around a pass does not)
-    // @Field: StatsReset: thread statistics resets seen in the last second (an interval with one is charged the CPU since the reset plus 200 us, at most its wall time)
-    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset", "s---", "F---", "QIHH",
-                                AP_HAL::micros64(), _pass_cpu_max_us,
+    // @Field: PassMax: the largest CPU time of one fast-lane pass in the last second, in microseconds (what the duty cap charges)
+    // @Field: WallBusy: host thread wall time from wake to the end of each pass in the last second, per mille (thread statistics do not feed it; preemption and waits on the slow worker count, the switch around a pass does not)
+    // @Field: StatsReset: thread statistics resets seen in the last second, host and slow worker (an interval with one is charged the CPU since the reset plus 200 us, at most its wall time)
+    // @Field: SlowReq: frames the slow worker served in the last second
+    // @Field: SlowMax: the longest of them, wall time in microseconds
+    // @Field: SlowCPU: the largest CPU time of one of them, in microseconds (charged to the duty cap with the host's)
+    // @Field: Deny: binding calls for the slow worker refused unrun in the last second, the duty cap's debt being beyond 50 ms
+    AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax,SlowCPU,Deny", "s-------",
+                                "F-------", "QIHHIIII", AP_HAL::micros64(), _pass_cpu_max_us,
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
-                                _cpu_charge.take_resets());
+                                uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
+                                _slow_max_us, _slow_cpu_max_us, _slow_refused);
 #endif
+    switch (_refusal_notice.update(now_ms, _slow_refused)) {
+    case RustM4::RefusalNotice::Text::Refused:
+        // within one 50-character STATUSTEXT
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rust: M4 calls refused, M7 duty cap %u/s",
+                      unsigned(MIN(_slow_refused, 99999U)));
+        break;
+    case RustM4::RefusalNotice::Text::ServedAgain:
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rust: M4 calls served again");
+        break;
+    case RustM4::RefusalNotice::Text::None:
+        break;
+    }
     _m4_calls_lost = 0;
     if ((uint8_t(_options.get()) & OPTION_RPC_SUMMARY) == 0 || _state != State::Running ||
         now_ms - _last_summary_ms < 10000) {
@@ -497,6 +640,8 @@ void AP_RustM4::check_started(uint32_t now_ms)
         _channel->resetAfterRestart();
         _session_calls = 0;
         _module_count = 0;
+        // the previous session's modules are gone: their slots end, through the PR's cleanups
+        _server.reset(_m4_session, _module_count);
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
         _restart_requested = false;
         enter(State::Running, now_ms);
@@ -618,6 +763,8 @@ void AP_RustM4::failure(const char *reason, const char *detail)
 // spend none of RUST_M4_RST_MAX (_restarts_used)
 void AP_RustM4::grant_restart()
 {
+    // the session's modules end with it
+    _server.reset(0, 0);
     _restart_grants++;
     // the new session starts without the old one's protocol errors
     _protocol_errors = 0;
@@ -669,6 +816,7 @@ void AP_RustM4::go_off(const char *reason)
     }
     // after run_permit: stopping rings the restart doorbell, which the M4 reads as park
     platform_stop();
+    _server.reset(0, 0);
     enter(State::Off, AP_HAL::millis());
 }
 
