@@ -5,8 +5,12 @@
   a hold or a requested park and reports it (MsgType::LuaParked) until answered; the M7 answers
   every report it accepts with a new grant in LUA_CONTROL_SLOT, and LUA_HOLD says whether Lua
   stays parked. Faults and stalls are charged to SCR_M4_RST_MAX; at the limit Lua is off and the
-  M4 runs on. The M7 keeps this copy and never reads the slot back. C++11, no ArduPilot
-  dependencies (host unit tests).
+  M4 runs on. The M7 keeps this copy and never reads the slot back.
+  A new M4 session expects park 1 again under the same grant, so session_started() belongs where
+  the M7 resyncs the channel at that session's start (AP_ScriptingM4::check_started(), on the
+  thread that serves frames): the old session no longer runs once the new one publishes, and the
+  resync drops whatever it queued, so no report of it is read after session_started().
+  C++11, no ArduPilot dependencies (host unit tests).
  */
 
 #include <stdint.h>
@@ -32,14 +36,19 @@ public:
     static const uint32_t PARK_TIMEOUT_MS = 3000;
 
     // LUA_CONTROL_SLOT for the next M4 session
-    uint32_t next_session_word(bool lua_runs) const { return word(lua_runs ? 0U : LUA_HOLD); }
-    // the M4 published that session; lua_runs as given to next_session_word()
+    uint32_t next_session_word(bool lua_runs) const
+    {
+        return word(lua_runs && _state != State::Off ? 0U : LUA_HOLD);
+    }
+    // the M4 published that session; lua_runs as given to next_session_word(). Off stays off
     void session_started(bool lua_runs)
     {
-        _state = lua_runs ? State::Running : State::Parked;
         _held_for_restart = false;
         _restart_wanted = false;
         _park_seq_expected = 1;   // the new M4 session counts its parks from 1
+        if (_state != State::Off) {
+            _state = lua_runs ? State::Running : State::Parked;
+        }
     }
     uint32_t control_word() const
     {
@@ -98,7 +107,8 @@ public:
     }
     bool park_overdue(uint32_t now_ms) const
     {
-        return _state == State::Stopping && now_ms - _stopping_since_ms > PARK_TIMEOUT_MS;
+        // held for the restart, the old session's park report is ignored and never awaited
+        return _state == State::Stopping && !_held_for_restart && now_ms - _stopping_since_ms > PARK_TIMEOUT_MS;
     }
     // Lua calls come from a running Lua, or one asked to park that has not yet
     bool lua_live() const { return _state == State::Running || _state == State::Stopping; }

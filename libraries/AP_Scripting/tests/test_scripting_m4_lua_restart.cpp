@@ -152,6 +152,62 @@ TEST(ScriptingM4LuaRestart, EveryAcceptedReportAdvancesTheGrant)
     EXPECT_EQ(lua.control_word() & LUA_HOLD, 0U);
     EXPECT_EQ(lua.grant(), 4U);
 }
+TEST(ScriptingM4LuaRestart, NewSessionExpectsParkOneAgain)
+{
+    LuaRestart lua = running();
+    uint8_t used = 0;
+    bool charged = false;
+    EXPECT_EQ(lua.parked(0, 1, LuaParkCause::Requested, used, 3, charged), Outcome::Restarted);
+    EXPECT_EQ(lua.parked(1, 2, LuaParkCause::Requested, used, 3, charged), Outcome::Restarted);
+    lua.session_started(true);   // a whole-M4 restart: the new session numbers its parks from 1
+    EXPECT_EQ(lua.parked(lua.grant(), 3, LuaParkCause::Fault, used, 3, charged), Outcome::Ignored);
+    EXPECT_EQ(lua.parked(lua.grant(), 1, LuaParkCause::Fault, used, 3, charged), Outcome::Restarted);
+    EXPECT_EQ(used, 1U);
+}
+
+TEST(ScriptingM4LuaRestart, OffSurvivesANewSession)
+{
+    LuaRestart lua = running();
+    uint8_t used = 1;
+    bool charged = false;
+    EXPECT_EQ(lua.parked(0, 1, LuaParkCause::Fault, used, 1, charged), Outcome::Off);
+    EXPECT_EQ(lua.next_session_word(true), 1U | LUA_HOLD);
+    lua.session_started(true);
+    EXPECT_EQ(lua.state(), State::Off);
+    EXPECT_EQ(lua.control_word(), 1U | LUA_HOLD);
+    EXPECT_FALSE(lua.lua_live());
+    EXPECT_FALSE(lua.request(true, 0));
+    EXPECT_EQ(lua.parked(1, 1, LuaParkCause::Requested, used, 1, charged), Outcome::Ignored);
+    lua.session_started(false);
+    EXPECT_FALSE(lua.request(true, 0));
+    EXPECT_EQ(lua.state(), State::Off);
+}
+
+TEST(ScriptingM4LuaRestart, StopHeldForTheRestartIsNeverOverdue)
+{
+    LuaRestart lua = running();
+    lua.request(false, 0);
+    lua.hold_until_restart();
+    EXPECT_FALSE(lua.park_overdue(LuaRestart::PARK_TIMEOUT_MS + 1));
+    lua.session_started(true);
+    EXPECT_FALSE(lua.park_overdue(LuaRestart::PARK_TIMEOUT_MS + 1));
+}
+
+TEST(ScriptingM4LuaRestart, ParkSequenceWrapsToZero)
+{
+    LuaRestart lua = running();
+    uint8_t used = 0;
+    bool charged = false;
+    for (uint32_t seq = 1; seq <= 65535U; seq++) {
+        ASSERT_EQ(lua.parked(lua.grant(), uint16_t(seq), LuaParkCause::Requested, used, 3, charged),
+                  Outcome::Restarted);
+    }
+    EXPECT_EQ(lua.parked(lua.grant(), 1, LuaParkCause::Requested, used, 3, charged), Outcome::Ignored);
+    EXPECT_EQ(lua.parked(lua.grant(), 0, LuaParkCause::Requested, used, 3, charged), Outcome::Restarted);
+    EXPECT_EQ(lua.parked(lua.grant(), 1, LuaParkCause::Requested, used, 3, charged), Outcome::Restarted);
+    EXPECT_EQ(lua.grant(), 65537U);
+    EXPECT_EQ(used, 0U);
+}
 #endif
 
 AP_GTEST_MAIN()
