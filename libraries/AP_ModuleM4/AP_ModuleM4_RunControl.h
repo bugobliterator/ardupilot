@@ -1,12 +1,11 @@
 #pragma once
 
 /*
-  What the M7 does about requests to stop and restart scripting (MAV_CMD_SCRIPTING STOP and
-  STOP_AND_RESTART, scripting:restart_all(), SCR_ENABLE), as AP_Scripting::thread() does
-  in-process: the scripts stop when scripting should not run (SCR_ENABLE 0, or a stop asked);
-  stopped, they start again on a restart request, or once SCR_ENABLE went to 0 and back to 1. On
-  the M4 build both are a requested restart of the M4, into a session that lists no script
-  (stopped) or one that runs the scripts. A requested restart is no fault: it spends none of
+  What the M7 does about requests to stop and restart the modules: they stop when they should not
+  run (disabled, or a stop asked); stopped, they start again on a restart request, or once enabled
+  went false and back to true. On the M4 both are a requested restart of the M4, into a session
+  that loads no module (stopped) or one that loads them. A change of MOD_RESTART is a restart
+  request (AP_ModuleM4::update()). A requested restart is no fault: it spends none of
   MOD_M4_RST_MAX. C++11, no ArduPilot dependencies (host unit tests).
  */
 
@@ -14,22 +13,20 @@
 
 namespace ModuleM4 {
 
-// the stopped in-process thread looks at the flags once a second: a session runs at least this
-// long before a restart ends it, so a script that restarts scripting at its start restarts at most
-// once a second. A stop needs no wait: it acts at once, as the in-process run loop does
+// a session runs at least this long before a restart ends it, so a module that asks for a restart
+// at its start restarts at most once a second. A stop needs no wait: it acts at once
 static const uint32_t RUN_CONTROL_MIN_SESSION_MS = 1000;
 
 /*
-  The stop and restart requests of AP_Scripting (MAV_CMD_SCRIPTING, the RC stop switch,
-  restart_all()) as the M4 host thread takes them. Any thread asks; the host thread takes. A stop
-  asked without a restart is kept until taken: a restart asked after it (a script's restart_all())
-  does not cancel it, as in-process the stopped script no longer runs to ask
+  The stop and restart requests as the M4 host thread takes them. Any thread asks; the host thread
+  takes. A stop asked without a restart is kept until taken: a restart asked after it does not
+  cancel it
  */
 class RunRequests {
 public:
-    // MAV_CMD_SCRIPTING STOP, the RC stop switch
+    // stop the modules
     void stop() { __atomic_fetch_or(&_asked, STOP_ASKED, __ATOMIC_RELAXED); }
-    // MAV_CMD_SCRIPTING STOP_AND_RESTART, restart_all()
+    // restart the modules (a MOD_RESTART change)
     void restart() { __atomic_fetch_or(&_asked, RESTART_ASKED, __ATOMIC_RELAXED); }
     // a request since the last take; restart: whether it is a restart (no stop without one asked)
     bool take(bool &restart)
@@ -47,15 +44,15 @@ private:
 
 enum class RunAction : uint8_t {
     None,
-    Stop,      // restart the M4 into a session that runs no script ("Scripting: stopped")
-    Restart,   // restart the M4 into a session that runs the scripts ("Scripting: restarted")
+    Stop,      // restart the M4 into a session that loads no module
+    Restart,   // restart the M4 into a session that loads the modules
 };
 
 class RunControl {
 public:
-    // one pass of the host thread while an M4 session runs. enabled: SCR_ENABLE; stop: a request
-    // taken this pass (RunRequests), restart whether it asked for a restart (STOP_AND_RESTART,
-    // restart_all()); running_ms: how long the session has been running
+    // one pass of the host thread while an M4 session runs. enabled: whether modules should run;
+    // stop: a request taken this pass (RunRequests), restart whether it asked for a restart;
+    // running_ms: how long the session has been running
     RunAction update(bool enabled, bool stop, bool restart, uint32_t running_ms)
     {
         if (stop) {
@@ -66,10 +63,10 @@ public:
             _cleared = true;
         }
         if (!_stopped) {
-            // SCR_ENABLE 0 or a stop without restart: the scripts stop at once, whatever the
+            // disabled or a stop without restart: the modules stop at once, whatever the
             // session's age, so no restart asked later can cancel the stop
             if (!enabled || (_stop && !_restart)) {
-                // they start again on a restart request or once SCR_ENABLE has been 0
+                // they start again on a restart request or once disabled and enabled again
                 _stopped = true;
                 _stop = false;
                 _cleared = !enabled;
@@ -99,10 +96,10 @@ private:
         return RunAction::Restart;
     }
 
-    bool _stopped = false;   // the session runs no script
+    bool _stopped = false;   // the session loads no module
     bool _stop = false;      // a stop asked and not yet acted on
     bool _restart = false;   // ... with a restart
-    bool _cleared = false;   // SCR_ENABLE has been 0 since the scripts stopped
+    bool _cleared = false;   // disabled since the modules stopped
 };
 
 }  // namespace ModuleM4
