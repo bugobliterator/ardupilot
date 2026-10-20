@@ -25,6 +25,19 @@ namespace Antmicro.Renode.Peripherals.MTD
             this.flash2 = flash2;
         }
 
+        // BOOT_CM4_ADD0 of the H747/H757 option bytes, as FLASH_BOOT4_CUR reports it
+        // (stm32h757_m4.repl / run.py --m4-elf set it with the RCC's Cm4BootAddress)
+        public uint Cm4BootAddress { get { return cm4BootAddress; } set { cm4BootAddress = value; } }
+
+        public override uint ReadDoubleWord(long offset)
+        {
+            if(offset == Boot4Current)
+            {
+                return (Cm4BootAdd1Reset << 16) | (cm4BootAddress >> 16);
+            }
+            return base.ReadDoubleWord(offset);
+        }
+
         public override void Reset()
         {
             base.Reset();
@@ -109,6 +122,7 @@ namespace Antmicro.Renode.Peripherals.MTD
             }
         }
 
+        private uint cm4BootAddress = DefaultCm4BootAddress;
         private bool bank1Programming;
         private bool bank2Programming;
 
@@ -116,6 +130,9 @@ namespace Antmicro.Renode.Peripherals.MTD
         private readonly MappedMemory flash1;
         private readonly MappedMemory flash2;
 
+        private const long Boot4Current = 0x048;
+        private const uint Cm4BootAdd1Reset = 0x1FF0;
+        private const uint DefaultCm4BootAddress = 0x08100000;
         private const long ControlBank1 = 0x00C;
         private const long ClearControlBank1 = 0x014;
         private const long ControlBank2 = 0x10C;

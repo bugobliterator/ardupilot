@@ -18,6 +18,8 @@
 //    and needs ENR/CCIPR/DxCFGR readback the stock model lacks
 //  - AP_NVIC_RettobaseFix + AP_DWT carried from the F405 harness
 //    (architecture-level ChibiOS blockers)
+//  - stock HSEM replaced by AP_STM32H7_HSEM: the stock model inverts
+//    lock/unlock and has no interrupts
 //  - SPI1/SPI2 declared (IMU/OSD buses) with their fixed DMAMUX request
 //    numbers; UART ReceiveDmaRequest lines wired likewise. On the H7 the
 //    peripheral->request mapping is silicon-fixed and the request->stream
@@ -409,7 +411,9 @@ crc: CRC.STM32_CRC @ sysbus 0x58024C00
 
 watchdog: Miscellaneous.AP_STM32_IWDG @ sysbus 0x58004800
 
-hsem: Miscellaneous.STM32H7_HardwareSemaphore @ sysbus 0x58026400
+hsem: Miscellaneous.AP_STM32H7_HSEM @ sysbus 0x58026400
+    cpu1: cpu
+    C1IRQ -> nvic@125
 
 // Alternate function mapping connections. For more details see `stm32l071.repl`.
 timer1:

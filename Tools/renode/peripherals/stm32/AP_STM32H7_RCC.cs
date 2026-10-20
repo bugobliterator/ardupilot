@@ -3,14 +3,17 @@
 // wrong for boards which use a different crystal or system clock.  This model
 // implements the oscillator, PLL, domain-prescaler and kernel-clock mux
 // registers and propagates their derived clocks into timing-aware Renode
-// peripherals.
+// peripherals.  RCC_GCR.BOOT_C2 starts a held Cortex-M4 (cpu2) when the
+// stm32h757_m4.repl overlay is loaded.
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using Antmicro.Renode.Core;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.CPU;
 
 namespace Antmicro.Renode.Peripherals.Miscellaneous
 {
@@ -18,6 +21,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
     public class AP_STM32H7_RCC : IDoubleWordPeripheral, IKnownSize
     {
         public AP_STM32H7_RCC(
+            IMachine machine,
             IPeripheral nvic = null, IPeripheral dwt = null,
             IPeripheral usart1 = null, IPeripheral usart2 = null,
             IPeripheral usart3 = null, IPeripheral uart4 = null,
@@ -32,6 +36,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             uint hseFrequency = DefaultHseFrequency,
             uint lseFrequency = DefaultLseFrequency)
         {
+            this.machine = machine;
             registers = new Dictionary<long, uint>();
             appliedFrequencies = new Dictionary<IPeripheral, ulong>();
             frequencyErrors = new HashSet<Type>();
@@ -86,6 +91,28 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public IPeripheral Nvic { get { return nvic; } set { nvic = value; UpdateClocks(); } }
         public IPeripheral Dwt { get { return dwt; } set { dwt = value; UpdateClocks(); } }
 
+        // Cortex-M4 of the H747/H757 (stm32h757_m4.repl). Held until RCC_GCR.BOOT_C2.
+        public IPeripheral Cpu2
+        {
+            get { return cpu2; }
+            set
+            {
+                cpu2 = value as CortexM;
+                if(value != null && cpu2 == null)
+                {
+                    throw new ArgumentException("Cpu2 must be a Cortex-M CPU");
+                }
+                if((Register(GCR) & BOOT_C2) == 0)
+                {
+                    HoldCpu2();
+                }
+            }
+        }
+        public IPeripheral Nvic2 { get { return nvic2; } set { nvic2 = value; UpdateClocks(); } }
+        public IPeripheral Dwt2 { get { return dwt2; } set { dwt2 = value; UpdateClocks(); } }
+        // BOOT_CM4_ADD0: where a released cpu2 takes its vector table.
+        public uint Cm4BootAddress { get { return cm4BootAddress; } set { cm4BootAddress = value; } }
+
         public IPeripheral Usart1 { get { return usart1; } set { usart1 = value; UpdateClocks(); } }
         public IPeripheral Usart2 { get { return usart2; } set { usart2 = value; UpdateClocks(); } }
         public IPeripheral Usart3 { get { return usart3; } set { usart3 = value; UpdateClocks(); } }
@@ -109,10 +136,15 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         public void Reset()
         {
+            uint watchdogResetScope;
+            registers.TryGetValue(GCR, out watchdogResetScope);
             registers.Clear();
             registers[CR] = HSION;
             registers[RSR] = PORRSTF | PINRSTF | BORRSTF;
+            // WW1RSC/WW2RSC are cleared only by a power-on reset (RM0399 RCC_GCR).
+            registers[GCR] = watchdogResetScope & (WW1RSC | WW2RSC);
             appliedFrequencies.Clear();
+            HoldCpu2();
             UpdateClocks();
         }
 
@@ -168,6 +200,16 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 registers[CIFR] = 0;
                 registers[CICR] = value;
                 return;
+            case GCR:
+            {
+                var previous = Register(GCR);
+                registers[GCR] = value & (WW1RSC | WW2RSC | BOOT_C1 | BOOT_C2);
+                if((value & BOOT_C2) != 0 && (previous & BOOT_C2) == 0)
+                {
+                    ReleaseCpu2();
+                }
+                return;
+            }
             default:
                 registers[offset] = value;
                 if(IsClockConfigurationRegister(offset))
@@ -250,10 +292,42 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             }
         }
 
+        private void HoldCpu2()
+        {
+            if(cpu2 != null)
+            {
+                cpu2.IsHalted = true;
+            }
+        }
+
+        private void ReleaseCpu2()
+        {
+            if(cpu2 == null)
+            {
+                this.Log(LogLevel.Warning, "RCC_GCR.BOOT_C2 set, but no Cortex-M4 is loaded (stm32h757_m4.repl)");
+                return;
+            }
+            if(!cpu2.IsHalted)
+            {
+                return;
+            }
+            // Set VTOR, SP and PC here: un-halting a CPU that never ran does not
+            // re-run CortexM's initial PC/SP load.
+            var stack = machine.SystemBus.ReadDoubleWord(cm4BootAddress);
+            var entry = machine.SystemBus.ReadDoubleWord(cm4BootAddress + 4);
+            cpu2.VectorTableOffset = cm4BootAddress;
+            cpu2.SP = stack;
+            cpu2.PC = entry;
+            this.Log(LogLevel.Info, "BOOT_C2: Cortex-M4 started at 0x{0:X}, SP 0x{1:X}", entry, stack);
+            cpu2.IsHalted = false;
+        }
+
         private void UpdateClocks()
         {
             SetPeripheralFrequency(nvic, CoreClock);
             SetPeripheralFrequency(dwt, CoreClock);
+            SetPeripheralFrequency(nvic2, HClock);
+            SetPeripheralFrequency(dwt2, HClock);
 
             SetPeripheralFrequency(usart1, Usart16Clock);
             SetPeripheralFrequency(usart6, Usart16Clock);
@@ -616,6 +690,11 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private uint lseFrequency;
         private IPeripheral nvic;
         private IPeripheral dwt;
+        private readonly IMachine machine;
+        private CortexM cpu2;
+        private IPeripheral nvic2;
+        private IPeripheral dwt2;
+        private uint cm4BootAddress = DefaultCm4BootAddress;
         private IPeripheral usart1;
         private IPeripheral usart2;
         private IPeripheral usart3;
@@ -644,6 +723,12 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         }
 
         private const long CR = 0x00;
+        private const long GCR = 0xA0;
+        private const uint WW1RSC = 1u << 0;
+        private const uint WW2RSC = 1u << 1;
+        private const uint BOOT_C1 = 1u << 2;
+        private const uint BOOT_C2 = 1u << 3;
+        private const uint DefaultCm4BootAddress = 0x08100000;
         private const long CFGR = 0x10;
         private const long D1CFGR = 0x18;
         private const long D2CFGR = 0x1C;

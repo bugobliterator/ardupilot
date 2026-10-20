@@ -1,0 +1,134 @@
+--- a/src/Emulator/Cores/tlib/arch/arm/helper.c
++++ b/src/Emulator/Cores/tlib/arch/arm/helper.c
+@@ -858,6 +858,25 @@
+     return 0;
+ }
+ 
++/* Exception entry stacking (ARMv7-M PushStack): the access is checked with the privilege of the
++ * interrupted context, not the handler's, and SP moves to the frame even when a write faults */
++static int v7m_exception_push(CPUState *env, uint32_t val, bool is_user)
++{
++    uint32_t phys_ptr = 0;
++    target_ulong page_size = 0;
++    int ret, prot = 0;
++    uint32_t address = env->regs[13] - 4;
++    ret = get_phys_addr(env, address, env->secure, ACCESS_DATA_STORE, is_user, &phys_ptr, &prot, &page_size, false);
++    env->regs[13] = address;
++    if(ret == TRANSLATE_SUCCESS) {
++        stl_phys(address, val);
++        return 0;
++    }
++    /*  Stacking error - MSTKERR; MMFAR is not valid for it */
++    env->v7m.fault_status[env->secure] |= MEM_FAULT_MSTKERR;
++    return 1;
++}
++
+ static uint32_t v7m_pop(CPUState *env)
+ {
+     uint32_t val;
+@@ -1367,6 +1386,8 @@
+             return; /* Never happens.  Keep compiler happy.  */
+     }
+ 
++    /* stacking uses the privilege of the context the exception interrupts */
++    const bool stack_is_user = !in_privileged_mode(env);
+     env->v7m.handler_mode = true;
+     env->condexec_bits = 0;
+ 
+@@ -1401,35 +1422,35 @@
+             if(arm_feature(env, ARM_FEATURE_V8)) {
+                 if(env->secure && (env->v7m.fpccr[env->secure] & ARM_FPCCR_TS_MASK) > 0) {
+                     for(int i = 15; i >= 8; --i) {
+-                        v7m_push(env, env->vfp.regs[i] >> 32);
+-                        v7m_push(env, env->vfp.regs[i]);
++                        v7m_exception_push(env, env->vfp.regs[i] >> 32, stack_is_user);
++                        v7m_exception_push(env, env->vfp.regs[i], stack_is_user);
+                     }
+                 }
+             }
+             /* Reserved for MVE VPR register, UNKNOWN if not implemented */
+-            v7m_push(env, 0xBADCAFEE);
++            v7m_exception_push(env, 0xBADCAFEE, stack_is_user);
+             uint32_t fpscr = vfp_get_fpscr(env);
+-            v7m_push(env, fpscr);
++            v7m_exception_push(env, fpscr, stack_is_user);
+ 
+             for(int i = 7; i >= 0; i--) {
+                 /* We need to swap low and high register parts, to pop them correctly on state restore.
+                  * The state can be restored on excp exit, or by specific load instructions */
+-                v7m_push(env, env->vfp.regs[i] >> 32);
+-                v7m_push(env, env->vfp.regs[i]);
++                v7m_exception_push(env, env->vfp.regs[i] >> 32, stack_is_user);
++                v7m_exception_push(env, env->vfp.regs[i], stack_is_user);
+             }
+             /* Set default values from FPDSCR to FPSCR in new context */
+             vfp_set_fpscr(env, (fpscr & ~ARM_FPDSCR_VALUES_MASK) | (env->v7m.fpdscr[env->secure] & ARM_FPDSCR_VALUES_MASK));
+         }
+     }
+     /* Switch to the handler mode.  */
+-    stack_status |= v7m_push(env, xpsr);
+-    stack_status |= v7m_push(env, env->regs[15]);
+-    stack_status |= v7m_push(env, env->regs[14]);
+-    stack_status |= v7m_push(env, env->regs[12]);
+-    stack_status |= v7m_push(env, env->regs[3]);
+-    stack_status |= v7m_push(env, env->regs[2]);
+-    stack_status |= v7m_push(env, env->regs[1]);
+-    stack_status |= v7m_push(env, env->regs[0]);
++    stack_status |= v7m_exception_push(env, xpsr, stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[15], stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[14], stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[12], stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[3], stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[2], stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[1], stack_is_user);
++    stack_status |= v7m_exception_push(env, env->regs[0], stack_is_user);
+ 
+     if(env->v7m.has_trustzone) {
+         /* RSHNX: On taking an exception, excluding tail-chaining that requires a transition from Secure to Non-secure state, the
+@@ -1437,21 +1458,21 @@
+          * additional state context registers, when switching from Secure to Non-secure */
+         if(cpu->secure && (lr & 1) == 0) {
+             tlib_printf(LOG_LEVEL_NOISY, "Pushing additional state context registers on stack");
+-            stack_status |= v7m_push(env, env->regs[11]);
+-            stack_status |= v7m_push(env, env->regs[10]);
+-            stack_status |= v7m_push(env, env->regs[9]);
+-            stack_status |= v7m_push(env, env->regs[8]);
+-            stack_status |= v7m_push(env, env->regs[7]);
+-            stack_status |= v7m_push(env, env->regs[6]);
+-            stack_status |= v7m_push(env, env->regs[5]);
+-            stack_status |= v7m_push(env, env->regs[4]);
++            stack_status |= v7m_exception_push(env, env->regs[11], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[10], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[9], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[8], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[7], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[6], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[5], stack_is_user);
++            stack_status |= v7m_exception_push(env, env->regs[4], stack_is_user);
+             /* Marked as reserved in docs */
+-            stack_status |= v7m_push(env, 0xDEADBEEF);
++            stack_status |= v7m_exception_push(env, 0xDEADBEEF, stack_is_user);
+             /* Push integrity signature */
+             uint32_t integrity = INTEGRITY_SIGN;
+             /* Set SFTC bit */
+             integrity |= (lr & ARM_EXC_RETURN_NFPCA_MASK) >> ARM_EXC_RETURN_NFPCA;
+-            stack_status |= v7m_push(env, integrity);
++            stack_status |= v7m_exception_push(env, integrity, stack_is_user);
+ 
+             /* On transition between security states, let's clear registers (RWBND) */
+             for(int i = 0; i < 12; ++i) {
+@@ -1474,9 +1495,11 @@
+     env->regs[15] = addr & 0xfffffffe;
+     env->thumb = addr & 1;
+     if(stack_status) {
+-        do_v7m_exception_exit(env);
+-        env->exception_index = EXCP_DATA_ABORT;
+-        do_interrupt_v7m(env);
++        /* the handler is entered with SP at the frame that was not written, and the stacking
++         * MemManage is pended unless this is the MemManage entry itself */
++        if((env->v7m.exception & ~BANKED_SECURE_EXCP_BIT) != ARMV7M_EXCP_MEM) {
++            tlib_nvic_set_pending_irq(env->secure ? BANKED_SECURE_EXCP(ARMV7M_EXCP_MEM) : ARMV7M_EXCP_MEM);
++        }
+     }
+ 
+     arm_announce_stack_change();

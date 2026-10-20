@@ -2572,6 +2572,10 @@ def _script(root, board, app, bootloader, platform, serial_index, uart_port,
     # base, as it is in the generated ChibiOS build configuration.
     effective_reserve_kb = boot_kb if reserve_kb == 0 else reserve_kb
     app_base = 0x08000000 + effective_reserve_kb * 1024
+    # the application flash region ends before FLASH_RESERVE_END_KB (e.g. a Cortex-M4 image)
+    flash_kb = (app.get_config('FLASH_USE_MAX_KB', default=0, type=int) or
+                app.get_config('FLASH_SIZE_KB', type=int))
+    app_flash_end = 0x08000000 + (flash_kb - app.get_config('FLASH_RESERVE_END_KB', default=0, type=int)) * 1024
     attached_uarts = [
         attachment['port']['peripheral'] for attachment in attachments or []
         if attachment['port']['bus'] == 'uart'
@@ -2823,6 +2827,7 @@ def _script(root, board, app, bootloader, platform, serial_index, uart_port,
     lines.append('')
     return '\n'.join(lines), {
         'app_base': app_base,
+        'app_flash_end': app_flash_end,
         'bootloader_load_base': 0x08000000 + boot_kb * 1024,
         'has_sdcard': has_sdcard,
         'serial_index': serial_index,
