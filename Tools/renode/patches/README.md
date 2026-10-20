@@ -23,6 +23,15 @@ is disabled). The STM32H757 Cortex-M4 sandbox relies on all three. Unprivileged
 STIR (`CCR.USERSETMPEND`) and ITM `TPR` are not modelled: every unprivileged
 PPB data access faults.
 
+`cortex-m-exception-stacking.patch` applies after the privilege patch. Exception
+entry stacks with the privilege of the interrupted context, as ARMv7-M does,
+not with the handler's: an unprivileged thread whose stack has overflowed into
+privileged RAM now faults on stacking (`CFSR.MSTKERR`) instead of writing the
+frame there. SP moves to the frame even when its writes fault, and the handler
+is entered with the stacking MemManage pended (unless it is the MemManage entry
+itself). A derived MemManage on an interrupt's stacking is taken after that
+interrupt's entry, not before it as on silicon.
+
 Apply these from the Renode Infrastructure directory (including its tlib
 checkout), then rebuild both native ARM-M and managed components. The patches
 were developed against Infrastructure `add012af003a0f620d3da52828262676f374d121`
@@ -34,6 +43,7 @@ patch -p1 < /path/to/ardupilot/Tools/renode/patches/usbip-unlink.patch
 patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-debug-monitor.patch
 patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-usb-debug-extensions.patch
 patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-privilege.patch
+patch -p1 < /path/to/ardupilot/Tools/renode/patches/cortex-m-exception-stacking.patch
 ```
 
 Skip patches already applied by your Renode build setup. From the Renode root:

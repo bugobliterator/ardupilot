@@ -269,14 +269,24 @@ def symbol_range(symbols, name):
     return start, start + int(match.group(2), 16)
 
 
+# overflow_stack's frame (push {lr}; sub sp, #260) and the largest exception frame (FP extended,
+# 104 B, plus 4 B of alignment): how far below the Lua stack guard the stacking SP of kind 8 can be
+OVERFLOW_STACK_FRAME = 264
+EXCEPTION_FRAME_MAX = 108
+LUA_STACK_GUARD = 32   # AP_SCRIPTING_M4_LUA_STACK_GUARD_SIZE
+
+
 def test_m4_lua_thread_faults_are_contained(start_m4lua):  # noqa: F811
     symbols = m4_symbols(Path(os.environ.get('M4LUA_M4_ELF', BUILD / 'scripting_m4.elf')))
-    # the AIRCR and RCC writes are the stores in port_lua_fault, the overflow the frames of overflow_stack
+    # the AIRCR and RCC writes are the stores in port_lua_fault
     fault_ranges = {
         7: symbol_range(symbols, 'ScriptingM4::port_lua_fault'),
         9: symbol_range(symbols, 'ScriptingM4::port_lua_fault'),
-        8: symbol_range(symbols, 'overflow_stack'),
     }
+    # the overflow faults while stacking its exception frame below the Lua stack guard, as on
+    # silicon: no frame, so the report gives the SP the stacking used and CFSR.MSTKERR
+    guard_top = symbol_range(symbols, 'lua_stack')[0] + LUA_STACK_GUARD
+    overflow_sp = (guard_top - OVERFLOW_STACK_FRAME - EXCEPTION_FRAME_MAX, guard_top)
     flood_ring_full = symbol_range(symbols, 'ScriptingM4::flood_ring_full')[0]
     run = start_with_scripts(start_m4lua, ['tests/m4_loop.lua'], {'SCR_M4_RST_MAX': 4})
     gcr = run.read_word(RCC_GCR)
@@ -312,10 +322,22 @@ def test_m4_lua_thread_faults_are_contained(start_m4lua):  # noqa: F811
     )
     for used, (kind, fault) in enumerate(steps, start=1):
         run.set('SCR_M4_INJECT', kind)
-        text = run.wait_text(r'^Scripting: M4 %s PC=0x[0-9A-F]{8}$' % fault)
-        pc = int(text.rsplit('=', 1)[1], 16)
-        start, end = fault_ranges[kind]
-        assert start <= pc < end, 'kind %u faulted at PC=0x%08X, outside 0x%08X-0x%08X' % (kind, pc, start, end)
+        if kind == 8:
+            # longer than one STATUSTEXT: the text arrives in two chunks, the second right after the first
+            text = run.wait_text(r'^Scripting: M4 %s on stacking ' % fault)
+            text += run.wait_text(r'.')
+            match = re.match(r'^Scripting: M4 %s on stacking SP=0x([0-9A-F]{8}) CFSR=0x([0-9A-F]{8}) '
+                             r'\(Lua stack overflow\)$' % fault, text)
+            assert match, 'kind 8 reported %r' % text
+            sp, cfsr = int(match.group(1), 16), int(match.group(2), 16)
+            assert overflow_sp[0] <= sp < overflow_sp[1], 'kind 8 stacked at SP=0x%08X, outside 0x%08X-0x%08X' % (
+                sp, overflow_sp[0], overflow_sp[1])
+            assert cfsr & 0x10, 'kind 8 CFSR=0x%08X without MSTKERR' % cfsr
+        else:
+            text = run.wait_text(r'^Scripting: M4 %s PC=0x[0-9A-F]{8}$' % fault)
+            pc = int(text.rsplit('=', 1)[1], 16)
+            start, end = fault_ranges[kind]
+            assert start <= pc < end, 'kind %u faulted at PC=0x%08X, outside 0x%08X-0x%08X' % (kind, pc, start, end)
         run.wait_text(re.escape('Scripting: M4 restarting (%u/4)' % used))
         run.wait_text(re.escape('Scripting: M4 restarted (%u/4)' % used))
         # the scripts load again (the counter starts over) and their calls reach the M7
