@@ -55,6 +55,8 @@ TEST(RustM4ModuleRanges, Overlap)
     EXPECT_TRUE(buffers_overlap(105, 10, 100, 10));
     EXPECT_FALSE(buffers_overlap(100, 10, 110, 10));
     EXPECT_FALSE(buffers_overlap(100, 0, 100, 10));
+    EXPECT_FALSE(buffers_overlap(105, 0, 100, 10));   // empty, inside the other buffer
+    EXPECT_FALSE(buffers_overlap(100, 10, 105, 0));
 }
 
 AP_GTEST_MAIN()

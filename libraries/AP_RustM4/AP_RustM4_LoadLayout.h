@@ -6,6 +6,7 @@
   bottom, RX top-aligned in region 7 below the shared window, RW directly
   below RX. Once staging is released, the stack (above a 32 B no-access
   guard) and the heap are carved from the bottom.
+  The layout's fields are only valid when the result is LoadFit::Ok.
  */
 
 #include <stdint.h>
@@ -39,18 +40,31 @@ struct LoadLayout {
 };
 
 static const uint32_t MODULE_STACK_GUARD = 32U;
+// room for the launch record and the host callback margin (AP_Rust Module.cpp)
+static const uint32_t MODULE_STACK_MIN = 4096U;
+// one allocator granule
+static const uint32_t MODULE_HEAP_MIN = 16U;
+// the .apmod header supplies it; the same limit as the module heap's alignment
+static const uint32_t MODULE_RW_ALIGNMENT_MAX = 4096U;
 
 inline LoadFit load_layout(uint32_t area_base, uint32_t area_size, const LoadRequest &r, LoadLayout &l)
 {
     const uint32_t top = area_base + area_size;
-    if (r.rw_alignment == 0 || (r.rw_alignment & (r.rw_alignment - 1U)) != 0 ||
-        !code_window(top, r.rx_size, r.rx_alignment, l.window)) {
+    if (!code_window(top, r.rx_size, r.rx_alignment, l.window) || l.window.rx_base < area_base) {
         return LoadFit::CodeTooLarge;
     }
-    if (r.rw_memory_size > l.window.rx_base - area_base) {
+    if (r.rw_alignment == 0 || r.rw_alignment > MODULE_RW_ALIGNMENT_MAX ||
+        (r.rw_alignment & (r.rw_alignment - 1U)) != 0 || r.rw_memory_size > l.window.rx_base - area_base) {
         return LoadFit::NoRoomToStage;
     }
     l.rw_base = (l.window.rx_base - r.rw_memory_size) & ~(r.rw_alignment - 1U);
+    if (l.rw_base < area_base || r.file_size > l.rw_base - area_base) {
+        return LoadFit::NoRoomToStage;
+    }
+    if (r.stack_size < MODULE_STACK_MIN || r.stack_size > area_size ||
+        r.heap_size < MODULE_HEAP_MIN || r.heap_size > area_size) {
+        return LoadFit::NoRoomToRun;
+    }
     l.staging_base = area_base;
     l.guard_base = area_base;
     l.stack_base = area_base + MODULE_STACK_GUARD;
@@ -59,10 +73,7 @@ inline LoadFit load_layout(uint32_t area_base, uint32_t area_size, const LoadReq
     l.heap_end = l.heap_base + r.heap_size;
     l.load_peak = r.file_size + (top - l.rw_base);
     l.run_need = (l.heap_end - area_base) + (top - l.rw_base);
-    if (r.file_size > l.rw_base - area_base) {
-        return LoadFit::NoRoomToStage;
-    }
-    if (r.stack_size > area_size || r.heap_size > area_size || l.heap_end > l.rw_base) {
+    if (l.heap_end > l.rw_base) {
         return LoadFit::NoRoomToRun;
     }
     return LoadFit::Ok;

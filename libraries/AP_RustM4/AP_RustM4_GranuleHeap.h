@@ -28,8 +28,17 @@ public:
     bool init(uintptr_t base, uint32_t size, uint32_t *used, uint32_t *starts, uint32_t words)
     {
         _count = 0;
-        if (base % GRANULE != 0 || size < GRANULE || used == nullptr || starts == nullptr ||
-            words < bitmap_words(size)) {
+        if (base % GRANULE != 0 || size < GRANULE || base + size < base || used == nullptr ||
+            starts == nullptr || words < bitmap_words(size)) {
+            return false;
+        }
+        // the module can write the arena, so the bitmaps must lie outside it and apart
+        const uintptr_t used_address = reinterpret_cast<uintptr_t>(used);
+        const uintptr_t starts_address = reinterpret_cast<uintptr_t>(starts);
+        const uintptr_t bitmap_bytes = uintptr_t(words) * sizeof(uint32_t);
+        if (spans_overlap(used_address, bitmap_bytes, base, size) ||
+            spans_overlap(starts_address, bitmap_bytes, base, size) ||
+            spans_overlap(used_address, bitmap_bytes, starts_address, bitmap_bytes)) {
             return false;
         }
         for (uint32_t i = 0; i < words; i++) {
@@ -109,6 +118,10 @@ public:
     }
 
 private:
+    static bool spans_overlap(uintptr_t a, uintptr_t a_length, uintptr_t b, uintptr_t b_length)
+    {
+        return a < b + b_length && b < a + a_length;
+    }
     static bool test(const uint32_t *bits, uint32_t i)
     {
         return ((bits[i >> 5] >> (i & 31U)) & 1U) != 0;
@@ -122,11 +135,11 @@ private:
         bits[i >> 5] &= ~(1U << (i & 31U));
     }
 
-    uintptr_t _base;
-    uint32_t _count;
-    uint32_t *_used;
-    uint32_t *_starts;
-    uint32_t _in_use;
+    uintptr_t _base {};
+    uint32_t _count {};
+    uint32_t *_used {};
+    uint32_t *_starts {};
+    uint32_t _in_use {};
 };
 
 }  // namespace RustM4
