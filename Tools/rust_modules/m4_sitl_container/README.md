@@ -20,11 +20,15 @@ Then run a command from the repository root:
 Tools/rust_modules/m4_sitl_container/run.sh '<command>'
 ```
 
-`run.sh` builds the image `rust-m4-sitl:1` on first use, copies the worktree
-into the volume `rust-m4-sitl-work` (mounted at `/work`, without `.git`; the
-volume's `build/` persists, so the host's `build/` is never shared) and runs
-`<command>` with bash in `/work`, in a container named `rust-m4-sitl`. The exit
-status is the command's; 2 means Docker is not running.
+`run.sh` builds the image `rust-m4-sitl:<tag>` when it is missing (the tag is
+the first 12 hex digits of the Dockerfile's SHA-256, so an edited Dockerfile
+builds a new image), removes a container `rust-m4-sitl` left by an earlier
+run, copies the worktree into the volume `rust-m4-sitl-work` (mounted at
+`/work`, without `.git`; the volume's `build/` persists, so the host's
+`build/` is never shared) and runs `<command>` with bash in `/work`, in a
+container named `rust-m4-sitl` started with `--init`, so stopping `run.sh`
+stops the container. The exit status is the command's; 2 means Docker is not
+running.
 
 `/work` is a one-commit git repository without submodule gitlinks, so waf
 cannot update submodules there: every configure in the container passes

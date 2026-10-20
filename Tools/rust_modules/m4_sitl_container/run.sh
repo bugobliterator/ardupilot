@@ -5,13 +5,20 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-IMAGE=rust-m4-sitl:1
+# the tag follows the Dockerfile, so an edited Dockerfile builds a new image
+TAG="$( (sha256sum "$HERE/Dockerfile" 2> /dev/null || shasum -a 256 "$HERE/Dockerfile") | cut -c1-12)"
+IMAGE="rust-m4-sitl:$TAG"
+NAME=rust-m4-sitl
 VOLUME=rust-m4-sitl-work
 docker info > /dev/null 2>&1 || { echo "run.sh: Docker is not running" >&2; exit 2; }
 docker image inspect "$IMAGE" > /dev/null 2>&1 || docker build --platform linux/amd64 -t "$IMAGE" "$HERE"
 docker volume inspect "$VOLUME" > /dev/null 2>&1 || docker volume create "$VOLUME" > /dev/null
+# a run whose client was killed can leave its container behind
+if docker container inspect "$NAME" > /dev/null 2>&1; then
+    docker rm -f "$NAME" > /dev/null
+fi
 # waf reads the version from git: /work gets a one-commit repository of its own
-exec docker run --rm --platform linux/amd64 --name rust-m4-sitl \
+exec docker run --rm --init --platform linux/amd64 --name "$NAME" \
     -v "$ROOT:/src:ro" -v "$VOLUME:/work" -w /work "$IMAGE" bash -c '
     set -e
     rsync -a --delete --exclude /build/ --exclude .git --exclude __pycache__/ /src/ /work/
