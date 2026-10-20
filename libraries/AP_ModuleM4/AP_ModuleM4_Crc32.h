@@ -54,6 +54,11 @@ inline uint32_t crc32_software_update(uint32_t state, const uint8_t *data, uint3
 struct CrcSelfCheck {
     uint32_t short_check;     // of "123456789": CRC32_CHECK when the unit is right
     uint32_t pattern_check;   // of the 2048 B pattern in pieces: CRC32_PATTERN_CHECK
+
+    bool passed() const
+    {
+        return short_check == CRC32_CHECK && pattern_check == CRC32_PATTERN_CHECK;
+    }
 };
 
 }  // namespace ModuleM4
