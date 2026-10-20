@@ -30,6 +30,8 @@
 // stacks; MPU region privileged-only), then Lua RAM (Lua thread, newlib, Lua heap)
 #define AP_SCRIPTING_M4_PRIV_RAM_SIZE    (32U * 1024U)
 #define AP_SCRIPTING_M4_LUA_STACK_SIZE   (16U * 1024U)
+// MPU no-access guard at the bottom of the Lua stack (the smallest MPU region)
+#define AP_SCRIPTING_M4_LUA_STACK_GUARD_SIZE 32U
 // the Lua heap the M4 image guarantees (linker assert); the SITL M4 caps its heap here too
 #define AP_SCRIPTING_M4_LUA_HEAP_MIN     (192U * 1024U)
 // of that heap, what Lua's count (SCR_HEAP_SIZE) never reaches: newlib's own allocations

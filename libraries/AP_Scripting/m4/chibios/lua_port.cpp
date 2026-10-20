@@ -32,7 +32,7 @@ enum : uint32_t {
 };
 static_assert(SYS_COUNT == 6, "port_syscall compares against the handler count");
 
-static const uint32_t STACK_GUARD_SIZE = 32;
+static const uint32_t STACK_GUARD_SIZE = AP_SCRIPTING_M4_LUA_STACK_GUARD_SIZE;
 
 extern "C" uint8_t __ram1_end__[], __heap_base__[], __heap_end__[];
 

@@ -124,9 +124,11 @@ extern "C" __attribute__((used, noreturn)) void m4_fault_entry(const uint32_t *f
     // a grant is a change from the value seen at start-up, so a grant written
     // before this handler reads the block is not missed
     const uint32_t granted = restart_grant_latched ? restart_grant_at_start : block->restart_grant.load();
+    // a stacking error wrote no frame: PC stays 0 and the LR slot holds the SP the stacking used
     const bool frame_valid = (cfsr & (SCB_CFSR_MSTKERR_Msk | SCB_CFSR_STKERR_Msk)) == 0;
     PeerHeader::recordFault(shared_window(), PeerHeader::Core::M4, cfsr, hfsr,
-                            frame_valid ? frame[6] : 0, frame_valid ? frame[5] : 0);
+                            frame_valid ? frame[6] : 0,
+                            frame_valid ? frame[5] : uint32_t(uintptr_t(frame)));
     SCB->CFSR = cfsr;   // write one to clear
     SCB->HFSR = hfsr;
     __disable_irq();
