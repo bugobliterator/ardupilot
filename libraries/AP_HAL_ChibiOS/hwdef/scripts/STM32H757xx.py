@@ -47,6 +47,15 @@ mcu = {
         (0x30040000,  32, 8), # SRAM3.
         (0x38000000,  64, 1), # SRAM4.
     ],
+    # boards that run the Cortex-M4 (hwdef "env USE_ALT_RAM_MAP 1"): D2 SRAM1/2
+    # are the M4's RAM and SRAM3 is the window shared with the M7, so none of
+    # them is M7 heap
+    'ALT_RAM_MAP' : [
+        (0x24000000, 512, 4), # AXI SRAM. Use this for SDMMC IDMA ops
+        (0x20000000, 128, 2), # DTCM, tightly coupled, no DMA, fast
+        (0x00000400,  63, 2), # ITCM (first 1k removed, to keep address 0 unused)
+        (0x38000000,  64, 1), # SRAM4.
+    ],
     'INSTRUCTION_RAM' : (0x00000400,  63), # ITCM (first 1k removed, to keep address 0 unused)
     'FLASH_RAM' : 		(0x24020000, 384), # AXI SRAM used for process stack and ram functions
     'DATA_RAM' :        (0x20010000,  64), # DTCM, tightly coupled, no DMA, fast
