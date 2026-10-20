@@ -52,6 +52,7 @@ private:
     void forward_call();
     void complete(int32_t result);
     void corrupt_tx_ring();
+    void flood();
     void compute_crc_self_check();
 
     CubePilotFW::Channel *_channel;
@@ -62,9 +63,11 @@ private:
     uint32_t _call_seq;
     uint32_t _call_posted_ms;   // when step() first saw the call Posted
     uint32_t _protocol_errors;  // frames from the M7 that are not a message the M4 serves
+    uint32_t _flood_until_ms;
     bool _ready;
     bool _call_timed;           // _call_posted_ms belongs to the current call
     bool _rx_stalled;
+    bool _flooding;
     CrcSelfCheck _crc_self_check;
     uint8_t _rx[MAX_FRAME];
 };

@@ -20,6 +20,11 @@ enum class MsgType : uint8_t {
     FaultInject = 4, // M7 -> M4: test-only fault request
     // 5, 6, 7: Lua Call, Reply, Notify; reserved
     Ready = 8,       // M7 -> M4: the M7 serves calls of this session
+    BindingCall = 9,   // M4 -> M7: a module's binding call
+    BindingReply = 10, // M7 -> M4: its reply
+    SystemCall = 11,   // M4 -> M7: a runtime call or notify (SystemMethod)
+    SystemReply = 12,  // M7 -> M4: its reply
+    Control = 13,      // M7 -> M4: a request to one module
 };
 
 enum class FaultKind : uint8_t {
@@ -65,8 +70,94 @@ struct __attribute__((packed)) MsgHeader {
     uint32_t seq;
 };
 
-// largest message, header included
-static const uint16_t MAX_FRAME = 1024;
+// largest message, header included (CubeFramework's SpscRing::maxPayload() for the 16 KB rings is about 8 KB)
+static const uint16_t MAX_FRAME = 2048;
+
+enum class ReplyStatus : uint8_t {
+    Ok = 0,
+    // 1, 2: Lua ArgError, Error; unused
+    UnknownMethod = 3,
+    Malformed = 4,
+};
+
+static const uint16_t CALL_FLAG_NOTIFY = 1;   // no reply
+
+struct __attribute__((packed)) BindingCallHeader {
+    MsgHeader header;   // BindingCall; seq set by the service
+    uint16_t module;    // module index
+    uint16_t flags;
+    uint32_t id;        // BindingId
+    uint16_t in_size;   // input bytes that follow (PR wire)
+    uint16_t out_size;  // output bytes the caller expects
+};
+
+struct __attribute__((packed)) BindingReplyHeader {
+    MsgHeader header;   // BindingReply, seq of the call
+    uint8_t transport;  // ReplyStatus
+    uint8_t reserved[3];
+    int32_t status;     // the adapter's AP_MODULE_STATUS_*
+    uint16_t out_size;  // output bytes that follow: 0 unless transport Ok and status OK
+    uint16_t reserved2;
+    uint32_t m7_wake_us;
+    uint32_t m7_exec_us;
+};
+
+enum class SystemMethod : uint16_t {
+    Config = 1, ListModules = 2, Resolve = 3, ModuleState = 4, Text = 5, StopAck = 6, RunStats = 7,
+    Noop = 9, FsOpen = 15, FsRead = 16, FsSeek = 18, FsClose = 20,
+};
+
+struct __attribute__((packed)) SystemCallHeader {
+    MsgHeader header;   // SystemCall
+    uint16_t method;    // SystemMethod
+    uint16_t flags;     // CALL_FLAG_NOTIFY
+};
+
+struct __attribute__((packed)) SystemReplyHeader {
+    MsgHeader header;   // SystemReply, seq of the call
+    uint16_t method;
+    uint8_t transport;  // ReplyStatus
+    uint8_t reserved;
+    int32_t result;     // method result, < 0: -errno
+};
+
+static const uint16_t CONTROL_STOP = 1;
+struct __attribute__((packed)) ControlMsg {
+    MsgHeader header;   // Control, M7 -> M4
+    uint16_t module;
+    uint16_t action;
+};
+
+static const uint16_t MAX_CALL_INPUT = MAX_FRAME - sizeof(BindingCallHeader);
+static const uint16_t MAX_REPLY_OUTPUT = MAX_FRAME - sizeof(BindingReplyHeader);
+
+// system method contents, without the value codec
+struct __attribute__((packed)) ConfigRequest { SystemCallHeader call; uint32_t crc_short; uint32_t crc_pattern; };
+struct __attribute__((packed)) ConfigReply {
+    SystemReplyHeader reply;
+    int32_t heap_size, code_size, stack_size;   // MOD_HEAP_MAX, MOD_CODE_MAXSIZE (clamped), MOD_STACK_MAX
+    uint8_t max_modules, debug_options, m4_options, reserved;
+};
+struct __attribute__((packed)) ModuleEntry { char name[64]; uint32_t size; };
+struct __attribute__((packed)) ListModulesReply { SystemReplyHeader reply; uint8_t count; uint8_t reserved[3]; ModuleEntry modules[8]; };
+static const uint16_t RESOLVE_MAX = 250;
+struct __attribute__((packed)) ResolveRequest { SystemCallHeader call; uint16_t count; uint16_t reserved; uint64_t hashes[RESOLVE_MAX]; };
+struct __attribute__((packed)) ResolveReply { SystemReplyHeader reply; uint16_t count; uint16_t reserved; uint32_t ids[RESOLVE_MAX]; };
+enum class ModuleStateKind : uint8_t { Loaded = 1, Started = 2, Returned = 3, Panicked = 4, Failed = 5 };
+struct __attribute__((packed)) ModuleStateNotify {
+    SystemCallHeader call;   // CALL_FLAG_NOTIFY
+    uint16_t module; uint8_t state; uint8_t reserved;
+    uint32_t rx_size, rw_size, heap_size, stack_size, crc;
+    int32_t result;          // start()'s result for Returned
+    char text[192];          // panic message or failure reason, terminated
+};
+struct __attribute__((packed)) TextNotify { SystemCallHeader call; uint16_t module; uint8_t severity; uint8_t reserved; uint16_t length; char text[512]; };
+struct __attribute__((packed)) FsOpenRequest { SystemCallHeader call; char path[128]; };   // read only
+// an FsRead reply carries the bytes after a SystemReplyHeader whose result is the count, at most 2000
+struct __attribute__((packed)) FsReadRequest { SystemCallHeader call; int32_t fd; uint16_t count; uint16_t reserved; };
+struct __attribute__((packed)) FsCloseReply { SystemReplyHeader reply; uint32_t crc; uint32_t served; };
+static_assert(sizeof(ResolveRequest) <= MAX_FRAME && sizeof(ResolveReply) <= MAX_FRAME, "resolve fits a frame");
+static_assert(sizeof(ListModulesReply) <= MAX_FRAME && sizeof(TextNotify) <= MAX_FRAME, "system frames fit");
 
 struct __attribute__((packed)) StatsMsg {
     MsgHeader header;
@@ -108,6 +199,16 @@ inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
         return len == sizeof(FaultInjectMsg);
     case MsgType::Ready:
         return len == sizeof(ReadyMsg);
+    case MsgType::BindingCall:
+        return len >= sizeof(BindingCallHeader);
+    case MsgType::BindingReply:
+        return len >= sizeof(BindingReplyHeader);
+    case MsgType::SystemCall:
+        return len >= sizeof(SystemCallHeader);
+    case MsgType::SystemReply:
+        return len >= sizeof(SystemReplyHeader);
+    case MsgType::Control:
+        return len == sizeof(ControlMsg);
     }
     return false;
 }
@@ -118,6 +219,76 @@ inline void fill_header(MsgHeader &header, MsgType type, uint16_t length, uint32
     header.reserved = 0;
     header.length = length;
     header.seq = seq;
+}
+
+inline uint16_t pack_binding_call(uint8_t *frame, uint16_t cap, uint32_t seq, uint16_t module, uint16_t flags,
+                                  uint32_t id, const uint8_t *input, uint16_t in_size, uint16_t out_size)
+{
+    const uint32_t length = uint32_t(sizeof(BindingCallHeader)) + in_size;
+    if (length > MAX_FRAME || length > cap || out_size > MAX_REPLY_OUTPUT || (in_size != 0 && input == nullptr)) {
+        return 0;
+    }
+    BindingCallHeader h;
+    fill_header(h.header, MsgType::BindingCall, uint16_t(length), seq);
+    h.module = module;
+    h.flags = flags;
+    h.id = id;
+    h.in_size = in_size;
+    h.out_size = out_size;
+    memcpy(frame, &h, sizeof(h));
+    if (in_size != 0) {
+        memcpy(frame + sizeof(h), input, in_size);
+    }
+    return uint16_t(length);
+}
+
+inline bool parse_binding_call(const uint8_t *frame, uint16_t len, BindingCallHeader &h)
+{
+    if (len < sizeof(h) || len > MAX_FRAME) {
+        return false;
+    }
+    memcpy(&h, frame, sizeof(h));
+    return h.header.type == uint8_t(MsgType::BindingCall) && h.header.length == len &&
+           uint32_t(sizeof(h)) + h.in_size == len && h.out_size <= MAX_REPLY_OUTPUT;
+}
+
+inline uint16_t pack_binding_reply(uint8_t *frame, uint16_t cap, uint32_t seq, ReplyStatus transport, int32_t status,
+                                   const uint8_t *output, uint16_t out_size, uint32_t wake_us, uint32_t exec_us)
+{
+    if (transport != ReplyStatus::Ok || status != 0) {
+        out_size = 0;
+    }
+    const uint32_t length = uint32_t(sizeof(BindingReplyHeader)) + out_size;
+    if (length > MAX_FRAME || length > cap || (out_size != 0 && output == nullptr)) {
+        return 0;
+    }
+    BindingReplyHeader h {};
+    fill_header(h.header, MsgType::BindingReply, uint16_t(length), seq);
+    h.transport = uint8_t(transport);
+    h.status = status;
+    h.out_size = out_size;
+    h.m7_wake_us = wake_us;
+    h.m7_exec_us = exec_us;
+    memcpy(frame, &h, sizeof(h));
+    if (out_size != 0) {
+        memcpy(frame + sizeof(h), output, out_size);
+    }
+    return uint16_t(length);
+}
+
+inline bool parse_binding_reply(const uint8_t *frame, uint16_t len, BindingReplyHeader &h, const uint8_t *&output)
+{
+    if (len < sizeof(h) || len > MAX_FRAME) {
+        return false;
+    }
+    memcpy(&h, frame, sizeof(h));
+    if (h.header.type != uint8_t(MsgType::BindingReply) || h.header.length != len ||
+        uint32_t(sizeof(h)) + h.out_size != len ||
+        (h.out_size != 0 && (h.transport != uint8_t(ReplyStatus::Ok) || h.status != 0))) {
+        return false;
+    }
+    output = frame + sizeof(h);
+    return true;
 }
 
 // short name of an M4 fault record; the SITL M4 records a signal number instead
