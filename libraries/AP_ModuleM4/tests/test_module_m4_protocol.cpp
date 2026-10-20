@@ -40,7 +40,7 @@ TEST(ModuleM4Protocol, RejectsShortWrongLengthAndUnknown)
     memcpy(buf, &ready, sizeof(ready));
     EXPECT_FALSE(parse_header(buf, MAX_FRAME + 4, header));           // longer than a frame
     // unknown types: the retired Ping, Lua's Call, Reply and Notify, anything else
-    for (uint8_t type : { 0, 1, 2, 5, 6, 7, 9, 99 }) {
+    for (uint8_t type : { 0, 1, 2, 5, 6, 7, 14, 99 }) {
         fill_header(ready.header, MsgType::Ready, sizeof(ready), 1);
         ready.header.type = type;
         memcpy(buf, &ready, sizeof(ready));

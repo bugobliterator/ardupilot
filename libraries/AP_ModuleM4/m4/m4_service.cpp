@@ -25,6 +25,7 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _ready = false;
     _rx_stalled = false;
     _call_timed = false;
+    _flooding = false;
     compute_crc_self_check();
 }
 
@@ -90,6 +91,13 @@ void M4Service::step_locked()
         // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
         forward_call();
     }
+    if (_flooding) {
+        if (now_ms - _flood_until_ms < 0x80000000U) {
+            _flooding = false;   // FLOOD_MS has passed
+        } else {
+            flood();
+        }
+    }
     // a receive error other than empty leaves the frame queued: stop beating so
     // the M7 sees a stale heartbeat and restarts us, which clears the ring
     if (!_rx_stalled) {
@@ -127,14 +135,20 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     case MsgType::FaultInject:
         handle_fault_inject(buf);
         return;
+    case MsgType::Control:
+        return;   // not acted on by this service yet
+    case MsgType::BindingReply:
+    case MsgType::SystemReply:
+        if (_link->state.load() == ModuleLink::Sent && header.seq == _call_seq) {
+            memcpy(_link->reply, buf, len);
+            complete(len);
+            return;
+        }
+        break;
     case MsgType::Stats:
+    case MsgType::BindingCall:
+    case MsgType::SystemCall:
         break;   // M4 -> M7 only
-    }
-    if (_link->state.load() == ModuleLink::Sent && header.seq == _call_seq) {
-        // the reply to the posted call, whatever its type
-        memcpy(_link->reply, buf, len);
-        complete(len);
-        return;
     }
     _protocol_errors++;
 }
@@ -150,6 +164,10 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
     case FaultKind::RingCorrupt:
         corrupt_tx_ring();
         return;
+    case FaultKind::Flood:
+        _flooding = true;
+        _flood_until_ms = _platform.millis() + FLOOD_MS;
+        return;
     case FaultKind::HardFault:
     case FaultKind::MemManage:
     case FaultKind::Stall:
@@ -158,11 +176,8 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
         _platform.inject_fault(FaultKind(inject.kind));
         return;
     case FaultKind::None:
-    case FaultKind::Flood:
         break;
     }
-    // Flood needs a frame the M7 serves as a no-op; this service has none, so it is
-    // unsupported, as is any value that is not a service FaultKind
 }
 
 void M4Service::forward_call()
@@ -171,8 +186,9 @@ void M4Service::forward_call()
     // before it reaches the M7, as the M7 checks it again
     const uint16_t len = _link->request_len;
     MsgHeader header;
-    if (len > MAX_FRAME || !parse_header(_link->request, len, header)) {
-        complete(-EINVAL);
+    if (len > MAX_FRAME || !parse_header(_link->request, len, header) ||
+        (MsgType(header.type) != MsgType::BindingCall && MsgType(header.type) != MsgType::SystemCall)) {
+        complete(-EINVAL);   // only calls go M4 -> M7 from the module thread
         return;
     }
     header.seq = ++_seq;
@@ -191,6 +207,27 @@ void M4Service::complete(int32_t result)
     _link->state.store(ModuleLink::Done);
     if (_platform.wake_module != nullptr) {
         _platform.wake_module();
+    }
+}
+
+static volatile uint32_t flood_ring_full;
+
+void M4Service::flood()
+{
+    // valid notify frames until the ring is full: the M7 must bound the time it spends on them
+    SystemCallHeader noop;
+    fill_header(noop.header, MsgType::SystemCall, sizeof(noop), 0);
+    noop.method = uint16_t(SystemMethod::Noop);
+    noop.flags = CALL_FLAG_NOTIFY;
+    // the service may sleep 5 ms between steps, so each step fills the ring to the top; bounded
+    // by twice the frames one ring (half the data) holds, as the M7 drains it meanwhile
+    const uint32_t max_frames = (CHANNEL_WINDOW_SIZE - Channel::kOverhead) / sizeof(noop);
+    for (uint32_t i = 0; i < max_frames; i++) {
+        noop.header.seq = ++_seq;
+        if (_channel->send(&noop, sizeof(noop)) != 0) {
+            flood_ring_full = flood_ring_full + 1;
+            return;
+        }
     }
 }
 
