@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Heap.h"
 
-#if AP_SCRIPTING_RUST_ENABLED
+#if AP_SCRIPTING_RUST_ENABLED && !AP_RUST_M4_ENABLED
 
 namespace AP_Rust
 {

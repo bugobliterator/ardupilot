@@ -3,7 +3,10 @@
 
 #include "AP_Rust_config.h"
 
-#if AP_SCRIPTING_RUST_ENABLED
+#if AP_SCRIPTING_RUST_ENABLED && AP_RUST_M4_ENABLED
+// the same public interface, implemented over the Cortex-M4 (libraries/AP_RustM4)
+#include <AP_RustM4/AP_RustM4_Runtime.h>
+#elif AP_SCRIPTING_RUST_ENABLED
 #if !HAL_OWNED_THREADS_ENABLED || !HAL_EXECUTABLE_MEMORY_ENABLED
 #error "Rust modules require owned threads and executable memory"
 #endif

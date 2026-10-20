@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Runtime.h"
 
-#if AP_SCRIPTING_RUST_ENABLED
+#if AP_SCRIPTING_RUST_ENABLED && !AP_RUST_M4_ENABLED
 #include "BindingAnalogPWM.h"
 #include "BindingArming.h"
 #include "BindingCAN.h"
