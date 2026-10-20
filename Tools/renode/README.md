@@ -458,10 +458,11 @@ its ELF load address and holds the M4 until the M7 sets `RCC_GCR.BOOT_C2`
 (the `BCM4=0` option-byte behaviour). The M4 then starts from that address.
 Both cores run serially with a 100 us quantum.
 `--m4-elf` needs a board whose hwdef reserves the M4 area with
-`FLASH_RESERVE_END_KB` (CubeOrangePlus-M4Lua); run.py also sets the flash
-controller's `BOOT4_CUR` from the ELF.
+`FLASH_RESERVE_END_KB` (CubeOrangePlus-SimOnHardWare-M4Module); run.py also sets
+the flash controller's `BOOT4_CUR` from the ELF.
 
-    Tools/renode/run.py CubeOrangePlus-M4Lua --m4-elf build/CubeOrangePlus-M4Lua/bin/scripting_m4.elf
+    Tools/renode/run.py CubeOrangePlus-SimOnHardWare-M4Module --vehicle arduplane \
+        --m4-elf build/CubeOrangePlus-SimOnHardWare-M4Module/bin/module_m4.elf
 
 The M4 has its own NVIC and DWT; it sees the rest of the bus as the M7 does.
 The option bytes the M7 checks before releasing the M4 are modelled read-only:
@@ -470,31 +471,14 @@ Not modelled: TCM privacy, the 0x10000000 D2 SRAM aliases, peripheral
 interrupts to the M4, and option-byte programming. `AP_STM32H7_HSEM` provides the
 semaphores and their HSEM1/HSEM2 interrupts. `tests/test_dual_core.py` covers
 hold and release, the HSEM, and a CubeFramework boot handshake
-(`CUBEFRAMEWORK_DIR=/path/to/CubeFramework`). `tests/test_m4_containment.py`
-boots the CubeOrangePlus-M4Lua Copter firmware with its M4 scripting image,
-injects faults on the M4 and checks that the M7 restarts it up to the
-`SCR_M4_RST_MAX` limit, then turns scripting off, without rebooting.
+(`CUBEFRAMEWORK_DIR=/path/to/CubeFramework`).
 
-`tests/test_m4_fault_reports.py` covers the fault reports the containment tests do not reach: a
-restarted M4 that faults right after it publishes its header, alone and with a STOP taken before its
-heartbeat times out, and a fault inside an M4 interrupt handler, which parks the M4. The three take
-about 5 minutes together; a failing one may wait out its 15-minute script timeout.
-
-`tests/test_m4_flight.py` flies the CubeOrangePlus-M4Lua Copter against the physics sidecar, as
-the CubeOrangePlus QuadPlane flight does. Its three flights are opt-in, as together they take about
-half an hour: set `M4_RENODE_FLIGHTS=1` to run them.
-
-- `test_m4_flight_harness`: a forced arm from the GCS, a short AUTO mission (take off, one waypoint,
-  land at home) and a script running on the M4 throughout (about 8 minutes).
-- `test_m4_mission_flight`: `m4_mission_flight.lua` arms the vehicle, holds a LOITER_UNLIM and moves
-  the mission on; its binding calls are checked against the SRPC log rows (about 10 minutes).
-- `test_m4_faults_mid_auto`: M4 faults while the vehicle holds in AUTO; the scripts reload, then
-  scripting turns off at the fault limit and the mission lands (about 12 to 15 minutes).
-
-They need the variant build and `build/sitl/tool/renode-physics` (`./waf --targets tool/renode-physics`
-on a SITL configuration, or `M4LUA_PHYSICS`). Renode flies about 4 to 5 times slower than real time.
-
-    M4_RENODE_FLIGHTS=1 python -m pytest Tools/renode/tests/test_m4_flight.py
+`tests/m4_module_harness.py` is shared by the Rust-on-M4 tests: its `start_m4`
+fixture boots the CubeOrangePlus-SimOnHardWare-M4Module Plane firmware with its M4
+image (`M4MODULE_ELF`, `M4MODULE_M4_ELF` override the build paths), connects MAVLink
+and the monitor, and `M4Run.wait_m4_started()` returns the
+`Module: started on M4 (...)` text. It also uploads files over MAVLink FTP and
+reads the DataFlash log from the SD card image after a run.
 
 ### Graphical launcher
 
