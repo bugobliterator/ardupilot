@@ -206,7 +206,8 @@ def test_m4_dropped_objects_do_not_cross_a_restart(start_m4lua, tmp_path):  # no
 def test_m4_devices(start_m4lua, tmp_path):  # noqa: F811
     '''I2C, PWM sources and CRSF menus on the real drivers, again after a restart: the M7 freed
     the first session's devices, sources and menus, or the second would find the tables full.
-    Socket() with networking off is refused before lwIP is called.'''
+    Socket() with networking off is refused before lwIP is called (plain board; M4LuaNet has no
+    Socket global yet).'''
     script = tmp_path / 'm4_devices_renode.lua'
     assert DEVICES_SCRIPT.count(DEVICES_SOCKET_CHECKS) == 1
     if NETWORKING_BOARD:

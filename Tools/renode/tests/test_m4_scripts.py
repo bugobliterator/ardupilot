@@ -211,8 +211,9 @@ def test_m4_runs_scripts(start_m4lua, tmp_path):  # noqa: F811
     texts = [r'^hello, world$', r'^String tests passed$', r'^Math tests passed$', r'^M4 loop 3$',
              r'^Test 100 fault_count 100$']
     if os.environ.get('M4LUA_BOARD') == 'CubeOrangePlus-M4LuaNet':
-        print('skipping tests/strings.lua on CubeOrangePlus-M4LuaNet: '
-              'needs > 110 KB heap; peak not monotonic (GC timing)', flush=True)
+        print('skipping tests/strings.lua on CubeOrangePlus-M4LuaNet: fails intermittently on the 110 KB '
+              'networking heap; sweep not monotonic (passed 110 KB, failed 119-121 KB, passed >= 123 KB), '
+              'suspected GC timing: see Lua Thread Restart results', flush=True)
         skipped = ('strings.lua',)
         scripts.remove('tests/strings.lua')
         texts.remove(r'^String tests passed$')
