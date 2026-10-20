@@ -9,7 +9,10 @@
 #include <AP_Scripting/AP_Scripting_config.h>
 #include <AP_Vehicle/AP_Vehicle_Type.h>
 
-#if AP_SCRIPTING_ENABLED && (APM_BUILD_TYPE(APM_BUILD_ArduPlane) || APM_BUILD_COPTER_OR_HELI)
+#include <AP_Motors/AP_Motors_config.h>
+
+#if AP_SCRIPTING_ENABLED && (APM_BUILD_TYPE(APM_BUILD_ArduPlane) || APM_BUILD_COPTER_OR_HELI) && \
+    AP_MOTORS_FRAME_DYNAMIC_SCRIPTING_MATRIX_ENABLED
 #define AP_RUST_MOTOR_CONFIG_ENABLED 1
 #include <AP_Math/AP_Math.h>
 #include <AP_Motors/AP_MotorsMatrix.h>
