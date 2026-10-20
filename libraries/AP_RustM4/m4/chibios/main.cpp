@@ -240,6 +240,9 @@ static void art_enable()
 {
     RCC_C2->AHB1ENR |= RCC_AHB1ENR_ARTEN;
     (void)RCC_C2->AHB1ENR;
+    // the CRC unit (crc_port.cpp) is the M4's alone: the M7 never enables or uses it
+    RCC_C2->AHB4ENR |= RCC_AHB4ENR_CRCEN;
+    (void)RCC_C2->AHB4ENR;
     // EN off while PCACHEADDR changes (RM0399 6.3.2). Stale code is not possible: the image is
     // rewritten only by SWD or the bootloader, and both end in a system reset, which clears CTR
     ART->CTR &= ~ART_CTR_EN;

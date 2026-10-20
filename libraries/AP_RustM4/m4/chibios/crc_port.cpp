@@ -6,8 +6,8 @@
   __RBIT(state), which lets a feed continue any earlier one, and a zlib seed s
   starts from state ~s (INIT = __RBIT(~s); s = 0 gives 0xFFFFFFFF).
 
-  The M7 enabled the unit's clock for this core (RCC_C2 AHB4ENR.CRCEN) before
-  releasing it and never uses the unit. On the M4 it is shared by the service
+  This core enables the unit's clock in its own RCC_C2 set (AHB4ENR.CRCEN, at
+  boot in main.cpp); the M7 never enables or uses the unit. On the M4 it is shared by the service
   thread (ring reads, the loader's checksum) and the module thread (ring
   writes inside its SVC handlers): every chunk runs with the kernel locked and
   reloads INIT from the caller's own state, so calls from the two threads
