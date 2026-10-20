@@ -11,10 +11,10 @@ FLASH_RESERVE_END_KB 256
 # D2 SRAM1/2 are the M4's RAM and SRAM3 the shared window: not M7 heap
 env USE_ALT_RAM_MAP 1
 
-# build the M4 image and the CubeFramework transport (Tools/ardupilotwaf/cubeframework.py);
-# the M7 still runs Rust in-process until AP_MODULE_M4_ENABLED is set
+# build the M4 image and the CubeFramework transport (Tools/ardupilotwaf/cubeframework.py,
+# which also defines AP_CUBEFRAMEWORK_ENABLED); the M7 still runs Rust in-process until
+# AP_MODULE_M4_ENABLED is set
 env MODULE_M4 1
-define AP_CUBEFRAMEWORK_ENABLED 1
 
 define AP_SCRIPTING_LUA_ENABLED 0
 define AP_MODULE_ENABLED 1
