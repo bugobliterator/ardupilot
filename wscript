@@ -275,6 +275,9 @@ submodules at specific revisions.
     g.add_option('--disable-modules', action='store_true', default=False,
                  help="Disable native modules")
 
+    g.add_option('--enable-m4-modules', action='store_true', default=False,
+                 help="SITL: run native Rust modules in a second process over the CubeFramework transport")
+
     g.add_option('--no-gcs', action='store_true',
                  default=False,
                  help="Disable GCS code")
@@ -554,6 +557,14 @@ def configure(cfg):
 
     cfg.msg('Setting board to', cfg.options.board)
     cfg.get_board().configure(cfg)
+
+    if cfg.options.enable_m4_modules:
+        if cfg.env.BOARD_CLASS != 'SITL':
+            cfg.fatal('--enable-m4-modules is for SITL; hardware uses --board CubeOrangePlus-SimOnHardWare-M4Module')
+        cfg.env.MODULE_M4 = '1'
+        cfg.env.DEFINES += ['AP_MODULE_M4_ENABLED=1']
+    if cfg.env.MODULE_M4:
+        cfg.load('cubeframework')
 
     cfg.load('waf_unit_test')
     cfg.load('mavgen')
@@ -967,6 +978,9 @@ def build(bld):
         bld.env.AP_LIBRARIES_OBJECTS_KW['use'] += ['littlefs']
         bld.littlefs()
 
+    if bld.env.MODULE_M4:
+        bld.env.AP_LIBRARIES_OBJECTS_KW['use'] += ['cubeframework']
+
     _build_cmd_tweaks(bld)
 
     if bld.env.SUBMODULE_UPDATE:
@@ -978,6 +992,11 @@ def build(bld):
     _build_dynamic_sources(bld)
 
     bld.add_group('build')
+    if bld.env.MODULE_M4:
+        # not before the build group: posting a cxx stlib/program earlier runs the compile
+        # database dry run, which globs generated DroneCAN sources before they exist
+        bld.cubeframework()
+        bld.module_m4_image()
     bld.get_board().build(bld)
     _build_common_taskgens(bld)
 
