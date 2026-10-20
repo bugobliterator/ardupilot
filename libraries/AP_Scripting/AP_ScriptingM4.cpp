@@ -577,15 +577,15 @@ void AP_ScriptingM4::supervise(uint32_t now_ms)
     }
 }
 
-// the GCS reason of the fault an M4 recorded: "HardFault PC=0x0810A3C4", in SITL the signal and address
+// the GCS reason of the fault an M4 recorded: "HardFault PC=0x0810A3C4" (ScriptingM4::fault_reason_text),
+// in SITL the signal and address
 static void fault_reason(const PeerHeader::View &view, char *reason, size_t reason_len)
 {
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
     hal.util->snprintf(reason, reason_len, "signal %u addr=0x%08X",
                        unsigned(view.faultCfsr), unsigned(view.faultPc));
 #else
-    hal.util->snprintf(reason, reason_len, "%s PC=0x%08X",
-                       ScriptingM4::fault_name(view.faultCfsr, view.faultHfsr), unsigned(view.faultPc));
+    ScriptingM4::fault_reason_text(reason, reason_len, view.faultCfsr, view.faultHfsr, view.faultPc, view.faultLr);
 #endif
 }
 
@@ -656,7 +656,7 @@ void AP_ScriptingM4::check_running(uint32_t now_ms)
         if (view.faultCount != _m4_fault_count) {
             _m4_fault_count = view.faultCount;
             _m4_fault_pc = view.faultPc;
-            char reason[40];
+            char reason[80];
             fault_reason(view, reason, sizeof(reason));
             failure(reason);
             return;
@@ -698,7 +698,7 @@ bool AP_ScriptingM4::report_start_fault()
         return false;
     }
     _m4_fault_pc = view.faultPc;
-    char reason[40];
+    char reason[80];
     fault_reason(view, reason, sizeof(reason));
     failure(reason);
     return true;

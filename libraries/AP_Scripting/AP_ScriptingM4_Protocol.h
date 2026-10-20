@@ -10,7 +10,9 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include "AP_ScriptingM4_Placement.h"
 
 namespace ScriptingM4 {
 
@@ -154,6 +156,36 @@ inline const char *fault_name(uint32_t cfsr, uint32_t hfsr)
         return "UsageFault";
     }
     return "HardFault";
+}
+
+// a fault taken while stacking its exception frame (CFSR MSTKERR or STKERR): no frame was
+// written, so the M4 records no PC, and the SP the stacking used in place of LR
+inline bool fault_on_stacking(uint32_t cfsr)
+{
+    return (cfsr & ((1U << 4) | (1U << 12))) != 0;
+}
+
+// how far below the Lua stack a stacking SP is still taken for a Lua stack overflow: the frame
+// that ran into the guard or past it into privileged RAM, and the exception frame below it.
+// The privileged stacks and data sit at the bottom of privileged RAM, well below this
+static const uint32_t LUA_STACK_OVERFLOW_REACH = 1024;
+
+// the reason of an M4 image fault record: "MemManage PC=0x081D047C", or for a fault on stacking
+// "MemManage on stacking SP=0x30007F60 CFSR=0x00000093", then " (Lua stack overflow)" when that
+// SP is in the Lua stack guard or just below it
+inline void fault_reason_text(char *text, size_t text_len, uint32_t cfsr, uint32_t hfsr, uint32_t pc, uint32_t lr)
+{
+    const char *name = fault_name(cfsr, hfsr);
+    if (!fault_on_stacking(cfsr)) {
+        snprintf(text, text_len, "%s PC=0x%08X", name, unsigned(pc));
+        return;
+    }
+    const uint32_t lua_stack_base = AP_SCRIPTING_M4_RAM_BASE + AP_SCRIPTING_M4_PRIV_RAM_SIZE;
+    const uint32_t sp = lr;
+    const bool lua_overflow = sp >= lua_stack_base - LUA_STACK_OVERFLOW_REACH &&
+                              sp < lua_stack_base + AP_SCRIPTING_M4_LUA_STACK_GUARD_SIZE;
+    snprintf(text, text_len, "%s on stacking SP=0x%08X CFSR=0x%08X%s", name, unsigned(sp), unsigned(cfsr),
+             lua_overflow ? " (Lua stack overflow)" : "");
 }
 
 }  // namespace ScriptingM4
