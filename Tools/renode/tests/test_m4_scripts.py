@@ -89,6 +89,8 @@ def upload_scripts(run, paths):
 def host_thread_stack(run, local_path):
     '''(free, size) bytes of the M7 ScriptingM4 host thread stack, from @SYS/threads.txt.'''
     ftp = mavftp.MAVFTP(run.mav, run.mav.target_system, run.mav.target_component)
+    # pymavlink's default temp file, /tmp/temp_mavftp_file, is shared by every process's get
+    ftp.temp_filename = str(local_path) + '.part'
     ret = ftp.cmd_get(['@SYS/threads.txt', str(local_path)])
     assert ret.error_code == 0, 'get threads.txt: %s' % ret
     ret = ftp.process_ftp_reply('OpenFileRO', timeout=60)
