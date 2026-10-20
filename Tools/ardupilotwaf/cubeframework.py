@@ -17,8 +17,12 @@ CF_SOURCES = ['CubePilotFW/Channel.cpp', 'CubePilotFW/SpscRing.cpp', 'CubePilotF
 CF_CHIBIOS_SOURCES = CF_SOURCES + ['CubePilotFW/pal/HSEM.cpp']
 CF_POSIX_SOURCES = CF_SOURCES + ['CubePilotFW/pal/Posix.cpp', 'CubePilotFW/pal/PosixHSEM.cpp',
                                  'CubePilotFW/pal/PosixChannel.cpp']
+# CubeFramework headers need C++17 (std::atomic<T>::is_always_lock_free). Only the objects that
+# include them get it: CubeFramework itself, the M4 process and the AP_ModuleM4 library objects
+# (configure()); the rest of the M7 build stays on ArduPilot's gnu++11. The later -std wins
+CXX17_CXXFLAGS = ['-std=gnu++17']
 # CubeFramework keeps its own warning set, not ArduPilot's -Werror list
-CF_CXXFLAGS = ['-Wno-error', '-Wno-cast-align', '-Wno-shadow']
+CF_CXXFLAGS = CXX17_CXXFLAGS + ['-Wno-error', '-Wno-cast-align', '-Wno-shadow']
 M4_DIR = 'libraries/AP_ModuleM4/m4'
 
 
@@ -31,11 +35,8 @@ def configure(cfg):
     if cfg.srcnode.find_node(CUBEFRAMEWORK + '/CubePilotFW/Channel.h') is None:
         cfg.fatal('CubeFramework missing: git submodule update --init ' + CUBEFRAMEWORK)
     env.prepend_value('INCLUDES', [cfg.srcnode.find_dir(CUBEFRAMEWORK).abspath()])
-    # CubeFramework headers need C++17 (std::atomic<T>::is_always_lock_free); the later -std wins
-    env.CXXFLAGS += ['-std=gnu++17']
-    if env.BOARD_CLASS == 'ChibiOS':
-        # gnu++17 turns on sized deallocation, which AP_Common/c++.cpp warns about
-        env.CXXFLAGS += ['-Wno-error=sized-deallocation']
+    # per-library flags (ap_library.custom_flags_check): AP_ModuleM4's M7 sources include CubeFramework
+    env.AP_LIB_EXTRA_CXXFLAGS['AP_ModuleM4'] = list(CXX17_CXXFLAGS)
     env.DEFINES += ['AP_CUBEFRAMEWORK_ENABLED=1']
 
 
