@@ -78,6 +78,7 @@
 #include <AP_Rust/AP_Rust_config.h>
 #if AP_SCRIPTING_RUST_ENABLED
 #include <AP_Rust/Runtime.h>
+#include <AP_RustM4/AP_RustM4.h>
 #endif
 #if AP_SCRIPTING_RUST_ENABLED && !AP_SCRIPTING_LUA_ENABLED && AP_SCRIPTING_SERIALDEVICE_ENABLED
 #include <AP_Scripting/AP_Scripting_SerialDevice.h>
@@ -519,6 +520,9 @@ protected:
 
 #if AP_SCRIPTING_RUST_ENABLED
     AP_Rust::Runtime rust_modules;
+#if AP_RUST_M4_ENABLED
+    AP_RustM4 rust_m4;
+#endif
 #endif
 
 #if AP_SCRIPTING_RUST_ENABLED && !AP_SCRIPTING_LUA_ENABLED && AP_SCRIPTING_SERIALDEVICE_ENABLED

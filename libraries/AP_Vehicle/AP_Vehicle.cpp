@@ -311,6 +311,12 @@ const AP_Param::GroupInfo AP_Vehicle::var_info[] = {
     AP_SUBGROUPINFO(rust_modules, "RUST_", 34, AP_Vehicle, AP_Rust::Runtime),
 #endif
 
+#if AP_SCRIPTING_RUST_ENABLED && AP_RUST_M4_ENABLED
+    // @Group: RUST_M4_
+    // @Path: ../AP_RustM4/AP_RustM4.cpp
+    AP_SUBGROUPINFO(rust_m4, "RUST_M4_", 60, AP_Vehicle, AP_RustM4),
+#endif
+
     AP_GROUPEND
 };
 
