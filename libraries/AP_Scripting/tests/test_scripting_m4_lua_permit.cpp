@@ -44,4 +44,19 @@ TEST(ScriptingM4LuaPermit, PermitChangesOnlyAtTheNextGrant)
     EXPECT_FALSE(permit.session_permitted());
 }
 
+TEST(ScriptingM4LuaPermit, LuaCallWithoutThePermitIsDroppedNotRefusedByTheDutyCap)
+{
+    LuaPermit permit;
+    permit.store_next(false);
+    permit.session_granted();
+    EXPECT_EQ(slow_call_route(MsgType::Call, true, true, permit), SlowCallRoute::ProtocolError);
+    EXPECT_EQ(slow_call_route(MsgType::Notify, true, true, permit), SlowCallRoute::ProtocolError);
+    EXPECT_EQ(slow_call_route(MsgType::Call, false, true, permit), SlowCallRoute::NotRefused);   // a system method
+    EXPECT_EQ(slow_call_route(MsgType::Stats, false, true, permit), SlowCallRoute::NotRefused);
+    EXPECT_EQ(slow_call_route(MsgType::Call, true, false, permit), SlowCallRoute::DutyCapError);  // NET_ENABLE 0
+    permit.store_next(true);
+    permit.session_granted();
+    EXPECT_EQ(slow_call_route(MsgType::Call, true, true, permit), SlowCallRoute::DutyCapError);
+}
+
 AP_GTEST_MAIN()

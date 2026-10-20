@@ -319,7 +319,8 @@ bool AP_ScriptingM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
     }
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // a session started without Lua gets no reply: handle_message() counts the protocol error
-    if (network_wanted() && !_lua_permit.serves(MsgType(header.type))) {
+    if (ScriptingM4::slow_call_route(MsgType(header.type), true, network_wanted(), _lua_permit) ==
+        ScriptingM4::SlowCallRoute::ProtocolError) {
         return false;
     }
 #endif

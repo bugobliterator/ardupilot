@@ -30,4 +30,22 @@ private:
     bool _session = false;
 };
 
+// what refuse_slow_binding() does with a frame while the duty cap refuses slow bindings
+enum class SlowCallRoute : uint8_t {
+    NotRefused,      // not a binding call: served as usual (handle_message() applies the permit)
+    ProtocolError,   // a Lua binding call from a session without Lua: no reply, a protocol error
+    DutyCapError,    // refused with the duty cap's Error reply
+};
+// binding_method: a Call or Notify at or above FIRST_BINDING_METHOD
+inline SlowCallRoute slow_call_route(MsgType type, bool binding_method, bool network_wanted, const LuaPermit &permit)
+{
+    if ((type != MsgType::Call && type != MsgType::Notify) || !binding_method) {
+        return SlowCallRoute::NotRefused;
+    }
+    if (network_wanted && !permit.serves(type)) {
+        return SlowCallRoute::ProtocolError;
+    }
+    return SlowCallRoute::DutyCapError;
+}
+
 }  // namespace ScriptingM4
