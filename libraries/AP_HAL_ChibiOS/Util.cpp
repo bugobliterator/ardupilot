@@ -442,6 +442,8 @@ __RAMFUNC__ void Util::thread_info(ExpandingString &str)
             chTMObjectInit(&tp->stats); // reset counters to zero
         } else {
             tp->stats.cumulative = 0U;
+            // as chTMObjectInit() leaves it, so a thread that watches best sees its own reset
+            tp->stats.best = (rtcnt_t)-1;
         }
 #else
         str.printf("%-13.13s PRI=%3u sp=%p STACK=%u/%u\n",
