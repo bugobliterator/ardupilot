@@ -93,6 +93,13 @@ local function update()
 end
 return update, 1000
 '''
+DEVICES_SOCKET_CHECKS = '''check(Socket(0) == nil, "stream socket without networking")
+check(Socket(1) == nil, "datagram socket without networking")
+'''
+# M4LuaNet has no Socket global until Lua sockets run on the M4
+NET_DEVICES_SOCKET_CHECKS = '''check(Socket == nil, "no Lua sockets on M4LuaNet yet")
+'''
+NETWORKING_BOARD = os.environ.get('M4LUA_BOARD') == 'CubeOrangePlus-M4LuaNet'
 
 
 def assert_host_stack(run, tmp_path):
@@ -201,7 +208,11 @@ def test_m4_devices(start_m4lua, tmp_path):  # noqa: F811
     the first session's devices, sources and menus, or the second would find the tables full.
     Socket() with networking off is refused before lwIP is called.'''
     script = tmp_path / 'm4_devices_renode.lua'
-    script.write_text(DEVICES_SCRIPT)
+    assert DEVICES_SCRIPT.count(DEVICES_SOCKET_CHECKS) == 1
+    if NETWORKING_BOARD:
+        script.write_text(DEVICES_SCRIPT.replace(DEVICES_SOCKET_CHECKS, NET_DEVICES_SOCKET_CHECKS))
+    else:
+        script.write_text(DEVICES_SCRIPT)
     run = start_with_scripts(start_m4lua, [], dict({'SCR_VM_I_COUNT': 1000000, 'NET_ENABLE': 0}, **LOG_ROWS),
                              files=[(script, 'APM/scripts')])
     run.wait_text(r'^Scripting: started on M4 \(1 scripts, heap \d+KB\)$', timeout=SCRIPT_TIMEOUT)
