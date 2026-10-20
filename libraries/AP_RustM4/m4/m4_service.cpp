@@ -120,6 +120,9 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
 {
     FaultInjectMsg inject;
     memcpy(&inject, buf, sizeof(inject));
+    if (inject.kind > FAULT_KIND_MAX) {
+        return;   // before FaultKind's 8 bits truncate it
+    }
     switch (FaultKind(inject.kind)) {
     case FaultKind::RingCorrupt:
         corrupt_tx_ring();

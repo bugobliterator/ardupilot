@@ -79,7 +79,8 @@ include $(RULESPATH)/arm-none-eabi.mk
 include $(RULESPATH)/rules.mk
 
 # fails (and removes the image) unless each symbol exists and lies in ram0, below the module
-# area, and unless the kernel's core allocator is absent (it would hand out module area RAM)
+# area, and unless the kernel's core allocator is absent (it would hand out module area RAM).
+# nm prints fixed-width lower-case hex, compared as strings: awk would read 300016e8 as a number
 all: $(BUILDDIR)/privileged_symbols.ok
 $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	@! $(TRGT)nm '$<' | grep -q -w chCoreAlloc || { echo "rust_m4: chCoreAlloc is linked"; rm -f '$<'; exit 1; }
@@ -96,7 +97,7 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	            if (!(name in found)) { print "rust_m4: " name " not found"; status = 1; continue } \
 	            count = split(found[name], addresses, " "); \
 	            for (i = 1; i <= count; i++) { \
-	                if (addresses[i] < privileged_base || addresses[i] >= module_base) { \
+	                if ((addresses[i] "") < (privileged_base "") || (addresses[i] "") >= (module_base "")) { \
 	                    print "rust_m4: " name " at 0x" addresses[i] " is not in privileged RAM"; status = 1 \
 	                } \
 	            } \
@@ -108,7 +109,10 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 # fails (and removes the image) if an M4 object reached a board header of the M7
 all: $(BUILDDIR)/no_board_headers.ok
 $(BUILDDIR)/no_board_headers.ok: $(BUILDDIR)/$(PROJECT).elf
-	@! grep -l -E '(^|[ /])hwdef\.h|AP_HAL_ChibiOS/' $(BUILDDIR)/.dep/*.d || { echo "rust_m4: an M4 object includes M7 board headers"; rm -f '$<'; exit 1; }
+	@grep -l -E '(^|[ /])hwdef\.h|AP_HAL_ChibiOS/' $(BUILDDIR)/.dep/*.d; status=$$?; \
+	if [ $$status -eq 0 ]; then echo "rust_m4: an M4 object includes M7 board headers"; fi; \
+	if [ $$status -gt 1 ]; then echo "rust_m4: cannot read the dependency files"; fi; \
+	if [ $$status -ne 1 ]; then rm -f '$<'; exit 1; fi
 	@touch '$@'
 
 # Privileged objects may call only each other, ChibiOS, CubeFramework and the
