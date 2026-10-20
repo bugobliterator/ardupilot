@@ -252,22 +252,34 @@ void __early_init(void) {
   SCB->DTCMCR |= 1; // DTCM enable
 
 #ifdef STM32_NOCACHE_MPU_REGION_1
+#ifndef STM32_NOCACHE_MPU_REGION_1_ATTR
+#define STM32_NOCACHE_MPU_REGION_1_ATTR MPU_RASR_ATTR_NON_CACHEABLE
+#endif
   // disable cache on configured regions so they can be used for DMA
   // this requires some coordination with the memory map in the MCU configuration script
   mpuConfigureRegion(STM32_NOCACHE_MPU_REGION_1,
                      STM32_NOCACHE_MPU_REGION_1_BASE,
                      MPU_RASR_ATTR_AP_RW_RW |
-                     MPU_RASR_ATTR_NON_CACHEABLE |
+                     STM32_NOCACHE_MPU_REGION_1_ATTR |
                      STM32_NOCACHE_MPU_REGION_1_SIZE |
                      MPU_RASR_ENABLE);
 #endif
 #ifdef STM32_NOCACHE_MPU_REGION_2
+#ifndef STM32_NOCACHE_MPU_REGION_2_ATTR
+#define STM32_NOCACHE_MPU_REGION_2_ATTR MPU_RASR_ATTR_NON_CACHEABLE
+#endif
   mpuConfigureRegion(STM32_NOCACHE_MPU_REGION_2,
                      STM32_NOCACHE_MPU_REGION_2_BASE,
                      MPU_RASR_ATTR_AP_RW_RW |
-                     MPU_RASR_ATTR_NON_CACHEABLE |
+                     STM32_NOCACHE_MPU_REGION_2_ATTR |
                      STM32_NOCACHE_MPU_REGION_2_SIZE |
                      MPU_RASR_ENABLE);
+#endif
+#if defined(STM32_NOCACHE_MPU_EARLY_ENABLE) && STM32_NOCACHE_MPU_EARLY_ENABLE
+  // the regions above apply only once the MPU is on; memory shared with the
+  // Cortex-M4 needs them before its first access
+  mpuEnable(MPU_CTRL_PRIVDEFENA);
+  SCB_CleanInvalidateDCache();
 #endif
 #if defined(DUAL_CORE)
   stm32_disable_cm4_core(); // disable second core
