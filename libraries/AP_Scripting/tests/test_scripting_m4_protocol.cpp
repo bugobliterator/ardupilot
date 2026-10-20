@@ -95,6 +95,10 @@ TEST(ScriptingM4Protocol, LuaParkedHasOneSize)
     EXPECT_TRUE(parse_header(reinterpret_cast<const uint8_t *>(&msg), sizeof(msg), header));
     fill_header(msg.header, MsgType::LuaParked, sizeof(msg) - 1, 7);
     EXPECT_FALSE(parse_header(reinterpret_cast<const uint8_t *>(&msg), sizeof(msg) - 1, header));
+    uint8_t longer[sizeof(msg) + 1] {};
+    fill_header(msg.header, MsgType::LuaParked, sizeof(longer), 7);
+    memcpy(longer, &msg, sizeof(msg));
+    EXPECT_FALSE(parse_header(longer, sizeof(longer), header));
 }
 
 TEST(ScriptingM4Protocol, LuaFaultKindsAreTheLuaThreads)
@@ -111,7 +115,7 @@ TEST(ScriptingM4Protocol, PlainBuildsRejectNetConfigTypes)
     uint8_t buf[MAX_FRAME] {};
     MsgHeader header;
     ReadyMsg ready {};
-    for (uint8_t type = 9; type <= 10; type++) {
+    for (uint8_t type = 9; type <= 11; type++) {   // NetConfigRequest, NetConfig, LuaParked
         fill_header(ready.header, MsgType::Ready, sizeof(ready), 1);
         ready.header.type = type;
         memcpy(buf, &ready, sizeof(ready));

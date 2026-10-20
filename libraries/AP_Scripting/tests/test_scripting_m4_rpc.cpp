@@ -217,7 +217,8 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     uint32_t hash = FNV_OFFSET;
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     // networking builds: the Channel's size, so an image with the other window split is refused,
-    // the NetConfig layout, the status block's meaning and the Lua permit slot
+    // the NetConfig layout, the status block's meaning, the Lua control slot, the LuaParked size
+    // and the Lua permit slot
     hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, hash);
     hash = fnv1a_word(60, hash);
     hash = fnv1a_word(3, hash);   // NetM4::STATUS_LAYOUT_VERSION
