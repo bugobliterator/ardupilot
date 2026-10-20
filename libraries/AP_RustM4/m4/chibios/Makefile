@@ -45,6 +45,9 @@ CPPSRC = $(ALLCPPSRC) \
          $(CONFDIR)/main.cpp \
          $(CONFDIR)/fault.cpp \
          $(CONFDIR)/crc_port.cpp \
+         $(CONFDIR)/module_port.cpp \
+         $(CONFDIR)/trampolines.cpp \
+         $(CONFDIR)/m4_selftest.cpp \
          $(M4DIR)/m4_service.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
@@ -56,13 +59,6 @@ M4_LOCAL_SOURCES = m4_math_ap_math.cpp m4_math_vector3.cpp m4_math_matrix3.cpp m
 CPPSRC += $(addprefix $(M4DIR)/local/,$(M4_LOCAL_SOURCES)) \
           $(M4_GENERATED_ROOT)/AP_Rust/BindingMath_generated.cpp \
           $(M4_GENERATED_ROOT)/AP_Rust/BindingLocal_generated.cpp
-# linker GC roots: the local set stays in the image before the SVC layer calls it
-M4_LOCAL_ROOTS = _ZN7AP_Rust16binding_is_localEm _ZN7AP_Rust18binding_local_wireEmRmS0_ \
-                 _ZN7AP_Rust22binding_local_dispatchEmPKhmPhm _ZN7AP_Rust16M4_LOCAL_IMPORTSE \
-                 _ZN7AP_Rust21M4_LOCAL_IMPORT_COUNTE
-comma := ,
-space := $(subst ,, )
-USE_LDOPT := $(USE_LDOPT),$(subst $(space),$(comma),$(strip $(patsubst %,--undefined=%,$(M4_LOCAL_ROOTS))))
 ASMSRC = $(ALLASMSRC)
 ASMXSRC = $(ALLXASMSRC)
 # rules.mk sorts INCDIR, so $(AP_ROOT)/libraries would come before the shim and shadow it: the
@@ -86,8 +82,9 @@ ULIBDIR =
 ULIBS = --specs=nano.specs --specs=nosys.specs -lm
 
 # privileged code calls or copies through these: they must be in privileged RAM
-# (HSEM ISR callbacks, the window pointers inside channel and service, the ModuleLink)
-PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link
+# (HSEM ISR callbacks, the window pointers inside channel and service, the ModuleLink, the module
+# thread's syscall stack and its context)
+PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link module_wa module_context
 
 RULESPATH = $(CHIBIOS)/os/common/startup/ARMCMx/compilers/GCC/mk
 include $(RULESPATH)/arm-none-eabi.mk
@@ -125,6 +122,14 @@ $(BUILDDIR)/privileged_symbols.ok: $(BUILDDIR)/$(PROJECT).elf
 	        } \
 	        exit status \
 	    }' || { rm -f '$<'; exit 1; }
+	@touch '$@'
+
+# fails (and removes the image) if the selftest left code or constants outside .m4_selftest, its
+# RX range (rust_m4.ld)
+all: $(BUILDDIR)/selftest_section.ok
+$(BUILDDIR)/selftest_section.ok: $(BUILDDIR)/$(PROJECT).elf
+	@$(TRGT)size -A $(OBJDIR)/m4_selftest.o | awk '$$1 ~ /^\.(text|rodata)/ && $$2 != 0 { print "rust_m4: m4_selftest.o has " $$1; bad = 1 } END { exit bad }' || { rm -f '$<'; exit 1; }
+	@$(TRGT)nm '$<' | awk '$$3 == "__m4_selftest_start__" { start = $$1 } $$3 == "__m4_selftest_end__" { end = $$1 } END { exit !(start != "" && end > start) }' || { echo "rust_m4: .m4_selftest is empty"; rm -f '$<'; exit 1; }
 	@touch '$@'
 
 # fails (and removes the image) if an M4 object reached a board header of the M7

@@ -291,8 +291,10 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
         log_rpc_stats(buf);
         return;
     case MsgType::BindingCall:
+        return;   // not served yet
     case MsgType::SystemCall:
-        return;   // not served yet: a SystemCall Noop notify is dropped unserved
+        send_module_text(buf, len);   // the other system methods are not served yet
+        return;
     case MsgType::FaultInject:
     case MsgType::Ready:
     case MsgType::BindingReply:
@@ -312,6 +314,28 @@ void AP_RustM4::send_ready(uint32_t now_ms)
     if (_channel->send(&ready, sizeof(ready)) != 0) {
         _dropped++;
     }
+}
+
+void AP_RustM4::send_module_text(const uint8_t *buf, uint16_t len)
+{
+    RustM4::TextNotify text;
+    if (len != sizeof(text)) {
+        return;
+    }
+    memcpy(&text, buf, sizeof(text));
+    if (text.call.method != uint16_t(RustM4::SystemMethod::Text) || (text.call.flags & RustM4::CALL_FLAG_NOTIFY) == 0 ||
+        text.severity > 7 || text.length > sizeof(text.text)) {
+        return;
+    }
+    // the PR's Runtime keeps 44 characters of a module text (Runtime::text); untrusted: printable only
+    char message[45];
+    const uint16_t count = MIN(text.length, uint16_t(sizeof(message) - 1));
+    for (uint16_t i = 0; i < count; i++) {
+        const char c = text.text[i];
+        message[i] = (c >= 0x20 && c < 0x7F) ? c : '?';
+    }
+    message[count] = 0;
+    GCS_SEND_TEXT(MAV_SEVERITY(text.severity), "Rust: %s", message);
 }
 
 // one row per method; SemMax carries the largest M7-side time of one call

@@ -132,6 +132,22 @@ inline int32_t host_text(ModuleContext &m, uint8_t severity, const uint8_t *mess
     return STATUS_OK;
 }
 
+// the panic of m.panic_text: state Panicked, reported to the M7 once
+inline void host_panic_report(ModuleContext &m, const HostPlatform &p)
+{
+    m.panic_text[sizeof(m.panic_text) - 1] = 0;
+    m.state.store(uint8_t(ModuleStateKind::Panicked));
+    ModuleStateNotify notify {};
+    static_assert(sizeof(m.panic_text) == sizeof(notify.text), "the panic text is sent whole");
+    fill_header(notify.call.header, MsgType::SystemCall, sizeof(notify), 0);
+    notify.call.method = uint16_t(SystemMethod::ModuleState);
+    notify.call.flags = CALL_FLAG_NOTIFY;
+    notify.module = m.index;
+    notify.state = uint8_t(ModuleStateKind::Panicked);
+    memcpy(notify.text, m.panic_text, sizeof(notify.text));
+    p.notify(p.platform, reinterpret_cast<const uint8_t *>(&notify), sizeof(notify));
+}
+
 inline void host_panic_record(ModuleContext &m, const uint8_t *message, uint32_t length, const HostPlatform &p)
 {
     uint32_t count = length < sizeof(m.panic_text) - 1 ? length : uint32_t(sizeof(m.panic_text) - 1);
@@ -142,15 +158,7 @@ inline void host_panic_record(ModuleContext &m, const uint8_t *message, uint32_t
         memcpy(m.panic_text, message, count);
     }
     m.panic_text[count] = 0;
-    m.state.store(uint8_t(ModuleStateKind::Panicked));
-    ModuleStateNotify notify {};
-    fill_header(notify.call.header, MsgType::SystemCall, sizeof(notify), 0);
-    notify.call.method = uint16_t(SystemMethod::ModuleState);
-    notify.call.flags = CALL_FLAG_NOTIFY;
-    notify.module = m.index;
-    notify.state = uint8_t(ModuleStateKind::Panicked);
-    memcpy(notify.text, m.panic_text, count + 1);
-    p.notify(p.platform, reinterpret_cast<const uint8_t *>(&notify), sizeof(notify));
+    host_panic_report(m, p);
 }
 
 }  // namespace RustM4

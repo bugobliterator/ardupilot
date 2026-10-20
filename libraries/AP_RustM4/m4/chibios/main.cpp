@@ -15,6 +15,7 @@
 #include <AP_RustM4_Layout.h>
 
 #include "../m4_service.h"
+#include "../module_port.h"
 #include "m4_fault.h"
 
 using namespace RustM4;
@@ -131,6 +132,12 @@ static uint32_t cycles_now()
     return DWT->CYCCNT;   // enabled by the ARMv7-M port_init()
 }
 
+// the module thread posted a call the service could not send at once
+static void wake_service()
+{
+    chBSemSignal(&doorbell);
+}
+
 static void lock_service()
 {
     chMtxLock(&service_mutex);
@@ -194,7 +201,8 @@ static_assert(AP_RUST_M4_WINDOW_SIZE == (1U << (AP_RUST_M4_WINDOW_MPU_SIZE + 1))
   privileged code also reaches its own RAM, the window and the HSEM.
   PRIVDEFENA=0: everything else (RCC, PWR, FLASH, AXI SRAM) faults for both;
   the PPB (SCB, MPU, NVIC) is privileged-only in any case. Regions 6 and 7
-  are left disabled here: the module host programs them. Where regions
+  are written disabled at every (re)start: the module port programs them
+  (6 the module stack guard, 7 the module's code). Where regions
   overlap the higher number wins.
  */
 static void mpu_setup()
@@ -293,7 +301,9 @@ int main(void)
     }
 
     const M4Platform platform { millis_now, cycles_now, AP_RUST_M4_CORE_CLOCK_HZ / 1000000U,
-                                inject_fault, nullptr, nullptr, lock_service, unlock_service };
+                                inject_fault, module_port_wake, module_port_start_selftest, lock_service,
+                                unlock_service };
+    module_port_init(call_link, service, wake_service);
     service.init(channel, window, call_link, platform);
     while (true) {
         if (block->run_permit.load() != 1) {

@@ -24,6 +24,7 @@
 #include <AP_RustM4_Layout.h>
 
 #include "../m4_service.h"
+#include "../module_port.h"
 
 using namespace RustM4;
 using CubePilotFW::Channel;
@@ -34,7 +35,7 @@ static char self_path[PATH_MAX];
 static char **self_argv;
 static pid_t parent;
 static uint32_t restart_grant_at_start;
-static ModuleLink call_link;   // not `link`: <unistd.h> declares link(); no module thread posts on it yet
+static ModuleLink call_link;   // not `link`: <unistd.h> declares link()
 static M4Service service;
 static pthread_mutex_t service_mutex = PTHREAD_MUTEX_INITIALIZER;   // M4Platform::lock
 
@@ -205,8 +206,10 @@ int main(int argc, char **argv)
         inject_fault(FaultKind::HardFault);
     }
 
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, nullptr, nullptr, lock_service,
+    // the built-in thread-path selftest (RUST_M4_INJECT 17) is the M4 image's only
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, module_port_wake, nullptr, lock_service,
                                 unlock_service };
+    module_port_init(call_link, service, nullptr);
     service.init(channel, window, call_link, platform);
     while (true) {
         if (getppid() != parent || block->run_permit.load() != 1) {

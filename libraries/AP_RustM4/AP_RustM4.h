@@ -79,6 +79,8 @@ private:
     void handle_message(const uint8_t *buf, uint16_t len);
     void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
+    // a module's text notify: sent as the PR's Runtime sends module texts
+    void send_module_text(const uint8_t *buf, uint16_t len);
     void log_supervisor(uint32_t now_ms, uint32_t elapsed_ms);
     void supervise(uint32_t now_ms);
     void check_started(uint32_t now_ms);
