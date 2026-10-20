@@ -3,7 +3,10 @@
 
 #include "AP_Module_config.h"
 
-#if AP_MODULE_ENABLED
+#if AP_MODULE_ENABLED && AP_MODULE_M4_ENABLED
+// the same public interface, implemented over the Cortex-M4 (libraries/AP_ModuleM4)
+#include <AP_ModuleM4/AP_ModuleM4_Runtime.h>
+#elif AP_MODULE_ENABLED
 #if !HAL_OWNED_THREADS_ENABLED || !HAL_EXECUTABLE_MEMORY_ENABLED
 #error "Native modules require owned threads and executable memory"
 #endif
