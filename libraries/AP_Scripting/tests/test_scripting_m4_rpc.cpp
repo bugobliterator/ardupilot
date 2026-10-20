@@ -220,7 +220,9 @@ TEST(ScriptingM4Rpc, ContractHashCoversTheTable)
     // the NetConfig layout, the status block's meaning and the Lua permit slot
     hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, hash);
     hash = fnv1a_word(60, hash);
-    hash = fnv1a_word(2, hash);   // NetM4::STATUS_LAYOUT_VERSION
+    hash = fnv1a_word(3, hash);   // NetM4::STATUS_LAYOUT_VERSION
+    hash = fnv1a_word(2, hash);    // LUA_CONTROL_SLOT
+    hash = fnv1a_word(32, hash);   // sizeof(LuaParkedMsg)
     hash = fnv1a_word(1, hash);   // LUA_PERMIT_SLOT: the M4 starts Lua only on the M7's permit
 #endif
     hash = fnv1a_word(MAX_VALUES, fnv1a_word(MAX_BLOB, fnv1a_word(RPC_PROTOCOL_VERSION,

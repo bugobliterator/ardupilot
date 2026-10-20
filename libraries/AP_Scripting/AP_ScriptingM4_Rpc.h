@@ -19,9 +19,14 @@
 namespace ScriptingM4 {
 
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
-static const uint32_t RPC_PROTOCOL_VERSION = 5;   // Channel 16 KB, network rings; NetConfigRequest/NetConfig
+static const uint32_t RPC_PROTOCOL_VERSION = 6;   // Channel 16 KB, network rings; NetConfig; Lua-only restarts
 // SupervisorBlock.reserved[1]: 1 the M4 starts the Lua thread, 0 it runs the network alone
 static const uint8_t LUA_PERMIT_SLOT = 1;
+// SupervisorBlock.reserved[2], M7-written: the Lua grant (bits 0-30) and LUA_HOLD. A new grant
+// answers a LuaParked report; with LUA_HOLD set the Lua thread stays parked, or parks
+static const uint8_t LUA_CONTROL_SLOT = 2;
+static const uint32_t LUA_HOLD = 1U << 31;
+static const uint32_t LUA_GRANT_MASK = LUA_HOLD - 1U;
 #else
 static const uint32_t RPC_PROTOCOL_VERSION = 3;
 #endif
@@ -573,8 +578,9 @@ constexpr uint32_t fnv1a_string(const char *text, uint32_t hash)
 // Lua permit slot too: an image that ignores the permit would start Lua the M7 holds
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
 #define SCRIPTING_M4_WINDOW_TERM(inner) \
-    fnv1a_word(LUA_PERMIT_SLOT, fnv1a_word(NetM4::STATUS_LAYOUT_VERSION, \
-               fnv1a_word(sizeof(NetM4::Config), fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, inner))))
+    fnv1a_word(LUA_PERMIT_SLOT, fnv1a_word(sizeof(LuaParkedMsg), fnv1a_word(LUA_CONTROL_SLOT, \
+               fnv1a_word(NetM4::STATUS_LAYOUT_VERSION, fnv1a_word(sizeof(NetM4::Config), \
+               fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, inner))))))
 #else
 #define SCRIPTING_M4_WINDOW_TERM(inner) inner
 #endif

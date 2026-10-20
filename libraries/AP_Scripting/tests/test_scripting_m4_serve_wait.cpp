@@ -693,6 +693,7 @@ TEST(ScriptingM4ServeWait, FastLaneTakesOnlyBoundedFrames)
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     EXPECT_TRUE(serve_on_fast_lane(MsgType::NetConfigRequest, 0, false));
     EXPECT_TRUE(serve_on_fast_lane(MsgType::NetConfig, 0, false));
+    EXPECT_FALSE(serve_on_fast_lane(MsgType::LuaParked, 0, false));   // the worker closes the session's files
 #endif
     EXPECT_FALSE(serve_on_fast_lane(MsgType(99), 0, true));
     EXPECT_FALSE(serve_on_fast_lane(MsgType(0), 0, true));

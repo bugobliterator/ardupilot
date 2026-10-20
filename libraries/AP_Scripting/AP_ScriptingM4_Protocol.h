@@ -29,6 +29,7 @@ enum class MsgType : uint8_t {
 #if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
     NetConfigRequest = 9,   // M4 -> M7: send this session's NET_* (networking on the M4)
     NetConfig = 10,         // M7 -> M4: NET_*, answer to NetConfigRequest
+    LuaParked = 11,   // M4 -> M7: the Lua thread is parked; repeated until LUA_CONTROL_SLOT answers
 #endif
 };
 
@@ -45,12 +46,28 @@ enum class FaultKind : uint8_t {
     LuaRccWrite = 9,      // Lua thread: stray write to RCC_GCR
     // 10 is SCR_M4_INJECT's refused bindings image, handled on the M7
     HandlerFault = 11,    // service: pends IRQ 147, whose handler faults inside that exception
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    // 12 is sent as a HardFault by SCR_M4_INJECT
+    LuaHardFault = 13,    // Lua thread: undefined instruction in unprivileged Lua code
+    LuaSyscallFault = 14, // Lua thread: a fault inside the fault-request syscall, privileged
+    NetThreadFault = 15,  // net_port thread: undefined instruction
+    LuaStall = 16,        // Lua thread: spins unprivileged with no syscall
+#endif
 };
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+static const uint8_t FAULT_KIND_MAX = 16;
+#else
 static const uint8_t FAULT_KIND_MAX = 11;
+#endif
 
 // the faults the Lua thread performs; the service performs the others
 inline bool lua_thread_fault(FaultKind kind)
 {
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+    if (kind == FaultKind::LuaHardFault || kind == FaultKind::LuaSyscallFault || kind == FaultKind::LuaStall) {
+        return true;
+    }
+#endif
     return kind == FaultKind::LuaAircr || kind == FaultKind::LuaStackOverflow || kind == FaultKind::LuaRccWrite;
 }
 
@@ -121,6 +138,25 @@ struct __attribute__((packed)) NetConfigMsg {
     MsgHeader header;
     NetM4::Config config;   // magic 0: no network on the M4 this session
 };
+
+enum class LuaParkCause : uint8_t {
+    None = 0,
+    Fault = 1,       // the Lua thread faulted unprivileged: cfsr, hfsr, pc and lr hold the record
+    Requested = 2,   // LUA_HOLD or a park the M4 asked for (stop, restart, a whole-M4 restart's hold)
+    Stalled = 3,     // LUA_STALL_MS of Lua CPU without a syscall
+};
+
+struct __attribute__((packed)) LuaParkedMsg {
+    MsgHeader header;
+    uint32_t grant;      // LUA_CONTROL_SLOT's grant the parked Lua session ran under
+    uint8_t cause;       // LuaParkCause
+    uint8_t reserved;
+    uint16_t park_seq;   // the park's number in this M4 session, from 1: the M7 accepts only the one it expects
+    uint32_t cfsr;       // SITL: the signal
+    uint32_t hfsr;
+    uint32_t pc;         // SITL: the fault address
+    uint32_t lr;
+};
 #endif
 
 // true if buf holds exactly one message of a known type; the header is copied out
@@ -150,6 +186,8 @@ inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
         return len == sizeof(NetConfigRequestMsg);
     case MsgType::NetConfig:
         return len == sizeof(NetConfigMsg);
+    case MsgType::LuaParked:
+        return len == sizeof(LuaParkedMsg);
 #endif
     }
     return false;

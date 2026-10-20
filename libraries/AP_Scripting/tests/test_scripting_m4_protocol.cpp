@@ -63,7 +63,9 @@ TEST(ScriptingM4Protocol, FaultNames)
 TEST(ScriptingM4Protocol, HandlerFaultIsAServiceFault)
 {
     EXPECT_EQ(uint8_t(FaultKind::HandlerFault), 11);
+#if !(defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED)
     EXPECT_EQ(FAULT_KIND_MAX, 11);
+#endif
     EXPECT_FALSE(lua_thread_fault(FaultKind::HandlerFault));   // the service pends it, not the Lua thread
 }
 
@@ -83,6 +85,25 @@ TEST(ScriptingM4Protocol, NetConfigMessagesHaveFixedSizes)
     fill_header(config.header, MsgType::NetConfig, sizeof(config) - 1, 2);
     memcpy(buf, &config, sizeof(config) - 1);
     EXPECT_FALSE(parse_header(buf, sizeof(config) - 1, header));
+}
+
+TEST(ScriptingM4Protocol, LuaParkedHasOneSize)
+{
+    LuaParkedMsg msg {};
+    fill_header(msg.header, MsgType::LuaParked, sizeof(msg), 7);
+    MsgHeader header;
+    EXPECT_TRUE(parse_header(reinterpret_cast<const uint8_t *>(&msg), sizeof(msg), header));
+    fill_header(msg.header, MsgType::LuaParked, sizeof(msg) - 1, 7);
+    EXPECT_FALSE(parse_header(reinterpret_cast<const uint8_t *>(&msg), sizeof(msg) - 1, header));
+}
+
+TEST(ScriptingM4Protocol, LuaFaultKindsAreTheLuaThreads)
+{
+    EXPECT_TRUE(lua_thread_fault(FaultKind::LuaHardFault));
+    EXPECT_TRUE(lua_thread_fault(FaultKind::LuaSyscallFault));
+    EXPECT_TRUE(lua_thread_fault(FaultKind::LuaStall));
+    EXPECT_FALSE(lua_thread_fault(FaultKind::NetThreadFault));
+    EXPECT_EQ(FAULT_KIND_MAX, 16U);
 }
 #else
 TEST(ScriptingM4Protocol, PlainBuildsRejectNetConfigTypes)

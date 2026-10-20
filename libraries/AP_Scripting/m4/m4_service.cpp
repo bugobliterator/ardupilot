@@ -155,6 +155,8 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     }
     case MsgType::NetConfigRequest:
         return;   // M4 -> M7 only
+    case MsgType::LuaParked:
+        return;   // M4 -> M7 only
 #endif
     }
 }

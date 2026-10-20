@@ -370,6 +370,8 @@ inline bool serve_on_fast_lane(MsgType type, uint16_t method, bool binding_fast)
     case MsgType::NetConfigRequest:   // answered from NET_* with a non-blocking send
     case MsgType::NetConfig:
         return true;
+    case MsgType::LuaParked:   // the M7 ends the Lua session's files: the worker
+        return false;
 #endif
     case MsgType::Call:
     case MsgType::Notify:

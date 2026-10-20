@@ -48,7 +48,12 @@ static_assert(INJECT_REFUSE_BINDINGS > uint8_t(ScriptingM4::FaultKind::LuaRccWri
 // SCR_M4_INJECT value handled on the M7: a HardFault now, and another right after the restarted
 // M4 publishes its header, before the M7 reads it (an early fault)
 static const int8_t INJECT_FAULT_AFTER_PUBLISH = 12;
+#if !(defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED)
 static_assert(INJECT_FAULT_AFTER_PUBLISH > ScriptingM4::FAULT_KIND_MAX, "not sent to the M4");
+#else
+static_assert(INJECT_FAULT_AFTER_PUBLISH > uint8_t(ScriptingM4::FaultKind::HandlerFault) &&
+              INJECT_FAULT_AFTER_PUBLISH < uint8_t(ScriptingM4::FaultKind::LuaHardFault), "not a FaultKind");
+#endif
 #endif
 
 AP_ScriptingM4 *AP_ScriptingM4::_singleton;
@@ -65,7 +70,7 @@ const AP_Param::GroupInfo AP_ScriptingM4::var_info[] = {
     // @Param: INJECT
     // @DisplayName: Scripting M4 fault injection
     // @Description: Test only. Changing this to a non-zero value makes the M4 scripting core fault in that way
-    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write,10:Bindings image refused,11:Fault in an M4 interrupt handler,12:Fault again after the restart
+    // @Values: 0:None,1:HardFault,2:MemManage,3:Stall,4:Lockup,5:Ring corruption,6:Request flood,7:Lua AIRCR reset,8:Lua stack overflow,9:Lua RCC write,10:Bindings image refused,11:Fault in an M4 interrupt handler,12:Fault again after the restart,13:Lua HardFault,14:Fault in a Lua syscall,15:Network thread HardFault,16:Lua stall
     // @User: Advanced
     AP_GROUPINFO("INJECT", 2, AP_ScriptingM4, _inject, 0),
 #endif
@@ -425,6 +430,9 @@ void AP_ScriptingM4::handle_message(const uint8_t *buf, uint16_t len)
         return;
     case MsgType::NetConfig:
         _protocol_errors++;   // M7 -> M4 only
+        return;
+    case MsgType::LuaParked:
+        _protocol_errors++;
         return;
 #endif
     }

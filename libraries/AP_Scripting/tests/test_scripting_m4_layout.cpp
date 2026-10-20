@@ -2,6 +2,9 @@
 #if __cplusplus >= 201703L
 // C++17 (CubeFramework): builds configured with --enable-scripting-m4
 #include <AP_Scripting/AP_ScriptingM4_Layout.h>
+#if defined(AP_NETWORKING_M4_ENABLED) && AP_NETWORKING_M4_ENABLED
+#include <AP_Networking/AP_Networking_M4_Layout.h>
+#endif
 
 using namespace ScriptingM4;
 
@@ -33,7 +36,19 @@ TEST(ScriptingM4Layout, NetworkingWindowSplitsIntoChannelBlockAndRings)
     EXPECT_EQ(AP_NETWORKING_M4_RING_BASE % AP_NETWORKING_M4_RING_SIZE, 0U);
     EXPECT_NE(AP_NETWORKING_M4_DOORBELL_GROUP, AP_SCRIPTING_M4_DOORBELL_GROUP);
     EXPECT_NE(AP_NETWORKING_M4_DOORBELL_GROUP, AP_SCRIPTING_M4_RESTART_GROUP);
-    EXPECT_EQ(RPC_PROTOCOL_VERSION, 5U);
+    EXPECT_EQ(RPC_PROTOCOL_VERSION, 6U);
+}
+
+TEST(ScriptingM4Layout, LuaControlWordAndParkReport)
+{
+    EXPECT_EQ(LUA_PERMIT_SLOT, 1U);
+    EXPECT_EQ(LUA_CONTROL_SLOT, 2U);
+    EXPECT_EQ(LUA_HOLD, 0x80000000U);
+    EXPECT_EQ(LUA_GRANT_MASK, 0x7FFFFFFFU);
+    EXPECT_EQ(sizeof(LuaParkedMsg), 32U);
+    EXPECT_EQ(offsetof(LuaParkedMsg, park_seq), 14U);
+    EXPECT_EQ(offsetof(NetM4::Region, header) + offsetof(NetM4::RegionHeader, fault_origin), 132U);
+    EXPECT_EQ(NetM4::STATUS_LAYOUT_VERSION, 3U);
 }
 
 TEST(ScriptingM4Layout, NetworkingClearLeavesTheRingRegion)

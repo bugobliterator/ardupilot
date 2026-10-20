@@ -129,6 +129,8 @@ static uint32_t contract(bool with_permit)
     uint32_t hash = fnv1a_word(AP_SCRIPTING_M4_CHANNEL_REGION_SIZE, FNV_OFFSET);
     hash = fnv1a_word(sizeof(NetM4::Config), hash);
     hash = fnv1a_word(NetM4::STATUS_LAYOUT_VERSION, hash);
+    hash = fnv1a_word(LUA_CONTROL_SLOT, hash);
+    hash = fnv1a_word(sizeof(LuaParkedMsg), hash);
     if (with_permit) {
         hash = fnv1a_word(LUA_PERMIT_SLOT, hash);
     }
