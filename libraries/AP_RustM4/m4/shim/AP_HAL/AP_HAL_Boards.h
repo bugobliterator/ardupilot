@@ -1,20 +1,18 @@
 #pragma once
 /*
-  M4 build: the board facts AP_Math and AP_Common/Location read, as the
-  CubeOrangePlus-SimOnHardWare-M4Rust M7 has them, so the M4's local pure-data types compute
-  what the M7 computes in-process (double ftype and position types). The SITL
-  M4 process uses the same values and follows the hardware image: SITL-only
-  checks in Location.cpp are compiled out.
+  M4 build: the board facts AP_Math and AP_Rust read. The SITL M4 process uses the same
+  values and follows the hardware image.
 
-  Deliberate differences from the M7's AP_Math and Location:
+  Deliberate differences from the M7's AP_Math:
+  - the M4 has a single-precision FPU: ftype is float where the M7 has double, and
+    neither double libm nor Location is linked. Local math results may differ from the
+    M7's in the last bits; the Renode and bench comparisons report any difference
   - INTERNAL_ERROR is a no-op (AP_InternalError.h): the M7 latches the
     internal-error flag and continues with the same result (AP_Math.cpp:317,421,
     quaternion.cpp:395,673,803, vector3.cpp:273)
   - ROTATION_CUSTOM_1/2 have no custom rotation: Vector3::rotate and
     Quaternion::from_rotation leave the value unchanged. Methods with a Rotation
     argument stay remote, so this is never reached (AP_CustomRotations.h)
-  - Location methods that read home, the EKF origin or terrain are not built
-    (AP_AHRS.h, AP_Terrain.h); they stay remote
  */
 #define HAL_BOARD_SITL     3
 #define HAL_BOARD_LINUX    7
@@ -28,9 +26,13 @@
 #define CONFIG_HAL_BOARD HAL_BOARD_CHIBIOS
 #undef CONFIG_HAL_BOARD_SUBTYPE
 #define CONFIG_HAL_BOARD_SUBTYPE HAL_BOARD_SUBTYPE_NONE
-#define HAL_HAVE_HARDWARE_DOUBLE 1
-#define HAL_WITH_EKF_DOUBLE 1
+#define HAL_HAVE_HARDWARE_DOUBLE 0
+#define HAL_WITH_EKF_DOUBLE 0
 #define HAL_WITH_POSTYPE_DOUBLE 1
+// Bindings.h and Image.h: the M4 builds the native module host and its local bindings
+#ifndef AP_SCRIPTING_RUST_ENABLED
+#define AP_SCRIPTING_RUST_ENABLED 1
+#endif
 #ifndef AP_SIM_ENABLED
 #define AP_SIM_ENABLED 0
 #endif
