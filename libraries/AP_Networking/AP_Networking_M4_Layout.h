@@ -135,10 +135,17 @@ struct PortRings {
     RingControl rx_control;   // M4 -> M7
     uint8_t rx[PORT_RING_DATA];
 };
+// what faulted when the M4 recorded a whole-M4 fault: written by the M4's fault handler before the
+// record, read by the M7 when it sees the fault count change; untrusted, any other value is Network
+enum class FaultOrigin : uint32_t {
+    Network = 0,      // a network thread, the service or an interrupt: not Lua's restart budget
+    LuaSyscall = 1,   // the Lua thread inside a syscall: Lua's call caused it
+};
 struct RegionHeader {
     // a copy of the M7's region generation, for the M4; the M7 never reads it back
     std::atomic<uint32_t> generation;
-    uint8_t reserved[124];
+    std::atomic<uint32_t> fault_origin;   // FaultOrigin, M4-written
+    uint8_t reserved[120];
 };
 struct Region {
     StatusBlock status;
@@ -151,6 +158,12 @@ struct Region {
     uint8_t spare[1024];
 };
 static_assert(sizeof(Region) == 16384, "the network region is 16 KB");
+
+inline FaultOrigin read_fault_origin(const Region &region)
+{
+    return region.header.fault_origin.load() == uint32_t(FaultOrigin::LuaSyscall) ? FaultOrigin::LuaSyscall
+                                                                                  : FaultOrigin::Network;
+}
 
 /*
   M7 only, while the M4 is held or halted (AP_Networking::m4_region_reset()): every ring empty,
