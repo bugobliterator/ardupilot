@@ -1,0 +1,14 @@
+{
+  "fast_namespaces": ["ahrs", "airspeed", "baro", "battery", "button", "efi", "esc_telem", "gps", "ins", "notify",
+                      "optical_flow", "proximity", "relay", "RPM", "servo_telem", "temperature_sensor", "terrain",
+                      "vehicle", "visual_odom", "winch", "compass", "rangefinder", "rc", "RC_Channel", "srv_channels",
+                      "SRV_Channels", "poscontrol", "precland", "fence", "follow", "mount", "quadplane", "sub", "LED"],
+  "slow_methods": ["ahrs.set_home", "rc.run_aux_function", "vehicle.set_mode", "vehicle.reboot"],
+  "quotas": {
+    "gcs.send_text": "Text", "gcs.send_named_float": "Text", "gcs.send_named_int": "Text",
+    "gcs.send_named_string": "Text", "param.set_and_save": "Storage", "Parameter.set_and_save": "Storage",
+    "mission.set_item": "Storage", "mission.clear": "Storage", "serialLED.send": "Led",
+    "logger.log_file_content": "FileLog", "logger.write": "Log", "mavlink.send_chan": "MavTx",
+    "CanBuffer.write_frame": "Can"
+  }
+}
