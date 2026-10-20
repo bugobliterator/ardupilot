@@ -66,6 +66,13 @@ bool stm32_was_watchdog_reset(void);
   return true if reboot was from a software reset
  */
 bool stm32_was_software_reset(void);
+
+#if defined(RCC_RSR_SFT2RSTF)
+/*
+  return true if the Cortex-M4 raised the last reset (dual-core H7)
+ */
+bool stm32_was_cm4_reset(void);
+#endif
     
 /*
   save the reset reason code
