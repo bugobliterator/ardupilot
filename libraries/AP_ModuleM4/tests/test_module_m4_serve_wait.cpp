@@ -742,43 +742,172 @@ TEST(ModuleM4ServeWait, RefusalTextsNeedRefusals)
     EXPECT_EQ(notice.update(16000, 0), Text::None);
 }
 
+// frames as the M4 sends them
+struct Frame {
+    uint8_t bytes[sizeof(StatsMsg)];
+    uint16_t len;
+};
+static Frame stats_frame()
+{
+    Frame f {};
+    StatsMsg stats {};
+    fill_header(stats.header, MsgType::Stats, sizeof(stats), 1);
+    memcpy(f.bytes, &stats, sizeof(stats));
+    f.len = sizeof(stats);
+    return f;
+}
+static Frame system_frame(SystemMethod method, uint16_t flags)
+{
+    Frame f {};
+    SystemCallHeader call {};
+    fill_header(call.header, MsgType::SystemCall, sizeof(call), 2);
+    call.method = uint16_t(method);
+    call.flags = flags;
+    memcpy(f.bytes, &call, sizeof(call));
+    f.len = sizeof(call);
+    return f;
+}
+static Frame binding_frame(uint32_t id)
+{
+    Frame f {};
+    f.len = pack_binding_call(f.bytes, sizeof(f.bytes), 3, 0, 0, id, nullptr, 0, 4);
+    return f;
+}
+
+// one pass of serve_pass(), serve()'s own loop, over a queue of frames, each frame_us long:
+// the frames served and how the pass ended
+static size_t frames_in_one_pass(const std::vector<Frame> &queue, uint32_t frame_us = 833, PassEnd *end = nullptr)
+{
+    uint8_t frame[MAX_FRAME];
+    size_t next = 0;
+    size_t served = 0;
+    uint32_t elapsed_us = 0;
+    const PassEnd result = serve_pass(frame,
+                                      [&](uint16_t &len) {
+                                          if (next == queue.size()) {
+                                              return -EAGAIN;
+                                          }
+                                          memcpy(frame, queue[next].bytes, queue[next].len);
+                                          len = queue[next].len;
+                                          next++;
+                                          return 0;
+                                      },
+                                      [&](uint16_t) {
+                                          served++;
+                                          elapsed_us += frame_us;
+                                      },
+                                      [&]() { return elapsed_us; });
+    if (end != nullptr) {
+        *end = result;
+    }
+    return served;
+}
+
 // a pass ends at MAX_REQUESTS_PER_WAKE frames while none takes it past MAX_SERVE_US, after the
-// first frame that does, and at once on an empty ring or a receive error
+// first binding call that does, and at once on an empty ring or a receive error
 TEST(ModuleM4ServeWait, PassEndsOnTimeOrAtTheFrameLimit)
 {
+    const std::vector<Frame> calls(MAX_REQUESTS_PER_WAKE + 4U, binding_frame(100));
     for (const uint32_t frame_us : { 0U, 6U, 7U, 8U, 833U }) {
-        size_t served = 0;
-        uint32_t elapsed_us = 0;
-        const PassEnd end = serve_pass([&](uint16_t &len) {
-                                           len = 16;
-                                           return 0;
-                                       },
-                                       [&](uint16_t) {
-                                           served++;
-                                           elapsed_us += frame_us;
-                                       },
-                                       [&]() { return elapsed_us; });
+        PassEnd end = PassEnd::Idle;
+        const size_t served = frames_in_one_pass(calls, frame_us, &end);
         EXPECT_EQ(end, PassEnd::Busy) << frame_us;
         // the first frame after which more than MAX_SERVE_US have passed ends the pass
         const size_t expected = frame_us * MAX_REQUESTS_PER_WAKE <= MAX_SERVE_US ? MAX_REQUESTS_PER_WAKE :
                                 MAX_SERVE_US / frame_us + 1;
         EXPECT_EQ(served, expected) << frame_us;
     }
+    uint8_t frame[MAX_FRAME] {};
     size_t served = 0;
-    EXPECT_EQ(serve_pass([](uint16_t &) { return -EAGAIN; }, [&](uint16_t) { served++; },
+    EXPECT_EQ(serve_pass(frame, [](uint16_t &) { return -EAGAIN; }, [&](uint16_t) { served++; },
                          []() { return uint32_t(0); }), PassEnd::Idle);
-    EXPECT_EQ(serve_pass([](uint16_t &) { return -EIO; }, [&](uint16_t) { served++; },
+    EXPECT_EQ(serve_pass(frame, [](uint16_t &) { return -EIO; }, [&](uint16_t) { served++; },
                          []() { return uint32_t(0); }), PassEnd::ReceiveError);
     EXPECT_EQ(served, 0U);
     // frames, then an empty ring: Idle whatever the time
-    uint8_t left = 3;
-    EXPECT_EQ(serve_pass([&](uint16_t &len) {
-                             len = 16;
-                             return left-- > 0 ? 0 : -EAGAIN;
-                         },
-                         [&](uint16_t) { served++; },
-                         []() { return uint32_t(0); }), PassEnd::Idle);
-    EXPECT_EQ(served, 3U);
+    PassEnd end = PassEnd::Busy;
+    EXPECT_EQ(frames_in_one_pass(std::vector<Frame>(3, binding_frame(100)), 0, &end), 3U);
+    EXPECT_EQ(end, PassEnd::Idle);
+}
+
+// the M4 between module steps: a module's text and state notifies, then its next call; with the
+// debt deep a pass is due only every 0.5 s, so the call must be served in this pass
+TEST(ModuleM4ServeWait, NotifiesAheadOfACallDoNotEndThePass)
+{
+    std::vector<Frame> queue(STATS_ROWS_PER_WINDOW, stats_frame());
+    queue.push_back(system_frame(SystemMethod::Text, CALL_FLAG_NOTIFY));
+    queue.push_back(system_frame(SystemMethod::ModuleState, CALL_FLAG_NOTIFY));
+    queue.push_back(system_frame(SystemMethod::Noop, CALL_FLAG_NOTIFY));
+    queue.push_back(binding_frame(100));
+    queue.push_back(binding_frame(101));   // the pass ends after the first call
+    EXPECT_EQ(frames_in_one_pass(queue), queue.size() - 1);
+    // the worst case: a window's Stats rows and one notify per module
+    std::vector<Frame> worst(STATS_ROWS_PER_WINDOW, stats_frame());
+    for (uint8_t i = 0; i < MAX_MODULES; i++) {
+        worst.push_back(system_frame(SystemMethod::Text, CALL_FLAG_NOTIFY));
+    }
+    worst.push_back(binding_frame(100));
+    worst.push_back(binding_frame(101));
+    EXPECT_EQ(frames_in_one_pass(worst), worst.size() - 1);
+    EXPECT_EQ(worst.size() - 1, size_t(MAX_EXEMPT_PER_PASS) + 1U);
+}
+
+// binding calls, system calls that wait for a reply and frames that do not parse end a pass on
+// time; exempt frames beyond MAX_EXEMPT_PER_PASS (a faulty M4) end it too
+TEST(ModuleM4ServeWait, BindingCallsEndThePassOnTime)
+{
+    const Frame frames[] = {
+        binding_frame(100),
+        system_frame(SystemMethod::Resolve, 0),
+        system_frame(SystemMethod::FsRead, 0),
+    };
+    for (const Frame &f : frames) {
+        uint8_t exempt_in_pass = 0;
+        EXPECT_TRUE(frame_ends_pass_on_time(f.bytes, f.len, exempt_in_pass));
+        EXPECT_EQ(exempt_in_pass, 0U);
+    }
+    Frame short_stats = stats_frame();
+    short_stats.len = sizeof(MsgHeader) + 4;
+    uint8_t exempt_in_pass = 0;
+    EXPECT_FALSE(frame_exempt_from_pass_time(short_stats.bytes, short_stats.len));
+    EXPECT_TRUE(frame_ends_pass_on_time(short_stats.bytes, short_stats.len, exempt_in_pass));
+    EXPECT_TRUE(frame_ends_pass_on_time(nullptr, 0, exempt_in_pass));
+    EXPECT_EQ(frames_in_one_pass({ binding_frame(100), binding_frame(101) }), 1U);
+    EXPECT_EQ(frames_in_one_pass(std::vector<Frame>(32, stats_frame())), size_t(MAX_EXEMPT_PER_PASS) + 1U);
+    EXPECT_EQ(frames_in_one_pass(std::vector<Frame>(32, system_frame(SystemMethod::Noop, CALL_FLAG_NOTIFY))),
+              size_t(MAX_EXEMPT_PER_PASS) + 1U);
+}
+
+static bool even_ids_fast(uint32_t id)
+{
+    return (id & 1U) == 0;
+}
+
+// the host serves binding calls of the Fast lane, the Noop notify, Stats rows and the M7 -> M4
+// types; every other frame goes to the slow worker
+TEST(ModuleM4ServeWait, FastLaneTakesOnlyFastBindingCalls)
+{
+    const Frame fast = binding_frame(100);
+    const Frame slow = binding_frame(101);
+    EXPECT_TRUE(frame_on_fast_lane(fast.bytes, fast.len, even_ids_fast));
+    EXPECT_FALSE(frame_on_fast_lane(slow.bytes, slow.len, even_ids_fast));
+    const Frame stats = stats_frame();
+    EXPECT_TRUE(frame_on_fast_lane(stats.bytes, stats.len, even_ids_fast));
+    const Frame noop = system_frame(SystemMethod::Noop, CALL_FLAG_NOTIFY);
+    EXPECT_TRUE(frame_on_fast_lane(noop.bytes, noop.len, even_ids_fast));
+    for (const SystemMethod method : { SystemMethod::Text, SystemMethod::ModuleState, SystemMethod::Resolve,
+                                       SystemMethod::FsRead, SystemMethod::Config }) {
+        const Frame f = system_frame(method, CALL_FLAG_NOTIFY);
+        EXPECT_FALSE(frame_on_fast_lane(f.bytes, f.len, even_ids_fast)) << unsigned(method);
+    }
+    ReadyMsg ready {};
+    fill_header(ready.header, MsgType::Ready, sizeof(ready), 0);
+    EXPECT_TRUE(frame_on_fast_lane(reinterpret_cast<const uint8_t *>(&ready), sizeof(ready), even_ids_fast));
+    // a frame that does not parse: the worker counts it
+    Frame truncated = fast;
+    truncated.len = sizeof(BindingCallHeader) - 1;
+    EXPECT_FALSE(frame_on_fast_lane(truncated.bytes, truncated.len, even_ids_fast));
+    EXPECT_FALSE(frame_on_fast_lane(fast.bytes, uint16_t(fast.len + 1), even_ids_fast));
 }
 
 AP_GTEST_MAIN()

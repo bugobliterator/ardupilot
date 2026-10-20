@@ -11,6 +11,7 @@
 #include <AP_Module/Runtime.h>
 #include "AP_ModuleM4_Protocol.h"
 #include "AP_ModuleM4_RunControl.h"
+#include "AP_ModuleM4_Server.h"
 #include "AP_ModuleM4_ServeWait.h"
 #include "AP_ModuleM4_StartFault.h"
 
@@ -26,9 +27,10 @@ class Channel;
   semaphore, with a timeout.
  */
 namespace ModuleM4 {
-// thread_create() offset: the host on PRIORITY_UART (on ChibiOS 61; the bounds are checked in
-// AP_ModuleM4_ChibiOS.cpp)
+// thread_create() offsets: the host on PRIORITY_UART, the slow worker on PRIORITY_IO (on ChibiOS
+// 61 and 56; the bounds are checked in AP_ModuleM4_ChibiOS.cpp)
 static const int8_t HOST_PRIORITY_OFFSET = 1;
+static const int8_t WORKER_PRIORITY_OFFSET = -2;
 }
 
 class AP_ModuleM4 {
@@ -73,6 +75,12 @@ private:
     AP_Int8 _options;
 
     void host_thread();
+    void worker_thread();
+    void serve_on_worker(uint16_t len);
+    bool refuse_slow_binding(const uint8_t *buf, uint16_t len);
+    void serve_binding(const uint8_t *buf, uint16_t len);
+    void serve_system(const uint8_t *buf, uint16_t len);
+    void send_frame(const uint8_t *buf, uint16_t len);
     void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
     void charge_cpu(bool pass_end);
@@ -142,6 +150,9 @@ private:
     uint32_t _wake_latency_us;
 
     uint8_t _rx_frame[ModuleM4::MAX_FRAME];
+    uint8_t _tx_frame[ModuleM4::MAX_FRAME];
+    // the modules' binding calls; the host and the slow worker it waits for, one at a time
+    AP_ModuleM4_Server _server;
     uint32_t _session_calls;          // calls of the current M4 session
     uint32_t _ready_sent_ms;
 
@@ -152,13 +163,29 @@ private:
     uint16_t _dropped;
     uint32_t _host_busy_us;
     uint16_t _duty_cap_hits;           // pauses the duty cap forced
-    uint32_t _host_cpu_us;             // host CPU time, what the duty cap charges
+    uint32_t _host_cpu_us;             // host and slow worker CPU time, what the duty cap charges
     uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
     uint32_t _pass_cpu_max_us;         // the largest CPU time of one pass
+    uint32_t _slow_requests;           // frames the slow worker served
+    uint32_t _slow_max_us;             // the longest of them, wall time
+    uint32_t _slow_cpu_max_us;         // the most CPU one of them used
+    uint32_t _slow_refused;            // binding calls for the worker refused unrun: duty-cap debt too deep
+    ModuleM4::RefusalNotice _refusal_notice;   // GCS texts about those refusals
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     ModuleM4::ServeDutyCap _duty_cap;
     // ChibiOS charges all the host's CPU (its waits sleep); SITL only its passes (its waits spin)
     ModuleM4::HostCpuCharge _cpu_charge { CONFIG_HAL_BOARD != HAL_BOARD_SITL };
+
+    // the slow worker, below the I/O threads, serves the frames the fast lane does not
+    // (AP_ModuleM4_Server::frame_on_fast_lane()): the host hands it one frame (_rx_frame) and waits
+    // for it, so the M4 sees its replies in order and only one of the two threads serves at a time
+    HAL_BinarySemaphore _worker_request;
+    HAL_BinarySemaphore _worker_done;
+    uint16_t _worker_len;
+    // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
+    // after _worker_done
+    ModuleM4::HostCpuCharge _worker_cpu_charge { false };
+    uint32_t _worker_used_us;
 
     struct {
         uint32_t count;           // calls timed since the last summary

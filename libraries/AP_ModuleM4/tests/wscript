@@ -19,6 +19,14 @@ def build(bld):
             tg.cxxflags = tg.to_list(getattr(tg, 'cxxflags', [])) + ['-std=gnu++17']
             tg.use = tg.to_list(tg.use) + ['cubeframework']
     try:
+        tg = bld.get_tgen_by_name('tests/test_module_m4_server')
+    except Exception:
+        tg = None
+    if tg is not None:
+        # the server with its test hooks; the copy in the ap library has none and is not linked
+        tg.source = tg.to_list(tg.source) + [bld.srcnode.find_node('libraries/AP_ModuleM4/AP_ModuleM4_Server.cpp')]
+        tg.defines = tg.to_list(getattr(tg, 'defines', [])) + ['AP_MODULE_M4_TEST_HOOKS=1']
+    try:
         tg = bld.get_tgen_by_name('tests/test_module_m4_local_math')
     except Exception:
         return   # not a Rust-enabled SITL configuration
