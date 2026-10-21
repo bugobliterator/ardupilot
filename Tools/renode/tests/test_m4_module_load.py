@@ -131,7 +131,7 @@ def test_m4_module_code_is_not_writable(start_m4, tmp_path):  # noqa: F811
     location = run.wait_text(r'^Module: M4 fault in m4_faults\.apmod\+0x([0-9A-F]+)$')
     offset = int(re.match(r'^Module: M4 fault in m4_faults\.apmod\+0x([0-9A-F]+)$', location).group(1), 16)
     assert MODULE_AREA[0] <= pc - offset <= pc, 'code base 0x%08X of fault PC 0x%08X' % (pc - offset, pc)
-    run.wait_text(r'^Module: M4 fault \(MemManage\), restarting \(\d/5\)$')
+    run.wait_text(r'^Module: M4 fault \(MemManage\), restart \(\d/5\)$')
     # the M4 restarts, loads the module again and keeps running; the M7 never stopped
     run.wait_text(r'^Module: loaded 1 modules$', timeout=START_TIMEOUT)
     run.wait_alive(10)

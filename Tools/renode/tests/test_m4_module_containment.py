@@ -67,7 +67,7 @@ def run_fault_steps(run, steps):
             used += 1
             for detail in details:
                 run.wait_text(detail)
-            restart_text = 'Module: M4 fault (%s), restarting (%u/%u)' % (reason, used, RESTART_MAX)
+            restart_text = 'Module: M4 fault (%s), restart (%u/%u)' % (reason, used, RESTART_MAX)
             run.wait_text('^' + re.escape(restart_text) + '$')
             # Renode runs the M7 well below real time: the backoff takes long in wall time
             run.wait_text(r'^Module: started on M4 \(', timeout=START_TIMEOUT + STEP_TIMEOUT)
@@ -114,7 +114,7 @@ def test_m4_module_lockup_turns_the_m4_off(start_m4):  # noqa: F811
     rcc_before = run.read_word(RCC_GCR)
     # interrupts off: no heartbeat, and the restart doorbell is never taken
     inject(run, 4)
-    run.wait_text(r'^Module: M4 fault \(no heartbeat\), restarting \(1/3\)$')
+    run.wait_text(r'^Module: M4 fault \(no heartbeat\), restart \(1/3\)$')
     run.wait_text(r'^Module: M4 not responding, off until reboot$')
     run.wait_alive(10)
     assert run.read_word(RCC_GCR) == rcc_before
@@ -127,7 +127,7 @@ def test_m4_module_handler_fault_turns_the_m4_off(start_m4):  # noqa: F811
     # a fault inside an M4 interrupt handler: reported and granted a restart, which parks
     inject(run, 11)
     run.wait_text(r'^Module: M4 HardFault ' + M4_PC + '$')
-    run.wait_text(r'^Module: M4 fault \(HardFault\), restarting \(1/3\)$')
+    run.wait_text(r'^Module: M4 fault \(HardFault\), restart \(1/3\)$')
     run.wait_text(r'^Module: M4 not responding, off until reboot$')
     run.wait_alive(10)
     assert run.read_word(RCC_GCR) == rcc_before
