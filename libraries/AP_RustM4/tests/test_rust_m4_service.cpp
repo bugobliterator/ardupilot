@@ -36,6 +36,8 @@ std::atomic<uint32_t> fake_cycles;
 std::atomic<uint32_t> millis_ahead;
 std::atomic<uint32_t> m7_millis_given;
 std::atomic<uint32_t> m7_millis_calls;
+std::atomic<uint32_t> stops;
+std::atomic<uint32_t> stopped_module;
 
 uint32_t millis_now()
 {
@@ -57,6 +59,11 @@ void m7_millis(uint32_t value)
 {
     m7_millis_given = value;
     m7_millis_calls++;
+}
+void stop_module(uint16_t module)
+{
+    stops++;
+    stopped_module = module;
 }
 void lock_service()
 {
@@ -85,8 +92,10 @@ void start()
     millis_ahead = 0;
     m7_millis_given = 0;
     m7_millis_calls = 0;
+    stops = 0;
+    stopped_module = 0xFFFF;
     const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_module, nullptr, m7_millis,
-                                lock_service, unlock_service };
+                                lock_service, unlock_service, stop_module };
     service.init(m4, window, call_link, platform);
 }
 
@@ -404,6 +413,31 @@ TEST(RustM4Service, ConfigIsSentOncePerSessionAndCached)
     EXPECT_TRUE(service.config_ready());
     EXPECT_EQ(m7_millis_given.load(), 6000U);
     millis_ahead = 0;
+}
+
+// a stop of this session reaches the platform with its module; one of another session, or not a stop,
+// is dropped as a protocol error
+TEST(RustM4Service, ControlStopOfThisSessionReachesThePlatform)
+{
+    start();
+    send_ready(9);
+    service.step();
+    auto send_control = [](uint32_t session, uint16_t action) {
+        ControlMsg control {};
+        fill_header(control.header, MsgType::Control, sizeof(control), session);
+        control.module = 0;
+        control.action = action;
+        ASSERT_EQ(m7.send(&control, sizeof(control)), 0);
+    };
+    send_control(8, CONTROL_STOP);
+    send_control(9, CONTROL_STOP + 1);
+    service.step();
+    EXPECT_EQ(stops.load(), 0U);
+    EXPECT_EQ(service.protocol_errors(), 2U);
+    send_control(9, CONTROL_STOP);
+    service.step();
+    EXPECT_EQ(stops.load(), 1U);
+    EXPECT_EQ(stopped_module.load(), 0U);
 }
 
 #endif  // AP_RUST_M4_ENABLED

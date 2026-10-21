@@ -171,6 +171,19 @@ static void host_start(void *, ModuleContext &module, const LoadLayout &layout, 
     module_port_start(module, layout, entry, rw_base);
 }
 
+static void host_request_stop(void *, ModuleContext &module)
+{
+    module_port_request_stop(module);
+}
+
+// M4Platform::stop_module, on the service thread: the loader runs its one module
+static void stop_module(uint16_t module)
+{
+    if (module == module_host.module().index) {
+        module_host.request_stop();
+    }
+}
+
 // the module area below 4 GB (the layout and the entry are uint32_t, as on the M4), its top aligned
 // as the code window needs: at the M4's own address where that is free (MAP_32BIT is not honoured
 // under every x86-64 emulation), else anywhere below 4 GB; null if it cannot be mapped
@@ -261,7 +274,7 @@ int main(int argc, char **argv)
     // the built-in thread-path selftest (RUST_M4_INJECT 17) is the M4 image's only
     // time_us is this process's own clock: no M7 millis() to take
     const M4Platform platform { millis_now, cycles_now, 1, inject_fault, module_port_wake, nullptr, nullptr,
-                                lock_service, unlock_service };
+                                lock_service, unlock_service, stop_module };
     module_port_init(call_link, service, nullptr);
     service.init(channel, window, call_link, platform);
     uint8_t *const area = map_module_area();
@@ -269,7 +282,7 @@ int main(int argc, char **argv)
     const ModuleHostPlatform host_platform {
         &call_link, area, uint32_t(uintptr_t(area)), AP_RUST_M4_MODULE_AREA_SIZE,
         { 62, AP_RUST_ABI_VERSION, 2, 0, AP_RUST_API_FINGERPRINT }, 16384, nullptr, host_config,
-        host_binding_name, nullptr, host_publish, host_start
+        host_binding_name, nullptr, host_publish, host_start, host_request_stop
     };
     module_host.init(host_platform);
     if (area == nullptr) {

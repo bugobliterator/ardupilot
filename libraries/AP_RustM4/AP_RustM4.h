@@ -54,7 +54,9 @@ public:
     void init(const AP_Rust::Runtime::Config &config);
     // from AP_Rust::Runtime::update(): a RUST_RESTART change asks for an M4 restart
     void update(const AP_Rust::Runtime::Config &config);
-    bool arming_checks(size_t buflen, char *buffer) const;
+    bool arming_checks(size_t buflen, char *buffer, const AP_Rust::Runtime::Config &config) const;
+    // the PR's masked XORs of the whole-file CRC-32s of the loaded and of the running modules
+    void checksums(uint32_t &loaded, uint32_t &running) const;
     State state() const { return _state; }
 
     static const struct AP_Param::GroupInfo var_info[];
@@ -110,11 +112,20 @@ private:
     void supervise(uint32_t now_ms);
     void check_started(uint32_t now_ms);
     void check_running(uint32_t now_ms);
-    void failure(const char *reason, const char *detail = nullptr);
+    // detail: the fault record's text; location: where in a module it faulted, each sent on its own line
+    void failure(const char *reason, const char *detail = nullptr, const char *location = nullptr);
+    // an M4 fault record's texts, and the module location of its PC
+    void report_fault(uint32_t cfsr, uint32_t hfsr, uint32_t pc, uint32_t lr);
+    // the session's module states and checksums start over (a session start, a restart, off)
+    void clear_modules();
+    bool module_ended(uint8_t index);
     bool report_start_fault();
     void go_off(const char *reason);
     void grant_restart();
     void run_control(uint32_t now_ms);
+    // a stop of every running module (Control), before a requested restart
+    void stop_modules();
+    void check_stopped();
     RustM4::RunAction take_run_request(uint32_t running_ms);
     void request_restart();
     void enter(State state, uint32_t now_ms);
@@ -149,7 +160,13 @@ private:
     uint32_t _restart_grants;         // restarts granted the M4: fault restarts and requested ones
     bool _restart_requested;          // the restart under way is a request, not a fault
     bool _initialized;
-    bool _prearm_disabled;            // RUST_DEBUG_OPTS bit 4, as last seen by update()
+    bool _enabled;                    // RUST_ENABLE, as last seen by update()
+    // a fault restart waits restart_backoff_ms() before its grant: on the timeout clock
+    bool _grant_pending;
+    uint32_t _grant_due_timeout_ms;
+    // a requested restart waits for the running modules to stop, at most MODULE_STOP_TIMEOUT_MS
+    bool _stopping;
+    uint32_t _stop_start_timeout_ms;
     int16_t _observed_restart;        // RUST_RESTART when update() last looked
     RustM4::RunRequests _run_requests;   // RUST_RESTART changes, taken by the host thread
     RustM4::RunControl _run_control;
@@ -157,6 +174,17 @@ private:
     RustM4::ModuleFile _modules[RustM4::MAX_MODULES];   // their files, sorted by name
     char _load_error[152];            // why this session loads no module, for the pre-arm check
     uint8_t _modules_loaded;          // ModuleState(Loaded) of this session
+    // per module of this session: from its Loaded, its Started until Returned, Panicked or Failed
+    bool _module_loaded[RustM4::MAX_MODULES];
+    bool _module_running[RustM4::MAX_MODULES];
+    uint32_t _module_crc[RustM4::MAX_MODULES];   // the CRC-32 the M7 served the M4 for it
+    uint32_t _served_crc;             // of the last module file the M4 closed
+    uint32_t _loaded_checksum;        // XOR of _module_crc of the loaded modules
+    uint32_t _running_checksum;       // ... of the running ones
+    // module 0's code and stack, from its Loaded, for the fault texts
+    uint32_t _module_rx_base;
+    uint32_t _module_rx_size;
+    uint32_t _module_stack_base;
     bool _config_seen;                // this session's Config arrived: its CRC self-check is known
     bool _crc_failed_sent;            // texts of this session
     bool _crc_values_sent;

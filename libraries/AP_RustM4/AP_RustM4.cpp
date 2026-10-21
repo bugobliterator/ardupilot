@@ -10,6 +10,7 @@
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
+#include "AP_RustM4_CallStatus.h"
 #include "AP_RustM4_Crc32.h"
 #include "AP_RustM4_Layout.h"
 #include "AP_RustM4_LoadLayout.h"
@@ -38,6 +39,8 @@ static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = RustM4::RESTART_TIMEOUT_MS;
 #endif
 // RUST_DEBUG_OPTS bit that disables the Rust pre-arm checks (AP_Rust::Runtime)
 static const uint8_t DEBUG_OPTION_NO_PREARM = 1U << 4;
+// the PR's RUST_LD_CSUM / RUST_RUN_CSUM mask
+static const uint32_t CHECKSUM_MASK = 0x007FFFFF;
 
 AP_RustM4 *AP_RustM4::_singleton;
 
@@ -77,7 +80,7 @@ void AP_RustM4::init(const AP_Rust::Runtime::Config &config)
     }
     _initialized = true;
     _observed_restart = config.restart;
-    _prearm_disabled = (uint8_t(config.debug_options) & DEBUG_OPTION_NO_PREARM) != 0;
+    _enabled = config.enable != 0;
     if (config.enable == 0) {
         return;   // Held: the M4 stays in reset (RUST_ENABLE needs a reboot)
     }
@@ -120,10 +123,12 @@ void AP_RustM4::init(const AP_Rust::Runtime::Config &config)
 
 void AP_RustM4::update(const AP_Rust::Runtime::Config &config)
 {
-    _prearm_disabled = (uint8_t(config.debug_options) & DEBUG_OPTION_NO_PREARM) != 0;
     if (!_initialized) {
         return;
     }
+    // RUST_ENABLE 0 stops the modules (a restart into a session that loads none), 1 starts them
+    // again; an M4 held at boot stays held until reboot
+    _enabled = config.enable != 0;
     // RUST_RESTART is a counter: any change asks for a restart of the modules, which on the M4 is
     // a requested M4 restart (no fault, none of RUST_M4_RST_MAX spent)
     if (config.restart != _observed_restart) {
@@ -626,6 +631,10 @@ uint16_t AP_RustM4::serve_file(RustM4::SystemMethod method, const uint8_t *buf, 
         }
         memcpy(&request, buf, sizeof(request));
         const AP_RustM4_FileServer::Closed closed = _file_server.close(request.fd);
+        if (closed.result == 0) {
+            // the module's checksum is what this M7 served, never what the M4 reports
+            _served_crc = closed.crc;
+        }
         RustM4::FsCloseReply reply {};
         pack_system_reply(method, seq, RustM4::ReplyStatus::Ok, closed.result, sizeof(reply));
         memcpy(&reply.reply, _tx_frame, sizeof(reply.reply));
@@ -747,8 +756,9 @@ uint16_t AP_RustM4::serve_resolve(const uint8_t *buf, uint16_t len, uint32_t seq
                              uint16_t(offsetof(ResolveReply, ids) + uint32_t(count) * sizeof(uint32_t)));
 }
 
-// the M4 loader's reports. Loaded counts toward the PR's "loaded N modules"; a failure is the PR's
-// fail(): "Rust: <reason>", kept for the pre-arm check
+// the M4 loader's and module thread's reports. Loaded counts toward the PR's "loaded N modules" and
+// its checksum toward RUST_LD_CSUM, Started toward RUST_RUN_CSUM until the module returns, panics or
+// fails; a failure or a panic is the PR's fail(): "Rust: <reason>", kept for the pre-arm check
 void AP_RustM4::module_state(const uint8_t *buf, uint16_t len)
 {
     RustM4::ModuleStateNotify notify;
@@ -759,6 +769,8 @@ void AP_RustM4::module_state(const uint8_t *buf, uint16_t len)
     if (notify.module >= _module_count) {
         return;
     }
+    const uint8_t index = uint8_t(notify.module);
+    const char *name = _modules[index].name;
     // untrusted: terminated, printable only
     notify.text[sizeof(notify.text) - 1] = 0;
     for (char *c = notify.text; *c != 0; c++) {
@@ -766,22 +778,89 @@ void AP_RustM4::module_state(const uint8_t *buf, uint16_t len)
             *c = '?';
         }
     }
+    char reason[80];
     switch (RustM4::ModuleStateKind(notify.state)) {
     case RustM4::ModuleStateKind::Loaded:
+        if (_module_loaded[index]) {
+            break;   // once per session
+        }
+        _module_loaded[index] = true;
+        _module_crc[index] = _served_crc;
+        _loaded_checksum ^= _module_crc[index];
+        if (index == 0) {
+            _module_rx_base = notify.rx_base;
+            _module_rx_size = notify.rx_size;
+            _module_stack_base = notify.stack_base;
+        }
         if (++_modules_loaded == _module_count) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: loaded %u modules", unsigned(_module_count));
         }
         break;
     case RustM4::ModuleStateKind::Started:
-        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: started %s", _modules[notify.module].name);
+        if (!_module_loaded[index] || _module_running[index]) {
+            break;
+        }
+        _module_running[index] = true;
+        _running_checksum ^= _module_crc[index];
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: started %s", name);
         break;
     case RustM4::ModuleStateKind::Failed:
+        IGNORE_RETURN(module_ended(index));
+        // the load's file, if it failed with the file open
+        _file_server.reset();
         load_error(notify.text);
         break;
     case RustM4::ModuleStateKind::Returned:
+        if (!module_ended(index)) {
+            break;
+        }
+        if (notify.result != RustM4::STATUS_OK && notify.result != RustM4::STATUS_STOPPED) {
+            hal.util->snprintf(reason, sizeof(reason), "%.31s returned %ld", name, long(notify.result));
+            load_error(reason);
+        }
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: exited %s", name);
+        break;
     case RustM4::ModuleStateKind::Panicked:
+        if (!module_ended(index)) {
+            break;
+        }
+        // the PR's latch, which there needs a reboot: here a RUST_RESTART change reclaims the
+        // parked module with a requested M4 restart
+        hal.util->snprintf(reason, sizeof(reason), "%.24s panic; set RUST_RESTART", name);
+        load_error(reason);
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Rust panic: %.37s", notify.text);
         break;
     }
+}
+
+// a running module of this session ended: false if it was not running
+bool AP_RustM4::module_ended(uint8_t index)
+{
+    if (!_module_running[index]) {
+        return false;
+    }
+    _module_running[index] = false;
+    _running_checksum ^= _module_crc[index];
+    return true;
+}
+
+void AP_RustM4::clear_modules()
+{
+    memset(_module_loaded, 0, sizeof(_module_loaded));
+    memset(_module_running, 0, sizeof(_module_running));
+    memset(_module_crc, 0, sizeof(_module_crc));
+    _served_crc = 0;
+    _loaded_checksum = 0;
+    _running_checksum = 0;
+    _module_rx_base = 0;
+    _module_rx_size = 0;
+    _module_stack_base = 0;
+}
+
+void AP_RustM4::checksums(uint32_t &loaded, uint32_t &running) const
+{
+    loaded = _loaded_checksum & CHECKSUM_MASK;
+    running = _running_checksum & CHECKSUM_MASK;
 }
 
 // one row per method; SemMax carries the largest M7-side time of one call
@@ -903,8 +982,18 @@ void AP_RustM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 void AP_RustM4::supervise(uint32_t now_ms)
 {
     switch (_state) {
-    case State::Starting:
     case State::Restarting:
+        if (_grant_pending) {
+            // a fault restart's backoff: the M4 waits for the grant (in its fault handler, or a SITL
+            // M4 that exited is started then), and the restart timeout counts from the grant
+            if (int32_t(platform_timeout_ms() - _grant_due_timeout_ms) >= 0) {
+                grant_restart();
+            }
+            break;
+        }
+        check_started(now_ms);
+        break;
+    case State::Starting:
         check_started(now_ms);
         break;
     case State::Running:
@@ -917,20 +1006,30 @@ void AP_RustM4::supervise(uint32_t now_ms)
 }
 
 /*
-  An M4 fault record as a short name for the one-line restart text ("MemManage", in SITL
-  "signal 11") and its detail ("MemManage PC=0x0810A3C4", RustM4::fault_reason_text; in SITL the
-  signal and address)
+  An M4 fault record: a short name for the one-line restart text ("MemManage", in SITL "signal 11"),
+  its detail ("MemManage PC=0x0810A3C4", RustM4::fault_reason_text; in SITL the signal and address)
+  and, for a PC in the module's code, where in the module ("fault in airshow.apmod+0x1A2C")
  */
-static void fault_reason(const PeerHeader::View &view, char *name, size_t name_len, char *detail, size_t detail_len)
+void AP_RustM4::report_fault(uint32_t cfsr, uint32_t hfsr, uint32_t pc, uint32_t lr)
 {
+    char name[16];
+    char detail[80];
+    char location[48] {};
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
-    hal.util->snprintf(name, name_len, "signal %u", unsigned(view.faultCfsr));
-    hal.util->snprintf(detail, detail_len, "signal %u addr=0x%08X", unsigned(view.faultCfsr), unsigned(view.faultPc));
+    (void)hfsr;
+    (void)lr;
+    hal.util->snprintf(name, sizeof(name), "signal %u", unsigned(cfsr));
+    hal.util->snprintf(detail, sizeof(detail), "signal %u addr=0x%08X", unsigned(cfsr), unsigned(pc));
 #else
-    hal.util->snprintf(name, name_len, "%s", RustM4::fault_name(view.faultCfsr, view.faultHfsr));
-    // the module stack is known once modules load on the M4
-    RustM4::fault_reason_text(detail, detail_len, view.faultCfsr, view.faultHfsr, view.faultPc, view.faultLr, 0);
+    hal.util->snprintf(name, sizeof(name), "%s", RustM4::fault_name(cfsr, hfsr));
+    RustM4::fault_reason_text(detail, sizeof(detail), cfsr, hfsr, pc, lr, _module_stack_base);
+    if (_module_count != 0 && _module_rx_size != 0 && !RustM4::fault_on_stacking(cfsr) &&
+        pc - _module_rx_base < _module_rx_size) {
+        hal.util->snprintf(location, sizeof(location), "fault in %.24s+0x%X", _modules[0].name,
+                           unsigned(pc - _module_rx_base));
+    }
 #endif
+    failure(name, detail, location[0] != 0 ? location : nullptr);
 }
 
 void AP_RustM4::check_started(uint32_t now_ms)
@@ -949,6 +1048,10 @@ void AP_RustM4::check_started(uint32_t now_ms)
         // waits meanwhile, and the heartbeat is taken after
         _file_server.reset();
         discover_on_worker();
+        if (_run_control.stopped()) {
+            _module_count = 0;   // stopped (RUST_ENABLE 0): a session that loads no module
+        }
+        clear_modules();
         now_ms = AP_HAL::millis();
         _m4_session = view.session;
         // a fault restart has been charged: a fault the M4 recorded on its way down is the same
@@ -1006,10 +1109,7 @@ void AP_RustM4::check_running(uint32_t now_ms)
         if (view.faultCount != _m4_fault_count) {
             _m4_fault_count = view.faultCount;
             _m4_fault_pc = view.faultPc;
-            char name[16];
-            char detail[80];
-            fault_reason(view, name, sizeof(name), detail, sizeof(detail));
-            failure(name, detail);
+            report_fault(view.faultCfsr, view.faultHfsr, view.faultPc, view.faultLr);
             return;
         }
         if (view.session != _m4_session) {
@@ -1049,10 +1149,7 @@ bool AP_RustM4::report_start_fault()
         return false;
     }
     _m4_fault_pc = view.faultPc;
-    char name[16];
-    char detail[80];
-    fault_reason(view, name, sizeof(name), detail, sizeof(detail));
-    failure(name, detail);
+    report_fault(view.faultCfsr, view.faultHfsr, view.faultPc, view.faultLr);
     return true;
 }
 
@@ -1064,12 +1161,16 @@ uint8_t AP_RustM4::restart_limit() const
 /*
   reason: short (at most 12 characters), so the restart text stays within one 50-character
   STATUSTEXT: "Rust: M4 fault (process exit), restarting (10/10)". detail: an M4 fault record's
-  text, sent first on its own line
+  text, and location where in the module it faulted, each sent first on its own line. The restart
+  is granted after restart_backoff_ms() of the restarts used (supervise())
  */
-void AP_RustM4::failure(const char *reason, const char *detail)
+void AP_RustM4::failure(const char *reason, const char *detail, const char *location)
 {
     if (detail != nullptr) {
         GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Rust: M4 %s", detail);
+    }
+    if (location != nullptr) {
+        GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Rust: M4 %s", location);
     }
     const bool held_requests = _start_fault.take_held();
     if (_restarts_used >= restart_limit()) {
@@ -1081,7 +1182,14 @@ void AP_RustM4::failure(const char *reason, const char *detail)
     GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Rust: M4 fault (%s), restarting (%u/%u)", reason,
                   unsigned(_restarts_used), unsigned(restart_limit()));
     _restart_requested = false;   // a fault during a requested restart is a fault
-    grant_restart();
+    // the session's modules are gone now; the grant waits for the backoff
+    _server.reset(0, 0);
+    _file_server.reset();
+    clear_modules();
+    _stopping = false;
+    _grant_pending = true;
+    _grant_due_timeout_ms = platform_timeout_ms() + RustM4::restart_backoff_ms(_restarts_used);
+    enter(State::Restarting, AP_HAL::millis());
     // a restart asked while a start fault was pending is served by this fault restart
     if (held_requests) {
         bool restart;
@@ -1096,6 +1204,9 @@ void AP_RustM4::grant_restart()
     // the session's modules and files end with it
     _server.reset(0, 0);
     _file_server.reset();
+    clear_modules();
+    _stopping = false;
+    _grant_pending = false;
     _restart_grants++;
     // the new session starts without the old one's protocol errors
     _protocol_errors = 0;
@@ -1109,14 +1220,63 @@ void AP_RustM4::grant_restart()
 // or restarts waits in _run_requests, and an M4 that is off is never restarted
 void AP_RustM4::run_control(uint32_t now_ms)
 {
+    if (_stopping) {
+        check_stopped();
+        return;
+    }
     // a fault at the session's start is pending: until the heartbeat tells whose it is (at most
     // HEARTBEAT_TIMEOUT_MS), a request waits, so it can never charge an absorbed fault again
     if (_start_fault.holds_requests()) {
         return;
     }
     if (take_run_request(now_ms - _state_start_ms) != RustM4::RunAction::None) {
-        request_restart();
+        stop_modules();
     }
+}
+
+// the stop step of a requested restart: each running module is asked to stop (the M4 sets its stop
+// flag and wakes its sleep); the restart follows once none runs, a returned or a panicked module
+// being stopped, or after MODULE_STOP_TIMEOUT_MS
+void AP_RustM4::stop_modules()
+{
+    bool running = false;
+    for (uint8_t i = 0; i < _module_count; i++) {
+        if (!_module_running[i]) {
+            continue;
+        }
+        running = true;
+        RustM4::ControlMsg control {};
+        // seq carries the session: the M4 drops a stop of an older one
+        RustM4::fill_header(control.header, MsgType::Control, sizeof(control), _m4_session);
+        control.module = i;
+        control.action = RustM4::CONTROL_STOP;
+        if (_channel->send(&control, sizeof(control)) != 0) {
+            _dropped++;   // the stop timeout reclaims the module
+        }
+    }
+    if (!running) {
+        request_restart();
+        return;
+    }
+    _stopping = true;
+    _stop_start_timeout_ms = platform_timeout_ms();
+}
+
+void AP_RustM4::check_stopped()
+{
+    bool running = false;
+    for (uint8_t i = 0; i < _module_count; i++) {
+        running = running || _module_running[i];
+    }
+    if (running && platform_timeout_ms() - _stop_start_timeout_ms < RustM4::MODULE_STOP_TIMEOUT_MS) {
+        return;
+    }
+    for (uint8_t i = 0; i < _module_count; i++) {
+        if (_module_running[i]) {
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rust: %.31s did not stop, M4 restarted", _modules[i].name);
+        }
+    }
+    request_restart();
 }
 
 // take a restart request and say what it does; running_ms: the session's age
@@ -1124,8 +1284,7 @@ RustM4::RunAction AP_RustM4::take_run_request(uint32_t running_ms)
 {
     bool restart = false;
     const bool asked = _run_requests.take(restart);
-    // RUST_ENABLE needs a reboot: a session that runs is enabled
-    return _run_control.update(true, asked, restart, running_ms);
+    return _run_control.update(_enabled, asked, restart, running_ms);
 }
 
 // a restart the M7 asks for: the session ends as after a fault, and the new one loads the modules
@@ -1149,6 +1308,9 @@ void AP_RustM4::go_off(const char *reason)
     platform_stop();
     _server.reset(0, 0);
     _file_server.reset();
+    clear_modules();
+    _stopping = false;
+    _grant_pending = false;
     enter(State::Off, AP_HAL::millis());
 }
 
@@ -1159,10 +1321,10 @@ void AP_RustM4::enter(State state, uint32_t now_ms)
     _state_start_timeout_ms = platform_timeout_ms();
 }
 
-bool AP_RustM4::arming_checks(size_t buflen, char *buffer) const
+bool AP_RustM4::arming_checks(size_t buflen, char *buffer, const AP_Rust::Runtime::Config &config) const
 {
-    // Held: RUST_ENABLE was 0 at boot, as the in-process runtime passes with RUST_ENABLE 0
-    if (_state == State::Held || _prearm_disabled) {
+    // as the in-process runtime: RUST_ENABLE 0 (Held: it was 0 at boot) or RUST_DEBUG_OPTS bit 4
+    if (_state == State::Held || config.enable == 0 || (uint8_t(config.debug_options) & DEBUG_OPTION_NO_PREARM) != 0) {
         return true;
     }
     if (_state == State::Off) {
@@ -1181,6 +1343,16 @@ bool AP_RustM4::arming_checks(size_t buflen, char *buffer) const
         hal.util->snprintf(buffer, buflen, "%s", _load_error);
         return false;
     }
+    uint32_t loaded, running;
+    checksums(loaded, running);
+    if (config.loaded_required != -1 && (uint32_t(config.loaded_required) & CHECKSUM_MASK) != loaded) {
+        hal.util->snprintf(buffer, buflen, "Rust: loaded checksum mismatch");
+        return false;
+    }
+    if (config.running_required != -1 && (uint32_t(config.running_required) & CHECKSUM_MASK) != running) {
+        hal.util->snprintf(buffer, buflen, "Rust: running checksum mismatch");
+        return false;
+    }
     return true;
 }
 
@@ -1193,6 +1365,11 @@ void AP_RustM4::send_fault_inject()
     }
     _inject_seen = kind;
     if (kind <= 0 || _state != State::Running) {
+        return;
+    }
+    if (kind == RustM4::INJECT_MODULE_SELFTEST && _module_count != 0) {
+        // the selftest runs in the module area on the loader's link: only in a session without modules
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rust: M4 thread check needs 0 modules");
         return;
     }
     uint32_t sent;

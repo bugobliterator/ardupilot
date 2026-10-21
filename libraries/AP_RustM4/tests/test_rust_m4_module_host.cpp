@@ -273,6 +273,8 @@ struct LoaderRig {
     std::map<uint32_t, std::string> names;
     std::vector<ModuleHost::Step> steps;
     uint32_t unpublished = 0;
+    uint32_t stops = 0;
+    bool stop_after_start = false;   // the stops came after the module thread started
 
     explicit LoaderRig(const std::vector<uint8_t> &file, uint32_t area_size = AP_RUST_M4_MODULE_AREA_SIZE) : m7(file)
     {
@@ -303,6 +305,11 @@ struct LoaderRig {
             rig.start = { true, layout, entry, rw_base, module.ranges };
             rig.m7.events.push_back("start");
             module.state.store(uint8_t(ModuleStateKind::Started));
+        };
+        platform.request_stop = [](void *context, ModuleContext &) {
+            auto &rig = *static_cast<LoaderRig *>(context);
+            rig.stops++;
+            rig.stop_after_start = rig.start.started;
         };
         host.init(platform);
     }
@@ -539,6 +546,35 @@ TEST(RustM4ModuleHost, RefusedStartFails)
     rig.run();
     EXPECT_EQ(rig.host.state(), ModuleHost::Step::Failed);
     EXPECT_STREQ(rig.host.failure(), "module heap/thread creation failed");
+}
+
+// Loaded carries where the code and the stack went, for the M7's fault texts
+TEST(RustM4ModuleHost, LoadedReportsTheCodeAndStackBases)
+{
+    SplitImportContainer container;
+    LoaderRig rig(container.bytes);
+    rig.run();
+    ASSERT_TRUE(started(rig)) << rig.host.failure();
+    ASSERT_EQ(rig.m7.states.size(), 2U);
+    EXPECT_EQ(rig.m7.states[0].rx_base, rig.start.layout.window.rx_base);
+    EXPECT_EQ(rig.m7.states[0].stack_base, rig.start.layout.stack_base);
+}
+
+// a stop the M7 sends before the module thread runs is applied once it runs: the start clears the
+// module's stop flag, so it would otherwise be lost
+TEST(RustM4ModuleHost, StopBeforeTheThreadRunsIsKept)
+{
+    SplitImportContainer container;
+    LoaderRig rig(container.bytes);
+    rig.host.request_stop();
+    EXPECT_EQ(rig.stops, 0U);
+    rig.run();
+    ASSERT_TRUE(started(rig)) << rig.host.failure();
+    EXPECT_EQ(rig.stops, 1U);
+    EXPECT_TRUE(rig.stop_after_start);
+    // once running, a stop goes to the thread at once
+    rig.host.request_stop();
+    EXPECT_EQ(rig.stops, 2U);
 }
 
 AP_GTEST_MAIN()

@@ -152,6 +152,8 @@ struct __attribute__((packed)) ModuleStateNotify {
     SystemCallHeader call;   // CALL_FLAG_NOTIFY
     uint16_t module; uint8_t state; uint8_t reserved;
     uint32_t rx_size, rw_size, heap_size, stack_size, crc;
+    // Loaded: where the code and the stack were placed, as the module sees them (fault texts)
+    uint32_t rx_base, stack_base;
     int32_t result;          // start()'s result for Returned
     char text[192];          // panic message or failure reason, terminated
 };

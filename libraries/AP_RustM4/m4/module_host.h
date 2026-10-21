@@ -48,6 +48,8 @@ struct ModuleHostPlatform {
     // module_port_start()
     void (*start)(void *context, ModuleContext &module, const LoadLayout &layout, uint32_t entry,
                   uint32_t rw_base);
+    // module_port_request_stop(); may be null
+    void (*request_stop)(void *context, ModuleContext &module);
 };
 
 class ModuleHost {
@@ -64,6 +66,9 @@ public:
     // the reason of a Failed load, as the M7 prints it after "Rust: "
     const char *failure() const { return _failure; }
     ModuleContext &module() { return _module; }
+    // the M7 asked the module to stop: at once if its thread runs, else as soon as it starts (the
+    // start clears the module's stop flag)
+    void request_stop();
     const LoadLayout &layout() const { return _layout; }
 
 private:
@@ -89,6 +94,7 @@ private:
     Step _step;
     bool _calling;            // a posted call has not completed
     uint8_t _start_phase;     // Start: Loaded sent, Started sent
+    bool _stop_pending;       // a stop asked before the module thread ran
     ConfigReply _config;
     char _name[32];           // the module's file name, as the PR's texts print it (%.31s)
     char _path[96];

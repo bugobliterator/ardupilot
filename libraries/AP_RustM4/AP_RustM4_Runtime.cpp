@@ -3,6 +3,7 @@
 #if AP_SCRIPTING_RUST_ENABLED && AP_RUST_M4_ENABLED
 
 #include <AP_Rust/Runtime.h>
+#include <GCS_MAVLink/GCS.h>
 #include "AP_RustM4.h"
 
 namespace AP_Rust
@@ -107,15 +108,25 @@ void Runtime::init()
 void Runtime::update()
 {
     AP_RustM4 *m4 = AP_RustM4::get_singleton();
-    if (m4 != nullptr) {
-        m4->update(config());
+    if (m4 == nullptr) {
+        return;
+    }
+    m4->update(config());
+    // RUST_DEBUG_OPTS bit 5, as the PR: the M7's checksums saved as the required ones, then cleared
+    if (_enable != 0 && (uint8_t(_debug_options.get()) & (1U << 5)) != 0) {
+        uint32_t loaded, running;
+        m4->checksums(loaded, running);
+        _loaded_required.set_and_save(loaded);
+        _running_required.set_and_save(running);
+        _debug_options.set_and_save(uint8_t(_debug_options.get()) & ~(1U << 5));
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: saved checksums");
     }
 }
 
 bool Runtime::arming_checks(size_t length, char *message) const
 {
     const AP_RustM4 *m4 = AP_RustM4::get_singleton();
-    return m4 == nullptr || m4->arming_checks(length, message);
+    return m4 == nullptr || m4->arming_checks(length, message, config());
 }
 
 #if AP_MISSION_ENABLED
