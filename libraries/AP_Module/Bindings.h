@@ -26,6 +26,9 @@ int32_t binding_local_dispatch(uint32_t id, const uint8_t *input, uint32_t input
 // (0 none, 1 Parameter.get, 2 a Parameter handle writer, 3 a by-name parameter writer)
 bool binding_is_posted(uint32_t id);
 uint8_t binding_mirror_role(uint32_t id);
+// not a BindingId: the call latency probe's ping (the SDK's Context::probe_ping()), no input or output.
+// In process it returns OK at once; the M4 forwards it to the M7 as a Ping system call
+static const uint32_t PROBE_PING_ID = 0xFFF0;
 struct LocalImport {
     uint64_t hash;
     uint32_t id;

@@ -63,6 +63,8 @@ public:
         int32_t (*call)(void *context, BindingId id, const uint8_t *input, uint32_t input_size,
                         uint8_t *output, uint32_t output_size);
         uint32_t (*resolve)(void *context, uint64_t hash);
+        // optional: called first in each binding call, before call (the call latency probe's entry stamp)
+        void (*entered)();
     };
     struct Stats {
         Heap::Stats heap;
