@@ -170,6 +170,7 @@ void AP_ModuleM4::doorbell_isr(uint8_t group)
 void AP_ModuleM4::host_thread()
 {
     ServeResult last = ServeResult::Idle;
+    bool woke_on_timeout = true;   // the first wake runs the housekeeping
     while (true) {
         if (_state == State::Off) {
             platform_m4_exited();   // SITL: reap the stopped process
@@ -197,16 +198,11 @@ void AP_ModuleM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
-        _probing = (uint8_t(_options.get()) & OPTION_CALL_PROBE) != 0 && CallLatencyLog::get().start();
-        if (_probing && !_input_memset_measured) {
-            // the slow worker is idle between the host's passes
-            _input_memset_measured = true;
-            CallLatencyLog::get().set_m7_memset_cycles(_server.input_memset_cycles());
-        }
         const uint32_t cap_wait_us = _duty_cap.wait_us(AP_HAL::micros());
         const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
         const ModuleM4::HostWait wait = ModuleM4::host_wait_after(cap_wait_us, last == ServeResult::Busy,
                                                               last == ServeResult::Stuck, ring_empty);
+        woke_on_timeout = false;
         switch (wait) {
         case ModuleM4::HostWait::DutyCap:
             // the host's share of the M7 ran out: serve nothing until credit returns, however many
@@ -227,10 +223,12 @@ void AP_ModuleM4::host_thread()
             // a ring that cannot be served now (not running, or a frame stuck after
             // a protocol error) must not make this loop spin: wait for the timeout
             if (ring_empty || last == ServeResult::Stuck) {
-                IGNORE_RETURN(_doorbell.wait(platform_wait_us()));
+                woke_on_timeout = !_doorbell.wait(platform_wait_us());
             }
             break;
         }
+        // a doorbell wake: the frames, then the pass's one CPU reading. The rest waits for a
+        // timed-out wait or the next housekeeping period
         _channel->wake();
         _woke_us = AP_HAL::micros();
         if (_probing) {
@@ -246,71 +244,86 @@ void AP_ModuleM4::host_thread()
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
         // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
-        // runs every platform_wait_us()) serves nothing. ChibiOS: the wait, the wake and the
-        // switch before this pass are charged after the decision
-        if (ModuleM4::pass_after_wake(_duty_cap, _woke_us, [this]() { charge_cpu(false); })) {
+        // runs every platform_wait_us()) serves nothing. SITL reads the CPU clock at the pass start
+        // too, after the decision; ChibiOS only at the pass end, which charges the wake with the pass
+        if (ModuleM4::pass_after_wake(_duty_cap, _woke_us, [this]() {
+                if (_cpu_charge.reads_at_pass_start()) {
+                    IGNORE_RETURN(charge_cpu(false));
+                }
+            })) {
             last = serve();
         }
-        const uint32_t now_ms = AP_HAL::millis();
-        PeerHeader::beat(_shared, PeerHeader::Core::M7);
-        supervise(now_ms);
-        if (_state == State::Running) {
-            if (now_ms - _mirror_backstop_ms >= 1000) {
-                _mirror_backstop_ms = now_ms;
-                _server.mark_all_live();   // raw set()s, whole-vector saves, failed frames
-            }
-            if (_server.mirror_dirty()) {
-                mirror_on_worker();
-            }
+        if (_state == State::Running && _server.mirror_dirty()) {
+            mirror_on_worker();
         }
-        drain_module_texts();
-        if (_state == State::Running) {
-            // after this pass's frames: a restart never makes the host thread wait
-            run_control(now_ms);
+        if (ModuleM4::housekeeping_due(_woke_us, _housekeeping_us, ModuleM4::HOUSEKEEPING_PERIOD_US, woke_on_timeout)) {
+            _housekeeping_us = _woke_us;
+            housekeeping();
         }
-#if AP_MODULE_M4_FAULT_INJECTION_ENABLED
-        send_fault_inject();
-#endif
-        if (_probing) {
-            CallLatencyLog::get().flush(now_ms);
-        }
-        const uint32_t busy_us = AP_HAL::micros() - _woke_us;
+        const uint32_t busy_us = charge_cpu(true) - _woke_us;
         _host_busy_us += busy_us;
         if (busy_us > LONG_PASS_US) {
             _long_passes++;
         }
-        charge_cpu(true);
-        if (now_ms - _stats_start_ms >= 1000) {
-            log_supervisor(now_ms, now_ms - _stats_start_ms);
-            _stats_start_ms = now_ms;
-            _requests = 0;
-            _protocol_errors = 0;
-            _dropped = 0;
-            _host_busy_us = 0;
-            _duty_cap_hits = 0;
-            _host_cpu_us = 0;
-            _long_passes = 0;
-            _pass_cpu_max_us = 0;
-            _slow_requests = 0;
-            _slow_max_us = 0;
-            _slow_cpu_max_us = 0;
-            _slow_refused = 0;
-            _m4_mirror_hits = 0;
-            _m4_mirror_misses = 0;
-            _m4_post_drops = 0;
-            _mirror_frames_sent = 0;
-            _mirror_entries_sent = 0;
-            _mirror_failed_sends = 0;
-            _post_errors = 0;
-            _post_drops = 0;
-            _posted_batched = 0;
-        }
+    }
+}
+
+void AP_ModuleM4::housekeeping()
+{
+    _probing = (uint8_t(_options.get()) & OPTION_CALL_PROBE) != 0 && CallLatencyLog::get().start();
+    if (_probing && !_input_memset_measured) {
+        // the slow worker is idle between the host's passes
+        _input_memset_measured = true;
+        CallLatencyLog::get().set_m7_memset_cycles(_server.input_memset_cycles());
+    }
+    const uint32_t now_ms = AP_HAL::millis();
+    PeerHeader::beat(_shared, PeerHeader::Core::M7);
+    supervise(now_ms);
+    if (_state == State::Running && now_ms - _mirror_backstop_ms >= 1000) {
+        _mirror_backstop_ms = now_ms;
+        _server.mark_all_live();   // raw set()s, whole-vector saves, failed frames
+    }
+    drain_module_texts();
+    if (_state == State::Running) {
+        // after this pass's frames: a restart never makes the host thread wait
+        run_control(now_ms);
+    }
+#if AP_MODULE_M4_FAULT_INJECTION_ENABLED
+    send_fault_inject();
+#endif
+    if (_probing) {
+        CallLatencyLog::get().flush(now_ms);
+    }
+    if (now_ms - _stats_start_ms >= 1000) {
+        log_supervisor(now_ms, now_ms - _stats_start_ms);
+        _stats_start_ms = now_ms;
+        _requests = 0;
+        _protocol_errors = 0;
+        _dropped = 0;
+        _host_busy_us = 0;
+        _duty_cap_hits = 0;
+        _host_cpu_us = 0;
+        _long_passes = 0;
+        _pass_cpu_max_us = 0;
+        _slow_requests = 0;
+        _slow_max_us = 0;
+        _slow_cpu_max_us = 0;
+        _slow_refused = 0;
+        _m4_mirror_hits = 0;
+        _m4_mirror_misses = 0;
+        _m4_post_drops = 0;
+        _mirror_frames_sent = 0;
+        _mirror_entries_sent = 0;
+        _mirror_failed_sends = 0;
+        _post_errors = 0;
+        _post_drops = 0;
+        _posted_batched = 0;
     }
 }
 
 // charge the duty cap the host's CPU since its previous reading (HostCpuCharge); at a pass end
 // that is the pass, the largest of which M4HP logs
-void AP_ModuleM4::charge_cpu(bool pass_end)
+uint32_t AP_ModuleM4::charge_cpu(bool pass_end)
 {
     uint64_t cpu_us;
     const bool reset = platform_thread_cpu_us(cpu_us);
@@ -322,6 +335,7 @@ void AP_ModuleM4::charge_cpu(bool pass_end)
     if (pass_end) {
         _pass_cpu_max_us = MAX(_pass_cpu_max_us, used_us);
     }
+    return wall_us;
 }
 
 // the slow worker: one frame at a time, handed over by the host, which waits until it is served.
