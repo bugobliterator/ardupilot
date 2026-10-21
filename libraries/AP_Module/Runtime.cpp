@@ -273,13 +273,29 @@ bool Runtime::pop_mission_command(MissionCommand &command)
 }
 #endif // AP_MISSION_ENABLED
 
+/*
+  The module's binding call entry (Module::binding_call()), for the probed dispatch that follows on
+  the same thread. Plain statics: one module thread makes probed calls at a time in process, as the
+  dispatch's call counter assumes too.
+ */
+static uint32_t probed_entry_us;
+static uint32_t probed_entry_cycles;   // the probe's cost of the entry stamp
+static void probed_binding_entered()
+{
+    const uint32_t start_cycles = CallLatencyLog::cycles();
+    probed_entry_us = CallLatencyLog::clock_us();
+    probed_entry_cycles = CallLatencyLog::cycles() - start_cycles;
+}
+
 // MOD_DEBUG_OPTS bit 3: binding_dispatch timed by the call latency probe, with the adapter's lock
-// taken first so that its wait is a stage of its own. Ret is the lock's give and the probe's record
+// taken first so that its wait is a stage of its own. Pre is the host entry to the dispatch, Ret
+// the lock's give and the probe's record
 static int32_t probed_binding_dispatch(void *context, BindingId id, const uint8_t *input, uint32_t input_size,
                                        uint8_t *output, uint32_t output_size)
 {
     static uint32_t calls;
     CallLatencyLog &probe = CallLatencyLog::get();
+    const uint32_t host_entry = probed_entry_us;
     const uint32_t start_cycles = CallLatencyLog::cycles();
     const uint32_t entry = CallLatencyLog::clock_us();
     uint16_t flags = uint16_t(CallLane::InProcess);
@@ -302,9 +318,9 @@ static int32_t probed_binding_dispatch(void *context, BindingId id, const uint8_
     trace.seq = ++calls;
     trace.id = uint16_t(id);
     trace.flags = flags;
-    call_stages(in_process_stamps(entry, lock_wait, adapter, adapter_done, returned), trace.stage_us);
+    call_stages(in_process_stamps(host_entry, entry, lock_wait, adapter, adapter_done, returned), trace.stage_us);
     probe.record(trace);
-    probe.add_overhead((lock_cycles - start_cycles) + (CallLatencyLog::cycles() - done_cycles));
+    probe.add_overhead(probed_entry_cycles + (lock_cycles - start_cycles) + (CallLatencyLog::cycles() - done_cycles));
     return result;
 }
 
@@ -318,7 +334,8 @@ Module *Runtime::load_bytes(const uint8_t *bytes, uint32_t length, const ModuleF
     auto *module = Module::load(bytes, length, file.name, _limits,
                                 {
                                     &slot, text
-                                }, error, {&slot, probing ? probed_binding_dispatch : binding_dispatch, binding_resolve},
+                                }, error, {&slot, probing ? probed_binding_dispatch : binding_dispatch, binding_resolve,
+                                           probing ? probed_binding_entered : nullptr},
                                 &missing_import,
                                 &missing_import_name,
                                 file.source == ModuleSource::ROMFS ? Module::Source::ROMFS : Module::Source::File,

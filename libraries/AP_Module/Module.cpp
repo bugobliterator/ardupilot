@@ -355,6 +355,9 @@ int32_t Module::binding_call(void *context, uint32_t id, const uint8_t *input, u
                              uint8_t *output, uint32_t output_size)
 {
     auto &module = *static_cast<Module *>(context);
+    if (module._bindings.entered != nullptr) {
+        module._bindings.entered();
+    }
     if (module._stop.load()) {
         return AP_MODULE_STATUS_STOPPED;
     }

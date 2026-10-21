@@ -51,16 +51,17 @@ TEST(RustCallLatency, StagesAcrossTheCounterWrap)
 TEST(RustCallLatency, InProcessStampsLeaveTheTransportStagesZero)
 {
     int32_t stages[CALL_STAGES];
-    call_stages(in_process_stamps(1000, 1001, 2501, 2503, 2504), stages);
-    for (CallStage zero : { CallStage::Pre, CallStage::Send, CallStage::Receive, CallStage::Pass, CallStage::Handoff,
+    call_stages(in_process_stamps(997, 1000, 1001, 2501, 2503, 2504), stages);
+    for (CallStage zero : { CallStage::Send, CallStage::Receive, CallStage::Pass, CallStage::Handoff,
                             CallStage::Reply, CallStage::Back }) {
         EXPECT_EQ(stage(stages, zero), 0);
     }
+    EXPECT_EQ(stage(stages, CallStage::Pre), 3);   // host entry to dispatch
     EXPECT_EQ(stage(stages, CallStage::Check), 1);
     EXPECT_EQ(stage(stages, CallStage::Lock), 1500);
     EXPECT_EQ(stage(stages, CallStage::Adapter), 2);
     EXPECT_EQ(stage(stages, CallStage::Return), 1);
-    EXPECT_EQ(stage(stages, CallStage::Total), 1504);
+    EXPECT_EQ(stage(stages, CallStage::Total), 1507);
 }
 
 static CallTrace trace_of(uint32_t seq, uint16_t id, int32_t total)

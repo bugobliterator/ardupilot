@@ -239,8 +239,8 @@ void CallLatencyLog::flush(uint32_t now_ms)
         // @Description: Rust binding call latency probe: the stages of one call from one microsecond counter (TIM5 on hardware), at most 50 rows a second (MOD_M4_OPTS bit 2 on the M4, MOD_DEBUG_OPTS bit 3 in process)
         // @Field: TimeUS: Time since system startup, when the M7 recorded the call
         // @Field: Id: BindingId (the SRPC rows of the same log name it)
-        // @Field: Fl: flags: bits 0-1 lane (0 in process, 1 fast, 2 slow worker), 2 M4 module thread slept for the reply, 3 M4 service woke on its poll timeout, 4 sent by the M4 service step, 5 pass followed a duty-cap pause, 6 refused unrun (duty cap), 7 over quota (unrun), 8 probe took the adapter's lock first, 9 adapter takes a lock the probe cannot, 10 M4 completion missing, 12-15 frames before it in its pass
-        // @Field: Pre: M4 binding call entry to frame ready to send
+        // @Field: Fl: flags: bits 0-1 lane (0 in process, 1 fast, 2 slow worker), 2 M4 module thread slept for the reply, 3 M4 wait before the reply was drained timed out, 4 sent by a later M4 drain, 5 pass followed a duty-cap pause, 6 refused unrun (duty cap), 7 over quota (unrun), 8 probe took the adapter's lock first, 9 adapter takes a lock the probe cannot, 10 M4 completion missing, 12-15 frames before it in its pass
+        // @Field: Pre: M4 binding call entry to frame ready to send (in process: host binding call entry to the dispatch)
         // @Field: Snd: M4 ring write and doorbell
         // @Field: Rcv: frame on the ring until the M7 host took it
         // @Field: Pas: part of Rcv: the M7 host's pass before this frame
