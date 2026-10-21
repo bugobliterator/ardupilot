@@ -15,8 +15,11 @@
 #include <AP_Module/BindingMAVLink.h>
 #include <AP_Module/BindingNetwork.h>
 #include <AP_Module/BindingONVIF.h>
+#include <AP_Module/BindingParam.h>
+#include <AP_Module/BindingSupport.h>
 #include <AP_Module/BindingSerialLED.h>
 #include <AP_Module/Bindings.h>
+#include <AP_Module/HostApi.h>
 #include "AP_ModuleM4_ServeWait.h"
 
 using namespace ModuleM4;
@@ -80,7 +83,160 @@ int32_t AP_ModuleM4_Server::dispatch(uint16_t module, uint32_t id, uint16_t in_s
     }
     _last_dispatch_ran = true;
 #endif
-    return AP_Module::binding_dispatch(&_slots[module], AP_Module::BindingId(id), _in, in_size, _out, out_size);
+    switch (AP_Module::BindingId(id)) {
+    case AP_Module::BindingId::PARAMETER_INIT:
+    case AP_Module::BindingId::PARAMETER_GET:
+    case AP_Module::BindingId::PARAMETER_SET:
+    case AP_Module::BindingId::PARAMETER_SET_AND_SAVE:
+    case AP_Module::BindingId::PARAMETER_SET_DEFAULT:
+    case AP_Module::BindingId::PARAMETER_CONFIGURED:
+        return serve_parameter(module, id);
+    default:
+        // PARAMETER_LAYOUT, which reports sizeof and alignof(Parameter), included
+        return AP_Module::binding_dispatch(&_slots[module], AP_Module::BindingId(id), _in, in_size, _out, out_size);
+    }
+}
+
+AP_ModuleM4_Server::AP_ModuleM4_Server()
+{
+    clear_handles();
+}
+
+void AP_ModuleM4_Server::clear_handles()
+{
+    memset(_handle_module, HANDLE_FREE, sizeof(_handle_module));
+    for (auto &parameter : _handle) {
+        parameter = Parameter();
+    }
+    _handle_count = 0;
+}
+
+uint16_t AP_ModuleM4_Server::handle_home(uint16_t module, uint64_t token)
+{
+    const uint64_t mixed = (token ^ (uint64_t(module) << 56)) * 0x9E3779B97F4A7C15ULL;
+    return uint16_t(mixed >> 56) & (PARAMETER_HANDLE_SLOTS - 1U);
+}
+
+// the slot of (module, token), or with insert a free slot claimed for it; -1 if absent or full
+int16_t AP_ModuleM4_Server::find_handle(uint16_t module, uint64_t token, bool insert)
+{
+    uint16_t slot = handle_home(module, token);
+    for (uint16_t probes = 0; probes < PARAMETER_HANDLE_SLOTS; probes++) {
+        if (_handle_module[slot] == HANDLE_FREE) {
+            if (!insert || _handle_count >= PARAMETER_HANDLES_MAX) {
+                return -1;
+            }
+            _handle_module[slot] = uint8_t(module);
+            _handle_token[slot] = token;
+            _handle_count++;
+            return int16_t(slot);
+        }
+        if (_handle_module[slot] == module && _handle_token[slot] == token) {
+            return int16_t(slot);
+        }
+        slot = (slot + 1U) & (PARAMETER_HANDLE_SLOTS - 1U);
+    }
+    return -1;
+}
+
+// linear-probing deletion: later entries of the run move back so every lookup still finds them
+void AP_ModuleM4_Server::erase_handle(uint16_t slot)
+{
+    const uint16_t mask = PARAMETER_HANDLE_SLOTS - 1U;
+    uint16_t next = slot;
+    while (true) {
+        next = (next + 1U) & mask;
+        if (_handle_module[next] == HANDLE_FREE) {
+            break;
+        }
+        const uint16_t home = handle_home(_handle_module[next], _handle_token[next]);
+        // next stays unless its home lies cyclically in (slot, next]
+        const bool stays = slot <= next ? (slot < home && home <= next) : (slot < home || home <= next);
+        if (!stays) {
+            _handle_module[slot] = _handle_module[next];
+            _handle_token[slot] = _handle_token[next];
+            _handle[slot] = _handle[next];
+            slot = next;
+        }
+    }
+    _handle_module[slot] = HANDLE_FREE;
+    _handle[slot] = Parameter();
+    _handle_count--;
+}
+
+void AP_ModuleM4_Server::release_handles(uint16_t module)
+{
+    uint16_t slot = 0;
+    while (slot < PARAMETER_HANDLE_SLOTS && _handle_count != 0) {
+        if (_handle_module[slot] == module) {
+            erase_handle(slot);   // may move another entry into slot: look at it again
+        } else {
+            slot++;
+        }
+    }
+}
+
+// the PR's generated Parameter adapters' wire and checks, on an M7-owned Parameter
+int32_t AP_ModuleM4_Server::serve_parameter(uint16_t module, uint32_t id)
+{
+    const AP_Module::BindingId binding = AP_Module::BindingId(id);
+    memset(_out, 0, binding == AP_Module::BindingId::PARAMETER_GET ? 5 : 1);
+    const uint64_t token = uint64_t(AP_Module::BindingWire::read(_in, 4)) |
+                           (uint64_t(AP_Module::BindingWire::read(_in + 4, 4)) << 32);
+    if (token == 0 || token > UINTPTR_MAX || token % alignof(Parameter) != 0) {
+        return AP_MODULE_STATUS_INVALID;
+    }
+    if (binding == AP_Module::BindingId::PARAMETER_INIT) {
+        const char *name = AP_Module::BindingWire::read_string(_in + 8);
+        if (name == nullptr) {
+            return AP_MODULE_STATUS_INVALID;
+        }
+        const int16_t slot = find_handle(module, token, true);
+        if (slot < 0) {
+            return AP_MODULE_STATUS_NO_MEMORY;
+        }
+        _handle[slot] = Parameter();
+#if AP_MODULE_M4_TEST_HOOKS
+        if (!_bind_parameters) {
+            return AP_MODULE_STATUS_OK;
+        }
+#endif
+        _out[0] = _handle[slot].init(name);
+        return AP_MODULE_STATUS_OK;
+    }
+    const int16_t slot = find_handle(module, token, false);
+    if (slot < 0) {
+        return AP_MODULE_STATUS_INVALID;
+    }
+    Parameter &parameter = _handle[slot];
+    if (binding == AP_Module::BindingId::PARAMETER_GET) {
+        float value;
+        if (parameter.get(value)) {
+            _out[0] = 1;
+            AP_Module::BindingWire::write_float(_out + 1, value);
+        }
+        return AP_MODULE_STATUS_OK;
+    }
+    if (binding == AP_Module::BindingId::PARAMETER_CONFIGURED) {
+        _out[0] = parameter.configured();
+        return AP_MODULE_STATUS_OK;
+    }
+    const float value = AP_Module::BindingWire::read_float(_in + 8);
+    if (!AP_Module::BindingParam::valid_value(parameter.type(), value)) {
+        return AP_MODULE_STATUS_INVALID;
+    }
+    switch (binding) {
+    case AP_Module::BindingId::PARAMETER_SET:
+        _out[0] = parameter.set(value);
+        break;
+    case AP_Module::BindingId::PARAMETER_SET_AND_SAVE:
+        _out[0] = parameter.set_and_save(value);
+        break;
+    default:
+        _out[0] = parameter.set_default(value);
+        break;
+    }
+    return AP_MODULE_STATUS_OK;
 }
 
 // the PR's session cleanups (Runtime.cpp:549-559), in its order
@@ -102,6 +258,7 @@ void AP_ModuleM4_Server::end_module(uint16_t index)
         return;
     }
     ModuleSlot &slot = _slots[index];
+    release_handles(index);
 #if AP_MODULE_M4_TEST_HOOKS
     _ended_modules++;
     if (!_cleanups_run) {
@@ -118,6 +275,8 @@ void AP_ModuleM4_Server::reset(uint32_t session, uint8_t module_count)
     for (uint16_t index = 0; index < _module_count; index++) {
         end_module(index);
     }
+    // a slot index is reused by the next session's module of that index
+    clear_handles();
     _module_count = module_count < ARRAY_SIZE(_slots) ? module_count : uint8_t(ARRAY_SIZE(_slots));
     for (uint16_t index = 0; index < _module_count; index++) {
         _slots[index] = ModuleSlot { index, session };

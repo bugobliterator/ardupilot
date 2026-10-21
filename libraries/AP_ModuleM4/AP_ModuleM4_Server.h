@@ -5,6 +5,7 @@
 #if AP_MODULE_ENABLED
 
 #include <stdint.h>
+#include <AP_Scripting/Parameter.h>
 #include "AP_ModuleM4_CallStatus.h"
 #include "AP_ModuleM4_ModuleTable.h"
 #include "AP_ModuleM4_Protocol.h"
@@ -23,8 +24,13 @@
  */
 class AP_ModuleM4_Server {
 public:
+    AP_ModuleM4_Server();
+
     // twice the frame: no adapter can reach past memory the server owns
     static const uint16_t SERVE_BUFFER_SIZE = 4096;
+    // Parameter handles of all modules (open addressing, a power of two) and the most in use
+    static const uint16_t PARAMETER_HANDLE_SLOTS = 256;
+    static const uint16_t PARAMETER_HANDLES_MAX = 224;
 
     // a new M4 session: ends every slot of the previous one, then module_count slots
     // (Discovery's count, at most ModuleM4::MAX_MODULES)
@@ -53,24 +59,46 @@ public:
     void run_cleanups_for_test(bool run) { _cleanups_run = run; }
     // adapters that dereference a vehicle singleton the gtest does not have
     static bool needs_vehicle(uint32_t id);
+    uint16_t parameter_handles() const { return _handle_count; }
+    // AP_Param::find() needs the vehicle's parameter tables, which a gtest does not have: init then
+    // claims the handle and leaves it unbound (as for a missing name)
+    void bind_parameters_for_test(bool bind) { _bind_parameters = bind; }
 #endif
 
 private:
     int32_t dispatch(uint16_t module, uint32_t id, uint16_t in_size, uint16_t out_size);
+    // the PR's Parameter.* adapters take the address of a Parameter in module memory and use
+    // it: here the address is a token only, of an M7-owned Parameter of the module
+    int32_t serve_parameter(uint16_t module, uint32_t id);
+    int16_t find_handle(uint16_t module, uint64_t token, bool insert);
+    void erase_handle(uint16_t slot);
+    void release_handles(uint16_t module);
+    void clear_handles();
+    static uint16_t handle_home(uint16_t module, uint64_t token);
 
     uint8_t _in[SERVE_BUFFER_SIZE];
     uint8_t _out[SERVE_BUFFER_SIZE];
     ModuleM4::ModuleSlot _slots[ModuleM4::MAX_MODULES];
     uint8_t _module_count = 0;
     ModuleM4::Quota _quotas;
+    static const uint8_t HANDLE_FREE = 0xFF;
+    uint64_t _handle_token[PARAMETER_HANDLE_SLOTS];
+    Parameter _handle[PARAMETER_HANDLE_SLOTS];
+    uint8_t _handle_module[PARAMETER_HANDLE_SLOTS];
+    uint16_t _handle_count = 0;
 #if AP_MODULE_M4_TEST_HOOKS
     uint16_t _last_input_end = 0;   // one past the last non-zero input byte at the last dispatch
     bool _last_dispatch_ran = false;
     uint32_t _ended_modules = 0;
     bool _cleanups_run = true;
+    bool _bind_parameters = true;
 #endif
 };
 
 static_assert(AP_ModuleM4_Server::SERVE_BUFFER_SIZE >= 2U * ModuleM4::MAX_FRAME, "serve buffers are twice the frame");
+static_assert((AP_ModuleM4_Server::PARAMETER_HANDLE_SLOTS & (AP_ModuleM4_Server::PARAMETER_HANDLE_SLOTS - 1)) == 0 &&
+              AP_ModuleM4_Server::PARAMETER_HANDLES_MAX < AP_ModuleM4_Server::PARAMETER_HANDLE_SLOTS,
+              "handle table: a power of two, never full");
+static_assert(ModuleM4::MAX_MODULES < 0xFF, "a module index is never the free marker");
 
 #endif  // AP_MODULE_ENABLED
