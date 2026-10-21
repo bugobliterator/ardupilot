@@ -21,7 +21,7 @@ struct CallStamps {
     uint32_t svc_entry;     // t0: the module's binding call enters the host (M4: the SVC body)
     uint32_t pre_send;      // the frame is checked and about to go on the ring (M4)
     uint32_t sent;          // t1: on the ring, doorbell rung (M4)
-    uint32_t m7_pass;       // the M7 host's serve pass started (its wake, after any duty-cap pause)
+    uint32_t m7_pass;       // the M7 host's serve pass started (its wake)
     uint32_t m7_received;   // t2: the M7 host took the frame off the ring
     uint32_t dispatch;      // t3: dispatch starts, on the lane's thread
     uint32_t lock_wait;     // the adapter's lock is about to be taken (probe pre-take)
@@ -190,7 +190,7 @@ static const char *const M4_CYCLE_PART_NAMES[M4_CYCLE_PARTS] = {
 enum class M7CyclePart : uint8_t {
     IsrToThread,   // doorbell interrupt entry to the host thread's return from its wait (first frame of a pass)
     Wake,          // Channel::wake() after that wait (first frame of a pass)
-    CapWait,       // after the wake to serve(): the duty cap's decision and charge (first frame of a pass)
+    CapWait,       // after the wake to serve(): the pass's stamps (first frame of a pass)
     Take,          // Channel::receive() of the frame
     Parse,         // serve entry: the header, module, id and quota checks
     Zero,          // clearing the serve buffers
@@ -199,7 +199,7 @@ enum class M7CyclePart : uint8_t {
     ReplyPack,     // the reply framed, up to its send
     ReplyRing,     // Channel::send() with the M4 awake: the ring write
     ReplyBell,     // Channel::send() with the M4 asleep: the ring write and the doorbell
-    PassEnd,       // after the probe's record to the end of serve(), and the pass's CPU charge (last frame of a pass)
+    PassEnd,       // after the probe's record to the end of serve() (last frame of a pass)
 };
 static const uint8_t M7_CYCLE_PARTS = 12;
 static const char *const M7_CYCLE_PART_NAMES[M7_CYCLE_PARTS] = {
@@ -268,8 +268,7 @@ static const uint16_t CALL_LANE_MASK = 0x3;           // CallLane
 static const uint16_t CALL_M4_SLEPT = 1U << 2;        // the module thread slept for its reply
 static const uint16_t CALL_M4_POLL_WAKE = 1U << 3;    // the M4 wait before the reply was drained timed out (no doorbell)
 static const uint16_t CALL_M4_SENT_BY_STEP = 1U << 4; // a later drain sent it, not forward_posted()
-static const uint16_t CALL_CAP_PAUSED = 1U << 5;      // the pass that served it followed a duty-cap pause
-static const uint16_t CALL_REFUSED = 1U << 6;         // refused unrun (duty-cap debt): no adapter stages
+// bits 5 and 6 are unused, kept clear so older logs read the same
 static const uint16_t CALL_QUOTA = 1U << 7;           // over its quota: answered unrun, no adapter stages
 static const uint16_t CALL_LOCK_TAKEN = 1U << 8;      // the probe took the adapter's lock first: Lock is its wait
 static const uint16_t CALL_LOCK_UNKNOWN = 1U << 9;    // the adapter takes a lock the probe cannot: inside Adapter

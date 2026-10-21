@@ -67,7 +67,7 @@ struct Probe<'a, 'h> {
 }
 
 impl Probe<'_, '_> {
-    // one call of binding, timed from this side; Busy (duty-cap refusal) and other errors counted
+    // one call of binding, timed from this side; Busy and other errors counted
     fn call(&mut self, binding: usize, tally: &mut Tally) -> Result {
         let start = self.c.time_us();
         let result = match binding {
