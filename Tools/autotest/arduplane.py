@@ -8088,7 +8088,9 @@ return update()
         logs = [path for path in self.log_list() if path not in before]
         messages = {'RLG1': [], 'RLG2': [], 'RLGP': []}
         formats = {}
+        # per log: a later log may give the RLGP type id to another message
         format_units = {}
+        rlgp_logs = set()
         for path in logs:
             dfreader = self.dfreader_for_path(path)
             while True:
@@ -8101,9 +8103,11 @@ return update()
                     if formats.setdefault(m.Name, entry) != entry:
                         raise NotAchievedException('%s registered as %s, then %s' % (m.Name, formats[m.Name], entry))
                 elif kind == 'FMTU':
-                    format_units[m.FmtType] = (m.UnitIds, m.MultIds)
+                    format_units[(path, m.FmtType)] = (m.UnitIds, m.MultIds)
                 elif kind in messages:
                     messages[kind].append(m)
+                    if kind == 'RLGP':
+                        rlgp_logs.add(path)
         if set(formats) != set(messages):
             raise NotAchievedException('formats %s in %s' % (sorted(formats), logs))
         if (formats['RLG1'][1] != 'QbBhHiIQfcCeELMn' or formats['RLG2'][1] != 'QNZff' or
@@ -8124,8 +8128,9 @@ return update()
         for m in messages['RLGP']:
             if m.Height != 100.5 or m.Lat != -35.363261 or m.Who != 1:
                 raise NotAchievedException('RLGP %s' % m)
-        if format_units[formats['RLGP'][0]] != ('smD#', 'F0G-'):
-            raise NotAchievedException('RLGP units %s' % (format_units[formats['RLGP'][0]],))
+        rlgp_units = {format_units.get((path, formats['RLGP'][0])) for path in rlgp_logs}
+        if rlgp_units != {('smD#', 'F0G-')}:
+            raise NotAchievedException('RLGP units %s' % (rlgp_units,))
         self.progress('Rust logs: %s' % {kind: len(rows) for (kind, rows) in messages.items()})
 
     def module_bindings(self, m4):
