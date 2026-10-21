@@ -8,6 +8,12 @@
 #include <AP_HAL/Semaphores.h>
 #include "CallLatency.h"
 
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+#include <hal.h>
+#elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#include <time.h>
+#endif
+
 class ExpandingString;
 
 namespace AP_Rust {
@@ -29,8 +35,20 @@ public:
     // the stage counter both cores read: TIM5's count on the STM32 (the M7's system timer, which
     // the M4 reads too), CLOCK_MONOTONIC in SITL, where the M4 is another process
     static uint32_t clock_us();
-    // a cycle count for the probe's own cost (ChibiOS: DWT); cycles_per_us() of them a microsecond
-    static uint32_t cycles();
+    // a cycle count for the probe's own cost and the cycle parts (ChibiOS: one DWT load);
+    // cycles_per_us() of them a microsecond
+    static uint32_t cycles()
+    {
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+        return DWT->CYCCNT;
+#elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return uint32_t(uint64_t(ts.tv_sec) * 1000000000U + uint64_t(ts.tv_nsec));
+#else
+        return 0;
+#endif
+    }
     static uint32_t cycles_per_us();
 
     // the lock the generated adapter of id takes, for the probe to take first (recursive locks:
@@ -47,8 +65,11 @@ public:
     void add_overhead(uint32_t cycles);
     // the sub-stages of a recorded call (its stamps), summed per binding for the summary
     void record_substages(uint32_t id, const CallStamps &stamps);
-    // the M4's cycles before the frame of a probed call of id was packed, as its trailer reports it
-    void record_m4_pre_cycles(uint32_t id, const uint16_t (&cycles)[M4_PRE_PARTS]);
+    // the M4CyclePart cycles of a probed call of id with their bit in taken, as its trailer reports them
+    void record_m4_cycles(uint32_t id, const uint32_t (&cycles)[M4_CYCLE_PARTS], uint32_t taken);
+    // the M7CyclePart cycles of a probed call of id with their bit in taken; one part on its own
+    void record_m7_cycles(uint32_t id, const uint32_t (&cycles)[M7_CYCLE_PARTS], uint32_t taken);
+    void record_m7_cycle(uint32_t id, M7CyclePart part, uint32_t cycles);
     // the M4's cost of one stamp, as its trailers report it
     void set_m4_stamp_cycles(uint32_t cycles) { _m4_stamp_cycles = cycles; }
     // the M4's memset cost in hundredths of a cycle per byte (64 B on its stack, 4 KB of its link
@@ -85,7 +106,8 @@ private:
     int32_t *_scratch;
     IdTotals _ids[SUMMARY_IDS];
     SubstageTotals *_substages;    // SUMMARY_IDS of them, by id slot
-    M4PreCycleTotals *_m4_pre;     // SUMMARY_IDS of them, by id slot
+    CycleTotals<M4_CYCLE_PARTS> *_m4_cycles;   // SUMMARY_IDS of them, by id slot
+    CycleTotals<M7_CYCLE_PARTS> *_m7_cycles;
     uint8_t _id_count;
     uint32_t _logged;
     uint32_t _log_tokens_milli;

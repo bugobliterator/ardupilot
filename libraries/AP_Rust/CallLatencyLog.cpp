@@ -46,19 +46,6 @@ uint32_t CallLatencyLog::clock_us()
 #endif
 }
 
-uint32_t CallLatencyLog::cycles()
-{
-#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-    return DWT->CYCCNT;
-#elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return uint32_t(uint64_t(ts.tv_sec) * 1000000000U + uint64_t(ts.tv_nsec));
-#else
-    return 0;
-#endif
-}
-
 uint32_t CallLatencyLog::cycles_per_us()
 {
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
@@ -107,13 +94,15 @@ bool CallLatencyLog::start()
     auto *traces = static_cast<CallTrace *>(calloc(CALL_TRACE_COUNT, sizeof(CallTrace)));
     auto *scratch = static_cast<int32_t *>(calloc(CALL_TRACE_COUNT, sizeof(int32_t)));
     auto *substages = static_cast<SubstageTotals *>(calloc(SUMMARY_IDS, sizeof(SubstageTotals)));
-    auto *m4_pre = static_cast<M4PreCycleTotals *>(calloc(SUMMARY_IDS, sizeof(M4PreCycleTotals)));
+    auto *m4_cycles = static_cast<CycleTotals<M4_CYCLE_PARTS> *>(calloc(SUMMARY_IDS, sizeof(CycleTotals<M4_CYCLE_PARTS>)));
+    auto *m7_cycles = static_cast<CycleTotals<M7_CYCLE_PARTS> *>(calloc(SUMMARY_IDS, sizeof(CycleTotals<M7_CYCLE_PARTS>)));
     auto *ring = traces != nullptr ? NEW_NOTHROW CallTraceRing<CALL_TRACE_COUNT>(traces) : nullptr;
-    if (scratch == nullptr || ring == nullptr || substages == nullptr || m4_pre == nullptr) {
+    if (scratch == nullptr || ring == nullptr || substages == nullptr || m4_cycles == nullptr || m7_cycles == nullptr) {
         free(traces);
         free(scratch);
         free(substages);
-        free(m4_pre);
+        free(m4_cycles);
+        free(m7_cycles);
         delete ring;
         return false;
     }
@@ -136,7 +125,8 @@ bool CallLatencyLog::start()
     _lock_pair_cycles = lock_pair_cycles;
     _scratch = scratch;
     _substages = substages;
-    _m4_pre = m4_pre;
+    _m4_cycles = m4_cycles;
+    _m7_cycles = m7_cycles;
     _log_tokens_milli = LOG_ROWS_BURST * 1000U;
     _log_refill_ms = AP_HAL::millis();
     _ring = ring;
@@ -195,7 +185,7 @@ void CallLatencyLog::record_substages(uint32_t id, const CallStamps &stamps)
     }
 }
 
-void CallLatencyLog::record_m4_pre_cycles(uint32_t id, const uint16_t (&cycles)[M4_PRE_PARTS])
+void CallLatencyLog::record_m4_cycles(uint32_t id, const uint32_t (&cycles)[M4_CYCLE_PARTS], uint32_t taken)
 {
     WITH_SEMAPHORE(_sem);
     if (_ring == nullptr) {
@@ -203,7 +193,31 @@ void CallLatencyLog::record_m4_pre_cycles(uint32_t id, const uint16_t (&cycles)[
     }
     const int8_t index = id_slot(id);
     if (index >= 0) {
-        _m4_pre[index].add(cycles);
+        _m4_cycles[index].add(cycles, taken);
+    }
+}
+
+void CallLatencyLog::record_m7_cycles(uint32_t id, const uint32_t (&cycles)[M7_CYCLE_PARTS], uint32_t taken)
+{
+    WITH_SEMAPHORE(_sem);
+    if (_ring == nullptr) {
+        return;
+    }
+    const int8_t index = id_slot(id);
+    if (index >= 0) {
+        _m7_cycles[index].add(cycles, taken);
+    }
+}
+
+void CallLatencyLog::record_m7_cycle(uint32_t id, M7CyclePart part, uint32_t cycles)
+{
+    WITH_SEMAPHORE(_sem);
+    if (_ring == nullptr) {
+        return;
+    }
+    const int8_t index = id_slot(id);
+    if (index >= 0) {
+        _m7_cycles[index].add(uint8_t(part), cycles);
     }
 }
 
@@ -285,8 +299,8 @@ void CallLatencyLog::summary(ExpandingString &str)
     static const char *const lanes[] = { "in-process", "fast", "slow", "?" };
     for (uint8_t i = 0; i < _id_count; i++) {
         const IdTotals &totals = _ids[i];
-        str.printf("id %lu %s: calls %lu, max Tot %ld us; window p50/p99/max us, sub mean/max us and m4cyc "
-                   "mean/max M4 cycles since start:\n",
+        str.printf("id %lu %s: calls %lu, max Tot %ld us; window p50/p99/max us, sub mean/max us, m4cyc and m7cyc "
+                   "mean/max cycles of each core since start:\n",
                    (unsigned long)totals.id, lanes[totals.flags & CALL_LANE_MASK], (unsigned long)totals.count, long(totals.max_total_us));
         for (uint8_t stage = 0; stage < CALL_STAGES; stage++) {
             const StageSummary s = summarize_stage(*_ring, totals.id, CallStage(stage), _scratch);
@@ -305,11 +319,20 @@ void CallLatencyLog::summary(ExpandingString &str)
             str.printf("  sub %s n %lu mean %ld max %ld\n", CALL_SUBSTAGE_NAMES[substage],
                        (unsigned long)sub.count[substage], long(sub.mean_us(substage)), long(sub.max_us[substage]));
         }
-        // M4 core cycles, since start
-        const M4PreCycleTotals &pre = _m4_pre[i];
-        for (uint8_t part = 0; part < M4_PRE_PARTS && pre.count != 0; part++) {
-            str.printf("  m4cyc %s n %lu mean %lu max %u\n", M4_PRE_PART_NAMES[part], (unsigned long)pre.count,
-                       (unsigned long)pre.mean(part), unsigned(pre.max[part]));
+        // core cycles, since start: M4 (its trailers) then M7
+        const CycleTotals<M4_CYCLE_PARTS> &m4 = _m4_cycles[i];
+        for (uint8_t part = 0; part < M4_CYCLE_PARTS; part++) {
+            if (m4.count[part] != 0) {
+                str.printf("  m4cyc %s n %lu mean %lu max %lu\n", M4_CYCLE_PART_NAMES[part],
+                           (unsigned long)m4.count[part], (unsigned long)m4.mean(part), (unsigned long)m4.max[part]);
+            }
+        }
+        const CycleTotals<M7_CYCLE_PARTS> &m7 = _m7_cycles[i];
+        for (uint8_t part = 0; part < M7_CYCLE_PARTS; part++) {
+            if (m7.count[part] != 0) {
+                str.printf("  m7cyc %s n %lu mean %lu max %lu\n", M7_CYCLE_PART_NAMES[part],
+                           (unsigned long)m7.count[part], (unsigned long)m7.mean(part), (unsigned long)m7.max[part]);
+            }
         }
     }
 }
