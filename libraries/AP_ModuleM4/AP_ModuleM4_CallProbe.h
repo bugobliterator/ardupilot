@@ -31,6 +31,11 @@ struct M4CallStamps {
     uint32_t reply_wake_us;
     uint32_t signalled_us;
     uint32_t resumed_us;
+    // core cycles before the frame was packed; 0 without a cycle counter
+    uint16_t svc_to_entry_cycles;     // SVC handler entry to host_binding_call() entry: the argument copy
+    uint16_t checks_cycles;           // after the entry stamp, the host's checks up to begin_probed_call()
+    uint16_t begin_probe_cycles;      // begin_probed_call()
+    uint16_t pack_cycles;             // pack_binding_call()
 };
 
 struct M4CallProbe {
@@ -39,6 +44,7 @@ struct M4CallProbe {
     // the core's cycle counter, for the stamp and memset costs; may be null
     uint32_t (*cycles)();
     uint32_t stamp_cycles;            // core cycles of one clock_us(), measured by the service at init
+    uint32_t svc_cycles;              // cycles() as the SVC handler took the call; 0: not taken
     std::atomic<bool> enabled;        // this session's Config carried M4_OPTION_CALL_PROBE
     bool in_call;                     // the module thread is in a probed binding call
     bool memset_measured;
@@ -51,6 +57,17 @@ struct M4CallProbe {
 inline bool probing(const M4CallProbe *probe)
 {
     return probe != nullptr && probe->clock_us != nullptr && probe->enabled.load();
+}
+
+inline uint32_t probe_cycles_now(const M4CallProbe &probe)
+{
+    return probe.cycles != nullptr ? probe.cycles() : 0;
+}
+
+inline uint16_t cycles_between(uint32_t from, uint32_t to)
+{
+    const uint32_t cycles = to - from;
+    return cycles > 0xFFFFU ? 0xFFFFU : uint16_t(cycles);
 }
 
 // a sub-stage stamp of the call in flight
@@ -116,6 +133,10 @@ inline CallProbeTrailer begin_probed_call(M4CallProbe &probe, uint32_t svc_entry
     trailer.prev_resumed_us = last.resumed_us;
     trailer.memset_small_centicycles = probe.memset_small_centicycles;
     trailer.memset_large_centicycles = probe.memset_large_centicycles;
+    trailer.prev_svc_to_entry_cycles = last.svc_to_entry_cycles;
+    trailer.prev_checks_cycles = last.checks_cycles;
+    trailer.prev_begin_probe_cycles = last.begin_probe_cycles;
+    trailer.prev_pack_cycles = last.pack_cycles;
     probe.current = M4CallStamps {};
     probe.in_call = true;
     return trailer;

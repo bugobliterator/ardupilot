@@ -483,7 +483,7 @@ TEST(ModuleM4HostCalls, MemsetCostIsMeasuredOnceBeforeTheFirstProbedCall)
     EXPECT_EQ(memcmp(f.stack, output, 4), 0);
     const uint32_t reads = fake_cycles_now;
     EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
-    EXPECT_EQ(fake_cycles_now, reads);   // not again
+    EXPECT_EQ(fake_cycles_now - reads, 5U * 3U);   // not again: only the five pre-pack cycle reads
     // the trailer reports it
     BindingCallHeader sent {};
     const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
@@ -491,6 +491,47 @@ TEST(ModuleM4HostCalls, MemsetCostIsMeasuredOnceBeforeTheFirstProbedCall)
     CallProbeTrailer trailer;
     ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
     EXPECT_EQ(trailer.memset_small_centicycles, probe.memset_small_centicycles);
+}
+
+TEST(ModuleM4HostCalls, PrePackCyclesReachTheNextTrailer)
+{
+    Fixture f;
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.cycles = fake_cycles;
+    probe.enabled.store(true);
+    probe.memset_measured = true;
+    served_probe = &probe;
+    f.platform.call = probed_call;
+    f.platform.probe = &probe;
+    const uint8_t output[4] = { 1, 2, 3, 4 };
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    // the SVC handler's stamp, 40 cycles before the host call reads the counter
+    fake_cycles_now = 1000;
+    probe.svc_cycles = 963;
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    EXPECT_EQ(probe.svc_cycles, 0U);   // used once
+    // each read 3 on from the one before
+    EXPECT_EQ(probe.last.svc_to_entry_cycles, 40);
+    EXPECT_EQ(probe.last.checks_cycles, 3);
+    EXPECT_EQ(probe.last.begin_probe_cycles, 3);
+    EXPECT_EQ(probe.last.pack_cycles, 3);
+    // the next call carries them; without an SVC stamp its own SvcEntry is 0
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    BindingCallHeader sent {};
+    const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, len, sent));
+    CallProbeTrailer trailer;
+    ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
+    EXPECT_EQ(trailer.prev_svc_to_entry_cycles, 40);
+    EXPECT_EQ(trailer.prev_checks_cycles, 3);
+    EXPECT_EQ(trailer.prev_begin_probe_cycles, 3);
+    EXPECT_EQ(trailer.prev_pack_cycles, 3);
+    EXPECT_EQ(probe.last.svc_to_entry_cycles, 0);
+    // a counter far behind saturates
+    EXPECT_EQ(cycles_between(0, 0x10000U), 0xFFFF);
+    EXPECT_EQ(cycles_between(0xFFFFFFFFU, 2), 3);
+    served_probe = nullptr;
 }
 
 AP_GTEST_MAIN()

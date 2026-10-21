@@ -73,7 +73,7 @@ TEST(ModuleM4Frames, ReplyCarriesOutputOnlyWithOk)
 
 TEST(ModuleM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
 {
-    EXPECT_EQ(sizeof(CallProbeTrailer), 64U);
+    EXPECT_EQ(sizeof(CallProbeTrailer), 72U);
     uint8_t frame[MAX_FRAME];
     const uint8_t input[3] = { 1, 2, 3 };
     CallProbeTrailer trailer {};
@@ -91,6 +91,10 @@ TEST(ModuleM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
     trailer.prev_resumed_us = 27;
     trailer.memset_small_centicycles = 125;
     trailer.memset_large_centicycles = 410;
+    trailer.prev_svc_to_entry_cycles = 31;
+    trailer.prev_checks_cycles = 32;
+    trailer.prev_begin_probe_cycles = 33;
+    trailer.prev_pack_cycles = 0xFFFF;
     const uint16_t len = pack_binding_call(frame, sizeof(frame), 9, 0, 0, 242, input, 3, 1, &trailer);
     ASSERT_EQ(len, sizeof(BindingCallHeader) + 3 + sizeof(trailer));
     BindingCallHeader h;
@@ -114,6 +118,10 @@ TEST(ModuleM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
     EXPECT_EQ(out.prev_resumed_us, 27U);
     EXPECT_EQ(out.memset_small_centicycles, 125);
     EXPECT_EQ(out.memset_large_centicycles, 410);
+    EXPECT_EQ(out.prev_svc_to_entry_cycles, 31);
+    EXPECT_EQ(out.prev_checks_cycles, 32);
+    EXPECT_EQ(out.prev_begin_probe_cycles, 33);
+    EXPECT_EQ(out.prev_pack_cycles, 0xFFFF);
     // the same frame without the flag: its length disagrees with its input size
     BindingCallHeader unflagged = h;
     unflagged.flags = 0;
