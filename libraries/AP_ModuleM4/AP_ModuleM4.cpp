@@ -11,6 +11,7 @@
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
+#include "AP_ModuleM4_CallProbe.h"
 #include "AP_ModuleM4_CallStatus.h"
 #include "AP_ModuleM4_Crc32.h"
 #include "AP_ModuleM4_Layout.h"
