@@ -287,6 +287,17 @@ impl Context<'_> {
         result(unsafe { self.api.sleep_ms.unwrap()(self.raw, milliseconds) })
     }
 
+    /// The call latency probe's ping: a host call with no input or output that reaches the host
+    /// and returns at once (on the M4, a round trip to the M7 that runs no binding). For latency
+    /// measurement only.
+    #[doc(hidden)]
+    pub fn probe_ping(&self) -> Result {
+        const PROBE_PING_ID: u32 = 0xFFF0; // AP_Rust/Bindings.h PROBE_PING_ID
+        result(unsafe {
+            self.api.binding_call.unwrap()(self.raw, PROBE_PING_ID, ptr::null(), 0, ptr::null_mut(), 0)
+        })
+    }
+
     /// MAVLink severity 0 (emergency) through 7 (debug). The host copies the
     /// message during this call; it must not retain a pointer into the module.
     pub fn text(&self, severity: u8, message: &str) -> Result {
