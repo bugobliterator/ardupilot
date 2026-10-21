@@ -72,6 +72,10 @@ inline void *module_token(uint16_t index)
 inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, const HostPlatform &p)
 {
     M4CallProbe *probe = probing(p.probe) ? p.probe : nullptr;
+    if (probe != nullptr && !probe->memset_measured) {
+        // once per M4 start, outside any call's stages; the link buffers are free here
+        measure_memset(*probe, m.request, m.reply, MAX_FRAME);
+    }
     const uint32_t entry_us = probe != nullptr ? probe->clock_us() : 0;
     if (m.stop.load()) {
         return STATUS_STOPPED;
@@ -132,7 +136,13 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
                                               uint16_t(a.input_size), uint16_t(a.output_size),
                                               probe != nullptr ? &trailer : nullptr);
     if (length == 0) {
+        if (probe != nullptr) {
+            probe->in_call = false;
+        }
         return STATUS_INVALID;
+    }
+    if (probe != nullptr) {
+        probe_stamp(*probe, probe->current.packed_us, PROBE_STAMP_PACKED);
     }
     if (settle) {
         p.mirror_pending(p.platform, m.index, token);
@@ -143,6 +153,10 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     const uint8_t *body = nullptr;
     if (result > 0 && !parse_binding_reply(m.reply, uint16_t(result), reply, body)) {
         status = STATUS_HOST_ERROR;
+        if (probe != nullptr) {
+            probe->in_call = false;
+            probe = nullptr;
+        }
     } else {
         const CallOutcome outcome = call_outcome(result, reply, uint16_t(a.output_size));
         if (outcome.copy_output && a.output_size != 0) {

@@ -11,31 +11,87 @@
 
 #include <atomic>
 #include <stdint.h>
+#include <string.h>
 #include "AP_ModuleM4_Protocol.h"
 
 namespace ModuleM4 {
 
-struct M4CallProbe {
-    // TIM5's count (the M7's micros()); null where the M4 cannot read it: no probe
-    uint32_t (*clock_us)();
-    uint32_t stamp_cycles;            // core cycles of one clock_us(), measured by the service at init
-    std::atomic<bool> enabled;        // this session's Config carried M4_OPTION_CALL_PROBE
-    // the call in flight: seq and stamps set by the service, 0 until it is sent
+// the M4's stamps of one probed call; seq 0 until the service sent it
+struct M4CallStamps {
     uint32_t seq;
     uint32_t sent_us;
     uint32_t reply_seen_us;
+    uint32_t return_us;
     uint16_t flags;                   // PROBE_M4_*
-    // the last probed call that got its reply, for the next trailer; last_seq 0: none
-    uint32_t last_seq;
-    uint32_t last_sent_us;
-    uint32_t last_reply_seen_us;
-    uint32_t last_return_us;
-    uint16_t last_flags;
+    uint16_t stamps;                  // PROBE_STAMP_*: the sub-stage stamps taken
+    uint32_t packed_us;
+    uint32_t posted_us;
+    uint32_t forward_returned_us;
+    uint32_t reply_isr_us;
+    uint32_t reply_wake_us;
+    uint32_t signalled_us;
+    uint32_t resumed_us;
+};
+
+struct M4CallProbe {
+    // TIM5's count (the M7's micros()); null where the M4 cannot read it: no probe
+    uint32_t (*clock_us)();
+    // the core's cycle counter, for the stamp and memset costs; may be null
+    uint32_t (*cycles)();
+    uint32_t stamp_cycles;            // core cycles of one clock_us(), measured by the service at init
+    std::atomic<bool> enabled;        // this session's Config carried M4_OPTION_CALL_PROBE
+    bool in_call;                     // the module thread is in a probed binding call
+    bool memset_measured;
+    uint16_t memset_small_centicycles;
+    uint16_t memset_large_centicycles;
+    M4CallStamps current;             // the call in flight
+    M4CallStamps last;                // the last probed call that got its reply; last.seq 0: none
 };
 
 inline bool probing(const M4CallProbe *probe)
 {
     return probe != nullptr && probe->clock_us != nullptr && probe->enabled.load();
+}
+
+// a sub-stage stamp of the call in flight
+inline void probe_stamp(M4CallProbe &probe, uint32_t &field, uint16_t bit)
+{
+    field = probe.clock_us();
+    probe.current.stamps |= bit;
+}
+
+// hundredths of a cycle per byte
+inline uint16_t centicycles_per_byte(uint32_t cycles, uint32_t bytes)
+{
+    const uint64_t value = uint64_t(cycles) * 100U / bytes;
+    return value > 0xFFFFU ? 0xFFFFU : uint16_t(value);
+}
+
+/*
+  The memset cost on this core, once per session at the first probed call, before its entry stamp:
+  1000 times 64 B on the caller's stack, then 1000 times 4 KB of large_a and large_b (the link's
+  request and reply buffers, half each, free while no call is posted)
+ */
+inline void measure_memset(M4CallProbe &probe, uint8_t *large_a, uint8_t *large_b, uint32_t half)
+{
+    probe.memset_measured = true;
+    if (probe.cycles == nullptr) {
+        return;
+    }
+    static const uint32_t ROUNDS = 1000;
+    uint8_t small[64];
+    uint32_t start = probe.cycles();
+    for (uint32_t i = 0; i < ROUNDS; i++) {
+        memset(small, int(i), sizeof(small));
+        __asm__ volatile("" : : "r"(small) : "memory");   // the stores are kept
+    }
+    probe.memset_small_centicycles = centicycles_per_byte(probe.cycles() - start, ROUNDS * uint32_t(sizeof(small)));
+    start = probe.cycles();
+    for (uint32_t i = 0; i < ROUNDS; i++) {
+        memset(large_a, int(i), half);
+        memset(large_b, int(i), half);
+    }
+    probe.memset_large_centicycles = centicycles_per_byte(probe.cycles() - start, ROUNDS * 2U * half);
 }
 
 // the trailer of a call about to be framed; the in-flight stamps start over
@@ -44,15 +100,24 @@ inline CallProbeTrailer begin_probed_call(M4CallProbe &probe, uint32_t svc_entry
     CallProbeTrailer trailer {};
     trailer.svc_entry_us = svc_entry_us;
     trailer.stamp_cycles = probe.stamp_cycles;
-    trailer.prev_seq = probe.last_seq;
-    trailer.prev_sent_us = probe.last_sent_us;
-    trailer.prev_reply_seen_us = probe.last_reply_seen_us;
-    trailer.prev_return_us = probe.last_return_us;
-    trailer.prev_flags = probe.last_flags;
-    probe.seq = 0;
-    probe.sent_us = 0;
-    probe.reply_seen_us = 0;
-    probe.flags = 0;
+    const M4CallStamps &last = probe.last;
+    trailer.prev_seq = last.seq;
+    trailer.prev_sent_us = last.sent_us;
+    trailer.prev_reply_seen_us = last.reply_seen_us;
+    trailer.prev_return_us = last.return_us;
+    trailer.prev_flags = last.flags;
+    trailer.prev_stamps = last.stamps;
+    trailer.prev_packed_us = last.packed_us;
+    trailer.prev_posted_us = last.posted_us;
+    trailer.prev_forward_returned_us = last.forward_returned_us;
+    trailer.prev_reply_isr_us = last.reply_isr_us;
+    trailer.prev_reply_wake_us = last.reply_wake_us;
+    trailer.prev_signalled_us = last.signalled_us;
+    trailer.prev_resumed_us = last.resumed_us;
+    trailer.memset_small_centicycles = probe.memset_small_centicycles;
+    trailer.memset_large_centicycles = probe.memset_large_centicycles;
+    probe.current = M4CallStamps {};
+    probe.in_call = true;
     return trailer;
 }
 
@@ -60,15 +125,13 @@ inline CallProbeTrailer begin_probed_call(M4CallProbe &probe, uint32_t svc_entry
 // without its reply (timeout, lost session) completes nothing
 inline void end_probed_call(M4CallProbe &probe, bool replied, uint32_t return_us)
 {
-    if (!replied || probe.seq == 0 || probe.reply_seen_us == 0) {
-        probe.last_seq = 0;
+    probe.in_call = false;
+    if (!replied || probe.current.seq == 0 || probe.current.reply_seen_us == 0) {
+        probe.last.seq = 0;
         return;
     }
-    probe.last_seq = probe.seq;
-    probe.last_sent_us = probe.sent_us;
-    probe.last_reply_seen_us = probe.reply_seen_us;
-    probe.last_return_us = return_us;
-    probe.last_flags = probe.flags;
+    probe.last = probe.current;
+    probe.last.return_us = return_us;
 }
 
 }  // namespace ModuleM4

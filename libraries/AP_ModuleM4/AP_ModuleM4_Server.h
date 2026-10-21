@@ -45,7 +45,14 @@ public:
         uint32_t adapter_done;
         uint16_t flags;            // AP_Module::CALL_QUOTA, CALL_LOCK_TAKEN, CALL_LOCK_UNKNOWN
         uint32_t overhead_cycles;  // the probe's own cost in this call
+        // Chk's sub-stage stamps, each with its AP_Module::CALL_STAMP_CHK_* bit in taken
+        uint32_t chk_parsed;
+        uint32_t chk_quota;
+        uint32_t chk_copied;
+        uint32_t taken;
     };
+    // cycles of one memset of the 4096 B input buffer (the probe's cost line); between frames only
+    uint32_t input_memset_cycles();
 
     // a new M4 session: ends every slot of the previous one, then module_count slots
     // (Discovery's count, at most ModuleM4::MAX_MODULES)

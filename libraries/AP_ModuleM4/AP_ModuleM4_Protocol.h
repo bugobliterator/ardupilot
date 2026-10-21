@@ -105,8 +105,27 @@ struct __attribute__((packed)) CallProbeTrailer {
     uint32_t prev_reply_seen_us;
     uint32_t prev_return_us;
     uint16_t prev_flags;       // PROBE_M4_* of that call
-    uint16_t reserved;
+    uint16_t prev_stamps;      // PROBE_STAMP_*: which of the sub-stage stamps below that call took
+    // that call's sub-stage stamps
+    uint32_t prev_packed_us;            // frame packed, before the platform call
+    uint32_t prev_posted_us;            // link posted, before forward_posted()
+    uint32_t prev_forward_returned_us;  // forward_posted() returned with the call sent
+    uint32_t prev_reply_isr_us;         // the doorbell interrupt before the service saw the reply
+    uint32_t prev_reply_wake_us;        // the service thread resumed after it
+    uint32_t prev_signalled_us;         // complete() signalled the module thread
+    uint32_t prev_resumed_us;           // the module thread resumed after its wait
+    // memset cost on the M4, hundredths of a cycle per byte: 64 B on the syscall stack and 4 KB of
+    // the link buffers (privileged RAM), 1000 times each at the session's first probed call; 0 before
+    uint16_t memset_small_centicycles;
+    uint16_t memset_large_centicycles;
 };
+// CallProbeTrailer::prev_stamps, the values of AP_Module::CALL_STAMP_M4_* (AP_Module/CallLatency.h)
+static const uint16_t PROBE_STAMP_PACKED = 1U << 4;
+static const uint16_t PROBE_STAMP_POSTED = 1U << 5;
+static const uint16_t PROBE_STAMP_FORWARD_RETURNED = 1U << 6;
+static const uint16_t PROBE_STAMP_REPLY_WAKE = 1U << 7;   // prev_reply_isr_us and prev_reply_wake_us
+static const uint16_t PROBE_STAMP_SIGNALLED = 1U << 8;
+static const uint16_t PROBE_STAMP_RESUMED = 1U << 9;
 // CallProbeTrailer::prev_flags, the values of AP_Module::CALL_M4_* (AP_Module/CallLatency.h)
 static const uint16_t PROBE_M4_SLEPT = 1U << 2;          // the module thread slept for its reply
 static const uint16_t PROBE_M4_POLL_WAKE = 1U << 3;      // the service's wait before the reply timed out

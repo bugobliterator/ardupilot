@@ -78,17 +78,25 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         memcpy(link.request, request, len);
     }
     link.request_len = len;
+    const bool probed = call_probe.in_call;
+    if (probed) {
+        probe_stamp(call_probe, call_probe.current.posted_us, PROBE_STAMP_POSTED);
+    }
     link.state.store(ModuleLink::Posted);
     // sent from here when the service could; otherwise the service's next step sends it
     if (!service_of->forward_posted()) {
         wake_service_of();
+    } else if (probed) {
+        probe_stamp(call_probe, call_probe.current.forward_returned_us, PROBE_STAMP_FORWARD_RETURNED);
     }
     // the service completes every posted call; sent ones within CALL_TIMEOUT_MS
-    if (link.state.load() != ModuleLink::Done) {
-        call_probe.flags |= PROBE_M4_SLEPT;
-    }
+    const bool waited = link.state.load() != ModuleLink::Done;
     while (link.state.load() != ModuleLink::Done) {
         (void)chBSemWaitTimeout(&call_done, TIME_MS2I(10));
+    }
+    if (probed && waited) {
+        call_probe.current.flags |= PROBE_M4_SLEPT;
+        probe_stamp(call_probe, call_probe.current.resumed_us, PROBE_STAMP_RESUMED);
     }
     int32_t result = link.result;
     if (result > 0) {
@@ -190,6 +198,11 @@ static_assert(CH_CFG_ST_FREQUENCY == 1000, "M7Clock takes this core's ticks as m
 static uint32_t tim5_count()
 {
     return read_outside_regions(OutsideRegister::Tim5Count);
+}
+
+static uint32_t dwt_cycles()
+{
+    return DWT->CYCCNT;
 }
 
 // the M7's micros64(), its wraps followed from the first read. The wraps are taken from the M7's
@@ -422,6 +435,23 @@ void ModuleM4::module_port_init(ModuleLink &link, M4Service &service, void (*wak
     m7_counter_running = m7_counter_started();
     // no probe without the M7's counter
     call_probe.clock_us = m7_counter_running ? tim5_count : nullptr;
+    call_probe.cycles = dwt_cycles;
+}
+
+// the call latency probe's stamp from the doorbell interrupt (kernel-locked from the ISR)
+uint32_t ModuleM4::module_port_probe_stamp_from_isr()
+{
+    chSysLockFromISR();
+    const uint32_t control = MPU->CTRL;
+    MPU->CTRL = control | MPU_CTRL_PRIVDEFENA_Msk;
+    __DSB();
+    __ISB();
+    const uint32_t value = TIM5->CNT;
+    MPU->CTRL = control;
+    __DSB();
+    __ISB();
+    chSysUnlockFromISR();
+    return value;
 }
 
 M4CallProbe &ModuleM4::module_port_call_probe()

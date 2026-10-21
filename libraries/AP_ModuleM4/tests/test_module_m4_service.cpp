@@ -766,10 +766,10 @@ TEST(ModuleM4Service, ProbeIsOnOnlyWhenTheConfigAsksForIt)
     M4CallProbe probe {};
     probe.clock_us = probe_clock;
     probe.enabled.store(true);
-    probe.last_seq = 9;
+    probe.last.seq = 9;
     start(&probe);
     EXPECT_FALSE(probe.enabled.load());   // a new session starts without
-    EXPECT_EQ(probe.last_seq, 0U);
+    EXPECT_EQ(probe.last.seq, 0U);
     configure(2);
     EXPECT_FALSE(probe.enabled.load());
     start(&probe);
@@ -801,18 +801,21 @@ TEST(ModuleM4Service, ProbedCallIsStampedAtSendAndReply)
     ASSERT_TRUE(binding_call_trailer(frame, len, call, trailer));
     EXPECT_EQ(trailer.svc_entry_us, 5U);
     EXPECT_NE(trailer.pre_send_us, 0U);
-    EXPECT_EQ(probe.seq, call.header.seq);
-    EXPECT_GT(probe.sent_us, trailer.pre_send_us);
-    EXPECT_EQ(probe.flags, 0);   // sent by the module thread
+    EXPECT_EQ(probe.current.seq, call.header.seq);
+    EXPECT_GT(probe.current.sent_us, trailer.pre_send_us);
+    EXPECT_EQ(probe.current.flags, 0);   // sent by the module thread
     // the reply after a wait that ended on the poll timeout
     service.note_wake(true);
     m7_reply(call.header.seq, 0x11);
     service.step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
-    EXPECT_GT(probe.reply_seen_us, probe.sent_us);
-    EXPECT_EQ(probe.flags, PROBE_M4_POLL_WAKE);
+    EXPECT_GT(probe.current.reply_seen_us, probe.current.sent_us);
+    EXPECT_EQ(probe.current.flags, PROBE_M4_POLL_WAKE);
+    // no doorbell stamps; complete() signalled the module thread after the reply was seen
+    EXPECT_EQ(probe.current.stamps, PROBE_STAMP_SIGNALLED);
+    EXPECT_GT(probe.current.signalled_us, probe.current.reply_seen_us);
     call_link.state.store(ModuleLink::Idle);
-    // a call the service's step sends, answered after a doorbell
+    // a call the service's step sends, answered after a stamped doorbell
     post_probed_call(probe);
     service.note_wake(false);
     service.step();
@@ -820,9 +823,13 @@ TEST(ModuleM4Service, ProbedCallIsStampedAtSendAndReply)
     ASSERT_TRUE(m7_receive(frame, len));
     ASSERT_TRUE(parse_binding_call(frame, len, call));
     m7_reply(call.header.seq, 0x11);
+    service.note_wake(false, true, 4000, 4007);
     service.step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
-    EXPECT_EQ(probe.flags, PROBE_M4_SENT_BY_STEP);
+    EXPECT_EQ(probe.current.flags, PROBE_M4_SENT_BY_STEP);
+    EXPECT_EQ(probe.current.stamps, PROBE_STAMP_REPLY_WAKE | PROBE_STAMP_SIGNALLED);
+    EXPECT_EQ(probe.current.reply_isr_us, 4000U);
+    EXPECT_EQ(probe.current.reply_wake_us, 4007U);
 }
 
 TEST(ModuleM4Service, UnprobedCallsLeaveTheProbeAlone)
@@ -839,8 +846,8 @@ TEST(ModuleM4Service, UnprobedCallsLeaveTheProbeAlone)
     m7_reply(call.header.seq, 0x11);
     service.step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
-    EXPECT_EQ(probe.seq, 0U);
-    EXPECT_EQ(probe.reply_seen_us, 0U);
+    EXPECT_EQ(probe.current.seq, 0U);
+    EXPECT_EQ(probe.current.reply_seen_us, 0U);
 }
 
 #endif  // AP_MODULE_M4_ENABLED
