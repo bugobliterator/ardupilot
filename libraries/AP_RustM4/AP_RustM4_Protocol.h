@@ -25,6 +25,7 @@ enum class MsgType : uint8_t {
     SystemCall = 11,   // M4 -> M7: a runtime call or notify (SystemMethod)
     SystemReply = 12,  // M7 -> M4: its reply
     Control = 13,      // M7 -> M4: a request to one module
+    ParameterChanged = 14, // M7 -> M4: Parameter values for the M4's mirror
 };
 
 enum class FaultKind : uint8_t {
@@ -81,6 +82,8 @@ enum class ReplyStatus : uint8_t {
 };
 
 static const uint16_t CALL_FLAG_NOTIFY = 1;   // no reply
+// BindingReplyHeader.reserved2: a ParameterChanged for this module failed to go out since its last reply
+static const uint16_t REPLY_FLAG_MIRROR_RESYNC = 1;
 
 struct __attribute__((packed)) BindingCallHeader {
     MsgHeader header;   // BindingCall; seq set by the service
@@ -194,6 +197,26 @@ struct __attribute__((packed)) ReadyMsg {
     MsgHeader header;
 };
 
+static const uint8_t PARAMETER_VALUE_BOUND = 1;   // Parameter::get() returned true
+struct __attribute__((packed)) ParameterValue {
+    uint64_t token;     // the handle's wire token (the module's Parameter address)
+    float value;        // Parameter::get()'s value; 0 when not bound
+    uint16_t module;
+    uint8_t flags;      // PARAMETER_VALUE_BOUND
+    uint8_t reserved;
+};
+struct __attribute__((packed)) ParameterChangedHeader {
+    MsgHeader header;   // ParameterChanged, seq = the M7 session
+    uint16_t count;     // ParameterValue entries that follow
+    uint16_t reserved;
+};
+static const uint16_t PARAMETER_CHANGED_MAX = 127;
+static_assert(sizeof(ParameterValue) == 16 && sizeof(ParameterChangedHeader) == 12, "ParameterChanged wire");
+static_assert(sizeof(ParameterChangedHeader) + PARAMETER_CHANGED_MAX * sizeof(ParameterValue) <= MAX_FRAME,
+              "a full ParameterChanged fits a frame");
+
+inline bool parse_parameter_changed(const uint8_t *frame, uint16_t len, ParameterChangedHeader &h);
+
 // true if buf holds exactly one message of a known type; the header is copied out
 inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
 {
@@ -221,6 +244,10 @@ inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
         return len >= sizeof(SystemReplyHeader);
     case MsgType::Control:
         return len == sizeof(ControlMsg);
+    case MsgType::ParameterChanged: {
+        ParameterChangedHeader h;
+        return parse_parameter_changed(buf, len, h);
+    }
     }
     return false;
 }
@@ -231,6 +258,38 @@ inline void fill_header(MsgHeader &header, MsgType type, uint16_t length, uint32
     header.reserved = 0;
     header.length = length;
     header.seq = seq;
+}
+
+inline bool parse_parameter_changed(const uint8_t *frame, uint16_t len, ParameterChangedHeader &h)
+{
+    if (len < sizeof(h) + sizeof(ParameterValue) || len > MAX_FRAME) {
+        return false;
+    }
+    memcpy(&h, frame, sizeof(h));
+    return h.header.type == uint8_t(MsgType::ParameterChanged) && h.header.length == len && h.count != 0 &&
+           h.count <= PARAMETER_CHANGED_MAX && uint32_t(sizeof(h)) + uint32_t(h.count) * sizeof(ParameterValue) == len;
+}
+
+inline ParameterValue parameter_value_at(const uint8_t *frame, uint16_t index)
+{
+    ParameterValue value;
+    memcpy(&value, frame + sizeof(ParameterChangedHeader) + uint32_t(index) * sizeof(value), sizeof(value));
+    return value;
+}
+
+inline uint16_t pack_parameter_changed(uint8_t *frame, uint16_t cap, uint32_t session, const ParameterValue *values,
+                                       uint16_t count)
+{
+    const uint32_t length = uint32_t(sizeof(ParameterChangedHeader)) + uint32_t(count) * sizeof(ParameterValue);
+    if (count == 0 || count > PARAMETER_CHANGED_MAX || length > cap || values == nullptr) {
+        return 0;
+    }
+    ParameterChangedHeader h {};
+    fill_header(h.header, MsgType::ParameterChanged, uint16_t(length), session);
+    h.count = count;
+    memcpy(frame, &h, sizeof(h));
+    memcpy(frame + sizeof(h), values, uint32_t(count) * sizeof(ParameterValue));
+    return uint16_t(length);
 }
 
 inline uint16_t pack_binding_call(uint8_t *frame, uint16_t cap, uint32_t seq, uint16_t module, uint16_t flags,

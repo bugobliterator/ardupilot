@@ -126,4 +126,43 @@ TEST(RustM4Protocol, InjectValuesOutsideFaultKind)
     EXPECT_EQ(FAULT_KIND_MAX, uint8_t(FaultKind::HandlerFault));
 }
 
+TEST(RustM4Protocol, ParameterChangedRoundTrip)
+{
+    ParameterValue values[2] {};
+    values[0] = ParameterValue { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    values[1] = ParameterValue { 0x20001010ULL, 0.0f, 1, 0, 0 };
+    uint8_t frame[MAX_FRAME];
+    const uint16_t len = pack_parameter_changed(frame, sizeof(frame), 77, values, 2);
+    ASSERT_EQ(len, 12U + 32U);
+    MsgHeader header;
+    ASSERT_TRUE(parse_header(frame, len, header));
+    EXPECT_EQ(header.seq, 77U);
+    ParameterChangedHeader h;
+    ASSERT_TRUE(parse_parameter_changed(frame, len, h));
+    EXPECT_EQ(h.count, 2U);
+    const ParameterValue second = parameter_value_at(frame, 1);
+    EXPECT_EQ(second.token, 0x20001010ULL);
+    EXPECT_EQ(second.module, 1U);
+    EXPECT_EQ(second.flags, 0U);
+    EXPECT_EQ(pack_parameter_changed(frame, sizeof(frame), 77, values, 0), 0U);
+    EXPECT_EQ(pack_parameter_changed(frame, 12U + 16U, 77, values, 2), 0U);   // cap
+    EXPECT_EQ(sizeof(ParameterChangedHeader) + PARAMETER_CHANGED_MAX * sizeof(ParameterValue), 2044U);
+}
+
+TEST(RustM4Protocol, ParameterChangedLengthsAndCountsAreChecked)
+{
+    ParameterValue value { 8, 1.0f, 0, PARAMETER_VALUE_BOUND, 0 };
+    uint8_t frame[MAX_FRAME];
+    const uint16_t len = pack_parameter_changed(frame, sizeof(frame), 1, &value, 1);
+    ParameterChangedHeader h;
+    MsgHeader header;
+    for (uint16_t short_len = 0; short_len < len; short_len++) {
+        EXPECT_FALSE(parse_parameter_changed(frame, short_len, h)) << short_len;
+    }
+    uint16_t count = 2;   // the header claims more entries than the length holds
+    memcpy(frame + offsetof(ParameterChangedHeader, count), &count, sizeof(count));
+    EXPECT_FALSE(parse_parameter_changed(frame, len, h));
+    EXPECT_FALSE(parse_header(frame, len, header));
+}
+
 AP_GTEST_MAIN()

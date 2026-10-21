@@ -5,7 +5,7 @@ using namespace RustM4;
 
 TEST(RustM4Layout, ProtocolNeverMatchesLua)
 {
-    EXPECT_EQ(PROTOCOL_VERSION, 0x52530001U);
+    EXPECT_EQ(PROTOCOL_VERSION, 0x52530002U);
 }
 
 TEST(RustM4Layout, ContractHashCoversTheCatalogue)

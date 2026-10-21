@@ -85,6 +85,11 @@ private:
     void serve_on_worker(uint16_t len);
     bool refuse_slow_binding(const uint8_t *buf, uint16_t len);
     void serve_binding(const uint8_t *buf, uint16_t len);
+    // the AP_Param change observer: any thread, lock-free (AP_RustM4_Server::mark_changed())
+    static void parameter_changed(const AP_Param *param);
+    // the dirty slots' values on the slow worker, charged to the duty cap like a worker frame
+    void mirror_on_worker();
+    void send_mirror_changes();
     void serve_system(const uint8_t *buf, uint16_t len);
     // the session's module files, found on the slow worker before Ready (discover())
     void discover_on_worker();
@@ -99,7 +104,8 @@ private:
     uint16_t serve_file(RustM4::SystemMethod method, const uint8_t *buf, uint16_t len, uint32_t seq);
     uint16_t pack_system_reply(RustM4::SystemMethod method, uint32_t seq, RustM4::ReplyStatus transport,
                                int32_t result, uint16_t length);
-    void send_frame(const uint8_t *buf, uint16_t len);
+    // true when sent
+    bool send_frame(const uint8_t *buf, uint16_t len);
     void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
     void charge_cpu(bool pass_end);
@@ -219,6 +225,12 @@ private:
     // the modules' binding calls; the host and the slow worker it waits for, one at a time
     AP_RustM4_Server _server;
     uint32_t _session_calls;          // calls of the current M4 session
+    // ParameterChanged frames: packed here, as a reply may wait in _tx_frame
+    uint8_t _mirror_frame[RustM4::MAX_FRAME];
+    uint32_t _mirror_backstop_ms;
+    uint32_t _mirror_frames_sent;
+    uint32_t _mirror_entries_sent;
+    uint32_t _mirror_failed_sends;
     uint32_t _ready_sent_ms;
 
     // counters of the current one-second window
@@ -246,7 +258,9 @@ private:
     // for it, so the M4 sees its replies in order and only one of the two threads serves at a time
     HAL_BinarySemaphore _worker_request;
     HAL_BinarySemaphore _worker_done;
-    uint16_t _worker_len;             // 0: discover() rather than a frame
+    enum class WorkerJob : uint8_t { Frame, Discover, Mirror };
+    WorkerJob _worker_job;
+    uint16_t _worker_len;             // the frame's length for WorkerJob::Frame
     // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
     // after _worker_done
     RustM4::HostCpuCharge _worker_cpu_charge { false };

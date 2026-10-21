@@ -15,6 +15,10 @@
 #include "AP_RustM4_Layout.h"
 #include "AP_RustM4_LoadLayout.h"
 
+#if !AP_PARAM_CHANGE_OBSERVER_ENABLED
+#error "AP_RustM4 needs AP_PARAM_CHANGE_OBSERVER_ENABLED"
+#endif
+
 static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
               "the M4 computes Location math in double (m4/shim/AP_HAL/AP_HAL_Boards.h)");
 
@@ -100,6 +104,7 @@ void AP_RustM4::init(const AP_Rust::Runtime::Config &config)
         return;
     }
     enter(State::Starting, now_ms);
+    IGNORE_RETURN(AP_Param::set_change_observer(&AP_RustM4::parameter_changed));
     // the slow worker first: the host hands it every frame the fast lane does not serve. It runs
     // the heavy bindings (files, logs, parameters, mission, texts) below io 58, storage/log_io 59,
     // UART/net 60 and the io - 1 threads (OA path planner, mount POI); its CPU is charged to the
@@ -208,6 +213,15 @@ void AP_RustM4::host_thread()
         const uint32_t now_ms = AP_HAL::millis();
         PeerHeader::beat(_shared, PeerHeader::Core::M7);
         supervise(now_ms);
+        if (_state == State::Running) {
+            if (now_ms - _mirror_backstop_ms >= 1000) {
+                _mirror_backstop_ms = now_ms;
+                _server.mark_all_live();   // raw set()s, whole-vector saves, failed frames
+            }
+            if (_server.mirror_dirty()) {
+                mirror_on_worker();
+            }
+        }
         drain_module_texts();
         if (_state == State::Running) {
             // after this pass's frames: a restart never makes the host thread wait
@@ -266,10 +280,16 @@ void AP_RustM4::worker_thread()
         uint64_t cpu_us;
         bool reset = platform_thread_cpu_us(cpu_us);
         IGNORE_RETURN(_worker_cpu_charge.pass_start(cpu_us, reset, AP_HAL::micros()));
-        if (_worker_len == 0) {
+        switch (_worker_job) {
+        case WorkerJob::Discover:
             discover();
-        } else {
+            break;
+        case WorkerJob::Mirror:
+            send_mirror_changes();
+            break;
+        case WorkerJob::Frame:
             handle_message(_rx_frame, _worker_len);
+            break;
         }
         reset = platform_thread_cpu_us(cpu_us);
         _worker_used_us = _worker_cpu_charge.pass_end(cpu_us, reset, AP_HAL::micros());
@@ -280,6 +300,7 @@ void AP_RustM4::worker_thread()
 void AP_RustM4::serve_on_worker(uint16_t len)
 {
     const uint32_t start_us = AP_HAL::micros();
+    _worker_job = WorkerJob::Frame;
     _worker_len = len;
     _worker_request.signal();
     IGNORE_RETURN(_worker_done.wait_blocking());
@@ -296,11 +317,48 @@ void AP_RustM4::serve_on_worker(uint16_t len)
 // waits for them before it sends Ready
 void AP_RustM4::discover_on_worker()
 {
-    _worker_len = 0;
+    _worker_job = WorkerJob::Discover;
     _worker_request.signal();
     IGNORE_RETURN(_worker_done.wait_blocking());
     _host_cpu_us += _worker_used_us;
     _duty_cap.charge(_worker_used_us);
+}
+
+// the AP_Param change observer: any thread, lock-free (AP_RustM4_Server::mark_changed())
+void AP_RustM4::parameter_changed(const AP_Param *param)
+{
+    AP_RustM4 *rust_m4 = _singleton;
+    if (rust_m4 != nullptr) {
+        rust_m4->_server.mark_changed(param);
+    }
+}
+
+void AP_RustM4::mirror_on_worker()
+{
+    _worker_job = WorkerJob::Mirror;
+    _worker_request.signal();
+    IGNORE_RETURN(_worker_done.wait_blocking());
+    _host_cpu_us += _worker_used_us;
+    _duty_cap.charge(_worker_used_us);
+}
+
+// ParameterChanged frames until no dirty slot has a change; a full ring leaves the rest dirty for
+// the next pass, and the module's next reply asks the M4 to forward its gets until then
+void AP_RustM4::send_mirror_changes()
+{
+    while (true) {
+        const uint16_t len = _server.pack_mirror_changes(_mirror_frame, sizeof(_mirror_frame));
+        if (len == 0) {
+            return;
+        }
+        if (_channel->send(_mirror_frame, len) != 0) {
+            _server.mirror_send_failed(_mirror_frame, len);
+            _mirror_failed_sends++;
+            return;
+        }
+        _mirror_frames_sent++;
+        _mirror_entries_sent += (len - sizeof(RustM4::ParameterChangedHeader)) / sizeof(RustM4::ParameterValue);
+    }
 }
 
 // the in-process runtime's discovery (AP_RustM4_Discovery.h); the milestone runs one module
@@ -436,6 +494,7 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
     case MsgType::BindingReply:
     case MsgType::SystemReply:
     case MsgType::Control:
+    case MsgType::ParameterChanged:
         _protocol_errors++;   // M7 -> M4 only
         return;
     }
@@ -445,13 +504,25 @@ void AP_RustM4::serve_binding(const uint8_t *buf, uint16_t len)
 {
     _session_calls++;
     const uint16_t reply_len = _server.serve_binding(buf, len, _tx_frame, sizeof(_tx_frame), AP_HAL::millis());
+    if (_server.last_call_wrote_parameters()) {
+        // the module reads its own write at once: the values go ahead of the reply, on the same ring
+        _server.mark_all_live();
+        send_mirror_changes();
+    }
+    const int16_t module = _server.last_call_module();
+    const bool resync = module >= 0 && _server.take_resync(uint16_t(module));
     if (reply_len >= sizeof(RustM4::BindingReplyHeader)) {
         RustM4::BindingReplyHeader reply;
         memcpy(&reply, _tx_frame, sizeof(reply));
         reply.m7_wake_us = _wake_latency_us;
+        if (resync) {
+            reply.reserved2 |= RustM4::REPLY_FLAG_MIRROR_RESYNC;
+        }
         memcpy(_tx_frame, &reply, sizeof(reply));
     }
-    send_frame(_tx_frame, reply_len);
+    if (!send_frame(_tx_frame, reply_len) && resync) {
+        _server.owe_resync(uint16_t(module));
+    }
 }
 
 // system calls: a module's text notify; a call of a method this M7 does not serve is answered
@@ -650,15 +721,17 @@ uint16_t AP_RustM4::serve_file(RustM4::SystemMethod method, const uint8_t *buf, 
 }
 
 // a reply to the M4; len 0 (it did not pack) sends nothing
-void AP_RustM4::send_frame(const uint8_t *buf, uint16_t len)
+bool AP_RustM4::send_frame(const uint8_t *buf, uint16_t len)
 {
     if (len == 0) {
         _dropped++;
-        return;
+        return false;
     }
     if (_channel->send(buf, len) != 0) {
         _dropped++;   // the M4 times the call out
+        return false;
     }
+    return true;
 }
 
 void AP_RustM4::send_ready(uint32_t now_ms)
@@ -801,6 +874,7 @@ void AP_RustM4::module_state(const uint8_t *buf, uint16_t len)
             break;
         }
         _module_running[index] = true;
+        _server.snapshot_module(index);
         _running_checksum ^= _module_crc[index];
         GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: started %s", name);
         break;
