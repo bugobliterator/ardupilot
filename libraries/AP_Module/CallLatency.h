@@ -158,39 +158,88 @@ struct SubstageTotals {
 };
 
 /*
-  The M4's core cycles of a probed call before its frame is packed (its CallProbeTrailer), counted
-  without the probe's clock reads in between: in DWT cycles they split PrePack finer than its stamps.
+  The core cycles of the parts of a probed call (DWT), counted without the probe's clock reads in
+  between: they split the stages finer than the stamps. The M4's come in its CallProbeTrailer (the
+  values of ModuleM4::M4CyclePart), the M7's are counted on the M7. A part is summed only for calls
+  that took it.
  */
-enum class M4PrePart : uint8_t {
-    SvcEntry,    // SVC handler entry to host_binding_call(): the argument copy
-    Checks,      // the host's checks after the entry stamp, up to begin_probed_call()
-    BeginProbe,  // begin_probed_call(): the trailer
-    Pack,        // pack_binding_call()
+enum class M4CyclePart : uint8_t {
+    SvcEntry,      // SVC handler entry to host_binding_call(): the argument copy
+    Checks,        // the host's checks after the entry stamp, up to begin_probed_call()
+    BeginProbe,    // begin_probed_call(): the trailer
+    Pack,          // pack_binding_call()
+    FwdLock,       // forward_posted(): the service lock
+    FwdRing,       // Channel::send() with the M7 awake: the ring write
+    FwdBell,       // Channel::send() with the M7 asleep: the ring write and the doorbell
+    FwdUnlock,     // forward_posted(): the service unlock
+    IsrToThread,   // doorbell interrupt entry to the module thread's return from its wait
+    DrainLock,     // the reply's drain step: the service lock
+    DrainRing,     // Channel::receive() of the reply
+    DrainParse,    // header and reply checks until the copy to the link
+    DrainCopy,     // the reply copied to the link
+    PortTail,      // after that copy to the platform call's return: complete(), unlock, wait end
+    RetCopy,       // reply checks and the copy to the module's output
+    SvcReturn,     // host_binding_call()'s end to the end of the SVC body
 };
-static const uint8_t M4_PRE_PARTS = 4;
-static const char *const M4_PRE_PART_NAMES[M4_PRE_PARTS] = { "SvcEntry", "Checks", "BeginProbe", "Pack" };
+static const uint8_t M4_CYCLE_PARTS = 16;
+static const char *const M4_CYCLE_PART_NAMES[M4_CYCLE_PARTS] = {
+    "SvcEntry", "Checks", "BeginProbe", "Pack", "FwdLock", "FwdRing", "FwdBell", "FwdUnlock",
+    "IsrToThread", "DrainLock", "DrainRing", "DrainParse", "DrainCopy", "PortTail", "RetCopy", "SvcReturn",
+};
 
-// count, sum and max of the M4PrePart cycles of one binding
-struct M4PreCycleTotals {
-    uint32_t count;
-    uint64_t sum[M4_PRE_PARTS];
-    uint16_t max[M4_PRE_PARTS];
+enum class M7CyclePart : uint8_t {
+    IsrToThread,   // doorbell interrupt entry to the host thread's return from its wait (first frame of a pass)
+    Wake,          // Channel::wake() after that wait (first frame of a pass)
+    CapWait,       // after the wake to serve(): the duty cap's decision and charge (first frame of a pass)
+    Take,          // Channel::receive() of the frame
+    Parse,         // serve entry: the header, module, id and quota checks
+    Zero,          // clearing the serve buffers
+    InCopy,        // the input copy
+    Adapter,       // the lock lookup and take, the adapter, the give
+    ReplyPack,     // the reply framed, up to its send
+    ReplyRing,     // Channel::send() with the M4 awake: the ring write
+    ReplyBell,     // Channel::send() with the M4 asleep: the ring write and the doorbell
+    PassEnd,       // after the probe's record to the end of serve(), and the pass's CPU charge (last frame of a pass)
+};
+static const uint8_t M7_CYCLE_PARTS = 12;
+static const char *const M7_CYCLE_PART_NAMES[M7_CYCLE_PARTS] = {
+    "IsrToThread", "Wake", "CapWait", "Take", "Parse", "Zero", "InCopy", "Adapter", "ReplyPack", "ReplyRing",
+    "ReplyBell", "PassEnd",
+};
 
-    void add(const uint16_t (&cycles)[M4_PRE_PARTS])
+// count, sum and max of each cycle part of one binding
+template <uint8_t N>
+struct CycleTotals {
+    uint32_t count[N];
+    uint64_t sum[N];
+    uint32_t max[N];
+
+    void add(uint8_t part, uint32_t cycles)
     {
-        for (uint8_t i = 0; i < M4_PRE_PARTS; i++) {
-            sum[i] += cycles[i];
-            if (cycles[i] > max[i]) {
-                max[i] = cycles[i];
+        if (part >= N) {
+            return;
+        }
+        sum[part] += cycles;
+        if (count[part] == 0 || cycles > max[part]) {
+            max[part] = cycles;
+        }
+        count[part]++;
+    }
+
+    // the parts with their bit in taken
+    void add(const uint32_t (&cycles)[N], uint32_t taken)
+    {
+        for (uint8_t i = 0; i < N; i++) {
+            if ((taken & (1U << i)) != 0) {
+                add(i, cycles[i]);
             }
         }
-        count++;
     }
 
     // mean rounded to the nearest cycle; 0 without samples
     uint32_t mean(uint8_t i) const
     {
-        return count != 0 ? uint32_t((sum[i] + count / 2) / count) : 0;
+        return count[i] != 0 ? uint32_t((sum[i] + count[i] / 2) / count[i]) : 0;
     }
 };
 
