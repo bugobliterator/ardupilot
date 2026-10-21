@@ -9,116 +9,9 @@
 
 namespace RustM4 {
 
-/*
-  Token bucket on the host thread's CPU time. Credit accrues at SHARE_PERCENT
-  of elapsed wall time up to BURST_US; each pass is charged in full for the
-  CPU time it used, so credit goes negative by that much. While credit is
-  below RESUME_US the host serves nothing, however many frames are pending.
-  Time a binding spends blocked (a semaphore, the SD card) yields the CPU to
-  other threads and is not charged; a binding that spins is.
-  One long worker frame (a file binding on the SD card) can leave a debt that
-  would pause serving past the M4's call timeout. The debt stays, but a pass
-  is allowed at the latest MAX_PAUSE_US after the previous one started; while
-  the debt is beyond MAX_DEBT_US the host refuses binding calls for the slow
-  worker in it (refuses_slow_bindings()): cheap calls are answered, heavy ones
-  fail until the debt is paid down. Passes this allows early cost at most
-  MAX_SERVE_US plus one frame each, plus up to MAX_EXEMPT_PER_PASS frames that
-  do not end a pass (frame_ends_pass_on_time()), and no debt is forgiven, so the
-  long-run share holds.
- */
-struct ServeDutyCapTestAccess;
-
-class ServeDutyCap {
-public:
-    static constexpr uint32_t SHARE_PERCENT = 10;
-    // 10 ms of CPU: a module's burst of a few hundred synchronous calls once a second runs
-    // unpaced; the share holds over a 100 ms horizon and in the long run
-    static constexpr int32_t BURST_US = 10000;
-    // a pass is at most MAX_SERVE_US plus one frame (and up to MAX_EXEMPT_PER_PASS small frames
-    // that do not end it): start one only with that much credit
-    static constexpr int32_t RESUME_US = 200;
-    // the deepest debt that is paid down by pausing alone
-    static constexpr int32_t MAX_DEBT_US = 50000;
-
-    void charge(uint32_t busy_us)
-    {
-        _credit_us -= busy_us;
-    }
-
-    // the longest the cap pauses serving, however deep the debt
-    static constexpr uint32_t MAX_PAUSE_US = uint32_t(RESUME_US + MAX_DEBT_US) * (100U / SHARE_PERCENT);
-
-    // 0 when a pass may start now, else the microseconds until it may
-    uint32_t wait_us(uint32_t now_us)
-    {
-        refill(now_us);
-        if (_credit_us >= RESUME_US) {
-            return 0;
-        }
-        // a pass at the latest MAX_PAUSE_US after the previous one started, however deep the debt;
-        // the debt stays, and while it is beyond MAX_DEBT_US such a pass refuses heavy calls
-        const uint32_t since_us = now_us - _pass_us;
-        const uint32_t pass_due_us = since_us >= MAX_PAUSE_US ? 0 : MAX_PAUSE_US - since_us;
-        if (refuses_slow_bindings()) {
-            return pass_due_us;
-        }
-        const uint32_t credit_due_us = uint32_t((RESUME_US - _credit_us) * int64_t(TIME_PER_CREDIT));   // <= MAX_PAUSE_US
-        return credit_due_us < pass_due_us ? credit_due_us : pass_due_us;
-    }
-
-    // the debt is too deep to run binding calls on the slow worker: they are refused unrun
-    bool refuses_slow_bindings() const
-    {
-        return _credit_us < -MAX_DEBT_US;
-    }
-
-    int64_t credit_us() const { return _credit_us; }
-
-private:
-    // a pass starts only through pass_after_wake(), so the host cannot charge its wake before
-    // deciding (the unit tests' simulators start passes through ServeDutyCapTestAccess)
-    template <typename ChargeWake>
-    friend bool pass_after_wake(ServeDutyCap &cap, uint32_t woke_us, ChargeWake charge_wake);
-    friend struct ServeDutyCapTestAccess;
-
-    // the host starts a pass, wait_us() having returned 0
-    void pass_started(uint32_t now_us)
-    {
-        _pass_us = now_us;
-    }
-
-    static_assert(100U % SHARE_PERCENT == 0, "whole microseconds of time per microsecond of credit");
-    static constexpr uint32_t TIME_PER_CREDIT = 100U / SHARE_PERCENT;
-
-    // elapsed time is taken modulo 2^32 us; the host refills at least every platform_wait_us()
-    // while it runs, and a gap of 71 min or more only earns less credit than it could
-    void refill(uint32_t now_us)
-    {
-        if (!_started) {
-            _started = true;   // the first call starts the clock: no credit for time before it
-            _refilled_us = now_us;
-            _pass_us = now_us;
-            return;
-        }
-        const uint32_t earned_us = (now_us - _refilled_us) / TIME_PER_CREDIT;
-        _refilled_us += earned_us * TIME_PER_CREDIT;   // the remainder counts next time
-        _credit_us += earned_us;
-        if (_credit_us >= BURST_US) {
-            _credit_us = BURST_US;
-            _refilled_us = now_us;   // full: only time from here on earns
-        }
-    }
-
-    int64_t _credit_us = BURST_US;
-    uint32_t _refilled_us = 0;
-    uint32_t _pass_us = 0;
-    bool _started = false;
-};
-
 // the M4 runtime's own frames, which it queues ahead of binding calls: its Stats rows (a log row
 // each, a burst once a second) and its system notifies (module texts and states, Noop). A call
-// queued behind them would otherwise wait for later passes, 0.5 s each while the duty-cap debt is
-// deep, and outlast the M4's call timeout
+// queued behind them would otherwise wait for a later pass, after the host's backoff
 inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
 {
     MsgHeader header;
@@ -138,7 +31,7 @@ inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
 
 // exempt frames per pass: the M4's legitimate worst case ahead of a call is one window's Stats rows
 // and one notify per module. More of them, e.g. forged by a faulty M4, end the pass as any other
-// frame; all are charged
+// frame
 static const uint8_t MAX_EXEMPT_PER_PASS = STATS_ROWS_PER_WINDOW + MAX_MODULES;
 static_assert(MAX_EXEMPT_PER_PASS == 27, "19 Stats and Counters frames and 8 module notifies");
 
@@ -252,84 +145,6 @@ inline bool frame_on_fast_lane(const uint8_t *buf, uint16_t len, bool (*binding_
     return false;
 }
 
-// what the user is told about duty-cap refusals, from the count refused in each second: one
-// "refused" text at most every NOTICE_MS while they continue, then one "served again" once a
-// whole NOTICE_MS has passed without one
-class RefusalNotice {
-public:
-    enum class Text { None, Refused, ServedAgain };
-    static constexpr uint32_t NOTICE_MS = 5000;
-
-    Text update(uint32_t now_ms, uint32_t refused_in_last_second)
-    {
-        if (refused_in_last_second != 0) {
-            _last_refusal_ms = now_ms;
-            if (!_told || now_ms - _told_ms >= NOTICE_MS) {
-                _told = true;
-                _told_ms = now_ms;
-                return Text::Refused;
-            }
-            return Text::None;
-        }
-        if (_told && now_ms - _last_refusal_ms >= NOTICE_MS) {
-            _told = false;
-            return Text::ServedAgain;
-        }
-        return Text::None;
-    }
-
-private:
-    bool _told = false;
-    uint32_t _told_ms = 0;
-    uint32_t _last_refusal_ms = 0;
-};
-
-// the host after a wait: whether its pass may serve is decided before the wait's own wake and
-// switch are charged (charge_wake), so the pass a duty-cap pause waited for runs; that charge
-// lands on the next wait
-template <typename ChargeWake>
-inline bool pass_after_wake(ServeDutyCap &cap, uint32_t woke_us, ChargeWake charge_wake)
-{
-    const bool may_serve = cap.wait_us(woke_us) == 0;
-    charge_wake();
-    if (may_serve) {
-        cap.pass_started(woke_us);
-    }
-    return may_serve;
-}
-
-// CPU charged on top of the reading after a statistics reset, for the part of the interval
-// before it: another thread can reset the clock only while this one is off the CPU (asleep, or
-// blocked in a pass), and before that it ran at most one pass's start (a pass is started only with
-// RESUME_US of credit, see ServeDutyCap)
-static const uint32_t RESET_ALLOWANCE_US = uint32_t(ServeDutyCap::RESUME_US);
-
-// CPU time to charge for the interval between two readings of the thread's CPU clock, in ticks
-// (ticks_per_us of them a microsecond) taken modulo 2^32; carry holds the ticks short of a whole
-// microsecond for the next interval. When the clock was reset in between (statistics cleared), or
-// went backwards, the end reading is the CPU used since the reset: that plus RESET_ALLOWANCE_US is
-// charged, at most the interval's wall time. Charging the wall time instead would charge a whole
-// 10 ms sleep for a GCS @SYS/threads.txt read and empty the duty cap's burst. A reset from the GCS
-// under-charges by at most what ran before it beyond the allowance. An interval reads forward
-// while it is under 2^31 ticks of CPU (5.3 s at 400 MHz); the host reads at least every
-// platform_wait_us() while it runs
-inline uint32_t interval_cpu_us(uint32_t start, uint32_t end, bool reset, uint32_t wall_us,
-                                uint32_t ticks_per_us, uint32_t &carry)
-{
-    if (reset || int32_t(end - start) < 0) {
-        carry = 0;
-        const uint32_t since_us = end / ticks_per_us;
-        if (since_us >= wall_us) {
-            return wall_us;
-        }
-        return wall_us - since_us > RESET_ALLOWANCE_US ? since_us + RESET_ALLOWANCE_US : wall_us;
-    }
-    const uint32_t used = (end - start) + carry;
-    const uint32_t used_us = used / ticks_per_us;
-    carry = used - used_us * ticks_per_us;
-    return used_us;
-}
-
 /*
   The M7 thread-statistics clock (ChibiOS CH_DBG_STATISTICS) as the host thread reads it about
   itself: the low word of the cumulative cycles of its finished slices, the cycle its running slice
@@ -353,78 +168,6 @@ inline uint32_t read_thread_cycles(ThreadStatsClock &clock, uint32_t now, bool &
 }
 
 /*
-  What the duty cap charges for the host's CPU, from readings of its CPU clock (ticks_per_us ticks
-  a microsecond, modulo 2^32) at the start and the end of each pass. charges_waits (ChibiOS, where
-  waits sleep): all CPU since the previous reading, so the wake, the switch and the bookkeeping
-  around a pass are charged too. Otherwise (SITL, whose waits spin on the simulated clock): each
-  pass only. An interval with a reset is charged as interval_cpu_us() says; the first reading only
-  starts the clock.
- */
-class HostCpuCharge {
-public:
-    HostCpuCharge(bool charges_waits, uint32_t ticks_per_us) :
-        _charges_waits(charges_waits),
-        _ticks_per_us(ticks_per_us)
-    {}
-
-    uint32_t pass_start(uint32_t cpu, bool reset, uint32_t wall_us)
-    {
-        if (!_started) {
-            _started = true;
-            latch(cpu, wall_us);
-            return 0;
-        }
-        uint32_t used_us = 0;
-        if (_charges_waits) {
-            used_us = interval(cpu, reset, wall_us);
-        } else if (reset || int32_t(cpu - _cpu) < 0) {
-            _resets++;
-        }
-        latch(cpu, wall_us);
-        return used_us;
-    }
-
-    uint32_t pass_end(uint32_t cpu, bool reset, uint32_t wall_us)
-    {
-        const uint32_t used_us = _started ? interval(cpu, reset, wall_us) : 0;
-        _started = true;
-        latch(cpu, wall_us);
-        return used_us;
-    }
-
-    // resets seen since the last call
-    uint16_t take_resets()
-    {
-        const uint16_t resets = _resets;
-        _resets = 0;
-        return resets;
-    }
-
-private:
-    uint32_t interval(uint32_t cpu, bool reset, uint32_t wall_us)
-    {
-        if (reset || int32_t(cpu - _cpu) < 0) {
-            _resets++;
-        }
-        return interval_cpu_us(_cpu, cpu, reset, wall_us - _wall_us, _ticks_per_us, _carry);
-    }
-
-    void latch(uint32_t cpu, uint32_t wall_us)
-    {
-        _cpu = cpu;
-        _wall_us = wall_us;
-    }
-
-    const bool _charges_waits;
-    const uint32_t _ticks_per_us;
-    bool _started = false;
-    uint32_t _cpu = 0;
-    uint32_t _wall_us = 0;
-    uint32_t _carry = 0;
-    uint16_t _resets = 0;
-};
-
-/*
   The host's work besides serving frames (heartbeat, supervision, texts, run control, statistics)
   runs after a wait that timed out, and after a pass a doorbell started only once period has
   passed since it last ran, so a stream of calls is served by frame work alone. now and last are
@@ -436,17 +179,13 @@ inline bool housekeeping_due(uint32_t now, uint32_t last, uint32_t period, bool 
     return woke_on_timeout || now - last >= period;
 }
 
-enum class HostWait { DutyCap, Doorbell, Backoff, Timeout };
+enum class HostWait { Doorbell, Backoff, Timeout };
 
-// how the host waits before its next serve pass. The duty cap comes first, whatever the
-// last pass returned or the ring holds; otherwise back off only while frames remain (a
-// flooding M4): an empty ring waits on the doorbell even when the pass ran out of budget on
-// wall time (preempted)
-inline HostWait host_wait_after(uint32_t cap_wait_us, bool budget_ran_out, bool stuck, bool ring_empty)
+// how the host waits before its next serve pass: back off only while frames remain (a flooding
+// M4); an empty ring waits on the doorbell even when the pass ran out of budget on wall time
+// (preempted)
+inline HostWait host_wait_after(bool budget_ran_out, bool stuck, bool ring_empty)
 {
-    if (cap_wait_us != 0) {
-        return HostWait::DutyCap;
-    }
     if (stuck) {
         return HostWait::Timeout;
     }
