@@ -15,6 +15,7 @@
 #include <AP_RustM4_Layout.h>
 
 #include "../m4_service.h"
+#include "../module_host.h"
 #include "../module_port.h"
 #include "m4_fault.h"
 
@@ -28,6 +29,7 @@ static M4Service service;
 static binary_semaphore_t doorbell;   // also wakes the service for a posted module call
 static ModuleLink call_link;   // not `link`: <unistd.h> declares link()
 static mutex_t service_mutex;   // M4Platform::lock: the service and the module thread's SVC
+static ModuleHost module_host;
 
 static uint8_t *shared_window()
 {
@@ -146,6 +148,31 @@ static void lock_service()
 static void unlock_service()
 {
     chMtxUnlock(&service_mutex);
+}
+
+// the loader's platform: the service's Config and Stats names, the module port's regions and start
+static bool host_config(void *, ConfigReply &reply)
+{
+    if (!service.config_ready()) {
+        return false;
+    }
+    reply = service.config_reply();
+    return true;
+}
+
+static void host_binding_name(void *, uint32_t id, const char *name)
+{
+    service.set_binding_name(id, name);
+}
+
+static void host_unpublish(void *)
+{
+    module_port_unpublish();
+}
+
+static void host_start(void *, ModuleContext &module, const LoadLayout &layout, uint32_t entry, uint32_t rw_base)
+{
+    module_port_start(module, layout, entry, rw_base);
 }
 
 // faults the service performs
@@ -305,11 +332,20 @@ int main(void)
                                 module_port_set_m7_millis, lock_service, unlock_service };
     module_port_init(call_link, service, wake_service);
     service.init(channel, window, call_link, platform);
+    // module area writes are privileged writes through region 1
+    const ModuleHostPlatform host_platform {
+        &call_link, reinterpret_cast<uint8_t *>(AP_RUST_M4_MODULE_AREA_BASE), AP_RUST_M4_MODULE_AREA_BASE,
+        AP_RUST_M4_MODULE_AREA_SIZE, { 40, AP_RUST_ABI_VERSION, 1, 0, AP_RUST_API_FINGERPRINT },
+        // the PR's thumbv7em host callback margin (Module.cpp)
+        4096, nullptr, host_config, host_binding_name, host_unpublish, nullptr, host_start
+    };
+    module_host.init(host_platform);
     while (true) {
         if (block->run_permit.load() != 1) {
             m4_park_forever();
         }
         service.step();
+        module_host.step();
         // bounded sleep (Channel contract): a doorbell can be deferred while the HSEM is busy
         if (channel.prepareSleep()) {
             (void)chBSemWaitTimeout(&doorbell, TIME_MS2I(5));

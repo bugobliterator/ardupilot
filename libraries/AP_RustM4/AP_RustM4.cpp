@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
+#include <AP_Rust/Bindings.h>
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
@@ -202,6 +203,7 @@ void AP_RustM4::host_thread()
         const uint32_t now_ms = AP_HAL::millis();
         PeerHeader::beat(_shared, PeerHeader::Core::M7);
         supervise(now_ms);
+        drain_module_texts();
         if (_state == State::Running) {
             // after this pass's frames: a restart never makes the host thread wait
             run_control(now_ms);
@@ -456,6 +458,8 @@ void AP_RustM4::serve_system(const uint8_t *buf, uint16_t len)
     if ((call.flags & RustM4::CALL_FLAG_NOTIFY) != 0) {
         if (call.method == uint16_t(RustM4::SystemMethod::Text)) {
             send_module_text(buf, len);
+        } else if (call.method == uint16_t(RustM4::SystemMethod::ModuleState)) {
+            module_state(buf, len);
         }
         return;
     }
@@ -468,6 +472,9 @@ void AP_RustM4::serve_system(const uint8_t *buf, uint16_t len)
         break;
     case RustM4::SystemMethod::ListModules:
         reply_len = serve_list_modules(call.header.seq);
+        break;
+    case RustM4::SystemMethod::Resolve:
+        reply_len = serve_resolve(buf, len, call.header.seq);
         break;
     case RustM4::SystemMethod::FsOpen:
     case RustM4::SystemMethod::FsRead:
@@ -667,15 +674,114 @@ void AP_RustM4::send_module_text(const uint8_t *buf, uint16_t len)
         text.severity > 7 || text.length > sizeof(text.text)) {
         return;
     }
-    // the PR's Runtime keeps 44 characters of a module text (Runtime::text); untrusted: printable only
-    char message[45];
-    const uint16_t count = MIN(text.length, uint16_t(sizeof(message) - 1));
+    // the PR's Runtime::text: 44 characters, 8 queued, the rest dropped and counted; untrusted:
+    // printable only
+    WITH_SEMAPHORE(_text_sem);
+    if (_text_count == ARRAY_SIZE(_texts)) {
+        _texts_dropped++;
+        return;
+    }
+    ModuleText &entry = _texts[(_text_head + _text_count) % ARRAY_SIZE(_texts)];
+    entry.severity = text.severity;
+    const uint16_t count = MIN(text.length, uint16_t(sizeof(entry.text) - 1));
     for (uint16_t i = 0; i < count; i++) {
         const char c = text.text[i];
-        message[i] = (c >= 0x20 && c < 0x7F) ? c : '?';
+        entry.text[i] = (c >= 0x20 && c < 0x7F) ? c : '?';
     }
-    message[count] = 0;
-    GCS_SEND_TEXT(MAV_SEVERITY(text.severity), "Rust: %s", message);
+    entry.text[count] = 0;
+    _text_count++;
+}
+
+// the PR's Runtime::drain_messages, on the host thread: at most one queue's worth per pass
+void AP_RustM4::drain_module_texts()
+{
+    for (uint8_t i = 0; i < ARRAY_SIZE(_texts); i++) {
+        ModuleText message;
+        {
+            WITH_SEMAPHORE(_text_sem);
+            if (_text_count == 0) {
+                break;
+            }
+            message = _texts[_text_head];
+            _text_head = (_text_head + 1) % ARRAY_SIZE(_texts);
+            _text_count--;
+        }
+        GCS_SEND_TEXT(MAV_SEVERITY(message.severity), "Rust: %s", message.text);
+    }
+    uint32_t dropped;
+    {
+        WITH_SEMAPHORE(_text_sem);
+        dropped = _texts_dropped;
+        _texts_dropped = 0;
+    }
+    if (dropped != 0) {
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rust: dropped %lu text messages", (unsigned long)dropped);
+    }
+}
+
+// the M4 loader's import round: each hash resolved by the PR's binding_resolve(), UINT32_MAX for
+// none. Built in _tx_frame
+uint16_t AP_RustM4::serve_resolve(const uint8_t *buf, uint16_t len, uint32_t seq)
+{
+    using RustM4::ResolveReply;
+    using RustM4::ResolveRequest;
+    uint16_t count = 0;
+    if (len >= offsetof(ResolveRequest, hashes)) {
+        memcpy(&count, buf + offsetof(ResolveRequest, count), sizeof(count));
+    }
+    if (len < offsetof(ResolveRequest, hashes) || count > RustM4::RESOLVE_MAX ||
+        len != offsetof(ResolveRequest, hashes) + uint32_t(count) * sizeof(uint64_t)) {
+        return pack_system_reply(RustM4::SystemMethod::Resolve, seq, RustM4::ReplyStatus::Malformed, -EINVAL,
+                                 sizeof(RustM4::SystemReplyHeader));
+    }
+    static_assert(sizeof(ResolveReply) <= sizeof(_tx_frame), "the reply fits");
+    for (uint16_t i = 0; i < count; i++) {
+        uint64_t hash;
+        memcpy(&hash, buf + offsetof(ResolveRequest, hashes) + i * sizeof(hash), sizeof(hash));
+        const uint32_t id = AP_Rust::binding_resolve(nullptr, hash);
+        memcpy(_tx_frame + offsetof(ResolveReply, ids) + i * sizeof(id), &id, sizeof(id));
+    }
+    memcpy(_tx_frame + offsetof(ResolveReply, count), &count, sizeof(count));
+    memset(_tx_frame + offsetof(ResolveReply, reserved), 0, sizeof(ResolveReply::reserved));
+    return pack_system_reply(RustM4::SystemMethod::Resolve, seq, RustM4::ReplyStatus::Ok, 0,
+                             uint16_t(offsetof(ResolveReply, ids) + uint32_t(count) * sizeof(uint32_t)));
+}
+
+// the M4 loader's reports. Loaded counts toward the PR's "loaded N modules"; a failure is the PR's
+// fail(): "Rust: <reason>", kept for the pre-arm check
+void AP_RustM4::module_state(const uint8_t *buf, uint16_t len)
+{
+    RustM4::ModuleStateNotify notify;
+    if (len != sizeof(notify)) {
+        return;
+    }
+    memcpy(&notify, buf, sizeof(notify));
+    if (notify.module >= _module_count) {
+        return;
+    }
+    // untrusted: terminated, printable only
+    notify.text[sizeof(notify.text) - 1] = 0;
+    for (char *c = notify.text; *c != 0; c++) {
+        if (*c < 0x20 || *c >= 0x7F) {
+            *c = '?';
+        }
+    }
+    switch (RustM4::ModuleStateKind(notify.state)) {
+    case RustM4::ModuleStateKind::Loaded:
+        if (++_modules_loaded == _module_count) {
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: loaded %u modules", unsigned(_module_count));
+        }
+        break;
+    case RustM4::ModuleStateKind::Started:
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: started %s", _modules[notify.module].name);
+        break;
+    case RustM4::ModuleStateKind::Failed:
+        load_error(notify.text);
+        break;
+    case RustM4::ModuleStateKind::Returned:
+    case RustM4::ModuleStateKind::Panicked:
+        break;
+    }
 }
 
 // one row per method; SemMax carries the largest M7-side time of one call
@@ -865,6 +971,7 @@ void AP_RustM4::check_started(uint32_t now_ms)
         _crc_values_sent = false;
         // the previous session's modules are gone: their slots end, through the PR's cleanups
         _server.reset(_m4_session, _module_count);
+        _modules_loaded = 0;
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
         _restart_requested = false;
         enter(State::Running, now_ms);

@@ -49,6 +49,8 @@ CPPSRC = $(ALLCPPSRC) \
          $(CONFDIR)/trampolines.cpp \
          $(CONFDIR)/m4_selftest.cpp \
          $(M4DIR)/m4_service.cpp \
+         $(M4DIR)/module_host.cpp \
+         $(AP_ROOT)/libraries/AP_Rust/Image.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/Channel.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/SpscRing.cpp \
          $(CUBEFRAMEWORK)/CubePilotFW/PeerHeader.cpp \
@@ -75,7 +77,7 @@ CPPWARN = -Wall -Wextra -Wundef
 # unprivileged module thread. ARDUPILOT_BUILD as the M7's build. Fault injection
 # (RUST_M4_INJECT) is on in every M4 build.
 UDEFS = -DCORE_CM4 -DSTM32H757xx -DCF_PLATFORM_BETAFLIGHT -DPORT_USE_SYSCALL=1 -DARDUPILOT_BUILD -DAP_RUST_M4_FAULT_INJECTION_ENABLED=1 \
-        -DCF_PAL_CRC32_EXTERNAL
+        -DCF_PAL_CRC32_EXTERNAL -DAP_SCRIPTING_RUST_ENABLED=1
 UADEFS = -DCORE_CM4 -DSTM32H757xx
 UINCDIR =
 ULIBDIR =
@@ -83,8 +85,8 @@ ULIBS = --specs=nano.specs --specs=nosys.specs -lm
 
 # privileged code calls or copies through these: they must be in privileged RAM
 # (HSEM ISR callbacks, the window pointers inside channel and service, the ModuleLink, the module
-# thread's syscall stack and its context)
-PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link module_wa module_context
+# thread's syscall stack and its context, the loader with the loaded module's context and heap bitmaps)
+PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link module_wa module_context module_host
 
 RULESPATH = $(CHIBIOS)/os/common/startup/ARMCMx/compilers/GCC/mk
 include $(RULESPATH)/arm-none-eabi.mk

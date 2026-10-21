@@ -91,6 +91,9 @@ private:
     // system calls, on the slow worker; each returns the reply's length in _tx_frame
     uint16_t serve_config(const uint8_t *buf, uint16_t len, uint32_t seq);
     uint16_t serve_list_modules(uint32_t seq);
+    uint16_t serve_resolve(const uint8_t *buf, uint16_t len, uint32_t seq);
+    void module_state(const uint8_t *buf, uint16_t len);
+    void drain_module_texts();
     uint16_t serve_file(RustM4::SystemMethod method, const uint8_t *buf, uint16_t len, uint32_t seq);
     uint16_t pack_system_reply(RustM4::SystemMethod method, uint32_t seq, RustM4::ReplyStatus transport,
                                int32_t result, uint16_t length);
@@ -152,7 +155,8 @@ private:
     RustM4::RunControl _run_control;
     uint8_t _module_count;            // modules of the current session: discovered, loadable
     RustM4::ModuleFile _modules[RustM4::MAX_MODULES];   // their files, sorted by name
-    char _load_error[48];             // why this session loads no module, for the pre-arm check
+    char _load_error[152];            // why this session loads no module, for the pre-arm check
+    uint8_t _modules_loaded;          // ModuleState(Loaded) of this session
     bool _config_seen;                // this session's Config arrived: its CRC self-check is known
     bool _crc_failed_sent;            // texts of this session
     bool _crc_values_sent;
@@ -170,6 +174,17 @@ private:
     RustM4::StartFault _start_fault;
     uint32_t _woke_us;
     uint32_t _wake_latency_us;
+
+    // module texts as the PR's Runtime::text queues them: 44 characters each, sent by the host thread
+    struct ModuleText {
+        uint8_t severity;
+        char text[45];
+    };
+    ModuleText _texts[8];
+    uint8_t _text_head;
+    uint8_t _text_count;
+    uint32_t _texts_dropped;
+    HAL_Semaphore _text_sem;
 
     uint8_t _rx_frame[RustM4::MAX_FRAME];
     uint8_t _tx_frame[RustM4::MAX_FRAME];
