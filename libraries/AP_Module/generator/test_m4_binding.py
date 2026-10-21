@@ -88,12 +88,43 @@ def test_catalogue_hash_covers_posted_and_mirrored():
     assert m4_binding.catalogue_hash(ENTRIES, LOCAL, table) == first
 
 
+SIZES = {5: (4, 4), 6: (12, 4)}
+
+
+def test_call_policy_packs_posted_role_and_local_wire():
+    first, values, wires = m4_binding.call_policy(m4_binding.policy_table(ENTRIES, POLICY, LOCAL), SIZES)
+    assert first == 5 and len(values) == 8 and wires == [(4, 4), (12, 4)]
+    policy = {first + offset: value for offset, value in enumerate(values)}
+    assert policy[5] == 1 << m4_binding.CALL_WIRE_SHIFT and policy[6] == 2 << m4_binding.CALL_WIRE_SHIFT
+    assert policy[7] == 0 and policy[8] == 0
+    assert policy[9] == m4_binding.CALL_POSTED
+    assert [policy[i] >> m4_binding.CALL_ROLE_SHIFT for i in (10, 11, 12)] == [1, 2, 3]
+
+
+def test_call_policy_without_entries_is_one_empty_slot():
+    assert m4_binding.call_policy({0: ('Unknown', 0, 0), 1: ('Fast', 0, 0)}, {}) == (0, [0], [(0, 0)])
+
+
+def test_call_policy_refuses_more_wires_than_the_byte_holds():
+    sizes = {i: (4 * i, 4) for i in range(m4_binding.CALL_WIRE_MAX + 1)}
+    table = {i: ('Local', 0, 0) for i in sizes}
+    with pytest.raises(ValueError, match='local wires'):
+        m4_binding.call_policy(table, sizes)
+
+
 def test_policy_functions_emission():
-    source = m4_binding.policy_functions(m4_binding.policy_table(ENTRIES, POLICY, LOCAL))
-    posted = source[source.index('bool binding_is_posted'):source.index('uint8_t binding_mirror_role')]
-    assert 'case 9:' in posted and 'case 3:' not in posted
-    role = source[source.index('uint8_t binding_mirror_role'):]
-    assert 'case 10: return 1U;' in role and 'case 11: return 2U;' in role and 'case 12: return 3U;' in role
+    source = m4_binding.policy_functions(m4_binding.policy_table(ENTRIES, POLICY, LOCAL), SIZES)
+    assert 'const uint8_t M4_CALL_POLICY[M4_CALL_POLICY_COUNT] = {\n    8U, // 5\n    16U, // 6\n' in source
+    assert '    1U, // 9\n    2U, // 10\n    4U, // 11\n    6U, // 12\n};' in source
+    assert '    { 4U, 4U },\n    { 12U, 4U },\n};' in source
+    for function in ('bool binding_is_local', 'bool binding_local_wire', 'bool binding_is_posted',
+                     'uint8_t binding_mirror_role'):
+        assert function in source
+    header = m4_binding.policy_header(m4_binding.policy_table(ENTRIES, POLICY, LOCAL), 0,
+                                      policy=m4_binding.call_policy(m4_binding.policy_table(ENTRIES, POLICY, LOCAL),
+                                                                    SIZES))
+    assert 'M4_CALL_POLICY_FIRST = 5U;' in header and 'M4_CALL_POLICY_COUNT = 8U;' in header
+    assert 'M4_LOCAL_WIRE_COUNT = 2U;' in header
 
 
 def test_catalogue_hash_depends_on_ids_and_hashes_only():
@@ -129,7 +160,6 @@ def test_every_local_id_checks_its_exact_sizes_first():
         # the size check comes before the adapter call in the same case
         assert body.index(sizes) < min(i for i in (body.find('::sinf('), body.find('binding_math_dispatch')) if i >= 0)
     assert 'default:\n        return AP_MODULE_STATUS_INVALID;' in dispatch
-    assert 'case 5: input_size = 4U; output_size = 4U; return true;' in source
 
 
 def test_local_import_table_lists_hashes_of_local_ids():

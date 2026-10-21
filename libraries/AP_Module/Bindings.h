@@ -26,6 +26,12 @@ int32_t binding_local_dispatch(uint32_t id, const uint8_t *input, uint32_t input
 // (0 none, 1 Parameter.get, 2 a Parameter handle writer, 3 a by-name parameter writer)
 bool binding_is_posted(uint32_t id);
 uint8_t binding_mirror_role(uint32_t id);
+// M4 builds: the bits of an M4_CALL_POLICY byte (BindingM4Policy_generated.h), which the four functions
+// above read: posted, the mirror role, and for a local id 1 + the index of its sizes in M4_LOCAL_WIRES
+static const uint8_t M4_CALL_POSTED = 1U;
+static const uint8_t M4_CALL_ROLE_SHIFT = 1U;
+static const uint8_t M4_CALL_ROLE_MASK = 3U;
+static const uint8_t M4_CALL_WIRE_SHIFT = 3U;
 // not a BindingId: the call latency probe's ping (the SDK's Context::probe_ping()), no input or output.
 // In process it returns OK at once; the M4 forwards it to the M7 as a Ping system call
 static const uint32_t PROBE_PING_ID = 0xFFF0;
