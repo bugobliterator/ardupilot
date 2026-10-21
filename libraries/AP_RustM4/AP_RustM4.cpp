@@ -227,7 +227,7 @@ void AP_RustM4::host_thread()
             }
             break;
         }
-        // a doorbell wake: the frames, then the pass's one CPU reading. The rest waits for a
+        // a doorbell wake: the frames between the pass's two CPU readings. The rest waits for a
         // timed-out wait or the next housekeeping period
         _channel->wake();
         _woke_us = AP_HAL::micros();
@@ -244,13 +244,9 @@ void AP_RustM4::host_thread()
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
         // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
-        // runs every platform_wait_us()) serves nothing. SITL reads the CPU clock at the pass start
-        // too, after the decision; ChibiOS only at the pass end, which charges the wake with the pass
-        if (RustM4::pass_after_wake(_duty_cap, _woke_us, [this]() {
-                if (_cpu_charge.reads_at_pass_start()) {
-                    IGNORE_RETURN(charge_cpu(false));
-                }
-            })) {
+        // runs every platform_wait_us()) serves nothing. ChibiOS: the wait, the wake and the
+        // switch before this pass are charged after the decision
+        if (RustM4::pass_after_wake(_duty_cap, _woke_us, [this]() { IGNORE_RETURN(charge_cpu(false)); })) {
             last = serve();
         }
         if (_state == State::Running && _server.mirror_dirty()) {
