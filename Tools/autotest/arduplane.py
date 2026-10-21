@@ -9,6 +9,7 @@ import operator
 import os
 import re
 import signal
+import struct
 import subprocess
 import time
 import zlib
@@ -7291,37 +7292,49 @@ return update()
             else:
                 raise NotAchievedException("Missing trick %s" % t)
 
-    def setup_rust_aerobatics(self, allow_mission_timeout=False):
+    def setup_rust_aerobatics(self, allow_mission_timeout=False, m4=False):
         '''Install and start the native aerobatics applet in a test context'''
         self.context_push()
         self.install_rust_applet_context('aerobatics/main.rs', install_name='airshow.apmod')
         self.install_rust_file_context(self.rust_applet_source_path('aerobatics/AirShow.txt'),
                                        install_name='trick72.txt', directory='scripts')
         self.customise_SITL_commandline([], model='plane-3d', wipe=True)
-        self.set_parameters({
+        parameters = {
             'RUST_ENABLE': 1,
             'RUST_HEAP_SIZE': 32768,
             'RUST_CODE_SIZE': 131072,
             'RUST_STACK_SIZE': 32768,
-            'SCR_ENABLE': 0,
             'RC7_OPTION': 300,
             'RC9_OPTION': 301,
-        })
-        self.context_set_speedup(5)
+        }
+        if self.rust_parameter_exists('SCR_ENABLE'):
+            parameters['SCR_ENABLE'] = 0   # absent on Lua-free builds
+        self.set_parameters(parameters)
+        # on the M4 each remote binding call is a round trip to the M7 process, 1-4 ms of wall time
+        # under emulated SITL: the AirShow's ~50 calls per tick need sim time slowed for its 40 Hz loop
+        self.context_set_speedup(0.25 if m4 else 5)
         self.context_collect('STATUSTEXT')
         errors = ['Rust panic:', 'Aerobatics error', 'Too low altitude, aborting', 'Invalid path - aborting',
                   'NavScript time out']
         if not allow_mission_timeout:
             errors.append('NavScriptTime timed out')
         self.install_message_hook_context(self.FailFastStatusText(self, errors))
+        if m4:
+            self.install_message_hook_context(self.FailFastStatusText(self, self.rust_m4_texts_fail_fast(), regex=True))
         self.reboot_sitl()
         self.set_rc(7, 1000)
         self.set_rc(9, 1000)
         self.wait_text('Rust: loaded 1 modules', check_context=True)
+        if m4:
+            # the module registers its parameter tables through M7 round trips after it starts
+            tstart = self.get_sim_time()
+            while not self.rust_parameter_exists('TRIK_ENABLE'):
+                if self.get_sim_time_cached() - tstart > 60:
+                    raise NotAchievedException('AirShow parameters not registered')
 
-    def AerobaticsScripting_rust(self):
+    def AerobaticsScripting_rust(self, m4=False):
         '''Fly the native Rust RC AirShow'''
-        self.setup_rust_aerobatics()
+        self.setup_rust_aerobatics(m4=m4)
         self.set_parameter('TRIK_ENABLE', 1)
         self.rust_scripting_restart()
         self.wait_text('Enabled 3 tricks', check_context=True)
@@ -7344,12 +7357,14 @@ return update()
         self.context_pop()
         self.reboot_sitl()
 
-    def AerobaticsScripting_rust_mission(self):
+    def AerobaticsScripting_rust_mission(self, m4=False):
         '''Fly native AirShow from NAV_SCRIPT_TIME with RC tricks disabled'''
-        self.setup_rust_aerobatics()
+        self.setup_rust_aerobatics(m4=m4)
         self.assert_parameter_value('TRIK_ENABLE', 0)
         self.set_parameter('RTL_AUTOLAND', 2)
-        self.load_mission('rust-aerobatics.txt')
+        # the M4 variant runs this body under its own test name: the mission is this test's
+        self.load_mission_from_filepath(os.path.join(testdir, 'ArduPlane_Tests', 'AerobaticsScripting_rust_mission',
+                                                     'rust-aerobatics.txt'))
         self.wait_ready_to_arm()
         self.context_clear_collection('STATUSTEXT')
         self.change_mode('AUTO')
@@ -7648,6 +7663,401 @@ return update()
         self.assert_prearm_failure('Rust: M4 not running', other_prearm_failures_fatal=False)
         self.context_pop()
         self.reboot_sitl()
+
+    def AerobaticsScripting_rust_m4(self):
+        '''Fly the native Rust RC AirShow with the module on the M4 (SITL two-process)'''
+        if not self.rust_m4_build():
+            raise NotAchievedException('needs a --enable-rust-m4 SITL build')
+        before = self.rust_m4_counters()
+        self.AerobaticsScripting_rust(m4=True)
+        self.rust_m4_checks(before)
+
+    def AerobaticsScripting_rust_mission_m4(self):
+        '''Fly the native Rust NAV_SCRIPT_TIME AirShow with the module on the M4 (SITL two-process)'''
+        if not self.rust_m4_build():
+            raise NotAchievedException('needs a --enable-rust-m4 SITL build')
+        before = self.rust_m4_counters()
+        self.AerobaticsScripting_rust_mission(m4=True)
+        self.rust_m4_checks(before)
+
+    def AerobaticsScripting_rust_soak(self):
+        '''Fly the native Rust RC AirShow three times with RUST_RESTART between them (on the M4 with
+        an --enable-rust-m4 SITL build, else in-process)'''
+        m4 = self.rust_m4_build()
+        before = self.rust_m4_counters()
+        memory = []
+
+        def record_memory(mav, m):
+            if m.get_type() == 'STATUSTEXT' and m.text.startswith('Rust RAM:'):
+                memory.append(m.text)
+        self.setup_rust_aerobatics(m4=m4)
+        self.install_message_hook_context(record_memory)
+        self.set_parameter('TRIK_ENABLE', 1)
+        self.rust_scripting_restart()
+        self.wait_text('Enabled 3 tricks', check_context=True)
+        self.set_parameter('TRIK1_ID', 72)
+
+        self.wait_ready_to_arm()
+        self.change_mode('TAKEOFF')
+        self.arm_vehicle()
+        self.wait_altitude(30, 40, timeout=30, relative=True)
+        self.change_mode('CRUISE')
+        for flight in range(3):
+            self.progress('AirShow %u of 3' % (flight + 1))
+            if flight:
+                self.set_rc(7, 1000)
+                self.context_clear_collection('STATUSTEXT')
+                self.rust_scripting_restart()
+                self.wait_text('Enabled 3 tricks', check_context=True)
+            self.delay_sim_time(1, reason='trick selection to register')
+            self.context_clear_collection('STATUSTEXT')
+            self.set_rc(7, 1500)
+            self.wait_text('Trick 1 selected (SuperAirShow)', check_context=True)
+            self.context_clear_collection('STATUSTEXT')
+            self.set_rc(7, 2000)
+            self.wait_text('Trick 1 started (SuperAirShow)', check_context=True)
+            self.wait_rust_airshow_complete()
+        self.set_rc(7, 1000)
+        self.rust_scripting_restart()
+        self.progress('Rust AirShow soak memory texts: %s' % memory)
+        self.disarm_vehicle(force=True)
+        self.context_pop()
+        self.reboot_sitl()
+        if m4:
+            self.rust_m4_checks(before)
+
+    def rust_m4_texts_fail_fast(self):
+        '''STATUSTEXT patterns (re.match) that end an M4 test at once: an M4 fault or restart'''
+        return [
+            r'Rust: M4 (HardFault|MemManage|BusFault|UsageFault|heartbeat lost|protocol errors|fault)',
+            r'.*restarting',
+            r'.*off until reboot',
+        ]
+
+    def rust_parameter_exists(self, name):
+        '''true when the vehicle has parameter name (SCR_ENABLE is absent on Lua-free builds)'''
+        try:
+            self.get_parameter(name, attempts=1, timeout=5, verbose=False)
+        except NotAchievedException:
+            return False
+        return True
+
+    def rust_m4_counters(self):
+        '''the DataFlash logs before an M4 test: rust_m4_checks reads the ones the test adds'''
+        return set(self.log_list())
+
+    def rust_m4_lanes(self):
+        '''{BindingId: lane} of the generated M4 binding policy of this build'''
+        path = os.path.join(self.rootdir(), 'build', 'sitl', 'libraries', 'AP_Rust', 'BindingM4Policy_generated.h')
+        lanes = {}
+        with open(path) as header:
+            for line in header:
+                m = re.match(r'\s*\{ M4Lane::(\w+), \d+ \}, // (\d+)$', line)
+                if m is not None:
+                    lanes[int(m.group(2))] = m.group(1)
+        if not lanes:
+            raise NotAchievedException('no M4 binding policy in %s' % path)
+        return lanes
+
+    def rust_m4_checks(self, before):
+        '''from the DataFlash logs the test added: no M4 restart or fault, SRPC rows for the
+        module's Fast and Slow bindings and none for its local (libm and math) ones, no refusal'''
+        logs = [path for path in self.log_list() if path not in before]
+        if not logs:
+            raise NotAchievedException('no DataFlash log of the M4 test')
+        lanes = self.rust_m4_lanes()
+        restarts = set()
+        faults = set()
+        supervisor_rows = 0
+        denied = 0
+        calls = {}
+        for path in logs:
+            dfreader = self.dfreader_for_path(path)
+            while True:
+                m = dfreader.recv_match(type=['M4ST', 'M4HP', 'SRPC'])
+                if m is None:
+                    break
+                if m.get_type() == 'M4ST':
+                    supervisor_rows += 1
+                    restarts.add(m.Rst)
+                    faults.add(m.Flt)
+                elif m.get_type() == 'M4HP':
+                    denied += m.Deny
+                else:
+                    calls[(m.Id, m.Name)] = calls.get((m.Id, m.Name), 0) + m.N
+        if supervisor_rows == 0:
+            raise NotAchievedException('no M4ST rows in %s' % logs)
+        if len(restarts) != 1 or len(faults) != 1:
+            raise NotAchievedException('M4 restarts %s, faults %s during the test' % (sorted(restarts), sorted(faults)))
+        # binding rows are keyed by BindingId; system methods, m4:other and m4:sysother are not
+        bindings = {key: count for (key, count) in calls.items() if key[0] < 0x7FFF}
+        local = sorted(name for (method, name) in bindings if lanes.get(method) == 'Local' or name.startswith('libm.'))
+        if local:
+            raise NotAchievedException('local bindings served by the M7: %s' % local)
+        served_lanes = {lanes.get(method) for (method, name) in bindings}
+        if not {'Fast', 'Slow'} <= served_lanes:
+            raise NotAchievedException('SRPC binding rows %s cover lanes %s' % (sorted(bindings), served_lanes))
+        if denied != 0:
+            raise NotAchievedException('M4HP Deny %u: binding calls refused' % denied)
+        top = sorted(calls.items(), key=lambda item: -item[1])[:12]
+        self.progress('Rust M4 checks: %u M4ST rows, restarts %s, Deny 0, SRPC calls %s' %
+                      (supervisor_rows, sorted(restarts), ', '.join('%s=%u' % (name, n) for ((_, name), n) in top)))
+
+    # the libm.rs values of the in-process run (RustBindings), as float32 bits: the M4 must match them
+    RUST_LIBM_REFERENCE = {
+        'SIN': '3f24eb73', 'COS': '3f43ccb3', 'ATAN': '3ffce359', 'SQRT': '3fb504f3', 'FMOD': 'be4ccccc',
+        'FLOOR': 'c0000000', 'CEIL': 'bf800000', 'TAN': '3e9e6153', 'ASIN': '3e9c00ad', 'ACOS': '3ff01006',
+        'EXP': '4000e153', 'LOG': '3e86549b', 'POW': '4001f716',
+    }
+
+    def rust_binding_texts(self, prefix):
+        '''the numbers of the latest collected module text "Rust: <prefix>..."'''
+        for m in reversed(self.context_collection('STATUSTEXT')):
+            text = m.text[len('Rust: '):] if m.text.startswith('Rust: ') else m.text
+            if text.startswith(prefix):
+                return [int(number) for number in text[len(prefix):].split()]
+        raise NotAchievedException('no text %s' % prefix)
+
+    def rust_named_value(self, kind, name, timeout=30):
+        '''the next NAMED_VALUE_<kind> called name'''
+        tstart = self.get_sim_time()
+        while self.get_sim_time_cached() - tstart < timeout:
+            m = self.mav.recv_match(type='NAMED_VALUE_%s' % kind, blocking=True, timeout=1)
+            if m is not None and m.name == name:
+                return m
+        raise NotAchievedException('no NAMED_VALUE_%s %s' % (kind, name))
+
+    def rust_binding_restart(self, text):
+        '''a RUST_RESTART change; then the module's text again'''
+        self.context_clear_collection('STATUSTEXT')
+        self.request_rust_restart()
+        self.wait_text('Rust: loaded 1 modules', check_context=True, timeout=600)
+        self.wait_text(text, check_context=True, timeout=600)
+
+    def rust_binding_module(self, m4, filename, wipe=False):
+        '''install one test module alone (RUST_MAX_MOD 1) with the in-process tests' limits and start it'''
+        self.context_push()
+        self.install_rust_test_module_context(filename, stack_size=8192)
+        if wipe:
+            self.customise_SITL_commandline([], wipe=True)
+        parameters = {'RUST_ENABLE': 1, 'RUST_HEAP_SIZE': 4096, 'RUST_STACK_SIZE': 65536, 'RUST_MAX_MOD': 1}
+        if m4:
+            parameters.update(self.RUST_M4_PARAMETERS)
+        self.set_parameters(parameters)
+        self.context_collect('STATUSTEXT')
+        self.install_message_hook_context(self.FailFastStatusText(
+            self, [r'Rust: .* (panic|returned -|stop timeout)', r'Rust panic'], regex=True))
+        if m4:
+            self.install_message_hook_context(self.FailFastStatusText(self, self.rust_m4_texts_fail_fast(), regex=True))
+        self.reboot_sitl()
+        self.wait_text('Rust: loaded 1 modules', check_context=True, timeout=600)
+
+    def rust_binding_module_end(self):
+        self.context_pop()
+        self.reboot_sitl()
+
+    def rust_bindings_read(self, m4):
+        '''bindings.rs: RC, arming and vehicle state read through the generated bindings'''
+        self.rust_binding_module(m4, 'bindings.rs')
+        self.wait_text('BIND R ', check_context=True, timeout=600)
+        self.delay_sim_time(1, reason='a full report')
+        if self.rust_binding_texts('BIND S ')[1] != 0 or self.rust_binding_texts('BIND R ')[0] != 1500:
+            raise NotAchievedException('BIND S %s R %s' % (self.rust_binding_texts('BIND S '),
+                                                           self.rust_binding_texts('BIND R ')))
+        self.context_clear_collection('STATUSTEXT')
+        self.set_rc(1, 1600)
+        self.wait_text('BIND R 1600', check_context=True, timeout=600)
+        self.set_rc(1, 1500)
+        self.context_clear_collection('STATUSTEXT')
+        self.arm_vehicle(force=True)
+        self.wait_text('BIND S 0 1 ', check_context=True, timeout=600)
+        self.context_clear_collection('STATUSTEXT')
+        self.disarm_vehicle(force=True)
+        self.wait_text('BIND S 0 0 ', check_context=True, timeout=600)
+        self.rust_binding_restart('BIND S ')
+        self.rust_binding_module_end()
+
+    def rust_bindings_math_ok(self, m4, filename):
+        '''values.rs, math.rs, printf.rs and files.rs check themselves and report MATH ok'''
+        created = []
+        if filename == 'files.rs':
+            with open('file-test.bin', 'xb') as data:
+                created.append('file-test.bin')
+                data.write(bytes(range(256)) * 3 + b'end')
+        made_directory = filename == 'files.rs' and not os.path.isdir('APM')
+        if made_directory:
+            os.mkdir('APM')
+        try:
+            self.rust_binding_module(m4, filename)
+            self.wait_text('Rust: MATH ok', check_context=True, timeout=600)
+            self.rust_binding_restart('Rust: MATH ok')
+            self.rust_binding_module_end()
+        finally:
+            for path in created:
+                os.unlink(path)
+            if made_directory:
+                os.rmdir('APM')
+
+    def rust_bindings_strings(self, m4):
+        '''strings.rs: literal texts and named values, over three loads'''
+        with open('string-test.txt', 'xb') as data:
+            data.write(b'123456789')
+        try:
+            self.rust_binding_module(m4, 'strings.rs')
+            for cycle in range(3):
+                if cycle:
+                    self.rust_binding_restart('STRING literal %s %n')
+                else:
+                    self.wait_text('STRING literal %s %n', check_context=True, timeout=600)
+                for kind, name, value in [('FLOAT', 'RUST_PERR', 12.5), ('INT', 'RUST_INT', -12345),
+                                          ('STRING', 'RUST_STR', 'native %s')]:
+                    got = self.rust_named_value(kind, name).value
+                    if got != value:
+                        raise NotAchievedException('%s %s, want %s' % (name, got, value))
+            self.rust_binding_module_end()
+        finally:
+            os.unlink('string-test.txt')
+
+    def rust_bindings_libm(self, m4):
+        '''libm.rs: float32 bits of every libm binding over two loads; returns {name: hex bits}'''
+        names = ('SIN', 'COS', 'ATAN', 'SQRT', 'FMOD', 'FLOOR', 'CEIL', 'TAN', 'ASIN', 'ACOS', 'EXP', 'LOG', 'POW')
+        self.rust_binding_module(m4, 'libm.rs')
+        values = {}
+        for cycle in range(2):
+            if cycle:
+                self.context_clear_collection('STATUSTEXT')
+                self.request_rust_restart()
+                self.wait_text('Rust: loaded 1 modules', check_context=True, timeout=600)
+            for suffix in names:
+                bits = '%08x' % struct.unpack('<I', struct.pack('<f', self.rust_named_value('FLOAT', 'LM_' + suffix).value))
+                if values.setdefault(suffix, bits) != bits:
+                    raise NotAchievedException('LM_%s %s after a reload, was %s' % (suffix, bits, values[suffix]))
+        self.rust_binding_module_end()
+        self.progress('Rust libm bits (%s): %s' % ('M4' if m4 else 'in-process', values))
+        return values
+
+    def rust_bindings_parameters(self, m4):
+        '''parameters.rs: module-owned parameters across reloads and a reboot'''
+        saved = []
+
+        def record_saved(mav, m):
+            if m.get_type() == 'PARAM_VALUE' and m.param_id == 'RTP_SAVED':
+                saved.append(m.param_value)
+        self.rust_binding_module(m4, 'parameters.rs', wipe=True)
+        self.install_message_hook_context(record_saved)
+        self.wait_text('PARAM ready', check_context=True, timeout=600)
+        self.assert_parameter_values({'RTP_SAVED': 10, 'RTP_UNSAVED': 20})
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameter('RTP_CMD', 1, add_to_context=False)
+        self.wait_text('PARAM queued', check_context=True, timeout=600)
+        # only the save IO handler sends this value unrequested
+        tstart = self.get_sim_time()
+        while 42 not in saved:
+            if self.get_sim_time_cached() - tstart > 30:
+                raise NotAchievedException('no unsolicited RTP_SAVED 42 (%s)' % saved)
+            self.mav.recv_match(type='PARAM_VALUE', blocking=True, timeout=1)
+        self.delay_sim_time(1, reason='backing-file IO')
+        self.assert_parameter_values({'RTP_SAVED': 42, 'RTP_UNSAVED': 99})
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameter('RTP_CMD', 2, add_to_context=False)
+        self.wait_text('PARAM volatile', check_context=True, timeout=600)
+        self.assert_parameter_values({'RTP_SAVED': 99, 'RTP_UNSAVED': 21})
+        for generation in range(1, 11):
+            self.progress('parameters reload %u' % generation)
+            self.rust_binding_restart('PARAM ready')
+            self.assert_parameter_values({'RTP_SAVED': 42, 'RTP_UNSAVED': 20})
+        self.context_clear_collection('STATUSTEXT')
+        self.set_parameter('RTP_CMD', 2, add_to_context=False)
+        self.wait_text('PARAM volatile', check_context=True, timeout=600)
+        self.assert_parameter_value('RTP_SAVED', 99)
+        self.context_clear_collection('STATUSTEXT')
+        self.reboot_sitl()
+        self.wait_text('PARAM ready', check_context=True, timeout=600)
+        self.assert_parameter_values({'RTP_SAVED': 42, 'RTP_UNSAVED': 20})
+        self.rust_binding_module_end()
+
+    def rust_bindings_logs(self, m4):
+        '''logs.rs: dynamic DataFlash formats and values over three loads'''
+        before = set(self.log_list())
+        self.context_push()
+        self.set_parameters({'LOG_BACKEND_TYPE': 1, 'LOG_DISARMED': 1, 'LOG_FILE_DSRMROT': 0})
+        self.rust_binding_module(m4, 'logs.rs')
+        self.wait_text('Rust: MATH ok', check_context=True, timeout=600)
+        self.delay_sim_time(1, reason='file backend flush')
+        for cycle in (1, 2):
+            self.rust_binding_restart('Rust: MATH ok')
+            self.delay_sim_time(1, reason='file backend flush')
+        self.rust_binding_module_end()
+        self.context_pop()
+        self.reboot_sitl()
+        logs = [path for path in self.log_list() if path not in before]
+        messages = {'RLG1': [], 'RLG2': [], 'RLGP': []}
+        formats = {}
+        format_units = {}
+        for path in logs:
+            dfreader = self.dfreader_for_path(path)
+            while True:
+                m = dfreader.recv_match()
+                if m is None:
+                    break
+                kind = m.get_type()
+                if kind == 'FMT' and m.Name in messages:
+                    entry = (m.Type, m.Format, m.Columns)
+                    if formats.setdefault(m.Name, entry) != entry:
+                        raise NotAchievedException('%s registered as %s, then %s' % (m.Name, formats[m.Name], entry))
+                elif kind == 'FMTU':
+                    format_units[m.FmtType] = (m.UnitIds, m.MultIds)
+                elif kind in messages:
+                    messages[kind].append(m)
+        if set(formats) != set(messages):
+            raise NotAchievedException('formats %s in %s' % (sorted(formats), logs))
+        if (formats['RLG1'][1] != 'QbBhHiIQfcCeELMn' or formats['RLG2'][1] != 'QNZff' or
+                formats['RLGP'][1:] != ('QfLB', 'TimeUS,Height,Lat,Who')):
+            raise NotAchievedException('formats %s' % formats)
+        for kind, rows in messages.items():
+            times = [m.TimeUS for m in rows]
+            if len(rows) < 100 or times != sorted(times) or times[0] <= 0:
+                raise NotAchievedException('%u %s rows' % (len(rows), kind))
+        for m in messages['RLG1']:
+            if ((m.A, m.B, m.C, m.D, m.E, m.F, m.G, m.H) != (-8, 250, -1234, 65000, -1234567, 4000000000,
+                                                             0xfedcba9876543210, 1.25) or
+                    (m.I, m.J, m.K, m.L, m.M, m.N, m.O) != (-1, 1, -1000, 1000, -35.363261, 3, 'AB')):
+                raise NotAchievedException('RLG1 %s' % m)
+        for m in messages['RLG2']:
+            if (m.Short, m.Long) != ('sixteen', 'sixty-four') or not math.isnan(m.Nan) or m.Inf != math.inf:
+                raise NotAchievedException('RLG2 %s' % m)
+        for m in messages['RLGP']:
+            if m.Height != 100.5 or m.Lat != -35.363261 or m.Who != 1:
+                raise NotAchievedException('RLGP %s' % m)
+        if format_units[formats['RLGP'][0]] != ('smD#', 'F0G-'):
+            raise NotAchievedException('RLGP units %s' % (format_units[formats['RLGP'][0]],))
+        self.progress('Rust logs: %s' % {kind: len(rows) for (kind, rows) in messages.items()})
+
+    def rust_bindings(self, m4):
+        '''the PR's binding test modules one at a time, with the checks of their in-process tests'''
+        self.rust_bindings_read(m4)
+        for filename in ('values.rs', 'math.rs', 'printf.rs', 'files.rs'):
+            self.rust_bindings_math_ok(m4, filename)
+        self.rust_bindings_strings(m4)
+        libm = self.rust_bindings_libm(m4)
+        if libm != self.RUST_LIBM_REFERENCE:
+            raise NotAchievedException('libm bits %s, in-process %s' % (
+                {k: v for (k, v) in libm.items() if v != self.RUST_LIBM_REFERENCE.get(k)},
+                {k: v for (k, v) in self.RUST_LIBM_REFERENCE.items() if v != libm.get(k)}))
+        self.rust_bindings_logs(m4)
+        self.rust_bindings_parameters(m4)
+
+    def RustBindings(self):
+        '''Rust binding test modules in-process: the reference of RustM4Bindings'''
+        if self.rust_m4_build():
+            raise NotAchievedException('needs an in-process Rust SITL build')
+        self.rust_bindings(m4=False)
+
+    def RustM4Bindings(self):
+        '''Rust binding test modules on the M4 (SITL two-process), against the in-process values'''
+        if not self.rust_m4_build():
+            raise NotAchievedException('needs a --enable-rust-m4 SITL build')
+        self.rust_bindings(m4=True)
 
     def UniversalAutoLandScript(self):
         '''Test UniversalAutoLandScript'''
@@ -11191,6 +11601,11 @@ return update()
             self.RustM4Lifecycle,
             self.RustM4Panic,
             self.RustM4Containment,
+            self.AerobaticsScripting_rust_m4,
+            self.AerobaticsScripting_rust_mission_m4,
+            self.AerobaticsScripting_rust_soak,
+            self.RustBindings,
+            self.RustM4Bindings,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
             self.SagetechMXS,
