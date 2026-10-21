@@ -128,7 +128,7 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         if (uint32_t(result) > cap) {
             result = -EMSGSIZE;
         } else if (reply != link.reply) {
-            memcpy(reply, link.reply, uint32_t(result));
+            copy_frame_bytes(reply, link.reply, uint32_t(result));
         }
     }
     link.state.store(ModuleLink::Idle);

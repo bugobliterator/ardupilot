@@ -154,4 +154,78 @@ TEST(RustM4Frames, ProbeFlagFollowsTheTrailer)
     EXPECT_TRUE(parse_binding_call(frame, len, h));
 }
 
+// the frame as a struct header and memcpy copies build it
+static void reference_pack(uint8_t *frame, uint32_t seq, uint16_t module, uint16_t flags, uint32_t id,
+                           const uint8_t *input, uint16_t in_size, uint16_t out_size, const CallProbeTrailer *trailer)
+{
+    const uint32_t trailer_size = trailer != nullptr ? uint32_t(sizeof(*trailer)) : 0U;
+    BindingCallHeader h;
+    fill_header(h.header, MsgType::BindingCall, uint16_t(sizeof(h) + in_size + trailer_size), seq);
+    h.module = module;
+    h.flags = trailer != nullptr ? uint16_t(flags | CALL_FLAG_PROBE) : uint16_t(flags & ~CALL_FLAG_PROBE);
+    h.id = id;
+    h.in_size = in_size;
+    h.out_size = out_size;
+    memcpy(frame, &h, sizeof(h));
+    memcpy(frame + sizeof(h), input, in_size);
+    if (trailer != nullptr) {
+        memcpy(frame + sizeof(h) + in_size, trailer, sizeof(*trailer));
+    }
+}
+
+// word and byte copies alike: every frame and input alignment, odd and word sizes, with and without a
+// trailer; nothing written past the frame
+TEST(RustM4Frames, PackedCallBytesEqualTheReferencePacking)
+{
+    alignas(4) static uint8_t source[MAX_CALL_INPUT + 8];
+    for (uint32_t i = 0; i < sizeof(source); i++) {
+        source[i] = uint8_t(i * 7U + 3U);
+    }
+    alignas(4) CallProbeTrailer trailer;
+    memcpy(&trailer, source + 1, sizeof(trailer));
+    const CallProbeTrailer *const trailers[] = { nullptr, &trailer };
+    const uint16_t sizes[] = { 0, 1, 3, 4, 5, 8, 12, 13, 64, 255, uint16_t(MAX_CALL_INPUT - sizeof(trailer)) };
+    alignas(4) static uint8_t packed[MAX_FRAME + 8], expected[MAX_FRAME + 8];
+    uint32_t cases = 0;
+    for (uint32_t frame_offset = 0; frame_offset < 4; frame_offset++) {
+        for (uint32_t input_offset = 0; input_offset < 4; input_offset++) {
+            for (uint16_t size : sizes) {
+                for (const CallProbeTrailer *with : trailers) {
+                    memset(packed, 0xA5, sizeof(packed));
+                    memset(expected, 0xA5, sizeof(expected));
+                    const uint8_t *input = source + input_offset;
+                    const uint16_t len = pack_binding_call(packed + frame_offset, MAX_FRAME, 0x01020304U, 0x0506,
+                                                           CALL_FLAG_NOTIFY, 0x0708090AU, input, size, 0x070B, with);
+                    reference_pack(expected + frame_offset, 0x01020304U, 0x0506, CALL_FLAG_NOTIFY, 0x0708090AU, input,
+                                   size, 0x070B, with);
+                    ASSERT_EQ(len, sizeof(BindingCallHeader) + size + (with != nullptr ? sizeof(trailer) : 0U));
+                    ASSERT_EQ(memcmp(packed, expected, sizeof(packed)), 0)
+                        << "frame +" << frame_offset << " input +" << input_offset << " size " << size
+                        << (with != nullptr ? " with trailer" : "");
+                    cases++;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(cases, 4U * 4U * 11U * 2U);
+}
+
+TEST(RustM4Frames, CopyFrameBytesCopiesExactlyTheSize)
+{
+    alignas(4) uint8_t src[40], dst[48];
+    for (uint32_t i = 0; i < sizeof(src); i++) {
+        src[i] = uint8_t(0x40 + i);
+    }
+    for (uint32_t offset = 0; offset < 4; offset++) {
+        for (uint32_t size = 0; size <= 32; size++) {
+            memset(dst, 0xEE, sizeof(dst));
+            copy_frame_bytes(dst + offset, src + (size & 1U), size);
+            for (uint32_t i = 0; i < sizeof(dst); i++) {
+                const bool inside = i >= offset && i < offset + size;
+                ASSERT_EQ(dst[i], inside ? src[(size & 1U) + i - offset] : 0xEE) << offset << " " << size << " " << i;
+            }
+        }
+    }
+}
+
 AP_GTEST_MAIN()

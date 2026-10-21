@@ -354,6 +354,28 @@ inline uint16_t pack_parameter_changed(uint8_t *frame, uint16_t cap, uint32_t se
     return uint16_t(length);
 }
 
+/*
+  dst[0, size) = src[0, size), word by word when both are 4-byte aligned and size is a multiple of 4, byte
+  by byte otherwise. The volatile stores keep GCC -Os from folding the loops into a memcpy call, which is a
+  byte loop in newlib-nano. The buffers must not overlap.
+ */
+inline void copy_frame_bytes(uint8_t *dst, const uint8_t *src, uint32_t size)
+{
+    if (((uintptr_t(dst) | uintptr_t(src) | size) & 3U) == 0) {
+        volatile uint32_t *word = static_cast<volatile uint32_t *>(static_cast<volatile void *>(dst));
+        for (uint32_t i = 0; i < size; i += 4) {
+            uint32_t value;
+            memcpy(&value, src + i, sizeof(value));
+            *word++ = value;
+        }
+        return;
+    }
+    volatile uint8_t *byte = dst;
+    for (uint32_t i = 0; i < size; i++) {
+        byte[i] = src[i];
+    }
+}
+
 // with a trailer, CALL_FLAG_PROBE is set and the trailer follows the input
 inline uint16_t pack_binding_call(uint8_t *frame, uint16_t cap, uint32_t seq, uint16_t module, uint16_t flags,
                                   uint32_t id, const uint8_t *input, uint16_t in_size, uint16_t out_size,
@@ -369,19 +391,14 @@ inline uint16_t pack_binding_call(uint8_t *frame, uint16_t cap, uint32_t seq, ui
     if (length > MAX_FRAME || length > cap || out_size > MAX_REPLY_OUTPUT || (in_size != 0 && input == nullptr)) {
         return 0;
     }
-    BindingCallHeader h;
-    fill_header(h.header, MsgType::BindingCall, uint16_t(length), seq);
-    h.module = module;
-    h.flags = flags;
-    h.id = id;
-    h.in_size = in_size;
-    h.out_size = out_size;
-    memcpy(frame, &h, sizeof(h));
-    if (in_size != 0) {
-        memcpy(frame + sizeof(h), input, in_size);
-    }
+    // the header written in place as its five little-endian words (MsgHeader.reserved is 0)
+    static_assert(sizeof(BindingCallHeader) == 20 && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "header words");
+    const uint32_t header[5] = { uint32_t(MsgType::BindingCall) | length << 16, seq,
+                                 uint32_t(module) | uint32_t(flags) << 16, id, uint32_t(in_size) | uint32_t(out_size) << 16 };
+    copy_frame_bytes(frame, reinterpret_cast<const uint8_t *>(header), sizeof(header));
+    copy_frame_bytes(frame + sizeof(header), input, in_size);
     if (trailer != nullptr) {
-        memcpy(frame + sizeof(h) + in_size, trailer, sizeof(*trailer));
+        copy_frame_bytes(frame + sizeof(header) + in_size, reinterpret_cast<const uint8_t *>(trailer), sizeof(*trailer));
     }
     return uint16_t(length);
 }
