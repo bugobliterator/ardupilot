@@ -8092,6 +8092,16 @@ return update()
                 raise NotAchievedException('profile line %s' % line)
             if int(m.group(3)) != 0:
                 raise NotAchievedException('binding errors in %s' % line)
+        phases = [t for t in texts[start:] if re.match(r'LATPH \d+ \d+$', t)]
+        if len(phases) != 13:
+            raise NotAchievedException('expected 13 LATPH lines, got %s' % phases)
+        # profile 14, the 5013 us control, with a start phase offset
+        self.set_parameters({'LATP_PROF': 14, 'LATP_OFFS': 1250})
+        self.set_parameter('RUST_RESTART', (int(self.get_parameter('RUST_RESTART')) + 1) % 32768)
+        self.wait_text(r'LAT start prof 14 1s time_us \d+us offs 1250', regex=True, check_context=True, timeout=600)
+        self.wait_text(r'LAT 14 mode5013 \d+/s n[1-9]\d* b\d+ e0 avg\d+ max\d+$', regex=True,
+                       check_context=True, timeout=120)
+        self.wait_text(r'LATPH 14 \d+$', regex=True, check_context=True, timeout=30)
         summary = self.fetch_file_via_ftp('@SYS/rust_latency.txt')
         self.progress(summary)
         if not re.search(r'^id \d+ %s: calls \d+' % ('(fast|slow)' if m4 else 'in-process'), summary, re.MULTILINE):
@@ -8125,7 +8135,7 @@ return update()
             raise NotAchievedException('no M4LT rows in %s' % logs)
         if lanes != ({1, 2} if m4 else {0}):
             raise NotAchievedException('M4LT lanes %s' % sorted(lanes))
-        if profiles != set(range(1, 14)):
+        if profiles != set(range(1, 15)):
             raise NotAchievedException('LATP rows for profiles %s' % sorted(profiles))
         self.progress('%u M4LT rows, lanes %s' % (rows, sorted(lanes)))
 
