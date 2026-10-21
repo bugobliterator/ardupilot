@@ -34,7 +34,15 @@ using CubePilotFW::HwSemaphore;
 namespace PeerHeader = CubePilotFW::PeerHeader;
 
 // the host thread runs at UART priority + 1, the interrupt only signals it
-static const uint8_t HSEM_IRQ_PRIORITY = 12;
+#ifndef AP_MODULE_M4_HSEM_IRQ_PRIORITY
+#define AP_MODULE_M4_HSEM_IRQ_PRIORITY 12
+#endif
+static const uint8_t HSEM_IRQ_PRIORITY = AP_MODULE_M4_HSEM_IRQ_PRIORITY;
+// the ISR signals a semaphore, so it must not preempt the kernel's critical
+// zones: ChibiOS ARMv7-M chcore.h, CORTEX_MAX_KERNEL_PRIORITY (SVCALL + 1)
+static_assert(AP_MODULE_M4_HSEM_IRQ_PRIORITY >= CORTEX_MAX_KERNEL_PRIORITY &&
+              AP_MODULE_M4_HSEM_IRQ_PRIORITY <= CORTEX_MIN_KERNEL_PRIORITY,
+              "HSEM IRQ priority outside the kernel's interrupt range");
 #if AP_MODULE_M4_PRIORITY_TEST
 static constexpr int HOST_PRIORITY = APM_MAIN_PRIORITY_BOOST + ModuleM4::HOST_PRIORITY_OFFSET;
 static constexpr int WORKER_PRIORITY = APM_MAIN_PRIORITY_BOOST + ModuleM4::WORKER_PRIORITY_OFFSET;
