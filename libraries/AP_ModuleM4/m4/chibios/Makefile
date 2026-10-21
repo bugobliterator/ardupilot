@@ -86,7 +86,7 @@ ULIBS = --specs=nano.specs --specs=nosys.specs -lm
 # privileged code calls or copies through these: they must be in privileged RAM
 # (HSEM ISR callbacks, the window pointers inside channel and service, the ModuleLink, the module
 # thread's syscall stack and its context, the loader with the loaded module's context and heap bitmaps)
-PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link module_wa module_context module_host
+PRIVILEGED_SYMBOLS = CubePilotFW::hsemCallbacks channel service call_link module_wa module_context module_host call_probe
 
 RULESPATH = $(CHIBIOS)/os/common/startup/ARMCMx/compilers/GCC/mk
 include $(RULESPATH)/arm-none-eabi.mk

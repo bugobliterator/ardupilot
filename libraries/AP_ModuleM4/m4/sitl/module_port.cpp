@@ -60,6 +60,15 @@ static struct timespec realtime_after_ms(uint32_t ms)
     return deadline;
 }
 
+// the call latency probe's stamp: CLOCK_MONOTONIC, the M7 process's probe counter too
+static uint32_t probe_clock_us()
+{
+    return uint32_t(monotonic_us());
+}
+
+// the call latency probe (MOD_M4_OPTS bit 2)
+static M4CallProbe call_probe { probe_clock_us, 0, {false}, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
     ModuleLink &link = *call_link_of;
@@ -74,6 +83,9 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
     // sent from here when the service could; otherwise its next step (1 ms poll) sends it
     (void)service_of->forward_posted();
     // the service completes every posted call within CALL_TIMEOUT_MS of posting
+    if (link.state.load() != ModuleLink::Done) {
+        call_probe.flags |= PROBE_M4_SLEPT;
+    }
     while (link.state.load() != ModuleLink::Done) {
         wait_until(realtime_after_ms(10));
     }
@@ -114,7 +126,7 @@ static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const u
 static const HostPlatform host_platform {
     port_call, port_notify, AP_Module::binding_local_wire, AP_Module::binding_local_dispatch, nullptr,
     AP_Module::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
-    AP_Module::binding_is_posted
+    AP_Module::binding_is_posted, &call_probe
 };
 
 static bool own_context(void *context)
@@ -241,6 +253,11 @@ void ModuleM4::module_port_init(ModuleLink &link, M4Service &service, void (*)()
 {
     call_link_of = &link;
     service_of = &service;
+}
+
+M4CallProbe &ModuleM4::module_port_call_probe()
+{
+    return call_probe;
 }
 
 void ModuleM4::module_port_wake()
