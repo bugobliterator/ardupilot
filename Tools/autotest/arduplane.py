@@ -8059,6 +8059,76 @@ return update()
             raise NotAchievedException('needs a --enable-m4-modules SITL build')
         self.module_bindings(m4=True)
 
+    def ModuleCallLatencyProbe(self):
+        '''Rust call latency probe: m4_latency.rs runs its 13 profiles, M4LT rows and @SYS/module_latency.txt
+        (on the M4 with a --enable-m4-modules build, MOD_M4_OPTS bit 2; else in process, MOD_DEBUG_OPTS
+        bit 3). SITL timings are not representative: the rows are checked for form only'''
+        m4 = self.module_m4_build()
+        self.context_push()
+        before = self.module_m4_counters()
+        self.install_rust_test_module_context('m4_latency.rs')
+        self.context_collect('STATUSTEXT')
+        parameters = dict(self.MODULE_M4_PARAMETERS) if m4 else {'MOD_ENABLE': 1}
+        parameters['MOD_M4_OPTS' if m4 else 'MOD_DEBUG_OPTS'] = 4 if m4 else 8
+        parameters['LOG_DISARMED'] = 1
+        # the module's profiles run on wall-clock time: so do the waits below
+        parameters['SIM_SPEEDUP'] = 1
+        self.set_parameters(parameters)
+        self.reboot_sitl()
+        # the first run adds LATP_*; one-second profiles from the restart on
+        self.wait_text(r'LAT start prof 0 10s', regex=True, check_context=True, timeout=120)
+        self.set_parameters({'LATP_SECS': 1, 'LATP_WAIT': 0})
+        self.set_parameter('MOD_RESTART', (int(self.get_parameter('MOD_RESTART')) + 1) % 32768)
+        self.wait_text(r'LAT start prof 0 1s', regex=True, check_context=True, timeout=600)
+        self.wait_text('LAT done', check_context=True, timeout=1200)
+        texts = [m.text for m in self.context_collection('STATUSTEXT')]
+        start = max(i for (i, t) in enumerate(texts) if t.startswith('LAT start prof 0 1s'))
+        lines = [t for t in texts[start:] if re.match(r'LAT \d+ ', t)]
+        if len(lines) != 13:
+            raise NotAchievedException('expected 13 profile lines, got %s' % lines)
+        for line in lines:
+            m = re.match(r'LAT (\d+) \w+ \d+/s n(\d+) b\d+ e(\d+) avg\d+ max\d+$', line)
+            if m is None or int(m.group(2)) == 0:
+                raise NotAchievedException('profile line %s' % line)
+            if int(m.group(3)) != 0:
+                raise NotAchievedException('binding errors in %s' % line)
+        summary = self.fetch_file_via_ftp('@SYS/module_latency.txt')
+        self.progress(summary)
+        if not re.search(r'^id \d+ %s: calls \d+' % ('(fast|slow)' if m4 else 'in-process'), summary, re.MULTILINE):
+            raise NotAchievedException('no binding in @SYS/module_latency.txt')
+        self.context_pop()
+        self.reboot_sitl()
+        logs = [path for path in self.log_list() if path not in before]
+        rows = 0
+        lanes = set()
+        profiles = set()
+        stages = ('Pre', 'Snd', 'Rcv', 'Hof', 'Chk', 'Sem', 'Adp', 'Rpl', 'Bck', 'Ret')
+        for path in logs:
+            dfreader = self.dfreader_for_path(path)
+            while True:
+                m = dfreader.recv_match(type=['M4LT', 'LATP'])
+                if m is None:
+                    break
+                if m.get_type() == 'LATP':
+                    profiles.add(m.Prof)
+                    continue
+                rows += 1
+                lanes.add(m.Fl & 3)
+                if m.Fl & (1 << 10):
+                    continue   # its M4 completion never came: no total
+                # every stage but Pas adds up to the total
+                total = sum(getattr(m, stage) for stage in stages)
+                if total != m.Tot or m.Tot < (1 if m4 else 0):
+                    raise NotAchievedException('M4LT stages %s do not add up to Tot %d' % (
+                        [getattr(m, stage) for stage in stages], m.Tot))
+        if rows == 0:
+            raise NotAchievedException('no M4LT rows in %s' % logs)
+        if lanes != ({1, 2} if m4 else {0}):
+            raise NotAchievedException('M4LT lanes %s' % sorted(lanes))
+        if profiles != set(range(1, 14)):
+            raise NotAchievedException('LATP rows for profiles %s' % sorted(profiles))
+        self.progress('%u M4LT rows, lanes %s' % (rows, sorted(lanes)))
+
     def UniversalAutoLandScript(self):
         '''Test UniversalAutoLandScript'''
         applet_script = "UniversalAutoLand.lua"
@@ -11606,6 +11676,7 @@ return update()
             self.AerobaticsScripting_rust_soak,
             self.RustBindings,
             self.ModuleM4Bindings,
+            self.ModuleCallLatencyProbe,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
             self.SagetechMXS,
