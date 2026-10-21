@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <AP_Rust/Bindings.h>
+#include <AP_Rust/BindingM4Policy_generated.h>
 #include <AP_RustM4_M7Clock.h>
 #include "../module_port.h"
 #include "module_svc.h"
@@ -169,10 +170,13 @@ static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const u
 }
 
 static const HostPlatform host_platform {
-    port_call, port_notify, AP_Rust::binding_local_wire, AP_Rust::binding_local_dispatch, nullptr,
-    AP_Rust::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
-    AP_Rust::binding_is_posted, &call_probe
+    port_call, port_notify, AP_Rust::M4_CALL_POLICY, AP_Rust::M4_CALL_POLICY_FIRST, AP_Rust::M4_CALL_POLICY_COUNT,
+    AP_Rust::M4_LOCAL_WIRES, AP_Rust::binding_local_dispatch, nullptr, port_mirror_get, port_mirror_pending,
+    port_mirror_settle, port_mirror_refresh, &call_probe
 };
+static_assert(CALL_POLICY_POSTED == AP_Rust::M4_CALL_POSTED && CALL_POLICY_ROLE_SHIFT == AP_Rust::M4_CALL_ROLE_SHIFT &&
+              CALL_POLICY_ROLE_MASK == AP_Rust::M4_CALL_ROLE_MASK && CALL_POLICY_WIRE_SHIFT == AP_Rust::M4_CALL_WIRE_SHIFT,
+              "one call policy encoding");
 
 /*
   TIM5 is the M7's ChibiOS system timer (1 MHz, 32 bits): its count is the

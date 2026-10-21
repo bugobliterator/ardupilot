@@ -40,12 +40,22 @@ static void fake_notify(void *platform, const uint8_t *frame, uint16_t len)
     memcpy(&call, frame, len < sizeof(call) ? len : sizeof(call));
     m7.last_notify_flags = call.flags;
 }
-// id 5 is local with the wire of libm.sinf: 4 B in, 4 B out
-static bool fake_local_wire(uint32_t id, uint32_t &input_size, uint32_t &output_size)
+/*
+  The call policy from id 5: id 5 is local with the wire of libm.sinf (4 B in, 4 B out), id 20 the mirrored
+  get (8 B in, 5 B out), id 21 a handle writer, id 22 a name writer, id 30 posted
+ */
+static const uint32_t FAKE_POLICY_FIRST = 5;
+static const uint8_t fake_local_wires[][2] = { { 12, 4 }, { 4, 4 } };
+static uint8_t fake_policy[26];
+static const uint8_t *fake_call_policy()
 {
-    input_size = 4;
-    output_size = 4;
-    return id == 5;
+    memset(fake_policy, 0, sizeof(fake_policy));
+    fake_policy[5 - FAKE_POLICY_FIRST] = 2U << CALL_POLICY_WIRE_SHIFT;
+    fake_policy[20 - FAKE_POLICY_FIRST] = uint8_t(MirrorRole::Get) << CALL_POLICY_ROLE_SHIFT;
+    fake_policy[21 - FAKE_POLICY_FIRST] = uint8_t(MirrorRole::HandleWriter) << CALL_POLICY_ROLE_SHIFT;
+    fake_policy[22 - FAKE_POLICY_FIRST] = uint8_t(MirrorRole::NameWriter) << CALL_POLICY_ROLE_SHIFT;
+    fake_policy[30 - FAKE_POLICY_FIRST] = CALL_POLICY_POSTED;
+    return fake_policy;
 }
 // as a generated adapter: writes its fixed 4 B whatever output_size says
 static uint32_t local_calls;
@@ -56,12 +66,6 @@ static int32_t fake_local(uint32_t, const uint8_t *, uint32_t, uint8_t *output, 
     return STATUS_OK;
 }
 
-// id 20 is the mirrored get (8 B in, 5 B out), id 21 a handle writer, id 22 a name writer
-static uint8_t fake_mirror_role(uint32_t id)
-{
-    return id == 20 ? uint8_t(MirrorRole::Get) : id == 21 ? uint8_t(MirrorRole::HandleWriter) :
-           id == 22 ? uint8_t(MirrorRole::NameWriter) : uint8_t(MirrorRole::None);
-}
 static bool fake_mirror_get(void *platform, uint16_t, uint64_t token, uint8_t *out5)
 {
     auto &m7 = *static_cast<FakeM7 *>(platform);
@@ -76,11 +80,6 @@ static void fake_mirror_pending(void *platform, uint16_t, uint64_t token)
 {
     static_cast<FakeM7 *>(platform)->pendings++;
     static_cast<FakeM7 *>(platform)->last_token = token;
-}
-// id 30 is posted
-static bool fake_is_posted(uint32_t id)
-{
-    return id == 30;
 }
 static void fake_mirror_settle(void *platform, uint16_t, uint64_t)
 {
@@ -104,8 +103,9 @@ struct Fixture {
     uint32_t used[1], starts[1];
     FakeM7 m7 {};
     ModuleContext m;
-    HostPlatform platform { fake_call, fake_notify, fake_local_wire, fake_local, &m7, fake_mirror_role, fake_mirror_get,
-                            fake_mirror_pending, fake_mirror_settle, fake_mirror_refresh, fake_is_posted, nullptr };
+    HostPlatform platform { fake_call, fake_notify, fake_call_policy(), FAKE_POLICY_FIRST, sizeof(fake_policy),
+                            fake_local_wires, fake_local, &m7, fake_mirror_get, fake_mirror_pending, fake_mirror_settle,
+                            fake_mirror_refresh, nullptr };
     Fixture()
     {
         local_calls = 0;
@@ -177,6 +177,25 @@ TEST(RustM4HostCalls, LocalIdsNeedTheirExactSizes)
         ASSERT_EQ(byte, 0x11);
     }
     EXPECT_EQ(f.m7.calls, 0U);
+}
+
+// ids below and above the policy table, and one whose slot wraps, are plain calls to the M7
+TEST(RustM4HostCalls, IdsOutsideThePolicyAreForwarded)
+{
+    Fixture f;
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, nullptr, 0, 0,
+                                         0);
+    const uint32_t ids[] = { 4U, FAKE_POLICY_FIRST + sizeof(fake_policy), 0xFFFFFFFFU };
+    for (uint32_t id : ids) {
+        EXPECT_EQ(host_binding_call(f.m, f.args(id, f.rw, 4, f.stack, 0), f.platform), STATUS_OK) << id;
+        BindingCallHeader sent {};
+        ASSERT_TRUE(parse_binding_call(f.m7.last_request, sizeof(BindingCallHeader) + 4, sent));
+        EXPECT_EQ(sent.id, id);
+        EXPECT_EQ(sent.flags & CALL_FLAG_NOTIFY, 0);
+    }
+    EXPECT_EQ(f.m7.calls, 3U);
+    EXPECT_EQ(f.m7.notifies, 0U);
+    EXPECT_EQ(local_calls, 0U);
 }
 
 TEST(RustM4HostCalls, LaunchTokenIsNeverNull)

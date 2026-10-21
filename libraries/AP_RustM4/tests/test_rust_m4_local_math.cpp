@@ -61,6 +61,25 @@ TEST(RustM4LocalMath, LocalIdsRefuseAnyOtherSize)
     EXPECT_EQ(local, 37U);
 }
 
+// the packed call policy says what the M4 policy table says, for every id and past the last one
+TEST(RustM4LocalMath, CallPolicyMatchesTheBindingPolicy)
+{
+    uint32_t posted = 0, mirrored = 0;
+    for (uint32_t id = 0; id < M4_BINDING_COUNT + 4U; id++) {
+        const uint8_t flags = id < M4_BINDING_COUNT ? M4_BINDING_POLICY[id].flags : 0U;
+        EXPECT_EQ(binding_is_posted(id), (flags & M4_FLAG_POSTED) != 0) << id;
+        const uint8_t role = (flags & M4_FLAG_MIRROR_GET) != 0 ? 1U : (flags & M4_FLAG_MIRROR_HANDLE_WRITER) != 0 ? 2U :
+                             (flags & M4_FLAG_MIRROR_NAME_WRITER) != 0 ? 3U : 0U;
+        EXPECT_EQ(binding_mirror_role(id), role) << id;
+        EXPECT_EQ(binding_is_local(id), id < M4_BINDING_COUNT && M4_BINDING_POLICY[id].lane == M4Lane::Local) << id;
+        posted += binding_is_posted(id) ? 1U : 0U;
+        mirrored += role != 0 ? 1U : 0U;
+    }
+    EXPECT_GT(posted, 0U);
+    EXPECT_GT(mirrored, 0U);
+    EXPECT_FALSE(binding_is_local(0xFFFFFFFFU) || binding_is_posted(0xFFFFFFFFU) || binding_mirror_role(0xFFFFFFFFU) != 0);
+}
+
 // the M4's libm adapters are generated apart from the M7's: same bytes for the same input. The math
 // adapters are the same generated code on both cores, so an x86 comparison of them proves nothing;
 // they are compared M4-versus-in-process on Renode and the bench (SITL AirShow, Renode AirShow).
