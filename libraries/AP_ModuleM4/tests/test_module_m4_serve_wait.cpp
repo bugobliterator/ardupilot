@@ -401,7 +401,12 @@ struct FakeThreadStats {
             clock.best = UINT32_MAX;
         }
     }
-    uint64_t read(uint32_t now, bool &reset) { return read_thread_cycles(clock, now, reset); }
+    uint64_t read(uint32_t now, bool &reset)
+    {
+        reads++;
+        return read_thread_cycles(clock, now, reset);
+    }
+    uint32_t reads = 0;
 };
 
 // the bench's binding_bench.lua: 416 synchronous calls back to back once a second, each pass
@@ -473,12 +478,14 @@ TEST(ModuleM4ServeWait, PassRunsRightAfterAPause)
 
 // the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading, a pass, a
 // reading, overhead, sleep. Readings come from FakeThreadStats; returns the CPU charged and the
-// CPU used. reset_every: a reset in every pass (0: none). marks_best: Util::thread_info's fix
+// CPU used. reset_kind: a reset in the pass (1) or in the sleep (2), 0: none. marks_best:
+// Util::thread_info's fix
 struct HostModel {
     FakeThreadStats stats;
     HostCpuCharge charge { true };
     uint64_t charged = 0;
     uint64_t used = 0;
+    uint32_t pass_end_charge = 0;   // the last pass-end reading's charge (M4HP's max pass)
     uint32_t now = 1000;
 
     void iteration(uint32_t wake_overhead, uint32_t pass, uint32_t sleep_overhead, uint32_t sleep,
@@ -495,7 +502,8 @@ struct HostModel {
         }
         now += pass - pass / 2;
         cpu = stats.read(now, reset);
-        charged += charge.pass_end(cpu, reset, now);
+        pass_end_charge = charge.pass_end(cpu, reset, now);
+        charged += pass_end_charge;
         now += sleep_overhead;
         stats.switch_out(now);
         used += wake_overhead + pass + sleep_overhead;
@@ -519,6 +527,23 @@ TEST(ModuleM4ServeWait, ChibiOSChargesAllHostCpu)
     // the first iteration charged its pass only (20 us): its reading started the clock
     EXPECT_EQ(host.charged - 20U, host.used - used_before);
     EXPECT_EQ(host.charge.take_resets(), 0U);
+}
+
+// ChibiOS: a pass reads the thread's statistics at its start, after the serve decision, and at its
+// end. The start reading charges the wait's wake and switch; the end reading, and so M4HP's max
+// pass, holds the pass only (fails if the host reads only at the pass end)
+TEST(ModuleM4ServeWait, DoorbellPassReadsAtStartAndEnd)
+{
+    HostModel host;
+    host.iteration(5, 20, 4, 500, 0);
+    const uint32_t reads_before = host.stats.reads;
+    const uint64_t charged_before = host.charged;
+    for (int i = 0; i < 10; i++) {
+        host.iteration(5, 20, 4, 500, 0);
+        EXPECT_EQ(host.pass_end_charge, 20U);
+    }
+    EXPECT_EQ(host.stats.reads - reads_before, 20U);
+    EXPECT_EQ(host.charged - charged_before, 10U * (4U + 5U + 20U));
 }
 
 // SITL charges passes only: the overhead around them is not charged
@@ -976,6 +1001,38 @@ TEST(ModuleM4ServeWait, PostedBatchStopsOnTime)
     EXPECT_EQ(run_batch(ring, MAX_SERVE_US + 1), 0U);
     EXPECT_EQ(ring.served, 0U);
     EXPECT_EQ(ring.next, 0U);
+}
+
+// doorbell wakes 100 us apart for 5 ms: the housekeeping runs once a millisecond, not after each
+// wake (fails without the period)
+TEST(ModuleM4ServeWait, HousekeepingRunsWithinOneMillisecond)
+{
+    for (const uint32_t start : { 1000U, UINT32_MAX - 2500U }) {
+        uint32_t last = start;   // it ran at the start
+        uint32_t runs = 0;
+        for (uint32_t elapsed = 100; elapsed <= 5000; elapsed += 100) {
+            const uint32_t now = start + elapsed;
+            if (housekeeping_due(now, last, HOUSEKEEPING_PERIOD_US, false)) {
+                runs++;
+                last = now;
+            }
+        }
+        EXPECT_GE(runs, 4U) << start;
+        EXPECT_LE(runs, 6U) << start;
+    }
+}
+
+// a wait that timed out on an empty ring runs the housekeeping, however soon after its last run
+// (fails if only the period decides)
+TEST(ModuleM4ServeWait, TimeoutWakeRunsHousekeeping)
+{
+    uint32_t runs = 0;
+    const uint32_t last = 5000;
+    if (housekeeping_due(last + 10U, last, HOUSEKEEPING_PERIOD_US, true)) {
+        runs++;
+    }
+    EXPECT_EQ(runs, 1U);
+    EXPECT_FALSE(housekeeping_due(last + 10U, last, HOUSEKEEPING_PERIOD_US, false));
 }
 
 AP_GTEST_MAIN()

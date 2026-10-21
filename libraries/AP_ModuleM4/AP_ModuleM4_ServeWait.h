@@ -407,6 +407,18 @@ private:
     uint16_t _resets = 0;
 };
 
+/*
+  The host's work besides serving frames (heartbeat, supervision, texts, run control, statistics)
+  runs after a wait that timed out, and after a pass a doorbell started only once period has
+  passed since it last ran, so a stream of calls is served by frame work alone. now and last are
+  on one wrapping clock; a timed-out wait bounds the gap between runs
+ */
+static const uint32_t HOUSEKEEPING_PERIOD_US = 1000;
+inline bool housekeeping_due(uint32_t now, uint32_t last, uint32_t period, bool woke_on_timeout)
+{
+    return woke_on_timeout || now - last >= period;
+}
+
 enum class HostWait { DutyCap, Doorbell, Backoff, Timeout };
 
 // how the host waits before its next serve pass. The duty cap comes first, whatever the
