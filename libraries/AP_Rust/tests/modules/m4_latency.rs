@@ -9,24 +9,29 @@
 //! Profiles: 1-12 are binding (Parameter.get, vehicle.get_mode, ahrs.get_origin, logger.write)
 //! times rate (10/s, 200/s, 1000/s): profile = 1 + 3 * binding + rate index. 13 is the burst.
 //! 14 is vehicle.get_mode every 5013 us, a period that is not a multiple of the 2500 us main loop.
-//! LATP_PROF 0 runs 1 to 13 in turn. Each profile's first call starts at time_us() % 2500 ==
+//! 15-17 are ahrs.get_location at 10/s, 200/s, 1000/s; 18 is Location.offset at 200/s on a copy of
+//! the location taken at the profile start. LATP_PROF 0 runs 1 to 18 in turn, all but 14. Each profile's first call starts at time_us() % 2500 ==
 //! LATP_OFFS % 2500; the achieved phase is in a 'LATPH profile phase' text and the end LATP row (Phs).
 #![no_std]
 #![no_main]
 
-use ap_rust_sdk::{enums::MavSeverity, Context, Error, LogValue as V, Parameter, Result};
+use ap_rust_sdk::{enums::MavSeverity, Context, Error, Location, LogValue as V, Parameter, Result};
 
 ap_rust_sdk::module!(run);
 
 const TABLE_KEY: u8 = 77;
-const PROFILE_COUNT: u32 = 13;
+const PROFILE_COUNT: u32 = 18;
 const BURST_PROFILE: u32 = 13;
 const CONTROL_PROFILE: u32 = 14;
 const CONTROL_PERIOD_US: u64 = 5013;
 // the M7 main loop period (SCHED_LOOP_RATE 400) the start phase is taken against
 const LOOP_US: u64 = 2500;
 const RATES: [u32; 3] = [10, 200, 1000];
-const NAMES: [&str; 4] = ["param", "mode", "origin", "log"];
+// short names: the LAT text must fit the 50 characters of a STATUSTEXT
+const NAMES: [&str; 6] = ["param", "mode", "origin", "log", "getloc", "locoff"];
+const OFFSET_BINDING: usize = 5;
+// profiles after the control: (profile, binding, rate)
+const LATER_PROFILES: [(u32, usize, u32); 4] = [(15, 4, 10), (16, 4, 200), (17, 4, 1000), (18, OFFSET_BINDING, 200)];
 // the burst: 40 calls a tick at 30 Hz, Parameter.get first as the AirShow's tick does
 const BURST_CALLS: [(usize, u32); 4] = [(0, 22), (1, 6), (2, 6), (3, 6)];
 const BURST_RATE: u32 = 30;
@@ -46,6 +51,8 @@ struct Probe<'a, 'h> {
     c: &'a Context<'h>,
     parameter: Parameter<'a, 'h>,
     written: u32,
+    // the Location.offset profile's start location
+    location: Location,
 }
 
 impl Probe<'_, '_> {
@@ -62,6 +69,15 @@ impl Probe<'_, '_> {
             2 => self.c.ahrs().get_origin().map(|origin| {
                 core::hint::black_box(origin.is_some());
             }),
+            4 => self.c.ahrs().get_location().map(|location| {
+                core::hint::black_box(location.is_some());
+            }),
+            OFFSET_BINDING => {
+                let mut location = self.location;
+                location.offset(self.c, 1.0, 1.0).map(|()| {
+                    core::hint::black_box(location);
+                })
+            }
             _ => {
                 self.written = self.written.wrapping_add(1);
                 self.c.logger().write("LATW", "N", None, &[V::U32(self.written)])
@@ -95,10 +111,22 @@ impl Probe<'_, '_> {
             }
             return Ok(());
         }
-        if profile == CONTROL_PROFILE {
-            return self.call(1, tally);
-        }
-        self.call(((profile - 1) / 3) as usize, tally)
+        self.call(binding_of(profile), tally)
+    }
+}
+
+fn later(profile: u32) -> (u32, usize, u32) {
+    LATER_PROFILES[(profile - CONTROL_PROFILE - 1) as usize]
+}
+
+// the binding of a single-binding profile
+fn binding_of(profile: u32) -> usize {
+    if profile < BURST_PROFILE {
+        ((profile - 1) / 3) as usize
+    } else if profile == CONTROL_PROFILE {
+        1
+    } else {
+        later(profile).1
     }
 }
 
@@ -107,8 +135,10 @@ fn rate_of(profile: u32) -> u32 {
         BURST_RATE
     } else if profile == CONTROL_PROFILE {
         (1_000_000 / CONTROL_PERIOD_US) as u32
-    } else {
+    } else if profile < BURST_PROFILE {
         RATES[((profile - 1) % 3) as usize]
+    } else {
+        later(profile).2
     }
 }
 
@@ -126,7 +156,7 @@ fn name_of(profile: u32) -> &'static str {
     } else if profile == CONTROL_PROFILE {
         "mode5013"
     } else {
-        NAMES[((profile - 1) / 3) as usize]
+        NAMES[binding_of(profile)]
     }
 }
 
@@ -174,6 +204,13 @@ fn align_phase(c: &Context<'_>, offset: u64) -> Result {
 fn run_profile(probe: &mut Probe<'_, '_>, profile: u32, seconds: u32, offset: u64) -> Result {
     let c = probe.c;
     let mut tally = Tally::default();
+    if profile != BURST_PROFILE && binding_of(profile) == OFFSET_BINDING {
+        probe.location = match c.ahrs().get_location() {
+            Err(Error::Stopped) => return Err(Error::Stopped),
+            Ok(Some(location)) => location,
+            _ => Location::default(),
+        };
+    }
     log_profile(c, profile, 0, &tally, 0)?;
     let period = period_of(profile);
     align_phase(c, offset)?;
@@ -246,7 +283,7 @@ fn run(c: &Context<'_>) -> Result {
     let wait = setting(c, "LATP_WAIT", 5)?;
     let offset = u64::from(setting(c, "LATP_OFFS", 0)?.min(5000)) % LOOP_US;
     let parameter = c.parameter("SCHED_LOOP_RATE")?.ok_or(Error::Unavailable)?;
-    let mut probe = Probe { c, parameter, written: 0 };
+    let mut probe = Probe { c, parameter, written: 0, location: Location::default() };
     c.sleep_ms(wait * 1000)?;
     // the cost of the module's own timing: one time_us() call
     let start = c.time_us();
@@ -259,10 +296,13 @@ fn run(c: &Context<'_>) -> Result {
         format_args!("LAT start prof {} {}s time_us {}us offs {}", profile, seconds, clock_cost, offset),
     )?;
     let (first, last) = if profile == 0 { (1, PROFILE_COUNT) } else { (profile, profile) };
-    if first < 1 || last > CONTROL_PROFILE {
+    if first < 1 || last > PROFILE_COUNT {
         return Err(Error::Invalid);
     }
     for selected in first..=last {
+        if profile == 0 && selected == CONTROL_PROFILE {
+            continue;
+        }
         run_profile(&mut probe, selected, seconds, offset)?;
     }
     c.gcs().send_text(MavSeverity::INFO, "LAT done")
