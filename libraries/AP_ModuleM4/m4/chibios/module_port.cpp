@@ -20,6 +20,7 @@
 #include <AP_Module/Bindings.h>
 #include <AP_Module/BindingM4Policy_generated.h>
 #include <AP_ModuleM4_M7Clock.h>
+#include "../module_poll.h"
 #include "../module_port.h"
 #include "module_svc.h"
 
@@ -78,6 +79,9 @@ static volatile uint32_t module_doorbell_cycles;   // DWT at the doorbell interr
 // set by whoever signals call_done, cleared by the module thread just before it waits on call_done:
 // never false while call_done is signalled
 static volatile bool call_done_signalled;
+static const uint32_t MODULE_POLL_CYCLES = MODULE_POLL_US * (AP_MODULE_M4_CORE_CLOCK_HZ / 1000000U);
+
+static uint32_t dwt_cycles();
 
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
@@ -100,11 +104,19 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
     } else if (probed) {
         probe_stamp(call_probe, call_probe.current.forward_returned_us, PROBE_STAMP_FORWARD_RETURNED);
     }
-    // this thread drains its reply itself, woken by the doorbell; the service's housekeeping
-    // times a sent call out within CALL_TIMEOUT_MS
+    // this thread drains its reply itself: polled for up to MODULE_POLL_US, then woken by the
+    // doorbell; the service's housekeeping times a sent call out within CALL_TIMEOUT_MS
     const bool waited = link.state.load() != ModuleLink::Done;
+    bool polled = false;
     if (waited) {
+        // a doorbell while it polls (the service armed one meanwhile) comes here too: no service wake
         module_waiting = true;
+        bool wake_service = false;
+        polled = poll_for_reply(*service_of, link, active->stop, dwt_cycles, MODULE_POLL_CYCLES, wake_service) ==
+                 PollEnd::Done;
+        if (wake_service) {
+            wake_service_of();
+        }
         while (link.state.load() != ModuleLink::Done) {
             module_doorbell_stamped = false;
             bool poll_timeout = false;
@@ -128,7 +140,7 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         module_waiting = false;
     }
     if (probed && waited) {
-        call_probe.current.flags |= PROBE_M4_SLEPT;
+        call_probe.current.flags |= polled ? PROBE_M4_POLLED : PROBE_M4_SLEPT;
         probe_stamp(call_probe, call_probe.current.resumed_us, PROBE_STAMP_RESUMED);
     }
     int32_t result = link.result;
