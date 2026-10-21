@@ -11,6 +11,7 @@
 #include <atomic>
 #include <stdint.h>
 #include <string.h>
+#include "AP_RustM4_CallProbe.h"
 #include "AP_RustM4_CallStatus.h"
 #include "AP_RustM4_GranuleHeap.h"
 #include "AP_RustM4_ModuleRanges.h"
@@ -35,6 +36,7 @@ struct HostPlatform {
     bool (*local_wire)(uint32_t id, uint32_t &input_size, uint32_t &output_size);
     int32_t (*local)(uint32_t id, const uint8_t *input, uint32_t input_size, uint8_t *output, uint32_t output_size);
     void *platform;
+    M4CallProbe *probe;   // the call latency probe; may be null
 };
 
 struct ModuleContext {
@@ -57,6 +59,8 @@ inline void *module_token(uint16_t index)
 
 inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, const HostPlatform &p)
 {
+    M4CallProbe *probe = probing(p.probe) ? p.probe : nullptr;
+    const uint32_t entry_us = probe != nullptr ? probe->clock_us() : 0;
     if (m.stop.load()) {
         return STATUS_STOPPED;
     }
@@ -82,8 +86,16 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     if (a.input_size > MAX_CALL_INPUT || a.output_size > MAX_REPLY_OUTPUT) {
         return STATUS_INVALID;
     }
+    // probed when the trailer fits the frame
+    CallProbeTrailer trailer {};
+    if (probe != nullptr && a.input_size + sizeof(trailer) <= MAX_CALL_INPUT) {
+        trailer = begin_probed_call(*probe, entry_us);
+    } else {
+        probe = nullptr;
+    }
     const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, 0, a.id, a.input,
-                                              uint16_t(a.input_size), uint16_t(a.output_size));
+                                              uint16_t(a.input_size), uint16_t(a.output_size),
+                                              probe != nullptr ? &trailer : nullptr);
     if (length == 0) {
         return STATUS_INVALID;
     }
@@ -96,6 +108,9 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     const CallOutcome outcome = call_outcome(result, reply, uint16_t(a.output_size));
     if (outcome.copy_output && a.output_size != 0) {
         memcpy(a.output, body, a.output_size);
+    }
+    if (probe != nullptr) {
+        end_probed_call(*probe, result > 0, probe->clock_us());
     }
     return outcome.status;
 }

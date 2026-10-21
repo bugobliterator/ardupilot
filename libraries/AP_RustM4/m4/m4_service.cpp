@@ -38,6 +38,22 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _config_pending = false;
     _config_ready = false;
     _config_seq = 0;
+    _call_probed = false;
+    _woke_on_poll = false;
+    M4CallProbe *probe = _platform.probe;
+    if (probe != nullptr) {
+        probe->enabled.store(false);   // until this session's Config asks for it
+        probe->last_seq = 0;
+        if (probe->clock_us != nullptr) {
+            // the cost of one stamp, reported in every trailer
+            static const uint32_t READS = 16;
+            const uint32_t start = _platform.cycles();
+            for (uint32_t i = 0; i < READS; i++) {
+                (void)probe->clock_us();
+            }
+            probe->stamp_cycles = (_platform.cycles() - start) / READS;
+        }
+    }
     compute_crc_self_check();
     // a CRC that disagrees with zlib would fail every ring frame: fault before the first beat,
     // so the M7 reports it as a start fault rather than this session running on bad CRCs
@@ -85,7 +101,7 @@ bool M4Service::forward_posted()
             _call_timed = true;
             _call_posted_ms = _platform.millis();
         }
-        forward_call();
+        forward_call(false);
     }
     const bool sent = _link->state.load() != ModuleLink::Posted;
     _platform.unlock();
@@ -109,7 +125,7 @@ void M4Service::step_locked()
         complete(-ETIMEDOUT);
     } else if (_ready && state == ModuleLink::Posted) {
         // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
-        forward_call();
+        forward_call(true);
     }
     // sent again if its reply did not come (the M7's ring was full)
     if (_ready && _config_pending && (_config_seq == 0 || now_ms - _config_sent_ms > CALL_TIMEOUT_MS)) {
@@ -211,7 +227,7 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
     }
 }
 
-void M4Service::forward_call()
+void M4Service::forward_call(bool from_step)
 {
     // the request was written by the module thread (unprivileged on the M4 image): check it
     // before it reaches the M7, as the M7 checks it again
@@ -228,11 +244,16 @@ void M4Service::forward_call()
     memcpy(&flags, _link->request + offsetof(SystemCallHeader, flags), sizeof(flags));
     uint16_t key;
     uint8_t reply_type;
+    M4CallProbe *probe = nullptr;
     if (MsgType(header.type) == MsgType::BindingCall) {
         BindingCallHeader call;
         memcpy(&call, _link->request, sizeof(call));
         key = call.id < KEY_OTHER ? uint16_t(call.id) : KEY_OTHER;
         reply_type = uint8_t(MsgType::BindingReply);
+        if ((flags & CALL_FLAG_PROBE) != 0 && probing(_platform.probe) && len >= sizeof(CallProbeTrailer) &&
+            len == sizeof(call) + call.in_size + sizeof(CallProbeTrailer)) {
+            probe = _platform.probe;
+        }
     } else {
         SystemCallHeader call;
         memcpy(&call, _link->request, sizeof(call));
@@ -241,6 +262,11 @@ void M4Service::forward_call()
     }
     header.seq = ++_seq;
     memcpy(_link->request, &header, sizeof(header));
+    if (probe != nullptr) {
+        const uint32_t pre_send_us = probe->clock_us();
+        memcpy(_link->request + len - sizeof(CallProbeTrailer) + offsetof(CallProbeTrailer, pre_send_us),
+               &pre_send_us, sizeof(pre_send_us));
+    }
     const uint32_t sent_cycles = _platform.cycles();
     if (_channel->send(_link->request, len) != 0) {
         return;   // ring full: the M7 is behind, try again on the next step
@@ -248,6 +274,14 @@ void M4Service::forward_call()
     if ((flags & CALL_FLAG_NOTIFY) != 0) {
         complete(0);   // no reply
         return;
+    }
+    _call_probed = probe != nullptr;
+    if (probe != nullptr) {
+        probe->sent_us = probe->clock_us();
+        probe->seq = header.seq;
+        if (from_step) {
+            probe->flags |= PROBE_M4_SENT_BY_STEP;
+        }
     }
     _call_seq = header.seq;
     _call_session = _session;
@@ -317,6 +351,9 @@ void M4Service::handle_config_reply(const uint8_t *buf, uint16_t len)
     }
     _config_reply = reply;
     _config_ready = true;
+    if (_platform.probe != nullptr && _platform.probe->clock_us != nullptr) {
+        _platform.probe->enabled.store((reply.m4_options & M4_OPTION_CALL_PROBE) != 0);
+    }
     if (_platform.m7_millis != nullptr) {
         _platform.m7_millis(reply.m7_millis);
     }
@@ -335,6 +372,13 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
         header.type != _call_reply_type) {
         _protocol_errors++;
         return;
+    }
+    if (_call_probed) {
+        M4CallProbe &probe = *_platform.probe;
+        probe.reply_seen_us = probe.clock_us();
+        if (_woke_on_poll) {
+            probe.flags |= PROBE_M4_POLL_WAKE;
+        }
     }
     const uint32_t round_trip_us = (_platform.cycles() - _call_sent_cycles) / _platform.cycles_per_us;
     uint32_t m7_us = 0;

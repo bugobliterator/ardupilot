@@ -65,6 +65,9 @@ static ModuleContext module_context;
 static uint32_t selftest_heap_used[2], selftest_heap_starts[2];
 static const uint32_t SELFTEST_HEAP_SIZE = 1024;
 
+// the call latency probe (RUST_M4_OPTS bit 2): its clock is set by module_port_init()
+static M4CallProbe call_probe;
+
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
     ModuleLink &link = *call_link_of;
@@ -81,6 +84,9 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         wake_service_of();
     }
     // the service completes every posted call; sent ones within CALL_TIMEOUT_MS
+    if (link.state.load() != ModuleLink::Done) {
+        call_probe.flags |= PROBE_M4_SLEPT;
+    }
     while (link.state.load() != ModuleLink::Done) {
         (void)chBSemWaitTimeout(&call_done, TIME_MS2I(10));
     }
@@ -102,7 +108,7 @@ static void port_notify(void *platform, const uint8_t *frame, uint16_t len)
 }
 
 static const HostPlatform host_platform {
-    port_call, port_notify, AP_Rust::binding_local_wire, AP_Rust::binding_local_dispatch, nullptr
+    port_call, port_notify, AP_Rust::binding_local_wire, AP_Rust::binding_local_dispatch, nullptr, &call_probe
 };
 
 /*
@@ -160,6 +166,12 @@ static bool m7_counter_started()
 }
 
 static_assert(CH_CFG_ST_FREQUENCY == 1000, "M7Clock takes this core's ticks as milliseconds");
+
+// the call latency probe's stamp: TIM5's count, the M7's AP_HAL::micros() and its probe's counter
+static uint32_t tim5_count()
+{
+    return read_outside_regions(OutsideRegister::Tim5Count);
+}
 
 // the M7's micros64(), its wraps followed from the first read. The wraps are taken from the M7's
 // millis() in the session's Config; before that, the first read assumes the M7 ran less than one
@@ -389,6 +401,13 @@ void RustM4::module_port_init(ModuleLink &link, M4Service &service, void (*wake_
     chBSemObjectInit(&stop_wake, true);
     chSemObjectInit(&parked, 0);
     m7_counter_running = m7_counter_started();
+    // no probe without the M7's counter
+    call_probe.clock_us = m7_counter_running ? tim5_count : nullptr;
+}
+
+M4CallProbe &RustM4::module_port_call_probe()
+{
+    return call_probe;
 }
 
 void RustM4::module_port_set_m7_millis(uint32_t m7_millis)
