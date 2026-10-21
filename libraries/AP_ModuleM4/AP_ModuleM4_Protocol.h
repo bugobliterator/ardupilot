@@ -137,8 +137,12 @@ struct __attribute__((packed)) ConfigReply {
     SystemReplyHeader reply;
     int32_t heap_size, code_size, stack_size;   // MOD_HEAP_MAX, MOD_CODE_MAXSIZE (clamped), MOD_STACK_MAX
     uint8_t max_modules, debug_options, m4_options, reserved;
+    // the M7's AP_HAL::millis() and AP_HAL::micros() read together as the reply is packed: the M4
+    // calibrates its copy of the M7 clock (AP_ModuleM4_M7Clock.h) from them
+    uint32_t m7_millis, m7_micros;
 };
-struct __attribute__((packed)) ModuleEntry { char name[64]; uint32_t size; };
+// path: what FsOpen takes for the module (module_path_allowed())
+struct __attribute__((packed)) ModuleEntry { char name[64]; char path[96]; uint32_t size; };
 struct __attribute__((packed)) ListModulesReply { SystemReplyHeader reply; uint8_t count; uint8_t reserved[3]; ModuleEntry modules[8]; };
 static const uint16_t RESOLVE_MAX = 250;
 struct __attribute__((packed)) ResolveRequest { SystemCallHeader call; uint16_t count; uint16_t reserved; uint64_t hashes[RESOLVE_MAX]; };
@@ -155,7 +159,13 @@ struct __attribute__((packed)) TextNotify { SystemCallHeader call; uint16_t modu
 struct __attribute__((packed)) FsOpenRequest { SystemCallHeader call; char path[128]; };   // read only
 // an FsRead reply carries the bytes after a SystemReplyHeader whose result is the count, at most 2000
 struct __attribute__((packed)) FsReadRequest { SystemCallHeader call; int32_t fd; uint16_t count; uint16_t reserved; };
+static const uint16_t FS_READ_MAX = 2000;
+// files are read in order: a seek is accepted only to the current offset
+struct __attribute__((packed)) FsSeekRequest { SystemCallHeader call; int32_t fd; int32_t offset; };
+struct __attribute__((packed)) FsCloseRequest { SystemCallHeader call; int32_t fd; };
+// crc: zlib's CRC-32 of exactly the bytes served, served: their count
 struct __attribute__((packed)) FsCloseReply { SystemReplyHeader reply; uint32_t crc; uint32_t served; };
+static_assert(sizeof(SystemReplyHeader) + FS_READ_MAX <= MAX_FRAME, "a read reply fits a frame");
 static_assert(sizeof(ResolveRequest) <= MAX_FRAME && sizeof(ResolveReply) <= MAX_FRAME, "resolve fits a frame");
 static_assert(sizeof(ListModulesReply) <= MAX_FRAME && sizeof(TextNotify) <= MAX_FRAME, "system frames fit");
 

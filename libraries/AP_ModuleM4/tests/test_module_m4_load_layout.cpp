@@ -111,4 +111,17 @@ TEST(ModuleM4LoadLayout, AreaSmallerThanTheCodeWindow)
               LoadFit::CodeTooLarge);
 }
 
+TEST(ModuleM4LoadLayout, CodeSizeCap)
+{
+    // MOD_STACK_MAX and MOD_HEAP_MAX defaults: staging bounds the image at half the area
+    EXPECT_EQ(staged_code_size_cap(229376, 32768, 32768), 114688U);
+    // larger stack and heap: what is left after guard, stack and heap, in whole 4096 B
+    EXPECT_EQ(staged_code_size_cap(229376, 98304, 98304), 28672U);
+    EXPECT_EQ(staged_code_size_cap(229376, 98304 + 4096, 98304), 28672U - 4096U);
+    // nothing left, or values beyond the area
+    EXPECT_EQ(staged_code_size_cap(229376, 131072, 98304), 0U);
+    EXPECT_EQ(staged_code_size_cap(229376, 16777216, 32768), 0U);
+    EXPECT_EQ(staged_code_size_cap(229376, 32768, UINT32_MAX), 0U);
+}
+
 AP_GTEST_MAIN()

@@ -79,4 +79,25 @@ inline LoadFit load_layout(uint32_t area_base, uint32_t area_size, const LoadReq
     return LoadFit::Ok;
 }
 
+// the largest MOD_CODE_MAXSIZE (a module's RX and RW, a multiple of 4096) the staged loader can
+// place in an area of area_size at stack_size and heap_size (m4_fit.py): the file, at least as
+// large as the image, is staged below it, so the image is at most half the area; and it shares the
+// area with the guard, the stack and the heap. 0 when the stack and heap alone fill the area
+inline uint32_t staged_code_size_cap(uint32_t area_size, uint32_t stack_size, uint32_t heap_size)
+{
+    if (stack_size > area_size || heap_size > area_size) {
+        return 0;
+    }
+    const uint64_t below = uint64_t(round_up_pow2(MODULE_STACK_GUARD + round_up_pow2(stack_size, 32U), 16U)) +
+                           heap_size;
+    if (below >= area_size) {
+        return 0;
+    }
+    uint32_t cap = area_size - uint32_t(below);
+    if (cap > area_size / 2U) {
+        cap = area_size / 2U;
+    }
+    return cap & ~4095U;
+}
+
 }  // namespace ModuleM4
