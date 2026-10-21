@@ -13,6 +13,7 @@
 #include <CubePilotFW/PeerHeader.h>
 #include <CubePilotFW/pal/HSEM.h>
 #include <AP_ModuleM4_Layout.h>
+#include <AP_ModuleM4_ServeWait.h>
 
 #include "../m4_service.h"
 #include "../module_host.h"
@@ -362,14 +363,28 @@ int main(void)
         4096, nullptr, host_config, host_binding_name, host_unpublish, nullptr, host_start, host_request_stop
     };
     module_host.init(host_platform);
+    // the housekeeping period in DWT cycles
+    static const uint32_t HOUSEKEEPING_CYCLES = HOUSEKEEPING_PERIOD_US * (AP_MODULE_M4_CORE_CLOCK_HZ / 1000000U);
+    uint32_t housekeeping_cycles = cycles_now();
+    bool poll_timeout = true;   // the first pass runs the housekeeping
     while (true) {
         if (block->run_permit.load() != 1) {
             m4_park_forever();
         }
-        service.step();
-        module_host.step();
+        // a doorbell wake: the frames only, so a completed call reaches the wait below at once and
+        // the module thread (below this one) runs. A load step waits for the previous one's call:
+        // the module host steps after every wake while it loads
+        service.drain_step();
+        const uint32_t now_cycles = cycles_now();
+        if (housekeeping_due(now_cycles, housekeeping_cycles, HOUSEKEEPING_CYCLES, poll_timeout)) {
+            housekeeping_cycles = now_cycles;
+            service.housekeeping_step();
+            module_host.step();
+        } else if (module_host.loading()) {
+            module_host.step();
+        }
         // bounded sleep (Channel contract): a doorbell can be deferred while the HSEM is busy
-        bool poll_timeout = false;
+        poll_timeout = false;
         bool slept = false;
         doorbell_stamped = false;
         if (channel.prepareSleep()) {

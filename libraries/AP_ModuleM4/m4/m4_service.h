@@ -5,9 +5,10 @@
   (ChibiOS image or SITL process): drains the M7's messages, forwards the
   module thread's call (posted on a ModuleLink) once the M7 is Ready, times
   the calls per BindingId and reports them once per second, carries out
-  fault injection and beats the M4 heartbeat. step() never blocks. The module thread sends its own call with forward_posted() when it
-  can; the platform's lock serialises that with step(), the ring's other
-  producer.
+  fault injection and beats the M4 heartbeat. drain_step() and
+  housekeeping_step() never block. The module thread sends its own call with
+  forward_posted() when it can; the platform's lock serialises that with the
+  service's steps, the ring's other producer.
  */
 
 #include <stdint.h>
@@ -44,10 +45,14 @@ struct M4Platform {
 class M4Service {
 public:
     void init(CubePilotFW::Channel &channel, uint8_t *window, ModuleLink &link, const M4Platform &platform);
-    // one pass; waits only for the lock
-    void step();
+    // after each wake: the M7's frames (replies complete the module's call) and a call the module
+    // thread posted but could not send. Waits only for the lock
+    void drain_step();
+    // the rest, after a wait that timed out or at most once a millisecond: call timeouts, the
+    // Config, fault injection's flood, the Stats rows and the heartbeat. Waits only for the lock
+    void housekeeping_step();
     // the module thread, after posting: sends the call itself when the M7 is Ready and the ring
-    // has room. False if it is still Posted: the service's next step sends it
+    // has room. False if it is still Posted: the service's next drain_step() sends it
     bool forward_posted();
     // the platform CRC's results of this session, computed at init(), which faults (HardFault)
     // when they are not zlib's
@@ -126,8 +131,9 @@ private:
     void record_posted(uint16_t key, uint32_t post_us);
     bool posted_binding_on_link() const;
 
-    void step_locked();
     void drain();
+    // the call timeout runs from posting: waiting for Ready or ring space counts too
+    void time_posted_call();
     void handle(const uint8_t *buf, uint16_t len);
     void handle_fault_inject(const uint8_t *buf);
     void handle_control(const uint8_t *buf, const MsgHeader &header);
@@ -157,7 +163,7 @@ private:
     uint32_t _post_drops;
     uint32_t _last_stats_ms;
     uint32_t _lost;
-    uint32_t _call_posted_ms;   // when step() first saw the call Posted
+    uint32_t _call_posted_ms;   // when the service first saw the call Posted
     uint32_t _protocol_errors;  // frames from the M7 that are not a message the M4 serves
     uint32_t _flood_until_ms;
     bool _ready;

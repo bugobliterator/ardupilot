@@ -103,6 +103,13 @@ void start(M4CallProbe *probe = nullptr)
     service.init(m4, window, call_link, platform);
 }
 
+// both halves of a service pass, in the loops' order
+void step_both()
+{
+    service.drain_step();
+    service.housekeeping_step();
+}
+
 void send_ready(uint32_t session)
 {
     ReadyMsg ready;
@@ -233,7 +240,7 @@ void round_trip(uint32_t id, uint32_t round_trip_us)
     ASSERT_TRUE(m7_receive_call(call));
     fake_cycles += round_trip_us;
     m7_reply(call.header.seq, 0x11);
-    service.step();
+    service.drain_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     call_link.state.store(ModuleLink::Idle);
 }
@@ -250,11 +257,12 @@ uint32_t probe_clock()
 void configure(uint8_t m4_options)
 {
     send_ready(7);
-    service.step();
+    service.drain_step();
+    service.housekeeping_step();
     ConfigRequest request;
     ASSERT_TRUE(m7_receive_config(request));
     m7_config_reply(request.call.header.seq, 1000, m4_options);
-    service.step();
+    service.drain_step();
     ASSERT_TRUE(service.config_ready());
 }
 
@@ -274,7 +282,7 @@ TEST(ModuleM4Service, PostedBindingCallIsSentAndCompletedBySeq)
 {
     start();
     send_ready(7);
-    service.step();   // takes Ready
+    service.drain_step();   // takes Ready
     post_call(BINDING);
     EXPECT_TRUE(service.forward_posted());
     EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
@@ -285,10 +293,10 @@ TEST(ModuleM4Service, PostedBindingCallIsSentAndCompletedBySeq)
     EXPECT_EQ(call.out_size, 4);
     const uint32_t first_seq = call.header.seq;
     m7_reply(first_seq + 1, 0x22);   // another seq: dropped
-    service.step();
+    service.drain_step();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
     m7_reply(first_seq, 0x22);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(call_link.result, int32_t(sizeof(BindingReplyHeader) + 4));
     EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x22);
@@ -305,14 +313,14 @@ TEST(ModuleM4Service, LateReplyIsDroppedBySeq)
 {
     start();
     send_ready(7);
-    service.step();
+    service.drain_step();
     post_call(BINDING);
     ASSERT_TRUE(service.forward_posted());
     BindingCallHeader first;
     ASSERT_TRUE(m7_receive_call(first));
     // no reply within CALL_TIMEOUT_MS
     millis_ahead += CALL_TIMEOUT_MS + 1;
-    service.step();
+    service.housekeeping_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(call_link.result, -ETIMEDOUT);
     EXPECT_EQ(service.lost(), 1U);
@@ -325,7 +333,7 @@ TEST(ModuleM4Service, LateReplyIsDroppedBySeq)
     ASSERT_NE(second.header.seq, first.header.seq);
     memset(call_link.reply, 0x55, sizeof(call_link.reply));
     m7_reply(first.header.seq, 0x33);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
     for (uint16_t i = 0; i < sizeof(BindingReplyHeader) + 4; i++) {
         ASSERT_EQ(call_link.reply[i], 0x55) << i;
@@ -334,7 +342,7 @@ TEST(ModuleM4Service, LateReplyIsDroppedBySeq)
     EXPECT_EQ(service.protocol_errors(), 1U);
     // the second call's own reply completes it
     m7_reply(second.header.seq, 0x44);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x44);
 }
@@ -343,24 +351,24 @@ TEST(ModuleM4Service, ReplyOfAnOlderSessionIsDropped)
 {
     start();
     send_ready(7);
-    service.step();
+    service.drain_step();
     post_call(BINDING);
     ASSERT_TRUE(service.forward_posted());
     BindingCallHeader call;
     ASSERT_TRUE(m7_receive_call(call));
     // a repeated Ready of the same session changes nothing
     send_ready(7);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
     // a new session: the call cannot be answered any more
     send_ready(8);
-    service.step();
+    service.drain_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(call_link.result, -ECONNRESET);
     EXPECT_EQ(service.lost(), 1U);
     memset(call_link.reply, 0x55, sizeof(call_link.reply));
     m7_reply(call.header.seq, 0x33);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(call_link.result, -ECONNRESET);
     EXPECT_EQ(call_link.reply[0], 0x55);
@@ -371,13 +379,13 @@ TEST(ModuleM4Service, StatsRowsAreKeyedAndNamedByBindingId)
 {
     start();
     send_ready(7);
-    service.step();
+    service.drain_step();
     service.set_binding_name(431, "ahrs:get_roll_rad");
     round_trip(431, 100);
     round_trip(431, 100);
     round_trip(432, 50);
     millis_ahead += 1000;
-    service.step();
+    service.housekeeping_step();
     StatsMsg rows[4];
     uint8_t row_count = 0;
     uint8_t frame[MAX_FRAME];
@@ -410,12 +418,12 @@ TEST(ModuleM4Service, SixteenBusiestRowsAreReported)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     for (uint32_t i = 0; i < 17; i++) {
         round_trip(500 + i, 10 * (i + 1));
     }
     millis_ahead += 1000;
-    service.step();
+    step_both();
     StatsMsg rows[20];
     uint8_t row_count = 0;
     uint8_t frame[MAX_FRAME];
@@ -445,7 +453,7 @@ TEST(ModuleM4Service, NotifyCompletesAtOnce)
 {
     start();
     send_ready(7);
-    service.step();
+    service.drain_step();
     TextNotify text {};
     fill_header(text.call.header, MsgType::SystemCall, sizeof(text), 0);
     text.call.method = uint16_t(SystemMethod::Text);
@@ -470,10 +478,11 @@ TEST(ModuleM4Service, ConfigIsSentOncePerSessionAndCached)
 {
     start();
     ConfigRequest request;
-    service.step();
+    service.housekeeping_step();
     EXPECT_FALSE(m7_receive_config(request));   // not before Ready
     send_ready(7);
-    service.step();
+    service.drain_step();
+    service.housekeeping_step();
     ASSERT_TRUE(m7_receive_config(request));
     EXPECT_EQ(request.crc_short, CRC32_CHECK);
     EXPECT_EQ(request.crc_pattern, CRC32_PATTERN_CHECK);
@@ -481,10 +490,10 @@ TEST(ModuleM4Service, ConfigIsSentOncePerSessionAndCached)
     EXPECT_FALSE(service.config_ready());
     // another seq is not its reply
     m7_config_reply(request.call.header.seq + 1, 5000);
-    service.step();
+    service.drain_step();
     EXPECT_FALSE(service.config_ready());
     m7_config_reply(request.call.header.seq, 5000);
-    service.step();
+    service.drain_step();
     ASSERT_TRUE(service.config_ready());
     EXPECT_EQ(service.config_reply().code_size, 114688);
     EXPECT_EQ(service.config_reply().stack_size, 16384);
@@ -494,23 +503,25 @@ TEST(ModuleM4Service, ConfigIsSentOncePerSessionAndCached)
     // the same session's Ready again: no second Config, even after the timeout
     send_ready(7);
     millis_ahead += CALL_TIMEOUT_MS + 1;
-    service.step();
+    service.drain_step();
+    service.housekeeping_step();
     EXPECT_FALSE(m7_receive_config(request));
     EXPECT_TRUE(service.config_ready());
     // a new session asks again, and keeps asking until it is answered
     send_ready(8);
-    service.step();
+    service.drain_step();
+    service.housekeeping_step();
     EXPECT_FALSE(service.config_ready());
     ASSERT_TRUE(m7_receive_config(request));
     const uint32_t first_seq = request.call.header.seq;
-    service.step();
+    service.housekeeping_step();
     EXPECT_FALSE(m7_receive_config(request));
     millis_ahead += CALL_TIMEOUT_MS + 1;
-    service.step();
+    service.housekeeping_step();
     ASSERT_TRUE(m7_receive_config(request));
     EXPECT_NE(request.call.header.seq, first_seq);
     m7_config_reply(request.call.header.seq, 6000);
-    service.step();
+    service.drain_step();
     EXPECT_TRUE(service.config_ready());
     EXPECT_EQ(m7_millis_given.load(), 6000U);
     millis_ahead = 0;
@@ -522,7 +533,7 @@ TEST(ModuleM4Service, ControlStopOfThisSessionReachesThePlatform)
 {
     start();
     send_ready(9);
-    service.step();
+    service.drain_step();
     auto send_control = [](uint32_t session, uint16_t action) {
         ControlMsg control {};
         fill_header(control.header, MsgType::Control, sizeof(control), session);
@@ -532,11 +543,11 @@ TEST(ModuleM4Service, ControlStopOfThisSessionReachesThePlatform)
     };
     send_control(8, CONTROL_STOP);
     send_control(9, CONTROL_STOP + 1);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(stops.load(), 0U);
     EXPECT_EQ(service.protocol_errors(), 2U);
     send_control(9, CONTROL_STOP);
-    service.step();
+    service.drain_step();
     EXPECT_EQ(stops.load(), 1U);
     EXPECT_EQ(stopped_module.load(), 0U);
 }
@@ -553,10 +564,10 @@ TEST(ModuleM4Service, ParameterChangedFeedsTheMirror)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     uint8_t out[5];
     ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
     EXPECT_EQ(out[0], 1U);
@@ -570,22 +581,22 @@ TEST(ModuleM4Service, StatsWindowSendsCounters)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     uint8_t out[5];
     ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
     EXPECT_FALSE(service.mirror_get(0, 0x20001010ULL, out));
     millis_ahead += 1000;
-    service.step();
+    step_both();
     CountersMsg counters;
     ASSERT_TRUE(m7_receive_counters(counters));
     EXPECT_EQ(counters.mirror_hits, 1U);
     EXPECT_EQ(counters.mirror_misses, 1U);
     EXPECT_EQ(counters.post_drops, 0U);
     millis_ahead += 1000;
-    service.step();
+    step_both();
     ASSERT_TRUE(m7_receive_counters(counters));
     EXPECT_EQ(counters.mirror_hits, 0U);
     EXPECT_EQ(counters.mirror_misses, 0U);
@@ -596,10 +607,10 @@ TEST(ModuleM4Service, ParameterChangedOfAnotherSessionIsDropped)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(6, &value, 1);
-    service.step();
+    step_both();
     uint8_t out[5];
     EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
     EXPECT_EQ(service.protocol_errors(), 1U);
@@ -609,14 +620,14 @@ TEST(ModuleM4Service, BadEntriesAreDroppedOthersApplied)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue values[3] = {
         { 0x20001000ULL, 1.0f, MAX_MODULES, PARAMETER_VALUE_BOUND, 0 },
         { 0x20001010ULL, 2.0f, 0, PARAMETER_VALUE_BOUND, 0 },
         { 0x20001020ULL, 3.0f, 0xFFFF, PARAMETER_VALUE_BOUND, 0 },
     };
     send_parameter_changed(7, values, 3);
-    service.step();
+    step_both();
     uint8_t out[5];
     EXPECT_TRUE(service.mirror_get(0, 0x20001010ULL, out));
     EXPECT_EQ(service.protocol_errors(), 2U);
@@ -628,10 +639,10 @@ TEST(ModuleM4Service, ResyncReplyMakesTheModuleStale)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     post_call(BINDING);
     ASSERT_TRUE(service.forward_posted());
     BindingCallHeader call;
@@ -644,7 +655,7 @@ TEST(ModuleM4Service, ResyncReplyMakesTheModuleStale)
     reply.reserved2 = REPLY_FLAG_MIRROR_RESYNC;
     memcpy(frame, &reply, sizeof(reply));
     ASSERT_EQ(m7.send(frame, len), 0);
-    service.step();
+    step_both();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     uint8_t out[5];
     EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
@@ -654,10 +665,10 @@ TEST(ModuleM4Service, ModuleEndForgetsItsEntries)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     ModuleStateNotify notify {};
     fill_header(notify.call.header, MsgType::SystemCall, sizeof(notify), 0);
     notify.call.method = uint16_t(SystemMethod::ModuleState);
@@ -672,7 +683,7 @@ TEST(ModuleM4Service, ModuleEndForgetsItsEntries)
     EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
     // the M7 still holds the ended module's slots: its later entries are dropped, not errors
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
     EXPECT_EQ(service.protocol_errors(), 0U);
 }
@@ -681,10 +692,10 @@ TEST(ModuleM4Service, ForwardedGetRefreshesAStaleEntryOnly)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     uint8_t out[5];
     const uint8_t answer[5] = { 1, 0, 0, 0x80, 0x40 };   // 4.0f
     service.mirror_refresh(0, 0x20001000ULL, answer);   // fresh: left as it is
@@ -707,16 +718,16 @@ TEST(ModuleM4Service, InitOfAnExistingTokenIsForwardedUntilItsFrame)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &value, 1);
-    service.step();
+    step_both();
     service.mirror_pending(0, 0x20001000ULL);   // the module thread, before its INIT goes out
     uint8_t out[5];
     EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
     const ParameterValue rebound { 0x20001000ULL, 1.0f, 0, PARAMETER_VALUE_BOUND, 0 };
     send_parameter_changed(7, &rebound, 1);
-    service.step();
+    step_both();
     service.mirror_settle(0, 0x20001000ULL);
     ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
     float got;
@@ -728,7 +739,7 @@ TEST(ModuleM4Service, PostedBindingIsTimedAndMarked)
 {
     start();
     send_ready(7);
-    service.step();
+    step_both();
     uint8_t input[16] {};
     call_link.request_len = pack_binding_call(call_link.request, MAX_FRAME, 0, 0, CALL_FLAG_NOTIFY, BINDING, input,
                                               sizeof(input), 0);
@@ -741,7 +752,7 @@ TEST(ModuleM4Service, PostedBindingIsTimedAndMarked)
     ASSERT_TRUE(m7_receive_call(call));
     EXPECT_EQ(call.flags, CALL_FLAG_NOTIFY);
     millis_ahead = millis_ahead.load() + 1000;
-    service.step();   // the Stats window
+    step_both();   // the Stats window
     StatsMsg stats;
     ASSERT_TRUE(m7_receive_stats(stats));
     EXPECT_EQ(stats.method, BINDING);
@@ -756,9 +767,9 @@ TEST(ModuleM4Service, PostedFrameDroppedAfterTheTimeoutCountsPostDrop)
     call_link.request_len = pack_binding_call(call_link.request, MAX_FRAME, 0, 0, CALL_FLAG_NOTIFY, BINDING, input,
                                               sizeof(input), 0);
     call_link.state.store(ModuleLink::Posted);
-    service.step();
+    step_both();
     millis_ahead = millis_ahead.load() + CALL_TIMEOUT_MS + 1;
-    service.step();
+    step_both();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(service.post_drops(), 1U);
 }
@@ -809,7 +820,7 @@ TEST(ModuleM4Service, ProbedCallIsStampedAtSendAndReply)
     // the reply after a wait that ended on the poll timeout
     service.note_wake(true);
     m7_reply(call.header.seq, 0x11);
-    service.step();
+    service.drain_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_GT(probe.current.reply_seen_us, probe.current.sent_us);
     EXPECT_EQ(probe.current.flags, PROBE_M4_POLL_WAKE);
@@ -820,13 +831,13 @@ TEST(ModuleM4Service, ProbedCallIsStampedAtSendAndReply)
     // a call the service's step sends, answered after a stamped doorbell
     post_probed_call(probe);
     service.note_wake(false);
-    service.step();
+    service.drain_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Sent);
     ASSERT_TRUE(m7_receive(frame, len));
     ASSERT_TRUE(parse_binding_call(frame, len, call));
     m7_reply(call.header.seq, 0x11);
     service.note_wake(false, true, 4000, 4007);
-    service.step();
+    service.drain_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(probe.current.flags, PROBE_M4_SENT_BY_STEP);
     EXPECT_EQ(probe.current.stamps, PROBE_STAMP_REPLY_WAKE | PROBE_STAMP_SIGNALLED);
@@ -846,10 +857,72 @@ TEST(ModuleM4Service, UnprobedCallsLeaveTheProbeAlone)
     BindingCallHeader call;
     ASSERT_TRUE(m7_receive_call(call));
     m7_reply(call.header.seq, 0x11);
-    service.step();
+    service.drain_step();
     ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(probe.current.seq, 0U);
     EXPECT_EQ(probe.current.reply_seen_us, 0U);
+}
+
+// the reply on the ring completes the call in drain_step(), which leaves the Stats window, the
+// call timeouts and the Config to housekeeping_step() (fails if drain_step() runs them)
+TEST(ModuleM4Service, DrainStepCompletesACallWithoutHousekeeping)
+{
+    start();
+    send_ready(7);
+    service.drain_step();   // takes Ready: the Config is housekeeping's
+    ConfigRequest request;
+    EXPECT_FALSE(m7_receive_config(request));
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x22);
+    millis_ahead += 1000;   // a Stats window is due
+    service.drain_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x22);
+    EXPECT_EQ(module_wakes.load(), 1U);
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    EXPECT_NE(m7.receive(frame, sizeof(frame), &len), 0);   // no Stats row, no Config
+    // a Sent call past its timeout stays Sent
+    call_link.state.store(ModuleLink::Idle);
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive_call(call));
+    millis_ahead += CALL_TIMEOUT_MS + 1;
+    service.drain_step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    EXPECT_EQ(service.lost(), 0U);
+    // a call the module thread could not send is sent by drain_step()
+    m7_reply(call.header.seq, 0x33);
+    service.drain_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    call_link.state.store(ModuleLink::Idle);
+    post_call(BINDING);
+    service.drain_step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    millis_ahead = 0;
+}
+
+// an unanswered Sent call times out in housekeeping_step(), as it did in step()
+TEST(ModuleM4Service, HousekeepingStepStillTimesOutCalls)
+{
+    start();
+    send_ready(7);
+    service.drain_step();
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    service.housekeeping_step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    millis_ahead += CALL_TIMEOUT_MS + 1;
+    service.housekeeping_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, -ETIMEDOUT);
+    EXPECT_EQ(service.lost(), 1U);
+    millis_ahead = 0;
 }
 
 #endif  // AP_MODULE_M4_ENABLED
