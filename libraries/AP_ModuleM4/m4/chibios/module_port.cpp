@@ -74,6 +74,7 @@ static M4CallProbe call_probe;
 static volatile bool module_waiting;
 static volatile bool module_doorbell_stamped;
 static volatile uint32_t module_doorbell_us;
+static volatile uint32_t module_doorbell_cycles;   // DWT at the doorbell interrupt's entry
 
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
@@ -104,13 +105,16 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         while (link.state.load() != ModuleLink::Done) {
             module_doorbell_stamped = false;
             bool poll_timeout = false;
+            uint32_t woke_cycles = 0;
             // the M7 rings once per sleep: armed again before each wait. False: a frame is waiting
             if (service_of->prepare_module_sleep()) {
                 poll_timeout = chBSemWaitTimeout(&call_done, TIME_MS2I(10)) == MSG_TIMEOUT;
+                woke_cycles = probed ? DWT->CYCCNT : 0;
             }
             const bool stamped = probed && !poll_timeout && module_doorbell_stamped;
             const uint32_t wake_us = stamped ? call_probe.clock_us() : 0;
-            if (service_of->drain_step_for_module(poll_timeout, stamped, module_doorbell_us, wake_us)) {
+            const uint16_t isr_to_thread = stamped ? cycles_between(module_doorbell_cycles, woke_cycles) : 0;
+            if (service_of->drain_step_for_module(poll_timeout, stamped, module_doorbell_us, wake_us, isr_to_thread)) {
                 wake_service_of();
             }
             if (poll_timeout && link.state.load() != ModuleLink::Done) {
@@ -174,6 +178,8 @@ static const HostPlatform host_platform {
     AP_Module::M4_LOCAL_WIRES, AP_Module::binding_local_dispatch, nullptr, port_mirror_get, port_mirror_pending,
     port_mirror_settle, port_mirror_refresh, &call_probe
 };
+static_assert(PING_BINDING_ID == AP_Module::PROBE_PING_ID && PING_BINDING_ID >= AP_Module::M4_BINDING_COUNT,
+              "the ping is no binding");
 static_assert(CALL_POLICY_POSTED == AP_Module::M4_CALL_POSTED && CALL_POLICY_ROLE_SHIFT == AP_Module::M4_CALL_ROLE_SHIFT &&
               CALL_POLICY_ROLE_MASK == AP_Module::M4_CALL_ROLE_MASK && CALL_POLICY_WIRE_SHIFT == AP_Module::M4_CALL_WIRE_SHIFT,
               "one call policy encoding");
@@ -369,6 +375,7 @@ static void sys_binding_call(struct port_extctx *ctx)
     BindingCallArgs args;
     memcpy(&args, reinterpret_cast<const void *>(uintptr_t(ctx->r0)), sizeof(args));
     ctx->r0 = uint32_t(host_binding_call(*active, args, host_platform));
+    record_svc_return(call_probe);
 }
 
 static void sys_module_returned(struct port_extctx *ctx)
@@ -519,13 +526,14 @@ void ModuleM4::module_port_wake()
     }
 }
 
-bool ModuleM4::module_port_doorbell_i(bool stamped, uint32_t isr_us)
+bool ModuleM4::module_port_doorbell_i(bool stamped, uint32_t isr_us, uint32_t isr_cycles)
 {
     if (!module_waiting) {
         return false;
     }
     if (stamped) {
         module_doorbell_us = isr_us;
+        module_doorbell_cycles = isr_cycles;
         module_doorbell_stamped = true;
     }
     chBSemSignalI(&call_done);

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <AP_Param/AP_Param.h>
 #include <AP_Scripting/Parameter.h>
+#include <AP_Module/CallLatency.h>
 #include "AP_ModuleM4_CallStatus.h"
 #include "AP_ModuleM4_ModuleTable.h"
 #include "AP_ModuleM4_Protocol.h"
@@ -50,6 +51,17 @@ public:
         uint32_t chk_quota;
         uint32_t chk_copied;
         uint32_t taken;
+        // the M7 cycle parts the server takes (Parse, Zero, InCopy, Adapter), each valid with its bit
+        // (AP_Module::M7CyclePart) in cycles_taken, and the counter after the adapter's lock was given
+        uint32_t cycles[AP_Module::M7_CYCLE_PARTS];
+        uint32_t cycles_taken;
+        uint32_t adapter_end_cycles;
+
+        void cycle_part(AP_Module::M7CyclePart part, uint32_t from, uint32_t to)
+        {
+            cycles[uint8_t(part)] = to - from;
+            cycles_taken |= 1U << uint8_t(part);
+        }
     };
     // cycles of one memset of the 4096 B input buffer (the probe's cost line); between frames only
     uint32_t input_memset_cycles();

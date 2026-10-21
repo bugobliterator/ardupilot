@@ -111,12 +111,13 @@ static volatile uint32_t doorbell_stamp_us;
 
 static void doorbell_callback(uint8_t group)
 {
+    const uint32_t isr_cycles = DWT->CYCCNT;   // the probe's IsrToThread starts here
     (void)group;
     const bool stamped = probing(&module_port_call_probe());
     const uint32_t isr_us = stamped ? module_port_probe_stamp_from_isr() : 0;
     chSysLockFromISR();
     // the module thread waiting for its reply drains it itself
-    if (!module_port_doorbell_i(stamped, isr_us)) {
+    if (!module_port_doorbell_i(stamped, isr_us, isr_cycles)) {
         if (stamped) {
             doorbell_stamp_us = isr_us;
             doorbell_stamped = true;

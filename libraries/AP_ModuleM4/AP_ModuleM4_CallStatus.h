@@ -47,4 +47,22 @@ inline CallOutcome call_outcome(int32_t transport_result, const BindingReplyHead
     return { STATUS_OK, true };
 }
 
+// a Ping's reply: OK, an M7 that does not know Ping (INVALID), or anything else (HOST_ERROR)
+inline int32_t ping_reply_status(const uint8_t *frame, uint16_t len)
+{
+    SystemReplyHeader reply;
+    if (len != sizeof(reply)) {
+        return STATUS_HOST_ERROR;
+    }
+    memcpy(&reply, frame, sizeof(reply));
+    if (reply.header.type != uint8_t(MsgType::SystemReply) || reply.header.length != len ||
+        reply.method != uint16_t(SystemMethod::Ping)) {
+        return STATUS_HOST_ERROR;
+    }
+    if (reply.transport == uint8_t(ReplyStatus::UnknownMethod)) {
+        return STATUS_INVALID;
+    }
+    return reply.transport == uint8_t(ReplyStatus::Ok) && reply.result == 0 ? STATUS_OK : STATUS_HOST_ERROR;
+}
+
 }  // namespace ModuleM4

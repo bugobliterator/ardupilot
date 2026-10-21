@@ -848,6 +848,127 @@ TEST(ModuleM4Service, ProbedCallIsStampedAtSendAndReply)
     EXPECT_EQ(probe.current.reply_wake_us, 4007U);
 }
 
+// a cycle counter that moves on by 5 per read
+uint32_t probe_cycles_now_value;
+uint32_t probe_cycles_fake()
+{
+    probe_cycles_now_value += 5;
+    return probe_cycles_now_value;
+}
+
+uint16_t part_bit(M4CyclePart part)
+{
+    return uint16_t(1U << uint8_t(part));
+}
+
+// the send and drain of a probed call are split into cycle parts
+TEST(ModuleM4Service, ProbedCallTakesItsSendAndDrainCycles)
+{
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.cycles = probe_cycles_fake;
+    probe_now = 0;
+    start(&probe);
+    configure(M4_OPTION_CALL_PROBE);
+    post_probed_call(probe);
+    ASSERT_TRUE(service.forward_posted());
+    // the M7 is awake: a ring write, no doorbell
+    const uint16_t sent = part_bit(M4CyclePart::FwdLock) | part_bit(M4CyclePart::FwdRing) |
+                          part_bit(M4CyclePart::FwdUnlock);
+    EXPECT_EQ(probe.current.cycles_taken, sent);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::FwdLock)], 5);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::FwdRing)], 5);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::FwdUnlock)], 5);
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    // the module thread drains it, woken 123 cycles after the doorbell interrupt
+    EXPECT_FALSE(service.drain_step_for_module(false, true, 4000, 4003, 123));
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    const uint16_t drained = part_bit(M4CyclePart::IsrToThread) | part_bit(M4CyclePart::DrainLock) |
+                             part_bit(M4CyclePart::DrainRing) | part_bit(M4CyclePart::DrainParse) |
+                             part_bit(M4CyclePart::DrainCopy);
+    EXPECT_EQ(probe.current.cycles_taken, sent | drained);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::IsrToThread)], 123);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::DrainLock)], 5);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::DrainRing)], 5);
+    EXPECT_EQ(probe.current.cycles[uint8_t(M4CyclePart::DrainCopy)], 5);
+    EXPECT_GE(probe.current.cycles[uint8_t(M4CyclePart::DrainParse)], 5);
+    EXPECT_NE(probe.current.drain_copied_cycles, 0U);
+    EXPECT_LE(probe.current.drain_copied_cycles, probe_cycles_now_value);
+    EXPECT_EQ(memcmp(call_link.reply + sizeof(BindingReplyHeader), "\x11\x11\x11\x11", 4), 0);
+    // the IsrToThread of one wait belongs to one reply; the service's drain takes its own lock
+    call_link.state.store(ModuleLink::Idle);
+    post_probed_call(probe);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    service.drain_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(probe.current.cycles_taken, sent | (drained & uint16_t(~part_bit(M4CyclePart::IsrToThread))));
+    // probe off: no part, no read
+    call_link.state.store(ModuleLink::Idle);
+    probe.enabled.store(false);
+    probe.current = M4CallStamps {};
+    const uint32_t reads = probe_cycles_now_value;
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    service.drain_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(probe.current.cycles_taken, 0);
+    EXPECT_EQ(probe_cycles_now_value, reads);
+}
+
+// the probe's ping goes out as a Ping system call with its trailer and is completed by its SystemReply
+TEST(ModuleM4Service, ProbedPingIsSentWithItsTrailer)
+{
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.cycles = probe_cycles_fake;
+    probe_now = 0;
+    start(&probe);
+    configure(M4_OPTION_CALL_PROBE);
+    const CallProbeTrailer trailer = begin_probed_call(probe, 5);
+    call_link.request_len = pack_ping_call(call_link.request, MAX_FRAME, &trailer);
+    call_link.state.store(ModuleLink::Posted);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Sent);
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    ASSERT_TRUE(m7_receive(frame, len));
+    SystemCallHeader call;
+    ASSERT_EQ(len, sizeof(call) + sizeof(trailer));
+    memcpy(&call, frame, sizeof(call));
+    EXPECT_EQ(call.method, uint16_t(SystemMethod::Ping));
+    CallProbeTrailer sent;
+    ASSERT_TRUE(ping_call_trailer(frame, len, call, sent));
+    EXPECT_EQ(sent.svc_entry_us, 5U);
+    EXPECT_NE(sent.pre_send_us, 0U);
+    EXPECT_EQ(probe.current.seq, call.header.seq);
+    EXPECT_NE(probe.current.cycles_taken & part_bit(M4CyclePart::FwdRing), 0);
+    SystemReplyHeader reply {};
+    fill_header(reply.header, MsgType::SystemReply, sizeof(reply), call.header.seq);
+    reply.method = uint16_t(SystemMethod::Ping);
+    ASSERT_EQ(m7.send(&reply, sizeof(reply)), 0);
+    service.drain_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, int32_t(sizeof(reply)));
+    EXPECT_NE(probe.current.reply_seen_us, 0U);
+    EXPECT_NE(probe.current.cycles_taken & part_bit(M4CyclePart::DrainCopy), 0);
+    EXPECT_EQ(ping_reply_status(call_link.reply, uint16_t(call_link.result)), STATUS_OK);
+    // without its trailer: sent, not probed
+    call_link.state.store(ModuleLink::Idle);
+    probe.current = M4CallStamps {};
+    call_link.request_len = pack_ping_call(call_link.request, MAX_FRAME);
+    call_link.state.store(ModuleLink::Posted);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive(frame, len));
+    EXPECT_EQ(len, sizeof(call));
+    EXPECT_EQ(probe.current.seq, 0U);
+}
+
 // the module thread's drain stamps its own wait, and leaves the service's note to the service
 TEST(ModuleM4Service, ModuleDrainStampsItsOwnWait)
 {

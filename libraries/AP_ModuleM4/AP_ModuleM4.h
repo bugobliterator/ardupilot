@@ -105,7 +105,26 @@ private:
     // a probed call's M7 stages are done (its reply sent): records the previous call its trailer
     // completes, and holds this one for the next
     void probe_served(const uint8_t *buf, uint16_t len, const AP_ModuleM4_Server::ServeProbe &served, uint16_t flags);
+    // the same for a probed frame of id whose trailer is parsed
+    void probe_frame(uint32_t seq, uint32_t id, const ModuleM4::CallProbeTrailer &trailer,
+                     const AP_ModuleM4_Server::ServeProbe &served, uint16_t flags, uint32_t reply_sent_us,
+                     uint32_t start_cycles);
+    // a probed frame's reply: its framing (ReplyPack from pack_from_cycles) and send() timed into the
+    // frame's M7 cycle parts; true when sent
+    bool send_reply_timed(const uint8_t *buf, uint16_t len, uint32_t pack_from_cycles);
     void serve_system(const uint8_t *buf, uint16_t len);
+    // the probe's Ping: an empty reply at once, on the host thread
+    void serve_ping(const uint8_t *buf, uint16_t len, uint32_t seq);
+    void pass_cycle_part(AP_Module::M7CyclePart part, uint32_t from, uint32_t to)
+    {
+        _pass_cycles[uint8_t(part)] = to - from;
+        _pass_cycles_taken |= 1U << uint8_t(part);
+    }
+    void frame_cycle_part(AP_Module::M7CyclePart part, uint32_t from, uint32_t to)
+    {
+        _frame_cycles[uint8_t(part)] = to - from;
+        _frame_cycles_taken |= 1U << uint8_t(part);
+    }
     // the session's module files, found on the slow worker before Ready (discover())
     void discover_on_worker();
     void discover();
@@ -247,6 +266,18 @@ private:
     uint16_t _frame_flags;            // its lane and its position in the pass
     uint32_t _frame_overhead_cycles;
     AP_Module::PendingCall _probe_pending;
+    // the probe's M7 cycle parts (AP_Module::M7CyclePart), each valid with its bit: those of this pass
+    // (the first frame's), then those the host takes for the frame being served
+    volatile uint32_t _doorbell_isr_cycles;   // the doorbell interrupt's entry
+    uint32_t _pass_cycles[AP_Module::M7_CYCLE_PARTS];
+    uint32_t _pass_cycles_taken;
+    uint32_t _pass_woken_cycles;              // after the wake (CapWait's start)
+    uint32_t _frame_cycles[AP_Module::M7_CYCLE_PARTS];
+    uint32_t _frame_cycles_taken;
+    // PassEnd: from the last probed frame's record to the end of serve(), for that frame's id
+    bool _pass_end_pending;
+    uint32_t _pass_end_id;
+    uint32_t _pass_end_from_cycles;
 
     // module texts as the PR's Runtime::text queues them: 44 characters each, sent by the host thread
     struct ModuleText {

@@ -91,6 +91,30 @@ static const uint16_t CALL_FLAG_PROBE = 2;
 static const uint8_t M4_OPTION_CALL_PROBE = 1U << 2;
 
 /*
+  The M4 core cycles of the parts of a probed call (DWT on the M4 image), in its order; the values
+  of AP_Module::M4CyclePart (AP_Module/CallLatency.h)
+ */
+enum class M4CyclePart : uint8_t {
+    SvcEntry,      // SVC handler entry to host_binding_call(): the argument copy
+    Checks,        // the host's checks after the entry stamp, up to begin_probed_call()
+    BeginProbe,    // begin_probed_call()
+    Pack,          // pack_binding_call()
+    FwdLock,       // forward_posted(): the service lock
+    FwdRing,       // Channel::send() with the M7 awake: the ring write
+    FwdBell,       // Channel::send() with the M7 asleep: the ring write and the doorbell
+    FwdUnlock,     // forward_posted(): the service unlock
+    IsrToThread,   // doorbell interrupt entry to the module thread's return from its wait
+    DrainLock,     // the reply's drain step: the service lock
+    DrainRing,     // Channel::receive() of the reply
+    DrainParse,    // header and reply checks until the copy to the link
+    DrainCopy,     // the reply copied to the link
+    PortTail,      // after that copy to the platform call's return: complete(), unlock, wait end
+    RetCopy,       // reply checks and the copy to the module's output
+    SvcReturn,     // host_binding_call()'s end to the end of the SVC body
+};
+static const uint8_t M4_CYCLE_PARTS = 16;
+
+/*
   The M4's stamps of a probed binding call (TIM5's count, the counter the M7
   stamps with too). The stamps the M4 takes after the send (sent, reply seen,
   return) come in the trailer of the module's next probed call. Untrusted on
@@ -118,12 +142,11 @@ struct __attribute__((packed)) CallProbeTrailer {
     // the link buffers (privileged RAM), 1000 times each at the session's first probed call; 0 before
     uint16_t memset_small_centicycles;
     uint16_t memset_large_centicycles;
-    // that call's M4 core cycles before its frame was packed: SVC entry to the host call, the host's
-    // checks, begin_probed_call() and pack_binding_call(); 0 without a cycle counter
-    uint16_t prev_svc_to_entry_cycles;
-    uint16_t prev_checks_cycles;
-    uint16_t prev_begin_probe_cycles;
-    uint16_t prev_pack_cycles;
+    // that call's M4 core cycles per M4CyclePart (saturated at 0xFFFF), each valid with its bit in
+    // prev_cycles_taken
+    uint16_t prev_cycles[M4_CYCLE_PARTS];
+    uint16_t prev_cycles_taken;
+    uint16_t reserved;
 };
 // CallProbeTrailer::prev_stamps, the values of AP_Module::CALL_STAMP_M4_* (AP_Module/CallLatency.h)
 static const uint16_t PROBE_STAMP_PACKED = 1U << 4;
@@ -160,7 +183,12 @@ struct __attribute__((packed)) BindingReplyHeader {
 enum class SystemMethod : uint16_t {
     Config = 1, ListModules = 2, Resolve = 3, ModuleState = 4, Text = 5, StopAck = 6, RunStats = 7,
     Noop = 9, FsOpen = 15, FsRead = 16, FsSeek = 18, FsClose = 20,
+    Ping = 21,   // answered on the M7 host thread with an empty reply; a CallProbeTrailer may follow
 };
+
+// not a BindingId: the call latency probe's ping from a module (the SDK's Context::probe_ping()),
+// no input or output. The M4 forwards it as SystemMethod::Ping (AP_Module/Bindings.h PROBE_PING_ID)
+static const uint32_t PING_BINDING_ID = 0xFFF0;
 
 struct __attribute__((packed)) SystemCallHeader {
     MsgHeader header;   // SystemCall
@@ -426,6 +454,35 @@ inline bool binding_call_trailer(const uint8_t *frame, uint16_t len, const Bindi
         return false;
     }
     memcpy(&trailer, frame + len - sizeof(trailer), sizeof(trailer));
+    return true;
+}
+
+// a Ping; with a trailer, CALL_FLAG_PROBE is set and the trailer follows the header
+inline uint16_t pack_ping_call(uint8_t *frame, uint16_t cap, const CallProbeTrailer *trailer = nullptr)
+{
+    const uint32_t trailer_size = trailer != nullptr ? uint32_t(sizeof(CallProbeTrailer)) : 0U;
+    const uint32_t length = uint32_t(sizeof(SystemCallHeader)) + trailer_size;
+    if (length > cap) {
+        return 0;
+    }
+    static_assert(sizeof(SystemCallHeader) == 12 && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "header words");
+    const uint32_t header[3] = { uint32_t(MsgType::SystemCall) | length << 16, 0,
+                                 uint32_t(SystemMethod::Ping) | uint32_t(trailer != nullptr ? CALL_FLAG_PROBE : 0) << 16 };
+    copy_frame_bytes(frame, reinterpret_cast<const uint8_t *>(header), sizeof(header));
+    if (trailer != nullptr) {
+        copy_frame_bytes(frame + sizeof(header), reinterpret_cast<const uint8_t *>(trailer), sizeof(*trailer));
+    }
+    return uint16_t(length);
+}
+
+// the trailer of a Ping frame of len bytes; false if it has none
+inline bool ping_call_trailer(const uint8_t *frame, uint16_t len, const SystemCallHeader &h, CallProbeTrailer &trailer)
+{
+    if (h.method != uint16_t(SystemMethod::Ping) || (h.flags & CALL_FLAG_PROBE) == 0 ||
+        len != sizeof(h) + sizeof(trailer)) {
+        return false;
+    }
+    memcpy(&trailer, frame + sizeof(h), sizeof(trailer));
     return true;
 }
 

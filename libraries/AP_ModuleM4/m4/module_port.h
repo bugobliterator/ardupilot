@@ -25,8 +25,9 @@ M4CallProbe &module_port_call_probe();
 // M4 image: the probe's counter read from an interrupt handler (the HSEM doorbell)
 uint32_t module_port_probe_stamp_from_isr();
 // M4 image, the doorbell interrupt with the kernel locked: true if it woke the module thread
-// waiting for its reply (with the probe's stamp when stamped); false: the service's doorbell
-bool module_port_doorbell_i(bool stamped, uint32_t isr_us);
+// waiting for its reply (with the probe's stamps when stamped: TIM5 and the core's cycles at the
+// interrupt's entry); false: the service's doorbell
+bool module_port_doorbell_i(bool stamped, uint32_t isr_us, uint32_t isr_cycles);
 
 // starts the module: start(&module_host_api, module_token(context.index)) at entry (with the
 // Thumb bit on the M4) on its stack in the layout, with rw_base as its static base (r9 on the
