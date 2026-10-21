@@ -101,8 +101,27 @@ static void port_notify(void *platform, const uint8_t *frame, uint16_t len)
     (void)port_call(platform, frame, len, call_link_of->reply, MAX_FRAME);
 }
 
+static bool port_mirror_get(void *, uint16_t module, uint64_t token, uint8_t *out5)
+{
+    return service_of->mirror_get(module, token, out5);
+}
+static void port_mirror_pending(void *, uint16_t module, uint64_t token)
+{
+    service_of->mirror_pending(module, token);
+}
+static void port_mirror_settle(void *, uint16_t module, uint64_t token)
+{
+    service_of->mirror_settle(module, token);
+}
+static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const uint8_t *out5)
+{
+    service_of->mirror_refresh(module, token, out5);
+}
+
 static const HostPlatform host_platform {
-    port_call, port_notify, AP_Rust::binding_local_wire, AP_Rust::binding_local_dispatch, nullptr
+    port_call, port_notify, AP_Rust::binding_local_wire, AP_Rust::binding_local_dispatch, nullptr,
+    AP_Rust::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
+    nullptr
 };
 
 /*

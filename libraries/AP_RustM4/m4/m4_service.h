@@ -16,6 +16,8 @@
 #include <AP_RustM4_Protocol.h>
 #include <AP_RustM4_StatsRows.h>
 #include <AP_RustM4_BindingHistogram.h>
+#include <AP_RustM4_ModuleTable.h>
+#include <AP_RustM4_ParamMirror.h>
 #include "module_link.h"
 
 namespace RustM4 {
@@ -57,6 +59,13 @@ public:
     uint32_t lost() const { return _lost; }
     // frames from the M7 dropped as not for this M4 (wrong type, stale seq or session)
     uint32_t protocol_errors() const { return _protocol_errors; }
+    // the module thread, inside its binding call; each takes the service lock
+    bool mirror_get(uint16_t module, uint64_t token, uint8_t *out5);
+    void mirror_pending(uint16_t module, uint64_t token);
+    void mirror_settle(uint16_t module, uint64_t token);
+    void mirror_refresh(uint16_t module, uint64_t token, const uint8_t *out5);
+    uint32_t mirror_hits() const { return _mirror_hits; }
+    uint32_t mirror_misses() const { return _mirror_misses; }
 
     // Stats keys: a BindingId below SYSTEM_KEY; a system method is SYSTEM_KEY | method
     static const uint16_t SYSTEM_KEY = 0x8000;
@@ -93,6 +102,8 @@ private:
     void send_stats(uint32_t now_ms);
     void handle_ready(const MsgHeader &header);
     void handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header);
+    void handle_parameter_changed(const uint8_t *buf, uint16_t len, const MsgHeader &header);
+    void forget_ended_module();
     void send_config(uint32_t now_ms);
     void handle_config_reply(const uint8_t *buf, uint16_t len);
     void count_lost();
@@ -139,6 +150,11 @@ private:
     uint32_t _config_sent_ms;
     bool _config_pending;       // this session's Config is not answered yet
     bool _config_ready;
+    ParamMirror _mirror;
+    uint32_t _mirror_hits;
+    uint32_t _mirror_misses;
+    uint8_t _ended_modules;     // a bit per module index: Returned, Panicked or Failed this session
+    static_assert(MAX_MODULES <= 8, "_ended_modules");
     uint8_t _rx[MAX_FRAME];
 };
 
