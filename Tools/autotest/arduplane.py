@@ -8101,6 +8101,12 @@ return update()
         self.wait_text(r'LAT 14 mode5013 \d+/s n[1-9]\d* b\d+ e0 avg\d+ max\d+$', regex=True,
                        check_context=True, timeout=120)
         self.wait_text(r'LATPH 14 \d+$', regex=True, check_context=True, timeout=30)
+        # profile 26, 200 times sleep_ms(5): avg and max are the overshoot in us
+        self.set_parameters({'LATP_PROF': 26, 'LATP_OFFS': 0})
+        self.set_parameter('RUST_RESTART', (int(self.get_parameter('RUST_RESTART')) + 1) % 32768)
+        self.wait_text(r'LAT start prof 26 1s', regex=True, check_context=True, timeout=600)
+        self.wait_text(r'LAT 26 sleepprec \d+/s n200 b\d+ e0 avg\d+ max\d+$', regex=True,
+                       check_context=True, timeout=120)
         summary = self.fetch_file_via_ftp('@SYS/rust_latency.txt')
         self.progress(summary)
         if not re.search(r'^id \d+ %s: calls \d+' % ('(fast|slow)' if m4 else 'in-process'), summary, re.MULTILINE):
@@ -8152,7 +8158,7 @@ return update()
             raise NotAchievedException('no M4LT rows in %s' % logs)
         if lanes != ({1, 2} if m4 else {0}):
             raise NotAchievedException('M4LT lanes %s' % sorted(lanes))
-        if profiles != set(range(1, 22)):
+        if profiles != set(range(1, 22)) | {26}:
             raise NotAchievedException('LATP rows for profiles %s' % sorted(profiles))
         if m4 and ping_rows == 0:
             raise NotAchievedException('no M4LT rows of the ping')
