@@ -9,6 +9,7 @@
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
+#include "AP_RustM4_Crc32.h"
 #include "AP_RustM4_Layout.h"
 #include "AP_RustM4_LoadLayout.h"
 
@@ -495,7 +496,11 @@ uint16_t AP_RustM4::pack_system_reply(RustM4::SystemMethod method, uint32_t seq,
     return length;
 }
 
-// the M4's Config: the module limits and the M7 clock
+/*
+  The M4's Config, once per session: the module limits, the M7 clock, and the M4's CRC self-check,
+  which the M7 checks. A CRC unit that disagrees with zlib's values cannot check what it loads:
+  no module loads until reboot (ListModules answers none) and arming is refused
+ */
 uint16_t AP_RustM4::serve_config(const uint8_t *buf, uint16_t len, uint32_t seq)
 {
     RustM4::ConfigRequest request;
@@ -504,6 +509,20 @@ uint16_t AP_RustM4::serve_config(const uint8_t *buf, uint16_t len, uint32_t seq)
                                  sizeof(RustM4::SystemReplyHeader));
     }
     memcpy(&request, buf, sizeof(request));
+    _config_seen = true;
+    const RustM4::CrcSelfCheck check { request.crc_short, request.crc_pattern };
+    if (!check.passed()) {
+        _crc_failed = true;
+        if (!_crc_failed_sent) {
+            _crc_failed_sent = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Rust: M4 CRC unit check failed");
+        }
+    }
+    if ((uint8_t(_options.get()) & OPTION_CRC_VALUES) != 0 && !_crc_values_sent) {
+        _crc_values_sent = true;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust: M4 CRC %08X %08X", unsigned(check.short_check),
+                      unsigned(check.pattern_check));
+    }
     RustM4::ConfigReply reply {};
     const AP_Rust::Runtime *runtime = AP_Rust::Runtime::get_singleton();
     if (runtime != nullptr) {
@@ -533,7 +552,8 @@ uint16_t AP_RustM4::serve_config(const uint8_t *buf, uint16_t len, uint32_t seq)
     return length;
 }
 
-// this session's discovery. Built in _tx_frame: the reply is too large for the worker's stack frame
+// this session's discovery; none before its Config has shown a CRC unit that agrees with zlib's.
+// Built in _tx_frame: the reply is too large for the worker's stack frame
 uint16_t AP_RustM4::serve_list_modules(uint32_t seq)
 {
     using RustM4::ListModulesReply;
@@ -542,7 +562,7 @@ uint16_t AP_RustM4::serve_list_modules(uint32_t seq)
     static_assert(sizeof(ListModulesReply::modules) / sizeof(ModuleEntry) >= RustM4::MAX_MODULES, "every module listed");
     static_assert(sizeof(ModuleEntry::name) == sizeof(RustM4::ModuleFile::name) &&
                   sizeof(ModuleEntry::path) == sizeof(RustM4::ModuleFile::path), "names and paths fit");
-    const uint8_t count = _module_count;
+    const uint8_t count = (_config_seen && !_crc_failed) ? _module_count : 0;
     memset(_tx_frame, 0, sizeof(ListModulesReply));
     for (uint8_t i = 0; i < count; i++) {
         uint8_t *entry = _tx_frame + offsetof(ListModulesReply, modules) + i * sizeof(ModuleEntry);
@@ -840,6 +860,9 @@ void AP_RustM4::check_started(uint32_t now_ms)
         // re-handshake: drop whatever either side queued before this start
         _channel->resetAfterRestart();
         _session_calls = 0;
+        _config_seen = false;
+        _crc_failed_sent = false;
+        _crc_values_sent = false;
         // the previous session's modules are gone: their slots end, through the PR's cleanups
         _server.reset(_m4_session, _module_count);
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
@@ -1041,6 +1064,10 @@ bool AP_RustM4::arming_checks(size_t buflen, char *buffer) const
     }
     if (_state != State::Running) {
         hal.util->snprintf(buffer, buflen, "Rust: M4 modules not started");
+        return false;
+    }
+    if (_crc_failed) {
+        hal.util->snprintf(buffer, buflen, "Rust: M4 CRC unit check failed");
         return false;
     }
     if (_load_error[0] != 0) {

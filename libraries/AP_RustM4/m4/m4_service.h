@@ -27,6 +27,8 @@ struct M4Platform {
     void (*inject_fault)(FaultKind kind);   // HardFault, MemManage, Stall, Lockup, HandlerFault
     void (*wake_module)();                  // the call on the ModuleLink is Done; may be null
     void (*start_selftest)();               // RUST_M4_INJECT 17: the built-in thread-path check; may be null
+    // a Config reply's M7 millis(), just received: calibrates the M7 clock time_us follows; may be null
+    void (*m7_millis)(uint32_t m7_millis);
     // one mutex around the service state and the TX ring (priority inheritance on the M4)
     void (*lock)();
     void (*unlock)();
@@ -43,6 +45,10 @@ public:
     // the platform CRC's results of this session, computed at init(), which faults (HardFault)
     // when they are not zlib's
     const CrcSelfCheck &crc_self_check() const { return _crc_self_check; }
+    // this session's Config (the service sends it after Ready, with the CRC self-check): its reply
+    // is valid once config_ready()
+    bool config_ready() const { return _config_ready; }
+    const ConfigReply &config_reply() const { return _config_reply; }
     // the Stats name of a remote import of this session (cleared at init()); later rows are id:<n>
     void set_binding_name(uint32_t id, const char *name);
     // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
@@ -85,6 +91,8 @@ private:
     void send_stats(uint32_t now_ms);
     void handle_ready(const MsgHeader &header);
     void handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header);
+    void send_config(uint32_t now_ms);
+    void handle_config_reply(const uint8_t *buf, uint16_t len);
     void count_lost();
 
     void step_locked();
@@ -123,6 +131,11 @@ private:
     bool _rx_stalled;
     bool _flooding;
     CrcSelfCheck _crc_self_check;
+    ConfigReply _config_reply;
+    uint32_t _config_seq;       // of the Config sent this session; 0: none sent yet
+    uint32_t _config_sent_ms;
+    bool _config_pending;       // this session's Config is not answered yet
+    bool _config_ready;
     uint8_t _rx[MAX_FRAME];
 };
 

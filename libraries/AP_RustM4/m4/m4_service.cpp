@@ -35,6 +35,9 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _rx_stalled = false;
     _call_timed = false;
     _flooding = false;
+    _config_pending = false;
+    _config_ready = false;
+    _config_seq = 0;
     compute_crc_self_check();
     // a CRC that disagrees with zlib would fail every ring frame: fault before the first beat,
     // so the M7 reports it as a start fault rather than this session running on bad CRCs
@@ -107,6 +110,10 @@ void M4Service::step_locked()
     } else if (_ready && state == ModuleLink::Posted) {
         // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
         forward_call();
+    }
+    // sent again if its reply did not come (the M7's ring was full)
+    if (_ready && _config_pending && (_config_seq == 0 || now_ms - _config_sent_ms > CALL_TIMEOUT_MS)) {
+        send_config(now_ms);
     }
     if (_flooding) {
         if (now_ms - _flood_until_ms < 0x80000000U) {
@@ -256,13 +263,57 @@ void M4Service::handle_ready(const MsgHeader &header)
         count_lost();
         complete(-ECONNRESET);
     }
+    if (!_have_session || header.seq != _session) {
+        // one Config per session
+        _config_pending = true;
+        _config_ready = false;
+        _config_seq = 0;
+    }
     _session = header.seq;
     _have_session = true;
     _ready = true;
 }
 
+void M4Service::send_config(uint32_t now_ms)
+{
+    ConfigRequest request;
+    memset(&request, 0, sizeof(request));
+    fill_header(request.call.header, MsgType::SystemCall, sizeof(request), ++_seq);
+    request.call.method = uint16_t(SystemMethod::Config);
+    request.crc_short = _crc_self_check.short_check;
+    request.crc_pattern = _crc_self_check.pattern_check;
+    if (_channel->send(&request, sizeof(request)) == 0) {
+        _config_seq = request.call.header.seq;
+        _config_sent_ms = now_ms;
+    }
+}
+
+// a Config reply the M7 refused or malformed leaves config_ready() false for the session
+void M4Service::handle_config_reply(const uint8_t *buf, uint16_t len)
+{
+    _config_pending = false;
+    ConfigReply reply;
+    if (len != sizeof(reply)) {
+        return;
+    }
+    memcpy(&reply, buf, sizeof(reply));
+    if (reply.reply.method != uint16_t(SystemMethod::Config) || reply.reply.transport != uint8_t(ReplyStatus::Ok)) {
+        return;
+    }
+    _config_reply = reply;
+    _config_ready = true;
+    if (_platform.m7_millis != nullptr) {
+        _platform.m7_millis(reply.m7_millis);
+    }
+}
+
 void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &header)
 {
+    if (MsgType(header.type) == MsgType::SystemReply && _config_pending && _config_seq != 0 &&
+        header.seq == _config_seq) {
+        handle_config_reply(buf, len);
+        return;
+    }
     // seq is never reused while this M4 runs: a reply to a call that timed out or lost its
     // session matches no Sent call
     if (_link->state.load() != ModuleLink::Sent || header.seq != _call_seq || _call_session != _session ||

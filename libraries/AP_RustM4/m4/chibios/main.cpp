@@ -301,8 +301,8 @@ int main(void)
     }
 
     const M4Platform platform { millis_now, cycles_now, AP_RUST_M4_CORE_CLOCK_HZ / 1000000U,
-                                inject_fault, module_port_wake, module_port_start_selftest, lock_service,
-                                unlock_service };
+                                inject_fault, module_port_wake, module_port_start_selftest,
+                                module_port_set_m7_millis, lock_service, unlock_service };
     module_port_init(call_link, service, wake_service);
     service.init(channel, window, call_link, platform);
     while (true) {
