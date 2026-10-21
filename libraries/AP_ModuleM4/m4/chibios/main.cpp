@@ -112,12 +112,17 @@ static volatile uint32_t doorbell_stamp_us;
 static void doorbell_callback(uint8_t group)
 {
     (void)group;
-    if (probing(&module_port_call_probe())) {
-        doorbell_stamp_us = module_port_probe_stamp_from_isr();
-        doorbell_stamped = true;
-    }
+    const bool stamped = probing(&module_port_call_probe());
+    const uint32_t isr_us = stamped ? module_port_probe_stamp_from_isr() : 0;
     chSysLockFromISR();
-    chBSemSignalI(&doorbell);
+    // the module thread waiting for its reply drains it itself
+    if (!module_port_doorbell_i(stamped, isr_us)) {
+        if (stamped) {
+            doorbell_stamp_us = isr_us;
+            doorbell_stamped = true;
+        }
+        chBSemSignalI(&doorbell);
+    }
     chSysUnlockFromISR();
 }
 

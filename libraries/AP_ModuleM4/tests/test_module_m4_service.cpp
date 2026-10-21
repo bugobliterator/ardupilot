@@ -42,6 +42,7 @@ std::atomic<uint32_t> m7_millis_given;
 std::atomic<uint32_t> m7_millis_calls;
 std::atomic<uint32_t> stops;
 std::atomic<uint32_t> stopped_module;
+std::atomic<uint32_t> injected;   // the last FaultKind injected
 
 uint32_t millis_now()
 {
@@ -52,8 +53,9 @@ uint32_t cycles_now()
 {
     return fake_cycles.load();
 }
-void inject_fault(FaultKind)
+void inject_fault(FaultKind kind)
 {
+    injected = uint32_t(kind);
 }
 void wake_module()
 {
@@ -98,6 +100,7 @@ void start(M4CallProbe *probe = nullptr)
     m7_millis_calls = 0;
     stops = 0;
     stopped_module = 0xFFFF;
+    injected = 0;
     const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_module, nullptr, m7_millis,
                                 lock_service, unlock_service, stop_module, probe };
     service.init(m4, window, call_link, platform);
@@ -843,6 +846,84 @@ TEST(ModuleM4Service, ProbedCallIsStampedAtSendAndReply)
     EXPECT_EQ(probe.current.stamps, PROBE_STAMP_REPLY_WAKE | PROBE_STAMP_SIGNALLED);
     EXPECT_EQ(probe.current.reply_isr_us, 4000U);
     EXPECT_EQ(probe.current.reply_wake_us, 4007U);
+}
+
+// the module thread's drain stamps its own wait, and leaves the service's note to the service
+TEST(ModuleM4Service, ModuleDrainStampsItsOwnWait)
+{
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe_now = 0;
+    start(&probe);
+    configure(M4_OPTION_CALL_PROBE);
+    service.note_wake(false, true, 1000, 1001);
+    post_probed_call(probe);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    EXPECT_FALSE(service.drain_step_for_module(false, true, 4000, 4003));
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(probe.current.flags, 0);
+    EXPECT_EQ(probe.current.stamps, PROBE_STAMP_REPLY_WAKE | PROBE_STAMP_SIGNALLED);
+    EXPECT_EQ(probe.current.reply_isr_us, 4000U);
+    EXPECT_EQ(probe.current.reply_wake_us, 4003U);
+    // the service's next reply still takes the service's note
+    call_link.state.store(ModuleLink::Idle);
+    post_probed_call(probe);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    service.drain_step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(probe.current.reply_isr_us, 1000U);
+    EXPECT_EQ(probe.current.reply_wake_us, 1001U);
+    // a module wait that timed out marks the reply as a poll wake
+    call_link.state.store(ModuleLink::Idle);
+    post_probed_call(probe);
+    ASSERT_TRUE(service.forward_posted());
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    EXPECT_FALSE(service.drain_step_for_module(true, false, 0, 0));
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(probe.current.flags, PROBE_M4_POLL_WAKE);
+    EXPECT_EQ(probe.current.stamps, PROBE_STAMP_SIGNALLED);
+}
+
+// a fault drained by the module thread is injected by the service's next drain_step()
+TEST(ModuleM4Service, ModuleDrainLeavesFaultsToTheService)
+{
+    start();
+    send_ready(7);
+    service.drain_step();
+    FaultInjectMsg inject {};
+    fill_header(inject.header, MsgType::FaultInject, sizeof(inject), 7);
+    inject.kind = uint32_t(FaultKind::Stall);
+    ASSERT_EQ(m7.send(&inject, sizeof(inject)), 0);
+    EXPECT_TRUE(service.drain_step_for_module(false, false, 0, 0));
+    EXPECT_EQ(injected.load(), 0U);
+    service.drain_step();
+    EXPECT_EQ(injected.load(), uint32_t(FaultKind::Stall));
+    injected = 0;
+    service.drain_step();   // once
+    EXPECT_EQ(injected.load(), 0U);
+    // drained by the service, injected at once
+    ASSERT_EQ(m7.send(&inject, sizeof(inject)), 0);
+    service.drain_step();
+    EXPECT_EQ(injected.load(), uint32_t(FaultKind::Stall));
+}
+
+// the module thread arms the doorbell again before it sleeps: false while a frame waits
+TEST(ModuleM4Service, ModuleSleepIsRefusedWhileAFrameWaits)
+{
+    start();
+    EXPECT_TRUE(service.prepare_module_sleep());
+    m4.wake();   // no doorbell in this process
+    send_ready(7);
+    EXPECT_FALSE(service.prepare_module_sleep());
+    service.drain_step();
+    EXPECT_TRUE(service.prepare_module_sleep());
+    m4.wake();
 }
 
 TEST(ModuleM4Service, UnprobedCallsLeaveTheProbeAlone)

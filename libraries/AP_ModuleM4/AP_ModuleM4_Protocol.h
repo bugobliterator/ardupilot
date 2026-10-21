@@ -110,8 +110,8 @@ struct __attribute__((packed)) CallProbeTrailer {
     uint32_t prev_packed_us;            // frame packed, before the platform call
     uint32_t prev_posted_us;            // link posted, before forward_posted()
     uint32_t prev_forward_returned_us;  // forward_posted() returned with the call sent
-    uint32_t prev_reply_isr_us;         // the doorbell interrupt before the service saw the reply
-    uint32_t prev_reply_wake_us;        // the service thread resumed after it
+    uint32_t prev_reply_isr_us;         // the doorbell interrupt before the M4 saw the reply
+    uint32_t prev_reply_wake_us;        // the thread that drained the reply resumed after it
     uint32_t prev_signalled_us;         // complete() signalled the module thread
     uint32_t prev_resumed_us;           // the module thread resumed after its wait
     // memset cost on the M4, hundredths of a cycle per byte: 64 B on the syscall stack and 4 KB of
@@ -134,8 +134,8 @@ static const uint16_t PROBE_STAMP_SIGNALLED = 1U << 8;
 static const uint16_t PROBE_STAMP_RESUMED = 1U << 9;
 // CallProbeTrailer::prev_flags, the values of AP_Module::CALL_M4_* (AP_Module/CallLatency.h)
 static const uint16_t PROBE_M4_SLEPT = 1U << 2;          // the module thread slept for its reply
-static const uint16_t PROBE_M4_POLL_WAKE = 1U << 3;      // the service's wait before the reply timed out
-static const uint16_t PROBE_M4_SENT_BY_STEP = 1U << 4;   // the service's step sent it, not the module thread
+static const uint16_t PROBE_M4_POLL_WAKE = 1U << 3;      // the wait before the reply was drained timed out
+static const uint16_t PROBE_M4_SENT_BY_STEP = 1U << 4;   // a later drain sent it, not forward_posted()
 
 struct __attribute__((packed)) BindingCallHeader {
     MsgHeader header;   // BindingCall; seq set by the service

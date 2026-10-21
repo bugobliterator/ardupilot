@@ -68,6 +68,12 @@ static const uint32_t SELFTEST_HEAP_SIZE = 1024;
 // the call latency probe (MOD_M4_OPTS bit 2): its clock is set by module_port_init()
 static M4CallProbe call_probe;
 
+// while set, the doorbell wakes the module thread for its reply, not the service. Written only by
+// the module thread (port_call()), read only by the doorbell interrupt: a volatile flag on one core
+static volatile bool module_waiting;
+static volatile bool module_doorbell_stamped;
+static volatile uint32_t module_doorbell_us;
+
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
     ModuleLink &link = *call_link_of;
@@ -89,10 +95,28 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
     } else if (probed) {
         probe_stamp(call_probe, call_probe.current.forward_returned_us, PROBE_STAMP_FORWARD_RETURNED);
     }
-    // the service completes every posted call; sent ones within CALL_TIMEOUT_MS
+    // this thread drains its reply itself, woken by the doorbell; the service's housekeeping
+    // times a sent call out within CALL_TIMEOUT_MS
     const bool waited = link.state.load() != ModuleLink::Done;
-    while (link.state.load() != ModuleLink::Done) {
-        (void)chBSemWaitTimeout(&call_done, TIME_MS2I(10));
+    if (waited) {
+        module_waiting = true;
+        while (link.state.load() != ModuleLink::Done) {
+            module_doorbell_stamped = false;
+            bool poll_timeout = false;
+            // the M7 rings once per sleep: armed again before each wait. False: a frame is waiting
+            if (service_of->prepare_module_sleep()) {
+                poll_timeout = chBSemWaitTimeout(&call_done, TIME_MS2I(10)) == MSG_TIMEOUT;
+            }
+            const bool stamped = probed && !poll_timeout && module_doorbell_stamped;
+            const uint32_t wake_us = stamped ? call_probe.clock_us() : 0;
+            if (service_of->drain_step_for_module(poll_timeout, stamped, module_doorbell_us, wake_us)) {
+                wake_service_of();
+            }
+            if (poll_timeout && link.state.load() != ModuleLink::Done) {
+                wake_service_of();
+            }
+        }
+        module_waiting = false;
     }
     if (probed && waited) {
         call_probe.current.flags |= PROBE_M4_SLEPT;
@@ -107,6 +131,18 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         }
     }
     link.state.store(ModuleLink::Idle);
+    if (waited) {
+        // a doorbell between the last drain and the clear came here, not to the service
+        if (chBSemWaitTimeout(&call_done, TIME_IMMEDIATE) == MSG_OK &&
+            service_of->drain_step_for_module(false, false, 0, 0)) {
+            wake_service_of();
+        }
+        // the service still sleeps on the sleep whose doorbell this thread took: armed again
+        // for it, or woken when a frame is already waiting
+        if (!service_of->prepare_module_sleep()) {
+            wake_service_of();
+        }
+    }
     return result;
 }
 
@@ -473,7 +509,23 @@ void ModuleM4::module_port_set_m7_millis(uint32_t m7_millis)
 
 void ModuleM4::module_port_wake()
 {
-    chBSemSignal(&call_done);
+    // the module thread completes its own call when it drains the reply
+    if (chThdGetSelfX() != module_thread) {
+        chBSemSignal(&call_done);
+    }
+}
+
+bool ModuleM4::module_port_doorbell_i(bool stamped, uint32_t isr_us)
+{
+    if (!module_waiting) {
+        return false;
+    }
+    if (stamped) {
+        module_doorbell_us = isr_us;
+        module_doorbell_stamped = true;
+    }
+    chBSemSignalI(&call_done);
+    return true;
 }
 
 void ModuleM4::module_port_start(ModuleContext &context, const LoadLayout &layout, uint32_t entry, uint32_t rw_base)
@@ -508,7 +560,7 @@ void ModuleM4::module_port_start(ModuleContext &context, const LoadLayout &layou
     context.state.store(uint8_t(ModuleStateKind::Started));
     active = &context;
     // below the service (the main thread, NORMALPRIO): the heartbeat waits for the module only
-    // for the service mutex, held for one forward_call() with priority inheritance
+    // for the service mutex, held for one forward_call() or drain with priority inheritance
     // painted, so that the syscall stack's high-water mark can be read (CH_DBG_FILL_THREADS is off)
     memset(module_wa, CH_DBG_STACK_FILL_VALUE, sizeof(module_wa));
     module_thread = chThdCreateStatic(module_wa, sizeof(module_wa), NORMALPRIO - 1, module_thread_main, nullptr);
