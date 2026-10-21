@@ -31,23 +31,31 @@ struct BindingCallArgs {
 // binding_mirror_role() values (generator m4_binding.py ROLE_VALUES)
 enum class MirrorRole : uint8_t { None = 0, Get = 1, HandleWriter = 2, NameWriter = 3 };
 
+// the bits of a call policy byte (AP_Module/Bindings.h M4_CALL_*): posted, the MirrorRole, and for an id
+// the M4 answers itself 1 + the index of its exact [input, output] sizes in HostPlatform::local_wires
+static const uint8_t CALL_POLICY_POSTED = 1U;
+static const uint8_t CALL_POLICY_ROLE_SHIFT = 1U;
+static const uint8_t CALL_POLICY_ROLE_MASK = 3U;
+static const uint8_t CALL_POLICY_WIRE_SHIFT = 3U;
+
 struct HostPlatform {
     // a whole call frame; the reply copied, its length returned, or -errno with no reply
     int32_t (*call)(void *platform, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap);
     void (*notify)(void *platform, const uint8_t *frame, uint16_t len);
-    // true for an id the M4 answers itself, with the exact sizes its adapter reads and writes
-    bool (*local_wire)(uint32_t id, uint32_t &input_size, uint32_t &output_size);
+    // one policy byte per id from call_policy_first; any other id is a plain call to the M7
+    const uint8_t *call_policy;
+    uint32_t call_policy_first;
+    uint32_t call_policy_count;
+    const uint8_t (*local_wires)[2];
     int32_t (*local)(uint32_t id, const uint8_t *input, uint32_t input_size, uint8_t *output, uint32_t output_size);
     void *platform;
-    // the Parameter mirror and posted ids; null: every call goes to the M7
-    uint8_t (*mirror_role)(uint32_t id);
+    // the Parameter mirror; null: every call goes to the M7
     // the module's Parameter.get answered from the mirror into out5; false on a miss (nothing written)
     bool (*mirror_get)(void *platform, uint16_t module, uint64_t token, uint8_t *out5);
     void (*mirror_pending)(void *platform, uint16_t module, uint64_t token);
     void (*mirror_settle)(void *platform, uint16_t module, uint64_t token);
     // a forwarded Parameter.get answered OK: out5 refreshes the module's STALE entry (never inserts)
     void (*mirror_refresh)(void *platform, uint16_t module, uint64_t token, const uint8_t *out5);
-    bool (*is_posted)(uint32_t id);
     M4CallProbe *probe;   // the call latency probe; may be null
 };
 
@@ -90,11 +98,13 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     if (a.context != m.token) {
         return STATUS_INVALID;
     }
-    uint32_t local_in = 0, local_out = 0;
-    const bool local = p.local_wire(a.id, local_in, local_out);
+    const uint32_t slot = a.id - p.call_policy_first;
+    const uint8_t policy = slot < p.call_policy_count ? p.call_policy[slot] : 0U;
+    const uint8_t wire = policy >> CALL_POLICY_WIRE_SHIFT;
+    const bool local = wire != 0;
     // a local adapter reads and writes its fixed sizes whatever the call says: exact sizes only,
     // so that the range checks below cover every byte it touches
-    if (local && (a.input_size != local_in || a.output_size != local_out)) {
+    if (local && (a.input_size != p.local_wires[wire - 1][0] || a.output_size != p.local_wires[wire - 1][1])) {
         return STATUS_INVALID;
     }
     const uintptr_t input = uintptr_t(a.input);
@@ -111,7 +121,7 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     // a posted id (generated policy: output 0, no vehicle command): the module waits only for the
     // ring copy, then gets OK; the M7 serves it without a reply
-    if (a.output_size == 0 && p.is_posted != nullptr && p.is_posted(a.id)) {
+    if (a.output_size == 0 && (policy & CALL_POLICY_POSTED) != 0) {
         const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, CALL_FLAG_NOTIFY, a.id, a.input,
                                                   uint16_t(a.input_size), 0);
         if (length == 0) {
@@ -120,7 +130,7 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
         p.notify(p.platform, m.request, length);
         return STATUS_OK;
     }
-    const MirrorRole role = p.mirror_role != nullptr ? MirrorRole(p.mirror_role(a.id)) : MirrorRole::None;
+    const MirrorRole role = MirrorRole((policy >> CALL_POLICY_ROLE_SHIFT) & CALL_POLICY_ROLE_MASK);
     uint64_t token = 0;
     if ((role == MirrorRole::Get || role == MirrorRole::HandleWriter) && a.input_size >= sizeof(token)) {
         memcpy(&token, a.input, sizeof(token));   // the PR wire: the receiver token first
