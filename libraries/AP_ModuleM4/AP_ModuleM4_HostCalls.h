@@ -99,8 +99,10 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     if (a.context != m.token) {
         return STATUS_INVALID;
     }
+    // the probe's ping: no buffers, no policy; forwarded as SystemMethod::Ping
+    const bool ping = a.id == PING_BINDING_ID;
     const uint32_t slot = a.id - p.call_policy_first;
-    const uint8_t policy = slot < p.call_policy_count ? p.call_policy[slot] : 0U;
+    const uint8_t policy = !ping && slot < p.call_policy_count ? p.call_policy[slot] : 0U;
     const uint8_t wire = policy >> CALL_POLICY_WIRE_SHIFT;
     const bool local = wire != 0;
     // a local adapter reads and writes its fixed sizes whatever the call says: exact sizes only,
@@ -110,8 +112,12 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     const uintptr_t input = uintptr_t(a.input);
     const uintptr_t output = uintptr_t(a.output);
-    if (!m.ranges.input_ok(input, a.input_size) || !m.ranges.output_ok(output, a.output_size) ||
-        buffers_overlap(input, a.input_size, output, a.output_size)) {
+    if (ping) {
+        if (a.input_size != 0 || a.output_size != 0) {
+            return STATUS_INVALID;
+        }
+    } else if (!m.ranges.input_ok(input, a.input_size) || !m.ranges.output_ok(output, a.output_size) ||
+               buffers_overlap(input, a.input_size, output, a.output_size)) {
         return STATUS_INVALID;
     }
     if (local) {
@@ -154,9 +160,10 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     } else {
         probe = nullptr;
     }
-    const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, 0, a.id, a.input,
-                                              uint16_t(a.input_size), uint16_t(a.output_size),
-                                              probe != nullptr ? &trailer : nullptr);
+    const CallProbeTrailer *sent_trailer = probe != nullptr ? &trailer : nullptr;
+    const uint16_t length = ping ? pack_ping_call(m.request, MAX_FRAME, sent_trailer)
+                                 : pack_binding_call(m.request, MAX_FRAME, 0, m.index, 0, a.id, a.input,
+                                                     uint16_t(a.input_size), uint16_t(a.output_size), sent_trailer);
     if (length == 0) {
         if (probe != nullptr) {
             probe->in_call = false;
@@ -166,20 +173,31 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     if (probe != nullptr) {
         const uint32_t packed_cycles = probe_cycles_now(*probe);
         M4CallStamps &current = probe->current;
-        current.svc_to_entry_cycles = svc_cycles != 0 ? cycles_between(svc_cycles, entry_cycles) : 0;
-        current.checks_cycles = cycles_between(checks_cycles, begin_cycles);
-        current.begin_probe_cycles = cycles_between(begin_cycles, begun_cycles);
-        current.pack_cycles = cycles_between(begun_cycles, packed_cycles);
+        if (svc_cycles != 0) {
+            probe_cycle_part(current, M4CyclePart::SvcEntry, svc_cycles, entry_cycles);
+        }
+        probe_cycle_part(current, M4CyclePart::Checks, checks_cycles, begin_cycles);
+        probe_cycle_part(current, M4CyclePart::BeginProbe, begin_cycles, begun_cycles);
+        probe_cycle_part(current, M4CyclePart::Pack, begun_cycles, packed_cycles);
         probe_stamp(*probe, current.packed_us, PROBE_STAMP_PACKED);
     }
     if (settle) {
         p.mirror_pending(p.platform, m.index, token);
     }
     const int32_t result = p.call(p.platform, m.request, length, m.reply, MAX_FRAME);
+    const uint32_t called_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
     int32_t status;
     BindingReplyHeader reply {};
     const uint8_t *body = nullptr;
-    if (result > 0 && !parse_binding_reply(m.reply, uint16_t(result), reply, body)) {
+    uint32_t copied_cycles = 0;
+    if (ping) {
+        status = result > 0 ? ping_reply_status(m.reply, uint16_t(result)) : STATUS_HOST_ERROR;
+        copied_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
+        if (result > 0 && status == STATUS_HOST_ERROR && probe != nullptr) {
+            probe->in_call = false;
+            probe = nullptr;
+        }
+    } else if (result > 0 && !parse_binding_reply(m.reply, uint16_t(result), reply, body)) {
         status = STATUS_HOST_ERROR;
         if (probe != nullptr) {
             probe->in_call = false;
@@ -191,9 +209,17 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
             copy_frame_bytes(a.output, body, a.output_size);
         }
         status = outcome.status;
+        copied_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
         if (role == MirrorRole::Get && a.input_size == 8 && a.output_size == 5 && outcome.copy_output &&
             status == STATUS_OK && p.mirror_refresh != nullptr) {
             p.mirror_refresh(p.platform, m.index, token, a.output);
+        }
+    }
+    if (probe != nullptr) {
+        M4CallStamps &current = probe->current;
+        probe_cycle_part(current, M4CyclePart::RetCopy, called_cycles, copied_cycles);
+        if (current.drain_copied_cycles != 0) {
+            probe_cycle_part(current, M4CyclePart::PortTail, current.drain_copied_cycles, called_cycles);
         }
     }
     if (settle) {
@@ -201,8 +227,22 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     if (probe != nullptr) {
         end_probed_call(*probe, result > 0, probe->clock_us());
+        // SvcReturn starts here; the port ends it (record_svc_return())
+        probe->return_cycles = probe_cycles_now(*probe);
     }
     return status;
+}
+
+// the port, as the SVC body that called host_binding_call() ends: SvcReturn of the call just completed
+inline void record_svc_return(M4CallProbe &probe)
+{
+    if (probe.return_cycles == 0) {
+        return;
+    }
+    if (probe.last.seq != 0) {
+        probe_cycle_part(probe.last, M4CyclePart::SvcReturn, probe.return_cycles, probe_cycles_now(probe));
+    }
+    probe.return_cycles = 0;
 }
 
 /*

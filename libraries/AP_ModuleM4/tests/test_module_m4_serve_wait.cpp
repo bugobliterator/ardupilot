@@ -920,7 +920,7 @@ static bool even_ids_fast(uint32_t id)
     return (id & 1U) == 0;
 }
 
-// the host serves binding calls of the Fast lane, the Noop notify, Stats rows and the M7 -> M4
+// the host serves binding calls of the Fast lane, the Noop notify, the Ping, Stats rows and the M7 -> M4
 // types; every other frame goes to the slow worker
 TEST(ModuleM4ServeWait, FastLaneTakesOnlyFastBindingCalls)
 {
@@ -932,6 +932,8 @@ TEST(ModuleM4ServeWait, FastLaneTakesOnlyFastBindingCalls)
     EXPECT_TRUE(frame_on_fast_lane(stats.bytes, stats.len, even_ids_fast));
     const Frame noop = system_frame(SystemMethod::Noop, CALL_FLAG_NOTIFY);
     EXPECT_TRUE(frame_on_fast_lane(noop.bytes, noop.len, even_ids_fast));
+    const Frame ping = system_frame(SystemMethod::Ping, 0);
+    EXPECT_TRUE(frame_on_fast_lane(ping.bytes, ping.len, even_ids_fast));
     for (const SystemMethod method : { SystemMethod::Text, SystemMethod::ModuleState, SystemMethod::Resolve,
                                        SystemMethod::FsRead, SystemMethod::Config }) {
         const Frame f = system_frame(method, CALL_FLAG_NOTIFY);

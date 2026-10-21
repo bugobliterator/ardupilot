@@ -544,7 +544,9 @@ TEST(ModuleM4HostCalls, MemsetCostIsMeasuredOnceBeforeTheFirstProbedCall)
     EXPECT_EQ(memcmp(f.stack, output, 4), 0);
     const uint32_t reads = fake_cycles_now;
     EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
-    EXPECT_EQ(fake_cycles_now - reads, 5U * 3U);   // not again: only the five pre-pack cycle reads
+    // not again: only the call's cycle reads, five before the pack, then the platform call's return, the
+    // output copy and host_binding_call()'s return
+    EXPECT_EQ(fake_cycles_now - reads, 8U * 3U);
     // the trailer reports it
     BindingCallHeader sent {};
     const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
@@ -573,25 +575,129 @@ TEST(ModuleM4HostCalls, PrePackCyclesReachTheNextTrailer)
     EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
     EXPECT_EQ(probe.svc_cycles, 0U);   // used once
     // each read 3 on from the one before
-    EXPECT_EQ(probe.last.svc_to_entry_cycles, 40);
-    EXPECT_EQ(probe.last.checks_cycles, 3);
-    EXPECT_EQ(probe.last.begin_probe_cycles, 3);
-    EXPECT_EQ(probe.last.pack_cycles, 3);
-    // the next call carries them; without an SVC stamp its own SvcEntry is 0
+    const auto part = [&probe](M4CyclePart p) { return probe.last.cycles[uint8_t(p)]; };
+    const auto bit = [](M4CyclePart p) { return uint16_t(1U << uint8_t(p)); };
+    EXPECT_EQ(part(M4CyclePart::SvcEntry), 40);
+    EXPECT_EQ(part(M4CyclePart::Checks), 3);
+    EXPECT_EQ(part(M4CyclePart::BeginProbe), 3);
+    EXPECT_EQ(part(M4CyclePart::Pack), 3);
+    EXPECT_EQ(part(M4CyclePart::RetCopy), 3);
+    // no drain stamped the copy to the link: no PortTail; SvcReturn waits for the port
+    const uint16_t host_parts = bit(M4CyclePart::SvcEntry) | bit(M4CyclePart::Checks) |
+                                bit(M4CyclePart::BeginProbe) | bit(M4CyclePart::Pack) | bit(M4CyclePart::RetCopy);
+    EXPECT_EQ(probe.last.cycles_taken, host_parts);
+    EXPECT_NE(probe.return_cycles, 0U);
+    record_svc_return(probe);
+    EXPECT_EQ(part(M4CyclePart::SvcReturn), 3);
+    EXPECT_EQ(probe.last.cycles_taken, host_parts | bit(M4CyclePart::SvcReturn));
+    EXPECT_EQ(probe.return_cycles, 0U);
+    record_svc_return(probe);   // once per call
+    EXPECT_EQ(part(M4CyclePart::SvcReturn), 3);
+    // the next call carries them; without an SVC stamp its own SvcEntry is not taken. A drain's copy to
+    // the link 30 cycles before the platform call returns is its PortTail
+    f.platform.call = [](void *platform, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap) {
+        const int32_t result = probed_call(platform, request, len, reply, cap);
+        served_probe->current.drain_copied_cycles = fake_cycles_now - 27;
+        return result;
+    };
     EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
     BindingCallHeader sent {};
     const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
     ASSERT_TRUE(parse_binding_call(f.m7.last_request, len, sent));
     CallProbeTrailer trailer;
     ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
-    EXPECT_EQ(trailer.prev_svc_to_entry_cycles, 40);
-    EXPECT_EQ(trailer.prev_checks_cycles, 3);
-    EXPECT_EQ(trailer.prev_begin_probe_cycles, 3);
-    EXPECT_EQ(trailer.prev_pack_cycles, 3);
-    EXPECT_EQ(probe.last.svc_to_entry_cycles, 0);
+    EXPECT_EQ(trailer.prev_cycles[uint8_t(M4CyclePart::SvcEntry)], 40);
+    EXPECT_EQ(trailer.prev_cycles[uint8_t(M4CyclePart::Checks)], 3);
+    EXPECT_EQ(trailer.prev_cycles[uint8_t(M4CyclePart::Pack)], 3);
+    EXPECT_EQ(trailer.prev_cycles[uint8_t(M4CyclePart::SvcReturn)], 3);
+    EXPECT_EQ(trailer.prev_cycles_taken, host_parts | bit(M4CyclePart::SvcReturn));
+    EXPECT_EQ(probe.last.cycles_taken & bit(M4CyclePart::SvcEntry), 0);
+    EXPECT_EQ(part(M4CyclePart::PortTail), 30);
+    EXPECT_NE(probe.last.cycles_taken & bit(M4CyclePart::PortTail), 0);
     // a counter far behind saturates
     EXPECT_EQ(cycles_between(0, 0x10000U), 0xFFFF);
     EXPECT_EQ(cycles_between(0xFFFFFFFFU, 2), 3);
+    served_probe = nullptr;
+}
+
+// the M7's answer to a Ping
+static void answer_ping(FakeM7 &m7, ReplyStatus transport)
+{
+    SystemReplyHeader reply {};
+    fill_header(reply.header, MsgType::SystemReply, sizeof(reply), 0);
+    reply.method = uint16_t(SystemMethod::Ping);
+    reply.transport = uint8_t(transport);
+    memcpy(m7.answer, &reply, sizeof(reply));
+    m7.answer_len = sizeof(reply);
+}
+
+TEST(ModuleM4HostCalls, PingIsForwardedAsASystemCall)
+{
+    Fixture f;
+    answer_ping(f.m7, ReplyStatus::Ok);
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0), f.platform), STATUS_OK);
+    EXPECT_EQ(f.m7.calls, 1U);
+    SystemCallHeader sent {};
+    memcpy(&sent, f.m7.last_request, sizeof(sent));
+    EXPECT_EQ(sent.header.type, uint8_t(MsgType::SystemCall));
+    EXPECT_EQ(sent.header.length, sizeof(SystemCallHeader));
+    EXPECT_EQ(sent.method, uint16_t(SystemMethod::Ping));
+    EXPECT_EQ(sent.flags, 0);
+    // an M7 that does not know Ping, a lost reply, a reply of another kind
+    answer_ping(f.m7, ReplyStatus::UnknownMethod);
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0), f.platform), STATUS_INVALID);
+    f.m7.answer_len = -ETIMEDOUT;
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0), f.platform), STATUS_HOST_ERROR);
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, nullptr, 0, 0, 0);
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0), f.platform), STATUS_HOST_ERROR);
+    // no buffers: anything else is refused before the M7
+    const uint32_t calls = f.m7.calls;
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, f.rw, 4, nullptr, 0), f.platform), STATUS_INVALID);
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, f.stack, 4), f.platform), STATUS_INVALID);
+    EXPECT_EQ(f.m7.calls, calls);
+    // a stop and a foreign context come first, as for a binding
+    BindingCallArgs foreign = f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0);
+    foreign.context = module_token(3);
+    EXPECT_EQ(host_binding_call(f.m, foreign, f.platform), STATUS_INVALID);
+    f.m.stop.store(true);
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0), f.platform), STATUS_STOPPED);
+    EXPECT_EQ(f.m7.calls, calls);
+}
+
+TEST(ModuleM4HostCalls, ProbedPingCarriesTheTrailer)
+{
+    Fixture f;
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.cycles = fake_cycles;
+    probe.enabled.store(true);
+    probe.memset_measured = true;
+    probe_now = 1000;
+    served_probe = &probe;
+    f.platform.call = probed_call;
+    f.platform.probe = &probe;
+    answer_ping(f.m7, ReplyStatus::Ok);
+    EXPECT_EQ(host_binding_call(f.m, f.args(PING_BINDING_ID, nullptr, 0, nullptr, 0), f.platform), STATUS_OK);
+    const uint16_t len = sizeof(SystemCallHeader) + sizeof(CallProbeTrailer);
+    SystemCallHeader sent {};
+    memcpy(&sent, f.m7.last_request, sizeof(sent));
+    EXPECT_EQ(sent.header.length, len);
+    CallProbeTrailer trailer;
+    ASSERT_TRUE(ping_call_trailer(f.m7.last_request, len, sent, trailer));
+    EXPECT_EQ(trailer.svc_entry_us, 1010U);
+    EXPECT_EQ(trailer.prev_seq, 0U);
+    // completed like a binding call: the next probed call carries it
+    EXPECT_EQ(probe.last.seq, 77U);
+    EXPECT_EQ(probe.last.cycles[uint8_t(M4CyclePart::Pack)], 3);
+    EXPECT_FALSE(probe.in_call);
+    const uint8_t output[4] = { 1, 2, 3, 4 };
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    BindingCallHeader call {};
+    const uint16_t call_len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, call_len, call));
+    ASSERT_TRUE(binding_call_trailer(f.m7.last_request, call_len, call, trailer));
+    EXPECT_EQ(trailer.prev_seq, 77U);
     served_probe = nullptr;
 }
 
