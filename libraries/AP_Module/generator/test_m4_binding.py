@@ -10,27 +10,31 @@ from bindings import ROOT
 QUOTA = dict(m4_binding.QUOTA_CLASSES)
 
 
-def entry(binding_id, name):
-    return dict(id=binding_id, hash='%016x' % binding_id, contract=dict(name=name, arguments=[], result='void'))
+def entry(binding_id, name, result='void', arguments=()):
+    return dict(id=binding_id, hash='%016x' % binding_id,
+                contract=dict(name=name, arguments=list(arguments), result=result))
 
 
 ENTRIES = [entry(1, 'ahrs.get_location'), entry(1, 'ahrs.get_position'), entry(2, 'vehicle.set_mode'),
            entry(3, 'gcs.send_text'), entry(4, 'file.read_at'), entry(5, 'libm.sinf'), entry(6, 'Vector3f.length'),
-           entry(8, 'ahrs.set_home')]
+           entry(8, 'ahrs.set_home'), entry(9, 'logger.write'),
+           entry(10, 'Parameter.get', 'bool-u8', [dict(type='f32-le', direction='optional-out')]),
+           entry(11, 'Parameter.set', 'bool-u8'), entry(12, 'param.set', 'bool-u8')]
 POLICY = dict(fast_namespaces=['ahrs', 'vehicle'], slow_methods=['vehicle.set_mode', 'ahrs.set_home'],
-              quotas={'gcs.send_text': 'Text'})
+              quotas={'gcs.send_text': 'Text'}, posted=['logger.write'],
+              mirrored={'Parameter.get': 'get', 'Parameter.set': 'handle_writer', 'param.set': 'name_writer'})
 LOCAL = {5, 6}
 
 
 def test_lanes_and_quotas():
     table = m4_binding.policy_table(ENTRIES, POLICY, LOCAL)
-    assert table[1] == ('Fast', QUOTA['None'])
-    assert table[2] == ('Slow', QUOTA['None'])          # listed slow method of a fast namespace
-    assert table[3] == ('Slow', QUOTA['Text'])
-    assert table[4] == ('Slow', QUOTA['None'])          # file access is never fast
-    assert table[5] == ('Local', QUOTA['None']) and table[6] == ('Local', QUOTA['None'])
-    assert table[7] == ('Unknown', QUOTA['None'])       # gap in the ids
-    assert table[0] == ('Unknown', QUOTA['None'])
+    assert table[1] == ('Fast', QUOTA['None'], 0)
+    assert table[2] == ('Slow', QUOTA['None'], 0)          # listed slow method of a fast namespace
+    assert table[3] == ('Slow', QUOTA['Text'], 0)
+    assert table[4] == ('Slow', QUOTA['None'], 0)          # file access is never fast
+    assert table[5] == ('Local', QUOTA['None'], 0) and table[6] == ('Local', QUOTA['None'], 0)
+    assert table[7] == ('Unknown', QUOTA['None'], 0)       # gap in the ids
+    assert table[0] == ('Unknown', QUOTA['None'], 0)
 
 
 def test_stale_policy_names_fail():
@@ -43,6 +47,53 @@ def test_stale_policy_names_fail():
 def test_unknown_quota_class_fails():
     with pytest.raises(ValueError, match='quota class'):
         m4_binding.policy_table(ENTRIES, dict(POLICY, quotas={'gcs.send_text': 'Nope'}), LOCAL)
+
+
+def test_posted_and_mirror_flags():
+    table = m4_binding.policy_table(ENTRIES, POLICY, LOCAL)
+    assert table[9] == ('Slow', QUOTA['None'], m4_binding.FLAG_POSTED)
+    assert table[10][2] == m4_binding.FLAG_MIRROR_GET
+    assert table[11][2] == m4_binding.FLAG_MIRROR_HANDLE_WRITER
+    assert table[12][2] == m4_binding.FLAG_MIRROR_NAME_WRITER
+    assert table[3][2] == 0
+
+
+def test_posted_rules_fail():
+    fast = [entry(13, 'vehicle.set_rudder_offset')]
+    with pytest.raises(ValueError, match='posted'):
+        m4_binding.policy_table(ENTRIES + fast, dict(POLICY, posted=['vehicle.set_rudder_offset']), LOCAL)
+    with pytest.raises(ValueError, match='posted'):   # a result: the module waits for it
+        m4_binding.policy_table(ENTRIES, dict(POLICY, posted=['Parameter.set']), LOCAL)
+    with pytest.raises(ValueError, match='posted'):   # an out argument
+        m4_binding.policy_table(ENTRIES, dict(POLICY, posted=['Parameter.get']), LOCAL)
+    with pytest.raises(ValueError, match='posted'):   # slow_methods
+        m4_binding.policy_table(ENTRIES, dict(POLICY, posted=['ahrs.set_home']), LOCAL)
+
+
+def test_stale_posted_or_mirrored_names_fail():
+    for broken in (dict(POLICY, posted=['logger.no_such']), dict(POLICY, mirrored={'Parameter.no_such': 'get'})):
+        with pytest.raises(ValueError, match='stale M4 policy'):
+            m4_binding.policy_table(ENTRIES, broken, LOCAL)
+    with pytest.raises(ValueError, match='mirror role'):
+        m4_binding.policy_table(ENTRIES, dict(POLICY, mirrored={'Parameter.get': 'reader'}), LOCAL)
+
+
+def test_catalogue_hash_covers_posted_and_mirrored():
+    table = m4_binding.policy_table(ENTRIES, POLICY, LOCAL)
+    first = m4_binding.catalogue_hash(ENTRIES, LOCAL, table)
+    unposted = m4_binding.policy_table(ENTRIES, dict(POLICY, posted=[]), LOCAL)
+    unmirrored = m4_binding.policy_table(ENTRIES, dict(POLICY, mirrored={}), LOCAL)
+    assert m4_binding.catalogue_hash(ENTRIES, LOCAL, unposted) != first
+    assert m4_binding.catalogue_hash(ENTRIES, LOCAL, unmirrored) != first
+    assert m4_binding.catalogue_hash(ENTRIES, LOCAL, table) == first
+
+
+def test_policy_functions_emission():
+    source = m4_binding.policy_functions(m4_binding.policy_table(ENTRIES, POLICY, LOCAL))
+    posted = source[source.index('bool binding_is_posted'):source.index('uint8_t binding_mirror_role')]
+    assert 'case 9:' in posted and 'case 3:' not in posted
+    role = source[source.index('uint8_t binding_mirror_role'):]
+    assert 'case 10: return 1U;' in role and 'case 11: return 2U;' in role and 'case 12: return 3U;' in role
 
 
 def test_catalogue_hash_depends_on_ids_and_hashes_only():
@@ -63,8 +114,8 @@ def test_local_sizes_follow_the_wire():
 
 def test_header_and_dispatch_emission():
     header = m4_binding.policy_header(m4_binding.policy_table(ENTRIES, POLICY, LOCAL), 0x1234ABCD)
-    assert 'M4_BINDING_COUNT = 9U' in header and 'M4_LOCAL_CATALOGUE_HASH = 0x1234ABCDU' in header
-    assert '{ M4Lane::Local, 0 }, // 5' in header
+    assert 'M4_BINDING_COUNT = 13U' in header and 'M4_LOCAL_CATALOGUE_HASH = 0x1234ABCDU' in header
+    assert '{ M4Lane::Local, 0, 0 }, // 5' in header
     source = m4_binding.local_dispatch(CONTRACT['libm'], m4_binding.local_sizes(CONTRACT), ENTRIES)
     assert 'case 5:' in source and '::sinf(' in source and 'binding_math_dispatch' in source
 
