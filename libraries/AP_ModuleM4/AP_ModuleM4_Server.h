@@ -89,6 +89,8 @@ public:
     void fill_input_for_test(uint8_t byte);
     // whether _in[from..SERVE_BUFFER_SIZE) was zero when the last adapter ran
     bool last_input_tail_zero(uint16_t from) const { return _last_input_end <= from; }
+    // whether all of _out was zero when the last adapter ran
+    bool output_was_zero_for_test() const { return _last_output_zero; }
     bool last_dispatch_ran() const { return _last_dispatch_ran; }
     uint32_t ended_modules() const { return _ended_modules; }
     // binding_crsf_cleanup() creates and initialises AP_CRSF_Telem when disarmed, which a gtest
@@ -115,8 +117,11 @@ private:
     void clear_handles();
     static uint16_t handle_home(uint16_t module, uint64_t token);
 
-    uint8_t _in[SERVE_BUFFER_SIZE];
-    uint8_t _out[SERVE_BUFFER_SIZE];
+    alignas(4) uint8_t _in[SERVE_BUFFER_SIZE];
+    alignas(4) uint8_t _out[SERVE_BUFFER_SIZE];
+    // leading bytes of each buffer that may be non-zero; everything past them is zero
+    uint16_t _in_dirty = SERVE_BUFFER_SIZE;
+    uint16_t _out_dirty = SERVE_BUFFER_SIZE;
     ModuleM4::ModuleSlot _slots[ModuleM4::MAX_MODULES];
     uint8_t _module_count = 0;
     ModuleM4::Quota _quotas;
@@ -140,6 +145,7 @@ private:
     PostedOutcome _last_posted_outcome = PostedOutcome::NotPosted;
 #if AP_MODULE_M4_TEST_HOOKS
     uint16_t _last_input_end = 0;   // one past the last non-zero input byte at the last dispatch
+    bool _last_output_zero = false;
     bool _last_dispatch_ran = false;
     uint32_t _ended_modules = 0;
     bool _cleanups_run = true;

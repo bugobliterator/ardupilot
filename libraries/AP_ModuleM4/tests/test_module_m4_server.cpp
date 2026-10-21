@@ -145,6 +145,61 @@ TEST(ModuleM4Server, ShortInputReadsZeros)
     EXPECT_TRUE(server.last_input_tail_zero(4));
 }
 
+static uint32_t fast_id_without_vehicle()
+{
+    uint32_t id = 0;
+    while (id < AP_Module::M4_BINDING_COUNT && (AP_Module::M4_BINDING_POLICY[id].lane != AP_Module::M4Lane::Fast ||
+                                              AP_ModuleM4_Server::needs_vehicle(id))) {
+        id++;
+    }
+    return id;
+}
+
+// the bytes of a longer earlier input are zero past a shorter later one
+TEST(ModuleM4Server, StaleInputIsZeroBeyondTheNewInput)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    const uint32_t id = fast_id_without_vehicle();
+    ASSERT_LT(id, AP_Module::M4_BINDING_COUNT);
+    uint8_t input[64];
+    memset(input, 0x11, sizeof(input));
+    uint8_t frame[MAX_FRAME];
+    serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, 64, 4));
+    EXPECT_FALSE(server.last_input_tail_zero(8));
+    serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, 8, 4));
+    EXPECT_TRUE(server.last_dispatch_ran());
+    EXPECT_TRUE(server.last_input_tail_zero(8));
+}
+
+// an adapter's output does not reach the next call's output buffer
+TEST(ModuleM4Server, StaleOutputIsZeroBeforeTheNextCall)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    uint8_t frame[MAX_FRAME];
+    const uint32_t layout = uint32_t(AP_Module::BindingId::PARAMETER_LAYOUT);   // writes a non-zero size
+    serve(server, frame, call(frame, layout, 0, 8));
+    EXPECT_TRUE(server.output_was_zero_for_test());
+    serve(server, frame, call(frame, layout, 0, 8));
+    EXPECT_TRUE(server.output_was_zero_for_test());
+}
+
+TEST(ModuleM4Server, ResetClearsTheWholeBuffers)
+{
+    AP_ModuleM4_Server server;
+    server.run_cleanups_for_test(false);
+    server.reset(1, 1);
+    server.fill_input_for_test(0xFF);
+    server.reset(2, 1);
+    const uint32_t id = fast_id_without_vehicle();
+    ASSERT_LT(id, AP_Module::M4_BINDING_COUNT);
+    uint8_t frame[MAX_FRAME];
+    serve(server, frame, call(frame, id, 4, 4));
+    EXPECT_TRUE(server.last_input_tail_zero(4));
+    EXPECT_TRUE(server.output_was_zero_for_test());
+}
+
 // a new session ends every slot of the old one, through every PR cleanup
 TEST(ModuleM4Server, EndModuleCallsEveryCleanup)
 {
