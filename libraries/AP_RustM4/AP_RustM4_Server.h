@@ -32,11 +32,23 @@ public:
     static const uint16_t PARAMETER_HANDLE_SLOTS = 256;
     static const uint16_t PARAMETER_HANDLES_MAX = 224;
 
+    // the call latency probe's stamps of one served binding call (AP_Rust::CallStamps)
+    struct ServeProbe {
+        uint32_t dispatch;
+        uint32_t lock_wait;
+        uint32_t adapter;
+        uint32_t adapter_done;
+        uint16_t flags;            // AP_Rust::CALL_QUOTA, CALL_LOCK_TAKEN, CALL_LOCK_UNKNOWN
+        uint32_t overhead_cycles;  // the probe's own cost in this call
+    };
+
     // a new M4 session: ends every slot of the previous one, then module_count slots
     // (Discovery's count, at most RustM4::MAX_MODULES)
     void reset(uint32_t session, uint8_t module_count);
-    // one BindingCall frame, untrusted; the reply is packed into reply (cap bytes), its length returned
-    uint16_t serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap, uint32_t now_ms);
+    // one BindingCall frame, untrusted; the reply is packed into reply (cap bytes), its length returned.
+    // With probe, the stages are stamped and the adapter's lock is taken first, so its wait is timed
+    uint16_t serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap, uint32_t now_ms,
+                           ServeProbe *probe = nullptr);
     // a module of this session ended: the PR's session cleanups for its slot
     void end_module(uint16_t index);
     // whether the host thread serves this frame itself (RustM4::frame_on_fast_lane())
