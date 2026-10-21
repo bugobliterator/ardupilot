@@ -31,6 +31,10 @@ void module_port_request_stop(ModuleContext &context);
 // true once start() returned, with its result
 bool module_port_returned(const ModuleContext &context, int32_t &result);
 
+// M4Platform::m7_millis (M4 image): the M7's millis() from this session's Config, received now;
+// time_us takes the M7's TIM5 wraps from it rather than assuming none
+void module_port_set_m7_millis(uint32_t m7_millis);
+
 // MOD_M4_INJECT 17 (M4 image): the built-in check of the thread path; M4Platform::start_selftest
 void module_port_start_selftest();
 

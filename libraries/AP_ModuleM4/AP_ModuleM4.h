@@ -68,6 +68,8 @@ private:
 
     // MOD_M4_OPTS bit 0
     static const uint8_t OPTION_RPC_SUMMARY = 1U << 0;
+    // MOD_M4_OPTS bit 1: the M4's CRC self-check values, once per session
+    static const uint8_t OPTION_CRC_VALUES = 1U << 1;
 
     AP_Int8 _restart_max;
 #if AP_MODULE_M4_FAULT_INJECTION_ENABLED
@@ -151,6 +153,10 @@ private:
     uint8_t _module_count;            // modules of the current session: discovered, loadable
     ModuleM4::ModuleFile _modules[ModuleM4::MAX_MODULES];   // their files, sorted by name
     char _load_error[48];             // why this session loads no module, for the pre-arm check
+    bool _config_seen;                // this session's Config arrived: its CRC self-check is known
+    bool _crc_failed_sent;            // texts of this session
+    bool _crc_values_sent;
+    bool _crc_failed;                 // an M4 CRC self-check failed: modules stay off until reboot
     bool _code_size_capped_sent;
     AP_ModuleM4_FileServer _file_server { ModuleM4::filesystem_file_ops() };
     uint32_t _m4_session;             // M4 peer header session being served

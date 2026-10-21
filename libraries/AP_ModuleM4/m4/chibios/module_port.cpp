@@ -53,6 +53,10 @@ static binary_semaphore_t stop_wake;   // sleep_ms waits on it; a stop request s
 static semaphore_t parked;             // nobody signals it: a panicked module waits here
 static M7Clock m7_clock;
 static bool m7_counter_running;
+// the M7 millis() of the session's Config and this core's ticks when it arrived (set by the service)
+static bool m7_millis_pending;
+static uint32_t m7_millis_given;
+static uint32_t m7_millis_given_ms;
 static uint32_t local_last_cycles;
 static uint64_t local_cycles;
 
@@ -157,8 +161,9 @@ static bool m7_counter_started()
 
 static_assert(CH_CFG_ST_FREQUENCY == 1000, "M7Clock takes this core's ticks as milliseconds");
 
-// the M7's micros64(), its wraps followed from the first read: exact while the M7 had run less
-// than one TIM5 wrap (71.6 min) when the M4 session made its first read
+// the M7's micros64(), its wraps followed from the first read. The wraps are taken from the M7's
+// millis() in the session's Config; before that, the first read assumes the M7 ran less than one
+// TIM5 wrap (71.6 min)
 static uint64_t time_us()
 {
     if (!m7_counter_running) {
@@ -169,7 +174,15 @@ static uint64_t time_us()
     }
     const uint32_t local_ms = uint32_t(chVTGetSystemTimeX());
     const uint32_t counter = read_outside_regions(OutsideRegister::Tim5Count);
-    if (!m7_clock.calibrated) {
+    chSysLock();
+    const bool given = m7_millis_pending;
+    // that millis() moved on with this core's ticks since it arrived
+    const uint32_t m7_millis_now = m7_millis_given + (local_ms - m7_millis_given_ms);
+    m7_millis_pending = false;
+    chSysUnlock();
+    if (given) {
+        m7_clock_calibrate(m7_clock, m7_millis_now, counter, local_ms);
+    } else if (!m7_clock.calibrated) {
         m7_clock_calibrate(m7_clock, counter / 1000U, counter, local_ms);
     } else {
         m7_clock_advance(m7_clock, counter, local_ms);
@@ -376,6 +389,15 @@ void ModuleM4::module_port_init(ModuleLink &link, M4Service &service, void (*wak
     chBSemObjectInit(&stop_wake, true);
     chSemObjectInit(&parked, 0);
     m7_counter_running = m7_counter_started();
+}
+
+void ModuleM4::module_port_set_m7_millis(uint32_t m7_millis)
+{
+    chSysLock();
+    m7_millis_given = m7_millis;
+    m7_millis_given_ms = uint32_t(chVTGetSystemTimeX());
+    m7_millis_pending = true;
+    chSysUnlock();
 }
 
 void ModuleM4::module_port_wake()
