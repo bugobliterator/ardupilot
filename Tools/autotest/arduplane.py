@@ -8160,7 +8160,7 @@ return update()
         self.module_bindings(m4=True)
 
     def ModuleCallLatencyProbe(self):
-        '''Rust call latency probe: m4_latency.rs runs its 13 profiles, M4LT rows and @SYS/module_latency.txt
+        '''Rust call latency probe: m4_latency.rs runs its 17 sweep profiles, M4LT rows and @SYS/module_latency.txt
         (on the M4 with a --enable-m4-modules build, MOD_M4_OPTS bit 2; else in process, MOD_DEBUG_OPTS
         bit 3). SITL timings are not representative: the rows are checked for form only'''
         m4 = self.module_m4_build()
@@ -8184,8 +8184,8 @@ return update()
         texts = [m.text for m in self.context_collection('STATUSTEXT')]
         start = max(i for (i, t) in enumerate(texts) if t.startswith('LAT start prof 0 1s'))
         lines = [t for t in texts[start:] if re.match(r'LAT \d+ ', t)]
-        if len(lines) != 13:
-            raise NotAchievedException('expected 13 profile lines, got %s' % lines)
+        if [int(t.split()[1]) for t in lines] != [p for p in range(1, 19) if p != 14]:
+            raise NotAchievedException('expected profiles 1-13 and 15-18, got %s' % lines)
         for line in lines:
             m = re.match(r'LAT (\d+) \w+ \d+/s n(\d+) b\d+ e(\d+) avg\d+ max\d+$', line)
             if m is None or int(m.group(2)) == 0:
@@ -8193,8 +8193,11 @@ return update()
             if int(m.group(3)) != 0:
                 raise NotAchievedException('binding errors in %s' % line)
         phases = [t for t in texts[start:] if re.match(r'LATPH \d+ \d+$', t)]
-        if len(phases) != 13:
-            raise NotAchievedException('expected 13 LATPH lines, got %s' % phases)
+        if len(phases) != 17:
+            raise NotAchievedException('expected 17 LATPH lines, got %s' % phases)
+        for (profile, name) in [(15, 'getloc'), (16, 'getloc'), (17, 'getloc'), (18, 'locoff')]:
+            if not any(t.startswith('LAT %u %s ' % (profile, name)) for t in lines):
+                raise NotAchievedException('no %s line for profile %u' % (name, profile))
         # profile 14, the 5013 us control, with a start phase offset
         self.set_parameters({'LATP_PROF': 14, 'LATP_OFFS': 1250})
         self.set_parameter('MOD_RESTART', (int(self.get_parameter('MOD_RESTART')) + 1) % 32768)
@@ -8235,7 +8238,7 @@ return update()
             raise NotAchievedException('no M4LT rows in %s' % logs)
         if lanes != ({1, 2} if m4 else {0}):
             raise NotAchievedException('M4LT lanes %s' % sorted(lanes))
-        if profiles != set(range(1, 15)):
+        if profiles != set(range(1, 19)):
             raise NotAchievedException('LATP rows for profiles %s' % sorted(profiles))
         self.progress('%u M4LT rows, lanes %s' % (rows, sorted(lanes)))
 
