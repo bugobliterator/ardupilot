@@ -85,7 +85,7 @@ public:
     {
         _service_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us, 0 };
     }
-    // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
+    // calls that had no reply within CALL_TIMEOUT_MS (Sent, or Posted and never sent) or lost their session
     uint32_t lost() const { return _lost; }
     // frames from the M7 dropped as not for this M4 (wrong type, stale seq or session)
     uint32_t protocol_errors() const { return _protocol_errors; }
@@ -154,7 +154,8 @@ private:
     void forget_ended_module();
     void send_config(uint32_t now_ms);
     void handle_config_reply(const uint8_t *buf, uint16_t len);
-    void count_lost();
+    void count_lost(uint16_t key);
+    uint16_t link_call_key() const;
     void record_posted(uint16_t key, uint32_t post_us);
     // the last reply's round trip into its Stats row: before any other Stats change, and after the
     // next call is on the ring, off the reply path

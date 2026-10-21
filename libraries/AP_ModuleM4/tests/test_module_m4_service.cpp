@@ -776,6 +776,31 @@ TEST(ModuleM4Service, PostedFrameDroppedAfterTheTimeoutCountsPostDrop)
     step_both();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(service.post_drops(), 1U);
+    EXPECT_EQ(service.lost(), 0U);
+}
+
+TEST(ModuleM4Service, CallTimedOutBeforeTheRingCountsLost)
+{
+    start();   // no Ready: the call cannot go out
+    post_call(BINDING);
+    step_both();
+    millis_ahead = millis_ahead.load() + CALL_TIMEOUT_MS + 1;
+    step_both();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, -ETIMEDOUT);
+    EXPECT_EQ(service.lost(), 1U);
+    EXPECT_EQ(service.post_drops(), 0U);
+    call_link.state.store(ModuleLink::Idle);
+    // the binding's Stats row carries it once the M7 is Ready
+    send_ready(7);
+    step_both();
+    millis_ahead = millis_ahead.load() + 1000;
+    step_both();
+    StatsMsg stats;
+    ASSERT_TRUE(m7_receive_stats(stats));
+    EXPECT_EQ(stats.method, BINDING);
+    EXPECT_EQ(stats.count, 0U);
+    EXPECT_EQ(stats.lost, 1U);
 }
 
 TEST(ModuleM4Service, ProbeIsOnOnlyWhenTheConfigAsksForIt)
