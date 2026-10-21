@@ -849,14 +849,14 @@ TEST(RustM4Service, ProbedCallIsStampedAtSendAndReply)
 }
 
 // a cycle counter that moves on by 5 per read
-uint32_t probe_cycles_now_value;
-uint32_t probe_cycles_fake()
+static uint32_t probe_cycles_now_value;
+static uint32_t probe_cycles_fake()
 {
     probe_cycles_now_value += 5;
     return probe_cycles_now_value;
 }
 
-uint16_t part_bit(M4CyclePart part)
+static uint16_t part_bit(M4CyclePart part)
 {
     return uint16_t(1U << uint8_t(part));
 }
