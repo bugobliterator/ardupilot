@@ -184,7 +184,7 @@ private:
     uint32_t _reported_post_drops;
     uint8_t _ended_modules;     // a bit per module index: Returned, Panicked or Failed this session
     static_assert(MAX_MODULES <= 8, "_ended_modules");
-    uint8_t _rx[MAX_FRAME];
+    alignas(4) uint8_t _rx[MAX_FRAME];   // the ring copies word-wise into a 4-aligned buffer
 };
 
 }  // namespace ModuleM4
