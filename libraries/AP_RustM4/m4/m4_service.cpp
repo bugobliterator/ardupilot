@@ -47,8 +47,10 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _reported_post_drops = 0;
     _ended_modules = 0;
     _call_probed = false;
-    _woke_on_poll = false;
-    _wake_stamped = false;
+    _service_wake = WakeNote {};
+    _module_wake = WakeNote {};
+    _module_draining = false;
+    _deferred_fault = uint8_t(FaultKind::None);
     M4CallProbe *probe = _platform.probe;
     if (probe != nullptr) {
         probe->enabled.store(false);   // until this session's Config asks for it
@@ -98,6 +100,11 @@ void M4Service::drain_step()
     // a reply is drained under the lock forward_posted() holds from send to Sent: it is never
     // seen before its call is Sent and dropped as stale
     _platform.lock();
+    if (_deferred_fault != uint8_t(FaultKind::None)) {
+        const FaultKind kind = FaultKind(_deferred_fault);
+        _deferred_fault = uint8_t(FaultKind::None);
+        _platform.inject_fault(kind);
+    }
     drain();
     if (_ready && _link->state.load() == ModuleLink::Posted) {
         // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
@@ -105,6 +112,22 @@ void M4Service::drain_step()
         forward_call(true);
     }
     _platform.unlock();
+}
+
+bool M4Service::drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us)
+{
+    _platform.lock();
+    _module_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us };
+    _module_draining = true;
+    drain();
+    if (_ready && _link->state.load() == ModuleLink::Posted) {
+        time_posted_call();
+        forward_call(true);
+    }
+    _module_draining = false;
+    const bool deferred = _deferred_fault != uint8_t(FaultKind::None);
+    _platform.unlock();
+    return deferred;
 }
 
 bool M4Service::forward_posted()
@@ -246,6 +269,11 @@ void M4Service::handle_fault_inject(const uint8_t *buf)
     case FaultKind::Stall:
     case FaultKind::Lockup:
     case FaultKind::HandlerFault:
+        if (_module_draining) {
+            // a stall must stop the service thread, not the module thread below it
+            _deferred_fault = uint8_t(inject.kind);
+            return;
+        }
         _platform.inject_fault(FaultKind(inject.kind));
         return;
     case FaultKind::None:
@@ -407,19 +435,20 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
         _protocol_errors++;
         return;
     }
+    WakeNote &wake = _module_draining ? _module_wake : _service_wake;
     if (_call_probed) {
         M4CallProbe &probe = *_platform.probe;
         probe.current.reply_seen_us = probe.clock_us();
-        if (_woke_on_poll) {
+        if (wake.poll_timeout) {
             probe.current.flags |= PROBE_M4_POLL_WAKE;
         }
-        if (_wake_stamped) {
-            probe.current.reply_isr_us = _wake_isr_us;
-            probe.current.reply_wake_us = _wake_us;
+        if (wake.stamped) {
+            probe.current.reply_isr_us = wake.isr_us;
+            probe.current.reply_wake_us = wake.wake_us;
             probe.current.stamps |= PROBE_STAMP_REPLY_WAKE;
         }
     }
-    _wake_stamped = false;   // one wait's stamps for one reply
+    wake.stamped = false;   // one wait's stamps for one reply
     const uint32_t round_trip_us = (_platform.cycles() - _call_sent_cycles) / _platform.cycles_per_us;
     uint32_t m7_us = 0;
     if (MsgType(header.type) == MsgType::BindingReply) {

@@ -54,6 +54,13 @@ public:
     // the module thread, after posting: sends the call itself when the M7 is Ready and the ring
     // has room. False if it is still Posted: the service's next drain_step() sends it
     bool forward_posted();
+    // the module thread, woken while it waits for its call's reply: drain_step() with that wait,
+    // not the service's last one, in the probe's stamps. A fault injection drained here is left
+    // to the service's next drain_step(): true if the service must be woken for it
+    bool drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us);
+    // the module thread, before it sleeps for its reply while the service sleeps: the Channel's
+    // prepareSleep(), so the M7 rings again (once per sleep). False if a frame is waiting
+    bool prepare_module_sleep() { return _channel->prepareSleep(); }
     // the platform CRC's results of this session, computed at init(), which faults (HardFault)
     // when they are not zlib's
     const CrcSelfCheck &crc_self_check() const { return _crc_self_check; }
@@ -68,10 +75,7 @@ public:
     // interrupt the probe stamped at isr_us, and the thread resumed at wake_us
     void note_wake(bool poll_timeout, bool stamped = false, uint32_t isr_us = 0, uint32_t wake_us = 0)
     {
-        _woke_on_poll = poll_timeout;
-        _wake_stamped = stamped;
-        _wake_isr_us = isr_us;
-        _wake_us = wake_us;
+        _service_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us };
     }
     // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
     uint32_t lost() const { return _lost; }
@@ -94,6 +98,13 @@ public:
     static const uint16_t KEY_SYSTEM_OTHER = 0xFFFF;
 
 private:
+    // a wait before a drain: ended on the poll timeout, or on a doorbell the probe stamped
+    struct WakeNote {
+        bool poll_timeout;
+        bool stamped;
+        uint32_t isr_us;
+        uint32_t wake_us;
+    };
     struct MethodStats {
         bool used;
         bool posted;   // in the padding after used
@@ -172,10 +183,12 @@ private:
     bool _rx_stalled;
     bool _flooding;
     bool _call_probed;          // the Sent call carries a probe trailer
-    bool _woke_on_poll;
-    bool _wake_stamped;
-    uint32_t _wake_isr_us;
-    uint32_t _wake_us;
+    // written by note_wake() on the service thread, outside the lock: the module thread's drain
+    // keeps its own
+    WakeNote _service_wake;
+    WakeNote _module_wake;
+    bool _module_draining;      // under the lock: the module thread drains
+    uint8_t _deferred_fault;    // FaultKind drained by the module thread, injected by the service
     CrcSelfCheck _crc_self_check;
     ConfigReply _config_reply;
     uint32_t _config_seq;       // of the Config sent this session; 0: none sent yet
