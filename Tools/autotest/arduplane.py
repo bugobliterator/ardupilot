@@ -7484,6 +7484,22 @@ return update()
         self.context_pop()
         self.reboot_sitl()
 
+    def RustM4Load(self):
+        '''Rust on the M4 (SITL two-process): the m4_hello module loads, runs and talks'''
+        if not self.rust_m4_build():
+            raise NotAchievedException('needs a --enable-rust-m4 SITL build')
+        self.context_push()
+        self.install_rust_test_module_context('m4_hello.rs')
+        self.context_collect('STATUSTEXT')
+        self.set_parameters({'RUST_ENABLE': 1})
+        self.reboot_sitl()
+        self.wait_text(r'Rust: started on M4 \(1 module, M4 RAM 224KB\)', regex=True, check_context=True, timeout=30)
+        self.wait_text('Rust: loaded 1 modules', check_context=True, timeout=30)
+        self.wait_text('Rust: m4 hello', check_context=True, timeout=30)
+        self.wait_text('m4 hello gcs', check_context=True, timeout=30)
+        self.context_pop()
+        self.reboot_sitl()
+
     def UniversalAutoLandScript(self):
         '''Test UniversalAutoLandScript'''
         applet_script = "UniversalAutoLand.lua"
@@ -11022,6 +11038,7 @@ return update()
             self.AerobaticsScripting_rust_mission,
             self.AerobaticsScripting_rust_mission_control,
             self.RustM4Boot,
+            self.RustM4Load,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
             self.SagetechMXS,
@@ -11462,6 +11479,7 @@ return update()
             "ClimbThrottleSaturation": "requires https://github.com/ArduPilot/ardupilot/pull/27106 to pass",
             "SoaringClimbRate": "very bad sink rate",
             "RustM4Boot": "Requires --enable-rust-m4 SITL build",
+            "RustM4Load": "Requires --enable-rust-m4 SITL build",
         }
         if not self.mavproxy_ftp_module_has_command("crccmp"):
             # added to MAVProxy in 328d7de20 (2026-07-27) and not in any
