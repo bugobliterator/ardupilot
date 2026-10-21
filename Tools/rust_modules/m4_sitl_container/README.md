@@ -48,3 +48,25 @@ clean copy and build:
 ```bash
 docker volume rm rust-m4-sitl-work
 ```
+
+## Watching the AirShow from the host
+
+`run.sh --udp-out '<command>'` passes `RUST_M4_SITL_OUT=udp:host.docker.internal:14550`
+to the command: an outbound MAVLink stream to the host's UDP port 14550 (no port is
+published). `watch_airshow.sh` uses it: it builds SITL Plane (`m4`, the default, with
+`--enable-rust-m4`, or `in-process`), installs `airshow.apmod` and its schedule, starts
+SITL at real time with `--serial1 udpclient:<host>:14550`, loads the
+`AerobaticsScripting_rust_mission` mission after `Rust: loaded 1 modules` and selects AUTO.
+It keeps running until it is stopped:
+
+```bash
+Tools/rust_modules/m4_sitl_container/run.sh --udp-out 'Tools/rust_modules/m4_sitl_container/watch_airshow.sh m4'
+```
+
+On the host, a GCS listens on the port, then arms (`arm throttle` in MAVProxy):
+
+```bash
+mavproxy.py --master=udp:0.0.0.0:14550 --out udp:127.0.0.1:14551 --load-module map3d
+```
+
+Stop it with Ctrl-C on `run.sh` (or `docker rm -f rust-m4-sitl`).
