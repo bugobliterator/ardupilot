@@ -30,8 +30,8 @@ constexpr uint32_t fnv1a_word(uint32_t word, uint32_t hash)
 }
 
 // peer header contract: a mismatched M4 image is refused
-// "RS" 1: never equal to a Lua image's RPC_PROTOCOL_VERSION
-static const uint32_t PROTOCOL_VERSION = 0x52530001U;
+// "RS" 2: never equal to a Lua image's RPC_PROTOCOL_VERSION
+static const uint32_t PROTOCOL_VERSION = 0x52530002U;
 constexpr uint32_t fnv1a_bytes(uint32_t hash, const uint8_t *bytes, uint32_t count)
 {
     return count == 0 ? hash : fnv1a_bytes(fnv1a_byte(hash, bytes[0]), bytes + 1, count - 1);

@@ -5,7 +5,7 @@ using namespace ModuleM4;
 
 TEST(ModuleM4Layout, ProtocolNeverMatchesLua)
 {
-    EXPECT_EQ(PROTOCOL_VERSION, 0x52530001U);
+    EXPECT_EQ(PROTOCOL_VERSION, 0x52530002U);
 }
 
 TEST(ModuleM4Layout, ContractHashCoversTheCatalogue)

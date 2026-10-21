@@ -5,11 +5,16 @@
 #if AP_MODULE_ENABLED
 
 #include <stdint.h>
+#include <atomic>
+#include <AP_Param/AP_Param.h>
 #include <AP_Scripting/Parameter.h>
 #include "AP_ModuleM4_CallStatus.h"
 #include "AP_ModuleM4_ModuleTable.h"
 #include "AP_ModuleM4_Protocol.h"
 #include "AP_ModuleM4_Quota.h"
+
+static_assert(ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_POINTER_LOCK_FREE == 2,
+              "the change observer needs lock-free atomics");
 
 // test-only inspection of the server (tests/wscript defines it for test_module_m4_server)
 #ifndef AP_MODULE_M4_TEST_HOOKS
@@ -46,6 +51,28 @@ public:
     // binding calls refused by their quota since the last call (M4ST QHit)
     uint32_t take_quota_hits() { return _quotas.take_hits(); }
 
+    static const uint16_t SLOT_WORDS = PARAMETER_HANDLE_SLOTS / 32U;
+    // any thread, lock-free, from the AP_Param change observer: the slots bound to param get their bit
+    void mark_changed(const AP_Param *param);
+    // every live slot gets its bit: the 1 Hz backstop and the settle after a parameter writer
+    void mark_all_live();
+    bool mirror_dirty() const;
+    // one ParameterChanged of this session with the dirty slots whose value or BOUND flag differs from
+    // what was last sent (or that were never sent), at most PARAMETER_CHANGED_MAX entries; 0 when
+    // none is left. The entries count as sent: after a failed send, call mirror_send_failed()
+    uint16_t pack_mirror_changes(uint8_t *frame, uint16_t cap);
+    // that frame did not go out: its slots are dirty and unsent again, their modules owe a resync
+    void mirror_send_failed(const uint8_t *frame, uint16_t len);
+    // REPLY_FLAG_MIRROR_RESYNC on the module's next reply; take clears it
+    bool take_resync(uint16_t module);
+    void owe_resync(uint16_t module);
+    // module start: its live slots are unsent and dirty (a full snapshot)
+    void snapshot_module(uint16_t module);
+    // the last serve_binding() ran one of the module's parameter writers (M4_FLAG_MIRROR_*_WRITER)
+    bool last_call_wrote_parameters() const { return _last_call_wrote_parameters; }
+    // module of the last serve_binding() that parsed, -1 if it did not
+    int16_t last_call_module() const { return _last_call_module; }
+
 #if AP_MODULE_M4_TEST_HOOKS
     // dispatch id with both buffers guarded past ModuleM4::MAX_FRAME: false if the adapter wrote there
     bool dispatch_guarded(uint32_t id, uint16_t in_size, uint16_t out_size);
@@ -63,6 +90,8 @@ public:
     // AP_Param::find() needs the vehicle's parameter tables, which a gtest does not have: init then
     // claims the handle and leaves it unbound (as for a missing name)
     void bind_parameters_for_test(bool bind) { _bind_parameters = bind; }
+    const AP_Param *bound_param_for_test(uint16_t module, uint64_t token);
+    static uint16_t handle_home_for_test(uint16_t module, uint64_t token) { return handle_home(module, token); }
 #endif
 
 private:
@@ -86,6 +115,18 @@ private:
     Parameter _handle[PARAMETER_HANDLE_SLOTS];
     uint8_t _handle_module[PARAMETER_HANDLE_SLOTS];
     uint16_t _handle_count = 0;
+    void set_dirty(uint16_t slot);
+    void set_sent(uint16_t slot, bool sent, bool bound);
+    // the bound AP_Param of each slot (AP_Param::find() at INIT), read by the observer on any thread
+    std::atomic<const AP_Param *> _handle_param[PARAMETER_HANDLE_SLOTS];
+    std::atomic<uint32_t> _dirty_slots[SLOT_WORDS];
+    uint32_t _sent_slots[SLOT_WORDS];         // a value of the slot went out since it was bound
+    uint32_t _sent_bound_slots[SLOT_WORDS];   // the BOUND flag that went out
+    float _sent_value[PARAMETER_HANDLE_SLOTS];
+    bool _resync_owed[ModuleM4::MAX_MODULES];
+    uint32_t _session = 0;
+    bool _last_call_wrote_parameters = false;
+    int16_t _last_call_module = -1;
 #if AP_MODULE_M4_TEST_HOOKS
     uint16_t _last_input_end = 0;   // one past the last non-zero input byte at the last dispatch
     bool _last_dispatch_ran = false;
