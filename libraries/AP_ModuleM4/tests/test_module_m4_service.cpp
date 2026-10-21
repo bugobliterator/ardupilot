@@ -130,7 +130,7 @@ bool is_config_request(const uint8_t *frame, uint16_t len)
     return call.header.type == uint8_t(MsgType::SystemCall) && call.method == uint16_t(SystemMethod::Config);
 }
 
-// the next M4 -> M7 frame other than Stats and Config; false if the ring holds no other
+// the next M4 -> M7 frame other than Stats, Counters and Config; false if the ring holds no other
 bool m7_receive(uint8_t *frame, uint16_t &len)
 {
     while (m7.receive(frame, MAX_FRAME, &len) == 0) {
@@ -139,7 +139,8 @@ bool m7_receive(uint8_t *frame, uint16_t &len)
             ADD_FAILURE() << "unparseable frame";
             return false;
         }
-        if (MsgType(header.type) != MsgType::Stats && !is_config_request(frame, len)) {
+        if (MsgType(header.type) != MsgType::Stats && MsgType(header.type) != MsgType::Counters &&
+            !is_config_request(frame, len)) {
             return true;
         }
     }
@@ -193,6 +194,21 @@ bool m7_receive_stats(StatsMsg &stats)
         MsgHeader header;
         if (parse_header(frame, len, header) && MsgType(header.type) == MsgType::Stats && len == sizeof(stats)) {
             memcpy(&stats, frame, sizeof(stats));
+            return true;
+        }
+    }
+    return false;
+}
+
+// the next Counters frame in the ring, other frames skipped; false if there is none
+bool m7_receive_counters(CountersMsg &counters)
+{
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    while (m7.receive(frame, MAX_FRAME, &len) == 0) {
+        MsgHeader header;
+        if (parse_header(frame, len, header) && MsgType(header.type) == MsgType::Counters) {
+            memcpy(&counters, frame, sizeof(counters));
             return true;
         }
     }
@@ -339,8 +355,8 @@ TEST(ModuleM4Service, StatsRowsAreKeyedAndNamedByBindingId)
     while (m7.receive(frame, sizeof(frame), &len) == 0) {
         MsgHeader header;
         ASSERT_TRUE(parse_header(frame, len, header));
-        if (is_config_request(frame, len)) {
-            continue;   // unanswered here: sent again after CALL_TIMEOUT_MS
+        if (is_config_request(frame, len) || MsgType(header.type) == MsgType::Counters) {
+            continue;   // Config: unanswered here, sent again after CALL_TIMEOUT_MS
         }
         ASSERT_EQ(MsgType(header.type), MsgType::Stats);
         ASSERT_LT(row_count, 4);
@@ -356,6 +372,42 @@ TEST(ModuleM4Service, StatsRowsAreKeyedAndNamedByBindingId)
     EXPECT_STREQ(rows[1].name, "id:432");
     EXPECT_EQ(rows[1].count, 1U);
     EXPECT_EQ(rows[1].total_us, 50U);
+    millis_ahead = 0;
+}
+
+// 17 keys in one window: the 16 with the most round-trip time named, the least folded into m4:other
+TEST(ModuleM4Service, SixteenBusiestRowsAreReported)
+{
+    start();
+    send_ready(7);
+    service.step();
+    for (uint32_t i = 0; i < 17; i++) {
+        round_trip(500 + i, 10 * (i + 1));
+    }
+    millis_ahead += 1000;
+    service.step();
+    StatsMsg rows[20];
+    uint8_t row_count = 0;
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    while (m7.receive(frame, sizeof(frame), &len) == 0) {
+        MsgHeader header;
+        ASSERT_TRUE(parse_header(frame, len, header));
+        if (MsgType(header.type) != MsgType::Stats) {
+            continue;
+        }
+        ASSERT_LT(row_count, 20);
+        memcpy(&rows[row_count++], frame, sizeof(StatsMsg));
+    }
+    ASSERT_EQ(row_count, 17);
+    for (uint8_t i = 0; i < 16; i++) {
+        // largest total first: 500 + 16 down to 500 + 1
+        EXPECT_EQ(rows[i].method, 516 - i);
+        EXPECT_EQ(rows[i].total_us, 10U * (17 - i));
+    }
+    EXPECT_STREQ(rows[16].name, "m4:other");
+    EXPECT_EQ(rows[16].count, 1U);
+    EXPECT_EQ(rows[16].total_us, 10U);
     millis_ahead = 0;
 }
 
@@ -481,6 +533,33 @@ TEST(ModuleM4Service, ParameterChangedFeedsTheMirror)
     EXPECT_EQ(service.mirror_hits(), 1U);
     EXPECT_FALSE(service.mirror_get(0, 0x20001010ULL, out));
     EXPECT_EQ(service.mirror_misses(), 1U);
+}
+
+// the window's mirror counts go after its Stats rows; the next window counts from zero
+TEST(ModuleM4Service, StatsWindowSendsCounters)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    uint8_t out[5];
+    ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
+    EXPECT_FALSE(service.mirror_get(0, 0x20001010ULL, out));
+    millis_ahead += 1000;
+    service.step();
+    CountersMsg counters;
+    ASSERT_TRUE(m7_receive_counters(counters));
+    EXPECT_EQ(counters.mirror_hits, 1U);
+    EXPECT_EQ(counters.mirror_misses, 1U);
+    EXPECT_EQ(counters.post_drops, 0U);
+    millis_ahead += 1000;
+    service.step();
+    ASSERT_TRUE(m7_receive_counters(counters));
+    EXPECT_EQ(counters.mirror_hits, 0U);
+    EXPECT_EQ(counters.mirror_misses, 0U);
+    millis_ahead = 0;
 }
 
 TEST(ModuleM4Service, ParameterChangedOfAnotherSessionIsDropped)

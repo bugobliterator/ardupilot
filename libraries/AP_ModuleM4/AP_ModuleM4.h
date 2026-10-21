@@ -112,6 +112,7 @@ private:
     void handle_message(const uint8_t *buf, uint16_t len);
     void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
+    void take_counters(const uint8_t *buf);
     // a module's text notify: sent as the PR's Runtime sends module texts
     void send_module_text(const uint8_t *buf, uint16_t len);
     void log_supervisor(uint32_t now_ms, uint32_t elapsed_ms);
@@ -236,6 +237,10 @@ private:
     uint32_t _post_drops;
     bool _post_error_reported;        // the GCS text of a failed one, once per module load
     uint32_t _posted_batched;         // posted frames the worker served after the one handed to it
+    // the M4's Counters frames since the last M4MR row
+    uint32_t _m4_mirror_hits;
+    uint32_t _m4_mirror_misses;
+    uint32_t _m4_post_drops;
     uint32_t _ready_sent_ms;
 
     // counters of the current one-second window

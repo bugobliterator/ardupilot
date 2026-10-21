@@ -168,6 +168,15 @@ void AP_ModuleM4::host_thread()
                 _slow_max_us = 0;
                 _slow_cpu_max_us = 0;
                 _slow_refused = 0;
+                _m4_mirror_hits = 0;
+                _m4_mirror_misses = 0;
+                _m4_post_drops = 0;
+                _mirror_frames_sent = 0;
+                _mirror_entries_sent = 0;
+                _mirror_failed_sends = 0;
+                _post_errors = 0;
+                _post_drops = 0;
+                _posted_batched = 0;
             }
             hal.scheduler->delay(100);
             continue;
@@ -251,6 +260,15 @@ void AP_ModuleM4::host_thread()
             _slow_max_us = 0;
             _slow_cpu_max_us = 0;
             _slow_refused = 0;
+            _m4_mirror_hits = 0;
+            _m4_mirror_misses = 0;
+            _m4_post_drops = 0;
+            _mirror_frames_sent = 0;
+            _mirror_entries_sent = 0;
+            _mirror_failed_sends = 0;
+            _post_errors = 0;
+            _post_drops = 0;
+            _posted_batched = 0;
         }
     }
 }
@@ -511,6 +529,9 @@ void AP_ModuleM4::handle_message(const uint8_t *buf, uint16_t len)
     switch (MsgType(header.type)) {
     case MsgType::Stats:
         log_rpc_stats(buf);
+        return;
+    case MsgType::Counters:
+        take_counters(buf);
         return;
     case MsgType::BindingCall:
         serve_binding(buf, len);
@@ -1022,12 +1043,22 @@ void AP_ModuleM4::log_rpc_stats(const uint8_t *buf)
     // @Field: Max: longest round trip
     // @Field: SemMax: longest M7-side time of one call
     // @Field: Tot: total round-trip time
-    AP::logger().WriteStreaming("SRPC", "TimeUS,Id,Name,N,P50,P99,Max,SemMax,Tot",
-                                "s#--sssss", "F---FFFFF", "QHZIIIIIQ",
+    // @Field: Post: 1 for a posted binding (the round trip is the M4's post-to-ring time)
+    AP::logger().WriteStreaming("SRPC", "TimeUS,Id,Name,N,P50,P99,Max,SemMax,Tot,Post",
+                                "s#--sssss-", "F---FFFFF-", "QHZIIIIIQB",
                                 AP_HAL::micros64(), stats.method, name,
                                 stats.count, stats.p50_us, stats.p99_us, stats.max_us, stats.m7_max_us,
-                                uint64_t(stats.total_us));
+                                uint64_t(stats.total_us), uint8_t(stats.reserved & ModuleM4::STATS_ROW_POSTED));
 #endif
+}
+
+void AP_ModuleM4::take_counters(const uint8_t *buf)
+{
+    ModuleM4::CountersMsg counters;
+    memcpy(&counters, buf, sizeof(counters));   // parse_header() checked the length
+    _m4_mirror_hits += counters.mirror_hits;
+    _m4_mirror_misses += counters.mirror_misses;
+    _m4_post_drops += counters.post_drops;
 }
 
 // @LoggerMessage: M4ST
@@ -1073,6 +1104,21 @@ void AP_ModuleM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
                                 _slow_max_us, _slow_cpu_max_us, _slow_refused);
+    // @LoggerMessage: M4MR
+    // @Description: Rust M4 Parameter mirror and posted calls, once per second (M4 builds)
+    // @Field: TimeUS: Time since system startup
+    // @Field: MirHit: Parameter.get answered on the M4 in the last M4 stats window
+    // @Field: MirMiss: Parameter.get forwarded to the M7 in the last M4 stats window
+    // @Field: MirTx: ParameterChanged frames sent in the last second
+    // @Field: MirEnt: Parameter values those frames carried
+    // @Field: MirRsy: ParameterChanged frames that did not fit the ring (the module's gets are forwarded until resent)
+    // @Field: PostErr: posted calls the M7 ran with a status other than OK
+    // @Field: PostDrop: posted calls dropped (M4 timeout, quota or duty-cap refusal)
+    // @Field: PostBat: posted calls the slow worker served in a batch after the one handed to it
+    AP::logger().WriteStreaming("M4MR", "TimeUS,MirHit,MirMiss,MirTx,MirEnt,MirRsy,PostErr,PostDrop,PostBat",
+                                "s--------", "F--------", "QIIIIIIII", AP_HAL::micros64(), _m4_mirror_hits,
+                                _m4_mirror_misses, _mirror_frames_sent, _mirror_entries_sent, _mirror_failed_sends,
+                                _post_errors, _post_drops + _m4_post_drops, _posted_batched);
 #endif
     switch (_refusal_notice.update(now_ms, _slow_refused)) {
     case ModuleM4::RefusalNotice::Text::Refused:

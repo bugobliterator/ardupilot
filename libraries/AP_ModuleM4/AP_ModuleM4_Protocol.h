@@ -26,6 +26,7 @@ enum class MsgType : uint8_t {
     SystemReply = 12,  // M7 -> M4: its reply
     Control = 13,      // M7 -> M4: a request to one module
     ParameterChanged = 14, // M7 -> M4: Parameter values for the M4's mirror
+    Counters = 15,     // M4 -> M7: mirror and posted counters of the last Stats window
 };
 
 enum class FaultKind : uint8_t {
@@ -188,6 +189,14 @@ struct __attribute__((packed)) StatsMsg {
     char name[64];         // "type:method" (binding_method_label()), terminated; logged, never trusted
 };
 
+struct __attribute__((packed)) CountersMsg {
+    MsgHeader header;
+    uint32_t mirror_hits;     // Parameter.get answered on the M4
+    uint32_t mirror_misses;   // forwarded to the M7
+    uint32_t post_drops;      // posted frames that never reached the ring
+    uint32_t reserved;
+};
+
 struct __attribute__((packed)) FaultInjectMsg {
     MsgHeader header;
     uint32_t kind;         // FaultKind
@@ -230,6 +239,8 @@ inline bool parse_header(const uint8_t *buf, uint16_t len, MsgHeader &header)
     switch (MsgType(header.type)) {
     case MsgType::Stats:
         return len == sizeof(StatsMsg);
+    case MsgType::Counters:
+        return len == sizeof(CountersMsg);
     case MsgType::FaultInject:
         return len == sizeof(FaultInjectMsg);
     case MsgType::Ready:
