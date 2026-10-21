@@ -53,7 +53,7 @@ static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = ModuleM4::START_TIMEOUT_MS;
 #else
 static const uint32_t PLATFORM_RESTART_TIMEOUT_MS = ModuleM4::RESTART_TIMEOUT_MS;
 #endif
-// MOD_DEBUG_OPTS bit that disables the Rust pre-arm checks (AP_Module::Runtime)
+// MOD_DEBUG_OPTS bit that disables the module pre-arm checks (AP_Module::Runtime)
 static const uint8_t DEBUG_OPTION_NO_PREARM = 1U << 4;
 // the PR's MOD_LD_CSUM / MOD_RUN_CSUM mask
 static const uint32_t CHECKSUM_MASK = 0x007FFFFF;
@@ -62,21 +62,21 @@ AP_ModuleM4 *AP_ModuleM4::_singleton;
 
 const AP_Param::GroupInfo AP_ModuleM4::var_info[] = {
     // @Param: RST_MAX
-    // @DisplayName: Rust M4 restart limit
+    // @DisplayName: M4 module restart limit
     // @Description: M4 restarts after faults before native modules stay off until reboot
     // @Range: 0 10
     // @User: Advanced
     AP_GROUPINFO("RST_MAX", 1, AP_ModuleM4, _restart_max, 3),
 #if AP_MODULE_M4_FAULT_INJECTION_ENABLED
     // @Param: INJECT
-    // @DisplayName: Rust M4 fault injection
+    // @DisplayName: M4 module fault injection
     // @Description: Test builds only: performs this fault kind on the M4 once when set
     // @User: Advanced
     AP_GROUPINFO("INJECT", 2, AP_ModuleM4, _inject, 0),
 #endif
     // @Param: OPTS
-    // @DisplayName: Rust M4 options
-    // @Description: Rust on the Cortex-M4 options
+    // @DisplayName: M4 module options
+    // @Description: Native modules on the Cortex-M4 options
     // @Bitmask: 0:GCS RPC summary every 10 s,1:GCS M4 CRC self-check values once per session,2:Call latency probe (M4LT log rows and @SYS/module_latency.txt, from the next M4 session)
     // @User: Advanced
     AP_GROUPINFO("OPTS", 3, AP_ModuleM4, _options, 0),
@@ -1091,9 +1091,9 @@ void AP_ModuleM4::module_state(const uint8_t *buf, uint16_t len)
         }
         // the PR's latch, which there needs a reboot: here a MOD_RESTART change reclaims the
         // parked module with a requested M4 restart
-        hal.util->snprintf(reason, sizeof(reason), "%.24s panic; set MOD_RESTART", name);
+        hal.util->snprintf(reason, sizeof(reason), "%.19s panic; set MOD_RESTART", name);
         load_error(reason);
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Module fatal: %.37s", notify.text);
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Module fatal: %.36s", notify.text);
         break;
     }
 }
@@ -1153,7 +1153,7 @@ void AP_ModuleM4::log_rpc_stats(const uint8_t *buf)
         }
     }
     // @LoggerMessage: SRPC
-    // @Description: Rust M4 binding call round trips of one method, once per second (M4 builds)
+    // @Description: M4 module binding call round trips of one method, once per second (M4 builds)
     // @Field: TimeUS: Time since system startup
     // @Field: Id: method id
     // @Field: Name: method name, as the M4 reports it
@@ -1182,7 +1182,7 @@ void AP_ModuleM4::take_counters(const uint8_t *buf)
 }
 
 // @LoggerMessage: M4ST
-// @Description: Rust M4 supervisor, once per second (M4 builds)
+// @Description: M4 module supervisor, once per second (M4 builds)
 // @Field: TimeUS: Time since system startup
 // @Field: St: supervisor state (0 held, 1 starting, 2 running, 3 restarting, 4 off)
 // @Field: HB: M4 heartbeat counter
@@ -1210,7 +1210,7 @@ void AP_ModuleM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
                                 uint16_t(MIN(_host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 _long_passes);
     // @LoggerMessage: M4HP
-    // @Description: Rust M4 host thread passes, once per second (M4 builds)
+    // @Description: M4 module host thread passes, once per second (M4 builds)
     // @Field: TimeUS: Time since system startup
     // @Field: PassMax: the largest CPU time of one fast-lane pass in the last second, in microseconds (what the duty cap charges)
     // @Field: WallBusy: host thread wall time from wake to the end of each pass in the last second, per mille (thread statistics do not feed it; preemption and waits on the slow worker count, the switch around a pass does not)
@@ -1225,7 +1225,7 @@ void AP_ModuleM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
                                 uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
                                 _slow_max_us, _slow_cpu_max_us, _slow_refused);
     // @LoggerMessage: M4MR
-    // @Description: Rust M4 Parameter mirror and posted calls, once per second (M4 builds)
+    // @Description: M4 module Parameter mirror and posted calls, once per second (M4 builds)
     // @Field: TimeUS: Time since system startup
     // @Field: MirHit: Parameter.get answered on the M4 in the last M4 stats window
     // @Field: MirMiss: Parameter.get forwarded to the M7 in the last M4 stats window
@@ -1260,13 +1260,14 @@ void AP_ModuleM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     const uint32_t window_ms = _last_summary_ms != 0 ? now_ms - _last_summary_ms : 10000;
     _last_summary_ms = now_ms;
     const uint32_t per_second = uint32_t(uint64_t(_rpc_summary.count) * 1000 / MAX(window_ms, 1U));
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust RPC %u/s p50<%u p99<%u max %uus",
-                  unsigned(per_second), unsigned(_rpc_summary.p50_us),
-                  unsigned(_rpc_summary.p99_us), unsigned(_rpc_summary.max_us));
+    // clamped within one 50-character STATUSTEXT
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Module: RPC %u/s p50<%u p99<%u max %uus",
+                  unsigned(MIN(per_second, 9999U)), unsigned(MIN(_rpc_summary.p50_us, 9999U)),
+                  unsigned(MIN(_rpc_summary.p99_us, 9999U)), unsigned(MIN(_rpc_summary.max_us, 99999U)));
     memset(&_rpc_summary, 0, sizeof(_rpc_summary));
     // busy microseconds per millisecond = per mille of one core
     const uint32_t host_permille = _host_busy_us / MAX(elapsed_ms, 1U);
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Rust M7 host %u.%u%% CPU",
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Module: M7 host %u.%u%% CPU",
                   unsigned(host_permille / 10), unsigned(host_permille % 10));
 }
 
@@ -1316,7 +1317,7 @@ void AP_ModuleM4::report_fault(uint32_t cfsr, uint32_t hfsr, uint32_t pc, uint32
     ModuleM4::fault_reason_text(detail, sizeof(detail), cfsr, hfsr, pc, lr, _module_stack_base);
     if (_module_count != 0 && _module_rx_size != 0 && !ModuleM4::fault_on_stacking(cfsr) &&
         pc - _module_rx_base < _module_rx_size) {
-        hal.util->snprintf(location, sizeof(location), "fault in %.24s+0x%X", _modules[0].name,
+        hal.util->snprintf(location, sizeof(location), "fault in %.22s+0x%X", _modules[0].name,
                            unsigned(pc - _module_rx_base));
     }
 #endif
@@ -1451,7 +1452,7 @@ uint8_t AP_ModuleM4::restart_limit() const
 
 /*
   reason: short (at most 12 characters), so the restart text stays within one 50-character
-  STATUSTEXT: "Module: M4 fault (process exit), restarting (10/10)". detail: an M4 fault record's
+  STATUSTEXT: "Module: M4 fault (process exit), restart (10/10)". detail: an M4 fault record's
   text, and location where in the module it faulted, each sent first on its own line. The restart
   is granted after restart_backoff_ms() of the restarts used (supervise())
  */
@@ -1470,7 +1471,7 @@ void AP_ModuleM4::failure(const char *reason, const char *detail, const char *lo
         return;
     }
     _restarts_used++;
-    GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Module: M4 fault (%s), restarting (%u/%u)", reason,
+    GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "Module: M4 fault (%s), restart (%u/%u)", reason,
                   unsigned(_restarts_used), unsigned(restart_limit()));
     _restart_requested = false;   // a fault during a requested restart is a fault
     // the session's modules are gone now; the grant waits for the backoff
@@ -1564,7 +1565,7 @@ void AP_ModuleM4::check_stopped()
     }
     for (uint8_t i = 0; i < _module_count; i++) {
         if (_module_running[i]) {
-            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Module: %.31s did not stop, M4 restarted", _modules[i].name);
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Module: %.15s did not stop, M4 restarted", _modules[i].name);
         }
     }
     request_restart();
