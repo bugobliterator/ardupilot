@@ -6,6 +6,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_Rust/Bindings.h>
+#include <AP_Rust/CallLatencyLog.h>
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
@@ -26,6 +27,11 @@ extern const AP_HAL::HAL& hal;
 
 namespace PeerHeader = CubePilotFW::PeerHeader;
 using RustM4::MsgType;
+using AP_Rust::CallLatencyLog;
+
+static_assert(RustM4::PROBE_M4_SLEPT == AP_Rust::CALL_M4_SLEPT && RustM4::PROBE_M4_POLL_WAKE == AP_Rust::CALL_M4_POLL_WAKE &&
+              RustM4::PROBE_M4_SENT_BY_STEP == AP_Rust::CALL_M4_SENT_BY_STEP, "the M4's probe flags are the log's");
+static const uint16_t PROBE_M4_FLAGS = RustM4::PROBE_M4_SLEPT | RustM4::PROBE_M4_POLL_WAKE | RustM4::PROBE_M4_SENT_BY_STEP;
 
 // after a pass that hit either limit with frames left: a flooding M4 gets one pass per pause
 static const uint32_t SERVE_BACKOFF_US = 500;
@@ -65,7 +71,7 @@ const AP_Param::GroupInfo AP_RustM4::var_info[] = {
     // @Param: OPTS
     // @DisplayName: Rust M4 options
     // @Description: Rust on the Cortex-M4 options
-    // @Bitmask: 0:GCS RPC summary every 10 s,1:GCS M4 CRC self-check values once per session
+    // @Bitmask: 0:GCS RPC summary every 10 s,1:GCS M4 CRC self-check values once per session,2:Call latency probe (M4LT log rows and @SYS/rust_latency.txt, from the next M4 session)
     // @User: Advanced
     AP_GROUPINFO("OPTS", 3, AP_RustM4, _options, 0),
     AP_GROUPEND
@@ -181,10 +187,12 @@ void AP_RustM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
+        _probing = (uint8_t(_options.get()) & OPTION_CALL_PROBE) != 0 && CallLatencyLog::get().start();
         const uint32_t cap_wait_us = _duty_cap.wait_us(AP_HAL::micros());
         const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
-        switch (RustM4::host_wait_after(cap_wait_us, last == ServeResult::Busy, last == ServeResult::Stuck,
-                                        ring_empty)) {
+        const RustM4::HostWait wait = RustM4::host_wait_after(cap_wait_us, last == ServeResult::Busy,
+                                                              last == ServeResult::Stuck, ring_empty);
+        switch (wait) {
         case RustM4::HostWait::DutyCap:
             // the host's share of the M7 ran out: serve nothing until credit returns, however many
             // frames are pending. An empty ring keeps listening, so its next doorbell is not missed
@@ -210,6 +218,11 @@ void AP_RustM4::host_thread()
         }
         _channel->wake();
         _woke_us = AP_HAL::micros();
+        if (_probing) {
+            _pass_us = CallLatencyLog::clock_us();
+            _pass_frames = 0;
+            _pass_cap_paused = wait == RustM4::HostWait::DutyCap;
+        }
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
@@ -239,6 +252,9 @@ void AP_RustM4::host_thread()
 #if AP_RUST_M4_FAULT_INJECTION_ENABLED
         send_fault_inject();
 #endif
+        if (_probing) {
+            CallLatencyLog::get().flush(now_ms);
+        }
         const uint32_t busy_us = AP_HAL::micros() - _woke_us;
         _host_busy_us += busy_us;
         if (busy_us > LONG_PASS_US) {
@@ -452,6 +468,12 @@ bool AP_RustM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
     send_frame(_tx_frame, RustM4::pack_binding_reply(_tx_frame, sizeof(_tx_frame), call.header.seq,
                                                      RustM4::ReplyStatus::Ok, RustM4::STATUS_BUSY, nullptr, 0,
                                                      _wake_latency_us, 0));
+    if (_probing) {
+        // unrun: no dispatch, lock or adapter stages
+        const uint32_t now_us = CallLatencyLog::clock_us();
+        const AP_RustM4_Server::ServeProbe unrun { now_us, now_us, now_us, now_us, 0, 0 };
+        probe_served(buf, len, unrun, AP_Rust::CALL_REFUSED);
+    }
     return true;
 }
 
@@ -492,7 +514,16 @@ AP_RustM4::ServeResult AP_RustM4::serve()
         [this](uint16_t len) {
             // a frame the worker's posted batch handed back is dispatched like any other
             while (len != 0) {
-                if (_server.frame_on_fast_lane(_rx_frame, len)) {
+                const bool fast = _server.frame_on_fast_lane(_rx_frame, len);
+                if (_probing) {
+                    const uint32_t start_cycles = CallLatencyLog::cycles();
+                    _frame_received_us = CallLatencyLog::clock_us();
+                    _frame_flags = uint16_t(fast ? AP_Rust::CallLane::Fast : AP_Rust::CallLane::Slow) |
+                                   uint16_t(MIN(_pass_frames, uint8_t(15)) << AP_Rust::CALL_POSITION_SHIFT);
+                    _pass_frames = uint8_t(MIN(_pass_frames + 1, 255));
+                    _frame_overhead_cycles = CallLatencyLog::cycles() - start_cycles;
+                }
+                if (fast) {
                     handle_message(_rx_frame, len);
                     len = 0;
                 } else if (_duty_cap.refuses_slow_bindings() && refuse_slow_binding(_rx_frame, len)) {
@@ -553,7 +584,9 @@ void AP_RustM4::handle_message(const uint8_t *buf, uint16_t len)
 void AP_RustM4::serve_binding(const uint8_t *buf, uint16_t len)
 {
     _session_calls++;
-    const uint16_t reply_len = _server.serve_binding(buf, len, _tx_frame, sizeof(_tx_frame), AP_HAL::millis());
+    AP_RustM4_Server::ServeProbe served {};
+    const uint16_t reply_len = _server.serve_binding(buf, len, _tx_frame, sizeof(_tx_frame), AP_HAL::millis(),
+                                                     _probing ? &served : nullptr);
     if (_server.last_call_wrote_parameters()) {
         // the module reads its own write at once: the values go ahead of the reply, on the same ring
         _server.mark_all_live();
@@ -594,6 +627,42 @@ void AP_RustM4::serve_binding(const uint8_t *buf, uint16_t len)
     if (!send_frame(_tx_frame, reply_len) && resync) {
         _server.owe_resync(uint16_t(module));
     }
+    if (_probing) {
+        probe_served(buf, len, served, served.flags);
+    }
+}
+
+void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_Server::ServeProbe &served,
+                             uint16_t flags)
+{
+    const uint32_t reply_sent_us = CallLatencyLog::clock_us();
+    const uint32_t start_cycles = CallLatencyLog::cycles();
+    RustM4::BindingCallHeader call;
+    RustM4::CallProbeTrailer trailer;
+    if (!RustM4::parse_binding_call(buf, len, call) || !RustM4::binding_call_trailer(buf, len, call, trailer)) {
+        return;   // the M4 does not probe this session, or the trailer did not fit the frame
+    }
+    CallLatencyLog &log = CallLatencyLog::get();
+    log.set_m4_stamp_cycles(trailer.stamp_cycles);
+    AP_Rust::CallTrace trace;
+    // the M4's stamps of its previous probed call, which the M7 holds
+    const AP_Rust::M4Completion previous { trailer.prev_seq, trailer.prev_sent_us, trailer.prev_reply_seen_us,
+                                           trailer.prev_return_us, uint16_t(trailer.prev_flags & PROBE_M4_FLAGS) };
+    if (_probe_pending.complete(previous, trace)) {
+        log.record(trace);
+    }
+    const AP_Rust::CallStamps stamps { trailer.svc_entry_us, trailer.pre_send_us, 0, _pass_us, _frame_received_us,
+                                       served.dispatch, served.lock_wait, served.adapter, served.adapter_done,
+                                       reply_sent_us, 0, 0 };
+    AP_Rust::CallTrace partial {};
+    partial.time_us = AP_HAL::micros64();
+    partial.seq = call.header.seq;
+    partial.id = uint16_t(MIN(call.id, uint32_t(UINT16_MAX)));
+    partial.flags = uint16_t(flags | _frame_flags | (_pass_cap_paused ? AP_Rust::CALL_CAP_PAUSED : 0));
+    if (_probe_pending.hold(partial, stamps, trace)) {
+        log.record(trace);
+    }
+    log.add_overhead(_frame_overhead_cycles + served.overhead_cycles + (CallLatencyLog::cycles() - start_cycles));
 }
 
 // system calls: a module's text notify; a call of a method this M7 does not serve is answered

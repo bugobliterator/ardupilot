@@ -8,6 +8,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_HAL/Semaphores.h>
 #include <AP_Param/AP_Param.h>
+#include <AP_Rust/CallLatency.h>
 #include <AP_Rust/Runtime.h>
 #include "AP_RustM4_Discovery.h"
 #include "AP_RustM4_FileServer.h"
@@ -72,6 +73,8 @@ private:
     static const uint8_t OPTION_RPC_SUMMARY = 1U << 0;
     // RUST_M4_OPTS bit 1: the M4's CRC self-check values, once per session
     static const uint8_t OPTION_CRC_VALUES = 1U << 1;
+    // RUST_M4_OPTS bit 2: the call latency probe (AP_Rust/CallLatencyLog.h), from the next M4 session
+    static const uint8_t OPTION_CALL_PROBE = RustM4::M4_OPTION_CALL_PROBE;
 
     AP_Int8 _restart_max;
 #if AP_RUST_M4_FAULT_INJECTION_ENABLED
@@ -90,6 +93,9 @@ private:
     // the dirty slots' values on the slow worker, charged to the duty cap like a worker frame
     void mirror_on_worker();
     void send_mirror_changes();
+    // a probed call's M7 stages are done (its reply sent): records the previous call its trailer
+    // completes, and holds this one for the next
+    void probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_Server::ServeProbe &served, uint16_t flags);
     void serve_system(const uint8_t *buf, uint16_t len);
     // the session's module files, found on the slow worker before Ready (discover())
     void discover_on_worker();
@@ -209,6 +215,17 @@ private:
     RustM4::StartFault _start_fault;
     uint32_t _woke_us;
     uint32_t _wake_latency_us;
+
+    // the call latency probe (RUST_M4_OPTS bit 2): the stamps of this pass and of the frame being
+    // served, on the probe's counter
+    bool _probing;
+    bool _pass_cap_paused;            // this pass followed a duty-cap pause
+    uint32_t _pass_us;
+    uint8_t _pass_frames;
+    uint32_t _frame_received_us;
+    uint16_t _frame_flags;            // its lane and its position in the pass
+    uint32_t _frame_overhead_cycles;
+    AP_Rust::PendingCall _probe_pending;
 
     // module texts as the PR's Runtime::text queues them: 44 characters each, sent by the host thread
     struct ModuleText {

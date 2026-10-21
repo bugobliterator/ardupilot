@@ -5,6 +5,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Rust/Bindings.h>
 #include <AP_Rust/BindingM4Policy_generated.h>
+#include <AP_Rust/CallLatency.h>
 #include <AP_Rust/HostApi.h>
 #include <AP_RustM4/AP_RustM4_Server.h>
 
@@ -396,4 +397,48 @@ TEST(RustM4Server, PostedQuotaRefusalIsADrop)
 
 #endif
 
-AP_GTEST_MAIN()
+AP_GTEST_MAIN()TEST(RustM4Server, ProbeStampsTheDispatchInOrder)
+{
+    AP_RustM4_Server server;
+    server.reset(1, 1);
+    uint8_t frame[MAX_FRAME];
+    static uint8_t reply[MAX_FRAME];
+    // the scheduler's semaphore guards it, but no scheduler runs in this test: no lock is taken
+    uint16_t len = call(frame, uint32_t(AP_Rust::BindingId::VEHICLE_GET_MODE), 0, 1);
+    ASSERT_EQ(AP_Rust::M4_BINDING_LOCK[uint32_t(AP_Rust::BindingId::VEHICLE_GET_MODE)], AP_Rust::M4Lock::Scheduler);
+    ASSERT_EQ(AP_Rust::M4_BINDING_LOCK[uint32_t(AP_Rust::BindingId::AHRS_GET_ORIGIN)], AP_Rust::M4Lock::Ahrs);
+    AP_RustM4_Server::ServeProbe probe {};
+    ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
+    EXPECT_GE(int32_t(probe.lock_wait - probe.dispatch), 0);
+    EXPECT_GE(int32_t(probe.adapter - probe.lock_wait), 0);
+    EXPECT_GE(int32_t(probe.adapter_done - probe.adapter), 0);
+    EXPECT_EQ(probe.flags & (AP_Rust::CALL_LOCK_TAKEN | AP_Rust::CALL_LOCK_UNKNOWN), 0);
+    // an adapter on a lock the probe does not take
+    uint32_t other = UINT32_MAX;
+    for (uint32_t id = 0; id < AP_Rust::M4_BINDING_COUNT; id++) {
+        if (AP_Rust::M4_BINDING_LOCK[id] == AP_Rust::M4Lock::Other && !AP_RustM4_Server::needs_vehicle(id) &&
+            AP_Rust::M4_BINDING_POLICY[id].lane != AP_Rust::M4Lane::Local) {
+            other = id;
+            break;
+        }
+    }
+    ASSERT_NE(other, UINT32_MAX);
+    len = call(frame, other, 0, 0);
+    probe = AP_RustM4_Server::ServeProbe {};
+    ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
+    EXPECT_NE(probe.flags & AP_Rust::CALL_LOCK_UNKNOWN, 0);
+    // a probed frame serves its input, not its trailer
+    const AP_Rust::BindingId get = AP_Rust::BindingId::PARAMETER_GET;
+    uint8_t input[8] = {};
+    const CallProbeTrailer trailer {};
+    len = pack_binding_call(frame, MAX_FRAME, 42, 0, 0, uint32_t(get), input, sizeof(input), 5, &trailer);
+    probe = AP_RustM4_Server::ServeProbe {};
+    const uint16_t reply_len = server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe);
+    BindingReplyHeader h {};
+    const uint8_t *body = nullptr;
+    ASSERT_TRUE(parse_binding_reply(reply, reply_len, h, body));
+    EXPECT_EQ(h.transport, uint8_t(ReplyStatus::Ok));
+    EXPECT_EQ(h.status, AP_RUST_STATUS_INVALID);   // token 0
+}
+
+

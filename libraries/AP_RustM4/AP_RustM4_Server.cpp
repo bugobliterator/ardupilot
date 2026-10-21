@@ -20,6 +20,7 @@
 #include <AP_Rust/BindingSupport.h>
 #include <AP_Rust/BindingSerialLED.h>
 #include <AP_Rust/Bindings.h>
+#include <AP_Rust/CallLatencyLog.h>
 #include <AP_Rust/HostApi.h>
 #include "AP_RustM4_ServeWait.h"
 
@@ -66,11 +67,19 @@ static void zero_bytes(uint8_t *p, uint32_t n)
 }
 
 uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap,
-                                         uint32_t now_ms)
+                                         uint32_t now_ms, ServeProbe *probe)
 {
     _last_posted_outcome = PostedOutcome::NotPosted;
     _last_call_wrote_parameters = false;
     _last_call_module = -1;
+    using AP_Rust::CallLatencyLog;
+    if (probe != nullptr) {
+        // until the adapter runs, every later stage is the dispatch stamp: a frame answered before it
+        // has no lock or adapter time
+        const uint32_t start_cycles = CallLatencyLog::cycles();
+        probe->dispatch = probe->lock_wait = probe->adapter = probe->adapter_done = CallLatencyLog::clock_us();
+        probe->overhead_cycles += CallLatencyLog::cycles() - start_cycles;
+    }
 #if AP_RUST_M4_TEST_HOOKS
     _last_dispatch_ran = false;
 #endif
@@ -101,6 +110,9 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
             return 0;
         }
         // as M4 Lua: a refused call is answered OK and not run; a bool result reads false
+        if (probe != nullptr) {
+            probe->flags |= AP_Rust::CALL_QUOTA;
+        }
         memset(_out, 0, call.out_size);
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, STATUS_OK, _out, call.out_size, 0, 0);
     }
@@ -114,7 +126,27 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
     // adapters do not all honour out_size; none writes past MAX_FRAME (NoAdapterWritesPastTheFrame)
     _out_dirty = MAX_FRAME;
     const uint32_t start_us = AP_HAL::micros();
-    const int32_t status = dispatch(call.module, call.id, call.in_size, call.out_size);
+    int32_t status;
+    if (probe == nullptr) {
+        status = dispatch(call.module, call.id, call.in_size, call.out_size);
+    } else {
+        // the adapter's own take of its (recursive) lock then waits for nothing
+        uint32_t cycles = CallLatencyLog::cycles();
+        AP_HAL::Semaphore *lock = CallLatencyLog::adapter_lock(call.id, probe->flags);
+        probe->lock_wait = CallLatencyLog::clock_us();
+        probe->overhead_cycles += CallLatencyLog::cycles() - cycles;
+        if (lock != nullptr) {
+            lock->take_blocking();
+        }
+        probe->adapter = CallLatencyLog::clock_us();
+        status = dispatch(call.module, call.id, call.in_size, call.out_size);
+        probe->adapter_done = CallLatencyLog::clock_us();
+        cycles = CallLatencyLog::cycles();
+        if (lock != nullptr) {
+            lock->give();
+        }
+        probe->overhead_cycles += CallLatencyLog::cycles() - cycles;
+    }
     const uint32_t exec_us = AP_HAL::micros() - start_us;
     _last_call_wrote_parameters = (AP_Rust::M4_BINDING_POLICY[call.id].flags &
                                    (AP_Rust::M4_FLAG_MIRROR_HANDLE_WRITER | AP_Rust::M4_FLAG_MIRROR_NAME_WRITER)) != 0;
