@@ -290,7 +290,7 @@ __attribute__((noreturn)) static void park_module()
 
 static void sys_allocate(struct port_extctx *ctx)
 {
-    ctx->r0 = own_context(ctx->r0) ? uint32_t(uintptr_t(host_allocate(*active, ctx->r1, ctx->r2))) : 0;
+    ctx->r0 = own_context(ctx->r0) ? uint32_t(uintptr_t(host_allocate(*active, ctx->r1, ctx->r2, host_platform))) : 0;
 }
 
 static void sys_deallocate(struct port_extctx *ctx)
@@ -610,6 +610,7 @@ void ModuleM4::module_port_start_selftest()
     m.request = call_link_of->request;
     m.reply = call_link_of->reply;
     m.panic_text[0] = 0;
+    m.heap_needed = 0;
     m.ranges.rx = { uintptr_t(__m4_selftest_start__), uint32_t(__m4_selftest_end__ - __m4_selftest_start__) };
     m.ranges.rw = { 0, 0 };
     m.ranges.stack = { layout.stack_base, layout.stack_top - layout.stack_base };

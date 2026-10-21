@@ -843,6 +843,8 @@ void M4Service::forget_ended_module()
     case ModuleStateKind::Started:
         _ended_modules &= uint8_t(~(1U << notify.module));
         break;
+    case ModuleStateKind::HeapNeeded:
+        break;
     }
 }
 

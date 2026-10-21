@@ -163,7 +163,7 @@ extern "C" {
 
 static uint8_t *host_api_allocate(void *context, uint32_t size, uint32_t alignment)
 {
-    return own_context(context) ? host_allocate(*active, size, alignment) : nullptr;
+    return own_context(context) ? host_allocate(*active, size, alignment, host_platform) : nullptr;
 }
 
 static void host_api_deallocate(void *context, uint8_t *allocation)
