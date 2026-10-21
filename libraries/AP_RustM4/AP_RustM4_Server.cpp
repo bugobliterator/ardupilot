@@ -73,6 +73,8 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
     _last_call_wrote_parameters = false;
     _last_call_module = -1;
     using AP_Rust::CallLatencyLog;
+    using AP_Rust::M7CyclePart;
+    const uint32_t entry_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
     if (probe != nullptr) {
         // until the adapter runs, every later stage is the dispatch stamp: a frame answered before it
         // has no lock or adapter time
@@ -124,16 +126,23 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         probe->chk_quota = CallLatencyLog::clock_us();
         probe->taken |= AP_Rust::CALL_STAMP_CHK_QUOTA;
     }
+    const uint32_t zero_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
     // newlib-nano's memset stores one byte per iteration: clear only what earlier calls touched
     if (_in_dirty > call.in_size) {
         zero_bytes(_in + call.in_size, _in_dirty - call.in_size);
     }
+    const uint32_t copy_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
     memcpy(_in, frame + sizeof(call), call.in_size);
     _in_dirty = call.in_size;
+    const uint32_t copied_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
     zero_bytes(_out, _out_dirty);
     // adapters do not all honour out_size; none writes past MAX_FRAME (NoAdapterWritesPastTheFrame)
     _out_dirty = MAX_FRAME;
     if (probe != nullptr) {
+        const uint32_t zeroed_cycles = CallLatencyLog::cycles();
+        probe->cycle_part(M7CyclePart::Parse, entry_cycles, zero_cycles);
+        probe->cycle_part(M7CyclePart::Zero, 0, (copy_cycles - zero_cycles) + (zeroed_cycles - copied_cycles));
+        probe->cycle_part(M7CyclePart::InCopy, copy_cycles, copied_cycles);
         probe->chk_copied = CallLatencyLog::clock_us();
         probe->taken |= AP_Rust::CALL_STAMP_CHK_COPIED;
     }
@@ -144,6 +153,7 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
     } else {
         // the adapter's own take of its (recursive) lock then waits for nothing
         uint32_t cycles = CallLatencyLog::cycles();
+        const uint32_t adapter_cycles = cycles;
         AP_HAL::Semaphore *lock = CallLatencyLog::adapter_lock(call.id, probe->flags);
         probe->lock_wait = CallLatencyLog::clock_us();
         probe->overhead_cycles += CallLatencyLog::cycles() - cycles;
@@ -157,7 +167,9 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         if (lock != nullptr) {
             lock->give();
         }
-        probe->overhead_cycles += CallLatencyLog::cycles() - cycles;
+        probe->adapter_end_cycles = CallLatencyLog::cycles();
+        probe->cycle_part(M7CyclePart::Adapter, adapter_cycles, probe->adapter_end_cycles);
+        probe->overhead_cycles += probe->adapter_end_cycles - cycles;
     }
     const uint32_t exec_us = AP_HAL::micros() - start_us;
     _last_call_wrote_parameters = (AP_Rust::M4_BINDING_POLICY[call.id].flags &

@@ -31,12 +31,12 @@ struct M4CallStamps {
     uint32_t reply_wake_us;
     uint32_t signalled_us;
     uint32_t resumed_us;
-    // core cycles before the frame was packed; 0 without a cycle counter
-    uint16_t svc_to_entry_cycles;     // SVC handler entry to host_binding_call() entry: the argument copy
-    uint16_t checks_cycles;           // after the entry stamp, the host's checks up to begin_probed_call()
-    uint16_t begin_probe_cycles;      // begin_probed_call()
-    uint16_t pack_cycles;             // pack_binding_call()
+    // core cycles per M4CyclePart, each valid with its bit in cycles_taken
+    uint16_t cycles[M4_CYCLE_PARTS];
+    uint16_t cycles_taken;
+    uint32_t drain_copied_cycles;     // the counter as the reply's copy to the link ended; 0: not taken
 };
+static_assert(M4_CYCLE_PARTS <= 16, "cycles_taken");
 
 struct M4CallProbe {
     // TIM5's count (the M7's micros()); null where the M4 cannot read it: no probe
@@ -52,6 +52,7 @@ struct M4CallProbe {
     uint16_t memset_large_centicycles;
     M4CallStamps current;             // the call in flight
     M4CallStamps last;                // the last probed call that got its reply; last.seq 0: none
+    uint32_t return_cycles;           // cycles() as host_binding_call() returned a probed call; 0: none
 };
 
 inline bool probing(const M4CallProbe *probe)
@@ -68,6 +69,13 @@ inline uint16_t cycles_between(uint32_t from, uint32_t to)
 {
     const uint32_t cycles = to - from;
     return cycles > 0xFFFFU ? 0xFFFFU : uint16_t(cycles);
+}
+
+// a part of the call in flight, from counter value from to to
+inline void probe_cycle_part(M4CallStamps &stamps, M4CyclePart part, uint32_t from, uint32_t to)
+{
+    stamps.cycles[uint8_t(part)] = cycles_between(from, to);
+    stamps.cycles_taken |= uint16_t(1U << uint8_t(part));
 }
 
 // a sub-stage stamp of the call in flight
@@ -133,10 +141,8 @@ inline CallProbeTrailer begin_probed_call(M4CallProbe &probe, uint32_t svc_entry
     trailer.prev_resumed_us = last.resumed_us;
     trailer.memset_small_centicycles = probe.memset_small_centicycles;
     trailer.memset_large_centicycles = probe.memset_large_centicycles;
-    trailer.prev_svc_to_entry_cycles = last.svc_to_entry_cycles;
-    trailer.prev_checks_cycles = last.checks_cycles;
-    trailer.prev_begin_probe_cycles = last.begin_probe_cycles;
-    trailer.prev_pack_cycles = last.pack_cycles;
+    memcpy(trailer.prev_cycles, last.cycles, sizeof(trailer.prev_cycles));
+    trailer.prev_cycles_taken = last.cycles_taken;
     probe.current = M4CallStamps {};
     probe.in_call = true;
     return trailer;

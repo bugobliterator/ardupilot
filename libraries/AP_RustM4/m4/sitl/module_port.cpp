@@ -232,7 +232,9 @@ static int32_t host_api_binding_call(void *context, uint32_t id, const uint8_t *
         return STATUS_INVALID;
     }
     const BindingCallArgs args { context, id, input, input_size, output, output_size };
-    return host_binding_call(*active, args, host_platform);
+    const int32_t status = host_binding_call(*active, args, host_platform);
+    record_svc_return(call_probe);
+    return status;
 }
 
 extern const AP_RustHostApi module_host_api;

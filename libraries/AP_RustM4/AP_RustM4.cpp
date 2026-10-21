@@ -32,6 +32,27 @@ using AP_Rust::CallLatencyLog;
 static_assert(RustM4::PROBE_M4_SLEPT == AP_Rust::CALL_M4_SLEPT && RustM4::PROBE_M4_POLL_WAKE == AP_Rust::CALL_M4_POLL_WAKE &&
               RustM4::PROBE_M4_SENT_BY_STEP == AP_Rust::CALL_M4_SENT_BY_STEP, "the M4's probe flags are the log's");
 static const uint16_t PROBE_M4_FLAGS = RustM4::PROBE_M4_SLEPT | RustM4::PROBE_M4_POLL_WAKE | RustM4::PROBE_M4_SENT_BY_STEP;
+#define M4_CYCLE_PART_MATCHES(part) (uint8_t(RustM4::M4CyclePart::part) == uint8_t(AP_Rust::M4CyclePart::part))
+static_assert(RustM4::M4_CYCLE_PARTS == AP_Rust::M4_CYCLE_PARTS && M4_CYCLE_PART_MATCHES(SvcEntry) &&
+              M4_CYCLE_PART_MATCHES(Checks) && M4_CYCLE_PART_MATCHES(BeginProbe) && M4_CYCLE_PART_MATCHES(Pack) &&
+              M4_CYCLE_PART_MATCHES(FwdLock) && M4_CYCLE_PART_MATCHES(FwdRing) && M4_CYCLE_PART_MATCHES(FwdBell) &&
+              M4_CYCLE_PART_MATCHES(FwdUnlock) && M4_CYCLE_PART_MATCHES(IsrToThread) &&
+              M4_CYCLE_PART_MATCHES(DrainLock) && M4_CYCLE_PART_MATCHES(DrainRing) &&
+              M4_CYCLE_PART_MATCHES(DrainParse) && M4_CYCLE_PART_MATCHES(DrainCopy) &&
+              M4_CYCLE_PART_MATCHES(PortTail) && M4_CYCLE_PART_MATCHES(RetCopy) && M4_CYCLE_PART_MATCHES(SvcReturn),
+              "the M4's cycle parts are the log's");
+#undef M4_CYCLE_PART_MATCHES
+static_assert(RustM4::PING_BINDING_ID == AP_Rust::PROBE_PING_ID && RustM4::PING_BINDING_ID <= UINT16_MAX,
+              "the ping's id is a trace id");
+
+// the M4 announced it sleeps: a send() now rings its doorbell (the probe's ReplyBell)
+static bool m4_asleep(const CubePilotFW::Channel &channel)
+{
+    // Channel::init() checked the window's 32 B alignment
+    const void *shared = channel.header() + PeerHeader::kSize;
+    const auto *control = static_cast<const CubePilotFW::Channel::Control *>(shared);
+    return control->asleep[uint8_t(PeerHeader::Core::M4)].load() == 1;
+}
 static_assert(RustM4::PROBE_STAMP_PACKED == AP_Rust::CALL_STAMP_M4_PACKED &&
               RustM4::PROBE_STAMP_POSTED == AP_Rust::CALL_STAMP_M4_POSTED &&
               RustM4::PROBE_STAMP_FORWARD_RETURNED == AP_Rust::CALL_STAMP_M4_FORWARD_RETURNED &&
@@ -157,9 +178,11 @@ void AP_RustM4::update(const AP_Rust::Runtime::Config &config)
 void AP_RustM4::doorbell_isr(uint8_t group)
 {
     (void)group;
+    const uint32_t isr_cycles = CallLatencyLog::cycles();   // the probe's IsrToThread starts here
     if (_singleton != nullptr) {
         _singleton->_doorbell_us = AP_HAL::micros();
         if (_singleton->_probing) {
+            _singleton->_doorbell_isr_cycles = isr_cycles;
             _singleton->_doorbell_probe_us = CallLatencyLog::clock_us();
             _singleton->_doorbell_probed = true;
         }
@@ -203,6 +226,8 @@ void AP_RustM4::host_thread()
         const RustM4::HostWait wait = RustM4::host_wait_after(cap_wait_us, last == ServeResult::Busy,
                                                               last == ServeResult::Stuck, ring_empty);
         woke_on_timeout = false;
+        bool doorbell_wait = false;
+        uint32_t woke_cycles = 0;
         switch (wait) {
         case RustM4::HostWait::DutyCap:
             // the host's share of the M7 ran out: serve nothing until credit returns, however many
@@ -224,12 +249,23 @@ void AP_RustM4::host_thread()
             // a protocol error) must not make this loop spin: wait for the timeout
             if (ring_empty || last == ServeResult::Stuck) {
                 woke_on_timeout = !_doorbell.wait(platform_wait_us());
+                woke_cycles = _probing ? CallLatencyLog::cycles() : 0;
+                doorbell_wait = !woke_on_timeout;
             }
             break;
         }
         // a doorbell wake: the frames between the pass's two CPU readings. The rest waits for a
         // timed-out wait or the next housekeeping period
+        const uint32_t wake_cycles = _probing ? CallLatencyLog::cycles() : 0;
         _channel->wake();
+        if (_probing) {
+            _pass_woken_cycles = CallLatencyLog::cycles();
+            _pass_cycles_taken = 0;
+            pass_cycle_part(AP_Rust::M7CyclePart::Wake, wake_cycles, _pass_woken_cycles);
+            if (doorbell_wait && _doorbell_probed) {
+                pass_cycle_part(AP_Rust::M7CyclePart::IsrToThread, _doorbell_isr_cycles, woke_cycles);
+            }
+        }
         _woke_us = AP_HAL::micros();
         if (_probing) {
             _pass_us = CallLatencyLog::clock_us();
@@ -249,6 +285,7 @@ void AP_RustM4::host_thread()
         if (RustM4::pass_after_wake(_duty_cap, _woke_us, [this]() { IGNORE_RETURN(charge_cpu(false)); })) {
             last = serve();
         }
+        const uint32_t served_cycles = _probing ? CallLatencyLog::cycles() : 0;
         if (_state == State::Running && _server.mirror_dirty()) {
             mirror_on_worker();
         }
@@ -256,10 +293,19 @@ void AP_RustM4::host_thread()
             _housekeeping_us = _woke_us;
             housekeeping();
         }
+        const uint32_t charge_cycles = _probing ? CallLatencyLog::cycles() : 0;
         const uint32_t busy_us = charge_cpu(true) - _woke_us;
         _host_busy_us += busy_us;
         if (busy_us > LONG_PASS_US) {
             _long_passes++;
+        }
+        if (_pass_end_pending) {
+            _pass_end_pending = false;
+            if (_probing) {
+                CallLatencyLog::get().record_m7_cycle(_pass_end_id, AP_Rust::M7CyclePart::PassEnd,
+                                                      (served_cycles - _pass_end_from_cycles) +
+                                                      (CallLatencyLog::cycles() - charge_cycles));
+            }
         }
     }
 }
@@ -537,14 +583,39 @@ AP_RustM4::ServeResult AP_RustM4::serve()
     if (_state != State::Running) {
         return ServeResult::Stuck;   // frames from before a (re)start are dropped by the re-handshake
     }
+    if (_probing) {
+        pass_cycle_part(AP_Rust::M7CyclePart::CapWait, _pass_woken_cycles, CallLatencyLog::cycles());
+    }
+    uint32_t take_cycles = 0;
+    bool take_timed = false;
     const RustM4::PassEnd end = RustM4::serve_pass(
         _rx_frame,
-        [this](uint16_t &len) { return _channel->receive(_rx_frame, sizeof(_rx_frame), &len); },
-        [this](uint16_t len) {
+        [this, &take_cycles, &take_timed](uint16_t &len) {
+            const uint32_t start_cycles = _probing ? CallLatencyLog::cycles() : 0;
+            const int ret = _channel->receive(_rx_frame, sizeof(_rx_frame), &len);
+            take_timed = _probing;
+            take_cycles = _probing ? CallLatencyLog::cycles() - start_cycles : 0;
+            return ret;
+        },
+        [this, &take_cycles, &take_timed](uint16_t len) {
             // a frame the worker's posted batch handed back is dispatched like any other
             while (len != 0) {
                 const bool fast = _server.frame_on_fast_lane(_rx_frame, len);
                 if (_probing) {
+                    // this frame's parts: its Take, and the pass's for the first frame
+                    _frame_cycles_taken = 0;
+                    if (take_timed) {
+                        frame_cycle_part(AP_Rust::M7CyclePart::Take, 0, take_cycles);
+                        take_timed = false;
+                    }
+                    if (_pass_frames == 0) {
+                        for (uint8_t i = 0; i < AP_Rust::M7_CYCLE_PARTS; i++) {
+                            if ((_pass_cycles_taken & (1U << i)) != 0) {
+                                _frame_cycles[i] = _pass_cycles[i];
+                                _frame_cycles_taken |= 1U << i;
+                            }
+                        }
+                    }
                     const uint32_t start_cycles = CallLatencyLog::cycles();
                     _frame_received_us = CallLatencyLog::clock_us();
                     _frame_flags = uint16_t(fast ? AP_Rust::CallLane::Fast : AP_Rust::CallLane::Slow) |
@@ -653,12 +724,28 @@ void AP_RustM4::serve_binding(const uint8_t *buf, uint16_t len)
         }
         memcpy(_tx_frame, &reply, sizeof(reply));
     }
-    if (!send_frame(_tx_frame, reply_len) && resync) {
+    const bool sent = _probing && (served.cycles_taken & (1U << uint8_t(AP_Rust::M7CyclePart::Adapter))) != 0
+                          ? send_reply_timed(_tx_frame, reply_len, served.adapter_end_cycles)
+                          : send_frame(_tx_frame, reply_len);
+    if (!sent && resync) {
         _server.owe_resync(uint16_t(module));
     }
     if (_probing) {
         probe_served(buf, len, served, served.flags);
     }
+}
+
+bool AP_RustM4::send_reply_timed(const uint8_t *buf, uint16_t len, uint32_t pack_from_cycles)
+{
+    const uint32_t packed_cycles = CallLatencyLog::cycles();
+    frame_cycle_part(AP_Rust::M7CyclePart::ReplyPack, pack_from_cycles, packed_cycles);
+    // with the M4 asleep, send() rings its doorbell too
+    const bool bell = m4_asleep(*_channel);
+    const uint32_t send_cycles = CallLatencyLog::cycles();
+    const bool sent = send_frame(buf, len);
+    frame_cycle_part(bell ? AP_Rust::M7CyclePart::ReplyBell : AP_Rust::M7CyclePart::ReplyRing, send_cycles,
+                     CallLatencyLog::cycles());
+    return sent;
 }
 
 void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_Server::ServeProbe &served,
@@ -671,6 +758,13 @@ void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_S
     if (!RustM4::parse_binding_call(buf, len, call) || !RustM4::binding_call_trailer(buf, len, call, trailer)) {
         return;   // the M4 does not probe this session, or the trailer did not fit the frame
     }
+    probe_frame(call.header.seq, call.id, trailer, served, flags, reply_sent_us, start_cycles);
+}
+
+void AP_RustM4::probe_frame(uint32_t seq, uint32_t id, const RustM4::CallProbeTrailer &trailer,
+                            const AP_RustM4_Server::ServeProbe &served, uint16_t flags, uint32_t reply_sent_us,
+                            uint32_t start_cycles)
+{
     CallLatencyLog &log = CallLatencyLog::get();
     log.set_m4_stamp_cycles(trailer.stamp_cycles);
     log.set_m4_memset(trailer.memset_small_centicycles, trailer.memset_large_centicycles);
@@ -686,12 +780,28 @@ void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_S
     if (_probe_pending.complete(previous, trace, &completed)) {
         log.record(trace);
         log.record_substages(trace.id, completed);
-        const uint16_t pre_cycles[AP_Rust::M4_PRE_PARTS] {
-            trailer.prev_svc_to_entry_cycles, trailer.prev_checks_cycles, trailer.prev_begin_probe_cycles,
-            trailer.prev_pack_cycles
-        };
-        log.record_m4_pre_cycles(trace.id, pre_cycles);
+        uint32_t m4_cycles[AP_Rust::M4_CYCLE_PARTS];
+        for (uint8_t i = 0; i < AP_Rust::M4_CYCLE_PARTS; i++) {
+            m4_cycles[i] = trailer.prev_cycles[i];
+        }
+        log.record_m4_cycles(trace.id, m4_cycles, trailer.prev_cycles_taken);
     }
+    // this frame's M7 parts: the host's, then the server's
+    uint32_t m7_cycles[AP_Rust::M7_CYCLE_PARTS];
+    uint32_t m7_taken = 0;
+    for (uint8_t i = 0; i < AP_Rust::M7_CYCLE_PARTS; i++) {
+        if ((served.cycles_taken & (1U << i)) != 0) {
+            m7_cycles[i] = served.cycles[i];
+            m7_taken |= 1U << i;
+        } else if ((_frame_cycles_taken & (1U << i)) != 0) {
+            m7_cycles[i] = _frame_cycles[i];
+            m7_taken |= 1U << i;
+        } else {
+            m7_cycles[i] = 0;
+        }
+    }
+    log.record_m7_cycles(id, m7_cycles, m7_taken);
+    _frame_cycles_taken = 0;
     AP_Rust::CallStamps stamps { trailer.svc_entry_us, trailer.pre_send_us, 0, _pass_us, _frame_received_us,
                                  served.dispatch, served.lock_wait, served.adapter, served.adapter_done,
                                  reply_sent_us, 0, 0 };
@@ -706,13 +816,17 @@ void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_S
     }
     AP_Rust::CallTrace partial {};
     partial.time_us = AP_HAL::micros64();
-    partial.seq = call.header.seq;
-    partial.id = uint16_t(MIN(call.id, uint32_t(UINT16_MAX)));
+    partial.seq = seq;
+    partial.id = uint16_t(MIN(id, uint32_t(UINT16_MAX)));
     partial.flags = uint16_t(flags | _frame_flags | (_pass_cap_paused ? AP_Rust::CALL_CAP_PAUSED : 0));
     if (_probe_pending.hold(partial, stamps, trace)) {
         log.record(trace);
     }
-    log.add_overhead(_frame_overhead_cycles + served.overhead_cycles + (CallLatencyLog::cycles() - start_cycles));
+    // PassEnd starts after the probe's own work, if this is the pass's last frame
+    _pass_end_id = id;
+    _pass_end_pending = true;
+    _pass_end_from_cycles = CallLatencyLog::cycles();
+    log.add_overhead(_frame_overhead_cycles + served.overhead_cycles + (_pass_end_from_cycles - start_cycles));
 }
 
 // system calls: a module's text notify; a call of a method this M7 does not serve is answered
@@ -721,6 +835,10 @@ void AP_RustM4::serve_system(const uint8_t *buf, uint16_t len)
 {
     RustM4::SystemCallHeader call;
     memcpy(&call, buf, sizeof(call));   // parse_header() checked len >= sizeof(SystemCallHeader)
+    if (call.method == uint16_t(RustM4::SystemMethod::Ping) && (call.flags & RustM4::CALL_FLAG_NOTIFY) == 0) {
+        serve_ping(buf, len, call.header.seq);
+        return;
+    }
     if ((call.flags & RustM4::CALL_FLAG_NOTIFY) != 0) {
         if (call.method == uint16_t(RustM4::SystemMethod::Text)) {
             send_module_text(buf, len);
@@ -754,6 +872,40 @@ void AP_RustM4::serve_system(const uint8_t *buf, uint16_t len)
         break;
     }
     send_frame(_tx_frame, reply_len);
+}
+
+// no adapter, lock or serve buffer: the M7 part of a ping is the frame's transport alone
+void AP_RustM4::serve_ping(const uint8_t *buf, uint16_t len, uint32_t seq)
+{
+    using AP_Rust::M7CyclePart;
+    RustM4::SystemCallHeader call;
+    memcpy(&call, buf, sizeof(call));
+    // the trailer is read after the reply, as a binding call's
+    const bool probed = _probing && (call.flags & RustM4::CALL_FLAG_PROBE) != 0;
+    AP_RustM4_Server::ServeProbe served {};
+    if (probed) {
+        const uint32_t entry_cycles = CallLatencyLog::cycles();
+        served.dispatch = CallLatencyLog::clock_us();
+        served.lock_wait = served.adapter = served.adapter_done = CallLatencyLog::clock_us();
+        served.adapter_end_cycles = CallLatencyLog::cycles();
+        served.cycle_part(M7CyclePart::Parse, entry_cycles, served.adapter_end_cycles);
+        served.cycle_part(M7CyclePart::Zero, 0, 0);
+        served.cycle_part(M7CyclePart::InCopy, 0, 0);
+        served.cycle_part(M7CyclePart::Adapter, 0, 0);
+    }
+    const uint16_t reply_len = pack_system_reply(RustM4::SystemMethod::Ping, seq, RustM4::ReplyStatus::Ok, 0,
+                                                 sizeof(RustM4::SystemReplyHeader));
+    if (!probed) {
+        send_frame(_tx_frame, reply_len);
+        return;
+    }
+    IGNORE_RETURN(send_reply_timed(_tx_frame, reply_len, served.adapter_end_cycles));
+    const uint32_t reply_sent_us = CallLatencyLog::clock_us();
+    const uint32_t start_cycles = CallLatencyLog::cycles();
+    RustM4::CallProbeTrailer trailer;
+    if (RustM4::ping_call_trailer(buf, len, call, trailer)) {
+        probe_frame(seq, RustM4::PING_BINDING_ID, trailer, served, 0, reply_sent_us, start_cycles);
+    }
 }
 
 // the reply's header at the start of _tx_frame; the method's contents follow it there

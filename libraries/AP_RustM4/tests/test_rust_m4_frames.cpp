@@ -1,4 +1,5 @@
 #include <AP_gtest.h>
+#include <AP_RustM4/AP_RustM4_CallStatus.h>
 #include <AP_RustM4/AP_RustM4_Protocol.h>
 
 using namespace RustM4;
@@ -73,7 +74,7 @@ TEST(RustM4Frames, ReplyCarriesOutputOnlyWithOk)
 
 TEST(RustM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
 {
-    EXPECT_EQ(sizeof(CallProbeTrailer), 72U);
+    EXPECT_EQ(sizeof(CallProbeTrailer), 100U);
     uint8_t frame[MAX_FRAME];
     const uint8_t input[3] = { 1, 2, 3 };
     CallProbeTrailer trailer {};
@@ -91,10 +92,11 @@ TEST(RustM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
     trailer.prev_resumed_us = 27;
     trailer.memset_small_centicycles = 125;
     trailer.memset_large_centicycles = 410;
-    trailer.prev_svc_to_entry_cycles = 31;
-    trailer.prev_checks_cycles = 32;
-    trailer.prev_begin_probe_cycles = 33;
-    trailer.prev_pack_cycles = 0xFFFF;
+    for (uint8_t i = 0; i < M4_CYCLE_PARTS; i++) {
+        trailer.prev_cycles[i] = uint16_t(31 + i);
+    }
+    trailer.prev_cycles[uint8_t(M4CyclePart::SvcReturn)] = 0xFFFF;
+    trailer.prev_cycles_taken = 0x8421;
     const uint16_t len = pack_binding_call(frame, sizeof(frame), 9, 0, 0, 242, input, 3, 1, &trailer);
     ASSERT_EQ(len, sizeof(BindingCallHeader) + 3 + sizeof(trailer));
     BindingCallHeader h;
@@ -118,15 +120,76 @@ TEST(RustM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
     EXPECT_EQ(out.prev_resumed_us, 27U);
     EXPECT_EQ(out.memset_small_centicycles, 125);
     EXPECT_EQ(out.memset_large_centicycles, 410);
-    EXPECT_EQ(out.prev_svc_to_entry_cycles, 31);
-    EXPECT_EQ(out.prev_checks_cycles, 32);
-    EXPECT_EQ(out.prev_begin_probe_cycles, 33);
-    EXPECT_EQ(out.prev_pack_cycles, 0xFFFF);
+    for (uint8_t i = 0; i + 1 < M4_CYCLE_PARTS; i++) {
+        EXPECT_EQ(out.prev_cycles[i], 31 + i);
+    }
+    EXPECT_EQ(out.prev_cycles[uint8_t(M4CyclePart::SvcReturn)], 0xFFFF);
+    EXPECT_EQ(out.prev_cycles_taken, 0x8421);
     // the same frame without the flag: its length disagrees with its input size
     BindingCallHeader unflagged = h;
     unflagged.flags = 0;
     memcpy(frame, &unflagged, sizeof(unflagged));
     EXPECT_FALSE(parse_binding_call(frame, len, h));
+}
+
+TEST(RustM4Frames, PingCarriesItsTrailerAfterTheHeader)
+{
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = pack_ping_call(frame, sizeof(frame));
+    ASSERT_EQ(len, sizeof(SystemCallHeader));
+    MsgHeader header;
+    ASSERT_TRUE(parse_header(frame, len, header));
+    SystemCallHeader h;
+    memcpy(&h, frame, sizeof(h));
+    EXPECT_EQ(h.header.type, uint8_t(MsgType::SystemCall));
+    EXPECT_EQ(h.header.seq, 0U);
+    EXPECT_EQ(h.method, uint16_t(SystemMethod::Ping));
+    EXPECT_EQ(h.flags, 0);
+    CallProbeTrailer out;
+    EXPECT_FALSE(ping_call_trailer(frame, len, h, out));
+
+    CallProbeTrailer trailer {};
+    trailer.svc_entry_us = 77;
+    trailer.prev_seq = 6;
+    trailer.prev_cycles[uint8_t(M4CyclePart::FwdBell)] = 1234;
+    trailer.prev_cycles_taken = 1U << uint8_t(M4CyclePart::FwdBell);
+    len = pack_ping_call(frame, sizeof(frame), &trailer);
+    ASSERT_EQ(len, sizeof(SystemCallHeader) + sizeof(trailer));
+    ASSERT_TRUE(parse_header(frame, len, header));
+    memcpy(&h, frame, sizeof(h));
+    EXPECT_EQ(h.flags, CALL_FLAG_PROBE);
+    EXPECT_EQ(h.header.length, len);
+    ASSERT_TRUE(ping_call_trailer(frame, len, h, out));
+    EXPECT_EQ(memcmp(&out, &trailer, sizeof(out)), 0);
+    // a trailer only where the length says so, and only on a Ping
+    EXPECT_FALSE(ping_call_trailer(frame, uint16_t(len - 1), h, out));
+    SystemCallHeader other = h;
+    other.method = uint16_t(SystemMethod::Noop);
+    EXPECT_FALSE(ping_call_trailer(frame, len, other, out));
+    // no room
+    EXPECT_EQ(pack_ping_call(frame, uint16_t(len - 1), &trailer), 0);
+}
+
+TEST(RustM4Frames, PingReplyStatus)
+{
+    SystemReplyHeader reply {};
+    fill_header(reply.header, MsgType::SystemReply, sizeof(reply), 3);
+    reply.method = uint16_t(SystemMethod::Ping);
+    reply.transport = uint8_t(ReplyStatus::Ok);
+    const uint8_t *frame = reinterpret_cast<const uint8_t *>(&reply);
+    EXPECT_EQ(ping_reply_status(frame, sizeof(reply)), STATUS_OK);
+    EXPECT_EQ(ping_reply_status(frame, sizeof(reply) - 1), STATUS_HOST_ERROR);
+    reply.transport = uint8_t(ReplyStatus::UnknownMethod);
+    EXPECT_EQ(ping_reply_status(frame, sizeof(reply)), STATUS_INVALID);
+    reply.transport = uint8_t(ReplyStatus::Ok);
+    reply.result = -5;
+    EXPECT_EQ(ping_reply_status(frame, sizeof(reply)), STATUS_HOST_ERROR);
+    reply.result = 0;
+    reply.method = uint16_t(SystemMethod::Noop);
+    EXPECT_EQ(ping_reply_status(frame, sizeof(reply)), STATUS_HOST_ERROR);
+    reply.method = uint16_t(SystemMethod::Ping);
+    reply.header.type = uint8_t(MsgType::BindingReply);
+    EXPECT_EQ(ping_reply_status(frame, sizeof(reply)), STATUS_HOST_ERROR);
 }
 
 TEST(RustM4Frames, ProbeFlagFollowsTheTrailer)

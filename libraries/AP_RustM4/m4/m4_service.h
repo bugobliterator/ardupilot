@@ -55,9 +55,11 @@ public:
     // has room. False if it is still Posted: the service's next drain_step() sends it
     bool forward_posted();
     // the module thread, woken while it waits for its call's reply: drain_step() with that wait,
-    // not the service's last one, in the probe's stamps. A fault injection drained here is left
+    // not the service's last one, in the probe's stamps (isr_to_thread_cycles: the doorbell interrupt
+    // to this thread's return from its wait, 0 if not taken). A fault injection drained here is left
     // to the service's next drain_step(): true if the service must be woken for it
-    bool drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us);
+    bool drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us,
+                               uint16_t isr_to_thread_cycles = 0);
     // the module thread, before it sleeps for its reply while the service sleeps: the Channel's
     // prepareSleep(), so the M7 rings again (once per sleep). False if a frame is waiting
     bool prepare_module_sleep() { return _channel->prepareSleep(); }
@@ -75,7 +77,7 @@ public:
     // interrupt the probe stamped at isr_us, and the thread resumed at wake_us
     void note_wake(bool poll_timeout, bool stamped = false, uint32_t isr_us = 0, uint32_t wake_us = 0)
     {
-        _service_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us };
+        _service_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us, 0 };
     }
     // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
     uint32_t lost() const { return _lost; }
@@ -104,6 +106,7 @@ private:
         bool stamped;
         uint32_t isr_us;
         uint32_t wake_us;
+        uint16_t isr_to_thread_cycles;
     };
     struct MethodStats {
         bool used;
@@ -141,6 +144,12 @@ private:
     void count_lost();
     void record_posted(uint16_t key, uint32_t post_us);
     bool posted_binding_on_link() const;
+    // the M7 announced it sleeps: a send() now rings its doorbell (the probe's FwdBell)
+    bool peer_asleep() const;
+    // the probe's cycle counter, when the probe is on; 0 otherwise
+    uint32_t probe_cycles() const;
+    // the service lock, its take timed into _lock_cycles while the probe is on
+    void lock_timed();
 
     void drain();
     // the call timeout runs from posting: waiting for Ready or ring space counts too
@@ -183,6 +192,11 @@ private:
     bool _rx_stalled;
     bool _flooding;
     bool _call_probed;          // the Sent call carries a probe trailer
+    // the probe's cycle parts of the last lock take and ring read, for the call they belong to
+    bool _lock_timed;
+    uint16_t _lock_cycles;
+    uint16_t _receive_cycles;
+    uint32_t _received_cycles;  // the counter as that read returned
     // written by note_wake() on the service thread, outside the lock: the module thread's drain
     // keeps its own
     WakeNote _service_wake;

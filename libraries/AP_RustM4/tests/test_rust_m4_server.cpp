@@ -421,6 +421,16 @@ AP_GTEST_MAIN()TEST(RustM4Server, ProbeStampsTheDispatchInOrder)
     EXPECT_GE(int32_t(probe.adapter - probe.lock_wait), 0);
     EXPECT_GE(int32_t(probe.adapter_done - probe.adapter), 0);
     EXPECT_EQ(probe.flags & (AP_Rust::CALL_LOCK_TAKEN | AP_Rust::CALL_LOCK_UNKNOWN), 0);
+    // the server's M7 cycle parts, and the counter after the adapter for ReplyPack
+    using AP_Rust::M7CyclePart;
+    const uint32_t server_parts = (1U << uint8_t(M7CyclePart::Parse)) | (1U << uint8_t(M7CyclePart::Zero)) |
+                                  (1U << uint8_t(M7CyclePart::InCopy)) | (1U << uint8_t(M7CyclePart::Adapter));
+    EXPECT_EQ(probe.cycles_taken, server_parts);
+    EXPECT_NE(probe.adapter_end_cycles, 0U);
+    for (const M7CyclePart part : { M7CyclePart::Parse, M7CyclePart::Zero, M7CyclePart::InCopy,
+                                    M7CyclePart::Adapter }) {
+        EXPECT_LT(probe.cycles[uint8_t(part)], 0x80000000U) << unsigned(part);   // forward in time
+    }
     // an adapter on a lock the probe does not take
     uint32_t other = UINT32_MAX;
     for (uint32_t id = 0; id < AP_Rust::M4_BINDING_COUNT; id++) {
@@ -435,6 +445,12 @@ AP_GTEST_MAIN()TEST(RustM4Server, ProbeStampsTheDispatchInOrder)
     probe = AP_RustM4_Server::ServeProbe {};
     ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
     EXPECT_NE(probe.flags & AP_Rust::CALL_LOCK_UNKNOWN, 0);
+    EXPECT_EQ(probe.cycles_taken, server_parts);
+    // a frame refused before the adapter takes no part
+    len = call(frame, AP_Rust::M4_BINDING_COUNT, 0, 0);
+    probe = AP_RustM4_Server::ServeProbe {};
+    ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
+    EXPECT_EQ(probe.cycles_taken, 0U);
     // a probed frame serves its input, not its trailer
     const AP_Rust::BindingId get = AP_Rust::BindingId::PARAMETER_GET;
     uint8_t input[8] = {};

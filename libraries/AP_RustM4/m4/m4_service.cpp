@@ -47,6 +47,10 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _reported_post_drops = 0;
     _ended_modules = 0;
     _call_probed = false;
+    _lock_timed = false;
+    _lock_cycles = 0;
+    _receive_cycles = 0;
+    _received_cycles = 0;
     _service_wake = WakeNote {};
     _module_wake = WakeNote {};
     _module_draining = false;
@@ -95,11 +99,36 @@ void M4Service::compute_crc_self_check()
     _crc_self_check.pattern_check = crc32_finish(crc);
 }
 
+bool M4Service::peer_asleep() const
+{
+    // Channel::init() checked the window's 32 B alignment
+    const void *shared = _channel->header() + PeerHeader::kSize;
+    const auto *control = static_cast<const Channel::Control *>(shared);
+    return control->asleep[uint8_t(PeerHeader::Core::M7)].load() == 1;
+}
+
+uint32_t M4Service::probe_cycles() const
+{
+    const M4CallProbe *probe = _platform.probe;
+    if (probe == nullptr || probe->cycles == nullptr || !probe->enabled.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    return probe->cycles();
+}
+
+void M4Service::lock_timed()
+{
+    const uint32_t start = probe_cycles();
+    _platform.lock();
+    _lock_timed = start != 0;
+    _lock_cycles = _lock_timed ? cycles_between(start, probe_cycles()) : 0;
+}
+
 void M4Service::drain_step()
 {
     // a reply is drained under the lock forward_posted() holds from send to Sent: it is never
     // seen before its call is Sent and dropped as stale
-    _platform.lock();
+    lock_timed();
     if (_deferred_fault != uint8_t(FaultKind::None)) {
         const FaultKind kind = FaultKind(_deferred_fault);
         _deferred_fault = uint8_t(FaultKind::None);
@@ -114,10 +143,11 @@ void M4Service::drain_step()
     _platform.unlock();
 }
 
-bool M4Service::drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us)
+bool M4Service::drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us,
+                                      uint16_t isr_to_thread_cycles)
 {
-    _platform.lock();
-    _module_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us };
+    lock_timed();
+    _module_wake = WakeNote { poll_timeout, stamped, isr_us, wake_us, isr_to_thread_cycles };
     _module_draining = true;
     drain();
     if (_ready && _link->state.load() == ModuleLink::Posted) {
@@ -132,13 +162,19 @@ bool M4Service::drain_step_for_module(bool poll_timeout, bool stamped, uint32_t 
 
 bool M4Service::forward_posted()
 {
-    _platform.lock();
+    lock_timed();
     if (_ready && _link->state.load() == ModuleLink::Posted) {
         time_posted_call();
         forward_call(false);
     }
     const bool sent = _link->state.load() != ModuleLink::Posted;
+    // the probed call this thread just sent: its reply cannot be drained before the unlock
+    M4CallProbe *probe = sent && _call_probed && _link->state.load() == ModuleLink::Sent ? _platform.probe : nullptr;
+    const uint32_t unlock_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
     _platform.unlock();
+    if (probe != nullptr) {
+        probe_cycle_part(probe->current, M4CyclePart::FwdUnlock, unlock_cycles, probe_cycles_now(*probe));
+    }
     return sent;
 }
 
@@ -154,6 +190,7 @@ void M4Service::time_posted_call()
 void M4Service::housekeeping_step()
 {
     _platform.lock();
+    _lock_timed = false;
     const uint32_t now_ms = _platform.millis();
     const uint8_t state = _link->state.load();
     if (state == ModuleLink::Posted && !_call_timed) {
@@ -198,7 +235,15 @@ void M4Service::drain()
     // bounded, so a flooding M7 cannot keep the M4 from beating
     for (uint8_t i = 0; i < 16; i++) {
         uint16_t len = 0;
+        // a probed call is Sent: its reply may be the next frame
+        const uint32_t receive_cycles = _call_probed ? probe_cycles() : 0;
         const int ret = _channel->receive(_rx, sizeof(_rx), &len);
+        if (receive_cycles != 0) {
+            _received_cycles = probe_cycles();
+            _receive_cycles = cycles_between(receive_cycles, _received_cycles);
+        } else {
+            _received_cycles = 0;
+        }
         if (ret != 0) {
             if (ret != -EAGAIN) {
                 _rx_stalled = true;   // e.g. -EMSGSIZE or -EBADMSG: the frame is not consumed
@@ -314,6 +359,10 @@ void M4Service::forward_call(bool from_step)
         key = uint16_t(SYSTEM_KEY | call.method);
         reply_type = uint8_t(MsgType::SystemReply);
         forget_ended_module();
+        CallProbeTrailer trailer;
+        if (probing(_platform.probe) && ping_call_trailer(_link->request, len, call, trailer)) {
+            probe = _platform.probe;
+        }
     }
     header.seq = ++_seq;
     memcpy(_link->request, &header, sizeof(header));
@@ -323,8 +372,18 @@ void M4Service::forward_call(bool from_step)
                &pre_send_us, sizeof(pre_send_us));
     }
     const uint32_t sent_cycles = _platform.cycles();
+    // with the M7 asleep, send() rings its doorbell too
+    const bool bell = probe != nullptr && peer_asleep();
+    const uint32_t send_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
     if (_channel->send(_link->request, len) != 0) {
         return;   // ring full: the M7 is behind, try again on the next step
+    }
+    if (probe != nullptr) {
+        probe_cycle_part(probe->current, bell ? M4CyclePart::FwdBell : M4CyclePart::FwdRing, send_cycles,
+                         probe_cycles_now(*probe));
+        if (_lock_timed) {
+            probe_cycle_part(probe->current, M4CyclePart::FwdLock, 0, _lock_cycles);
+        }
     }
     if ((flags & CALL_FLAG_NOTIFY) != 0) {
         if (MsgType(header.type) == MsgType::BindingCall) {
@@ -438,6 +497,15 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
     WakeNote &wake = _module_draining ? _module_wake : _service_wake;
     if (_call_probed) {
         M4CallProbe &probe = *_platform.probe;
+        if (_lock_timed) {
+            probe_cycle_part(probe.current, M4CyclePart::DrainLock, 0, _lock_cycles);
+        }
+        if (_received_cycles != 0) {
+            probe_cycle_part(probe.current, M4CyclePart::DrainRing, 0, _receive_cycles);
+        }
+        if (wake.isr_to_thread_cycles != 0) {
+            probe_cycle_part(probe.current, M4CyclePart::IsrToThread, 0, wake.isr_to_thread_cycles);
+        }
         probe.current.reply_seen_us = probe.clock_us();
         if (wake.poll_timeout) {
             probe.current.flags |= PROBE_M4_POLL_WAKE;
@@ -449,6 +517,7 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
         }
     }
     wake.stamped = false;   // one wait's stamps for one reply
+    wake.isr_to_thread_cycles = 0;
     const uint32_t round_trip_us = (_platform.cycles() - _call_sent_cycles) / _platform.cycles_per_us;
     uint32_t m7_us = 0;
     if (MsgType(header.type) == MsgType::BindingReply) {
@@ -479,7 +548,14 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
             _untimed.m7_max_us = m7_us;
         }
     }
+    const uint32_t copy_cycles = _call_probed && _received_cycles != 0 ? probe_cycles_now(*_platform.probe) : 0;
     memcpy(_link->reply, buf, len);
+    if (copy_cycles != 0) {
+        M4CallStamps &current = _platform.probe->current;
+        probe_cycle_part(current, M4CyclePart::DrainParse, _received_cycles, copy_cycles);
+        current.drain_copied_cycles = probe_cycles_now(*_platform.probe);
+        probe_cycle_part(current, M4CyclePart::DrainCopy, copy_cycles, current.drain_copied_cycles);
+    }
     complete(len);
 }
 

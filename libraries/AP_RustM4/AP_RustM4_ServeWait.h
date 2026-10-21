@@ -218,7 +218,7 @@ inline uint16_t serve_posted_batch(const uint8_t *frame, Receive receive, IsPost
 /*
   Which thread serves a frame. The host's fast lane, above the I/O threads, takes only what does
   fixed work with no file, storage, SD or bus access: binding calls whose generated M4 lane is Fast
-  (binding_fast), the Noop notify, the Stats rows and Counters, and the M7 -> M4 types, which only count a
+  (binding_fast), the Noop notify, the Ping, the Stats rows and Counters, and the M7 -> M4 types, which only count a
   protocol error. Everything else, the other system methods and frames that do not parse
   included, goes to the slow worker below the I/O threads.
  */
@@ -246,7 +246,7 @@ inline bool frame_on_fast_lane(const uint8_t *buf, uint16_t len, bool (*binding_
     case MsgType::SystemCall: {
         SystemCallHeader call;
         memcpy(&call, buf, sizeof(call));
-        return call.method == uint16_t(SystemMethod::Noop);
+        return call.method == uint16_t(SystemMethod::Noop) || call.method == uint16_t(SystemMethod::Ping);
     }
     }
     return false;
