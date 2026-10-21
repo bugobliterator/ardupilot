@@ -1,3 +1,6 @@
+// the values compared are set exactly
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+
 #include <AP_gtest.h>
 #include <AP_ModuleM4/AP_ModuleM4_config.h>
 #if AP_MODULE_M4_ENABLED
@@ -7,6 +10,7 @@
 #include <chrono>
 // the M4 service as the M4 image and the SITL M4 process build it (tests/wscript adds its
 // source and the include paths its bare-name includes need)
+#include <AP_ModuleM4_CallStatus.h>
 #include <AP_ModuleM4_Layout.h>
 #include <m4_service.h>
 
@@ -438,6 +442,162 @@ TEST(ModuleM4Service, ControlStopOfThisSessionReachesThePlatform)
     service.step();
     EXPECT_EQ(stops.load(), 1U);
     EXPECT_EQ(stopped_module.load(), 0U);
+}
+
+static void send_parameter_changed(uint32_t session, const ParameterValue *values, uint16_t count)
+{
+    uint8_t frame[MAX_FRAME];
+    const uint16_t len = pack_parameter_changed(frame, sizeof(frame), session, values, count);
+    ASSERT_NE(len, 0U);
+    ASSERT_EQ(m7.send(frame, len), 0);
+}
+
+TEST(ModuleM4Service, ParameterChangedFeedsTheMirror)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    uint8_t out[5];
+    ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
+    EXPECT_EQ(out[0], 1U);
+    EXPECT_EQ(service.mirror_hits(), 1U);
+    EXPECT_FALSE(service.mirror_get(0, 0x20001010ULL, out));
+    EXPECT_EQ(service.mirror_misses(), 1U);
+}
+
+TEST(ModuleM4Service, ParameterChangedOfAnotherSessionIsDropped)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(6, &value, 1);
+    service.step();
+    uint8_t out[5];
+    EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
+    EXPECT_EQ(service.protocol_errors(), 1U);
+}
+
+TEST(ModuleM4Service, BadEntriesAreDroppedOthersApplied)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue values[3] = {
+        { 0x20001000ULL, 1.0f, MAX_MODULES, PARAMETER_VALUE_BOUND, 0 },
+        { 0x20001010ULL, 2.0f, 0, PARAMETER_VALUE_BOUND, 0 },
+        { 0x20001020ULL, 3.0f, 0xFFFF, PARAMETER_VALUE_BOUND, 0 },
+    };
+    send_parameter_changed(7, values, 3);
+    service.step();
+    uint8_t out[5];
+    EXPECT_TRUE(service.mirror_get(0, 0x20001010ULL, out));
+    EXPECT_EQ(service.protocol_errors(), 2U);
+    // a token above UINTPTR_MAX is refused where pointers are 32-bit (the M4 image); the SITL M4
+    // process and this host test have 64-bit pointers, so only the module checks run here
+}
+
+TEST(ModuleM4Service, ResyncReplyMakesTheModuleStale)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    BindingReplyHeader reply {};
+    uint8_t frame[MAX_FRAME];
+    const uint8_t output[4] = { 0, 0, 0, 0 };
+    uint16_t len = pack_binding_reply(frame, sizeof(frame), call.header.seq, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    memcpy(&reply, frame, sizeof(reply));
+    reply.reserved2 = REPLY_FLAG_MIRROR_RESYNC;
+    memcpy(frame, &reply, sizeof(reply));
+    ASSERT_EQ(m7.send(frame, len), 0);
+    service.step();
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    uint8_t out[5];
+    EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
+}
+
+TEST(ModuleM4Service, ModuleEndForgetsItsEntries)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    ModuleStateNotify notify {};
+    fill_header(notify.call.header, MsgType::SystemCall, sizeof(notify), 0);
+    notify.call.method = uint16_t(SystemMethod::ModuleState);
+    notify.call.flags = CALL_FLAG_NOTIFY;
+    notify.module = 0;
+    notify.state = uint8_t(ModuleStateKind::Returned);
+    memcpy(call_link.request, &notify, sizeof(notify));
+    call_link.request_len = sizeof(notify);
+    call_link.state.store(ModuleLink::Posted);
+    ASSERT_TRUE(service.forward_posted());
+    uint8_t out[5];
+    EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
+    // the M7 still holds the ended module's slots: its later entries are dropped, not errors
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
+    EXPECT_EQ(service.protocol_errors(), 0U);
+}
+
+TEST(ModuleM4Service, ForwardedGetRefreshesAStaleEntryOnly)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    uint8_t out[5];
+    const uint8_t answer[5] = { 1, 0, 0, 0x80, 0x40 };   // 4.0f
+    service.mirror_refresh(0, 0x20001000ULL, answer);   // fresh: left as it is
+    ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
+    float got;
+    memcpy(&got, out + 1, 4);
+    EXPECT_EQ(got, 3.5f);
+    service.mirror_pending(0, 0x20001000ULL);   // a writer whose frame never came (refused or timed out)
+    service.mirror_settle(0, 0x20001000ULL);
+    EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));   // STALE
+    service.mirror_refresh(0, 0x20001000ULL, answer);
+    ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
+    memcpy(&got, out + 1, 4);
+    EXPECT_EQ(got, 4.0f);
+    service.mirror_refresh(0, 0x20001010ULL, answer);   // never inserts: a never-initialised token stays a miss
+    EXPECT_FALSE(service.mirror_get(0, 0x20001010ULL, out));
+}
+
+TEST(ModuleM4Service, InitOfAnExistingTokenIsForwardedUntilItsFrame)
+{
+    start();
+    send_ready(7);
+    service.step();
+    const ParameterValue value { 0x20001000ULL, 3.5f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &value, 1);
+    service.step();
+    service.mirror_pending(0, 0x20001000ULL);   // the module thread, before its INIT goes out
+    uint8_t out[5];
+    EXPECT_FALSE(service.mirror_get(0, 0x20001000ULL, out));
+    const ParameterValue rebound { 0x20001000ULL, 1.0f, 0, PARAMETER_VALUE_BOUND, 0 };
+    send_parameter_changed(7, &rebound, 1);
+    service.step();
+    service.mirror_settle(0, 0x20001000ULL);
+    ASSERT_TRUE(service.mirror_get(0, 0x20001000ULL, out));
+    float got;
+    memcpy(&got, out + 1, 4);
+    EXPECT_EQ(got, 1.0f);
 }
 
 #endif  // AP_MODULE_M4_ENABLED
