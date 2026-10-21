@@ -25,14 +25,14 @@ public:
     FileServerFixture() : server(ops())
     {
         fixture = this;
-        files["/APM/rust/digits.apmod"] = "123456789";
+        files["/APM/modules/digits.apmod"] = "123456789";
         std::string pattern;
         for (uint32_t i = 0; i < 2048; i++) {
             pattern.push_back(char(pattern_byte(i)));
         }
-        files["/APM/rust/pattern.apmod"] = pattern;
-        files["rust/sitl.apmod"] = "sitl";
-        files["@ROMFS/rust/romfs.apmod"] = "romfs";
+        files["/APM/modules/pattern.apmod"] = pattern;
+        files["modules/sitl.apmod"] = "sitl";
+        files["@ROMFS/modules/romfs.apmod"] = "romfs";
         files["/APM/scripts/x.lua"] = "lua";
     }
     ~FileServerFixture()
@@ -121,7 +121,7 @@ FileServerFixture *FileServerFixture::fixture;
 TEST(ModuleM4FileServer, CrcCoversServedBytes)
 {
     FileServerFixture f;
-    const int32_t fd = f.open("/APM/rust/digits.apmod");
+    const int32_t fd = f.open("/APM/modules/digits.apmod");
     ASSERT_GE(fd, 0);
     uint8_t buffer[16];
     EXPECT_EQ(f.read(fd, buffer, 4), 4);
@@ -134,13 +134,13 @@ TEST(ModuleM4FileServer, CrcCoversServedBytes)
 TEST(ModuleM4FileServer, CrcOfAPartialReadIsOfTheServedBytesOnly)
 {
     FileServerFixture f;
-    const int32_t fd = f.open("/APM/rust/pattern.apmod");
+    const int32_t fd = f.open("/APM/modules/pattern.apmod");
     uint8_t buffer[2000];
     EXPECT_EQ(f.read(fd, buffer, 1001), 1001);
     const auto closed = f.close(fd);
     EXPECT_EQ(closed.served, 1001U);
     EXPECT_EQ(closed.crc, f.zlib_crc_of_pattern(1001));   // computed bitwise in the test
-    const int32_t again = f.open("/APM/rust/pattern.apmod");
+    const int32_t again = f.open("/APM/modules/pattern.apmod");
     EXPECT_EQ(f.read(again, buffer, 2000), 2000);
     EXPECT_EQ(f.read(again, buffer, 2000), 48);
     EXPECT_EQ(f.close(again).crc, 0xB9D45861U);   // zlib.crc32 of the whole pattern
@@ -149,7 +149,7 @@ TEST(ModuleM4FileServer, CrcOfAPartialReadIsOfTheServedBytesOnly)
 TEST(ModuleM4FileServer, OutOfOrderReadIsRefused)
 {
     FileServerFixture f;
-    const int32_t fd = f.open("/APM/rust/pattern.apmod");
+    const int32_t fd = f.open("/APM/modules/pattern.apmod");
     uint8_t buffer[64];
     EXPECT_EQ(f.read(fd, buffer, 64), 64);
     EXPECT_EQ(f.seek(fd, 0), -EINVAL);       // backwards
@@ -163,13 +163,13 @@ TEST(ModuleM4FileServer, WritesAndOtherPathsAreRefused)
 {
     FileServerFixture f;
     EXPECT_LT(f.open("/APM/scripts/x.lua"), 0);
-    EXPECT_LT(f.open_for_write("/APM/rust/a.apmod"), 0);
+    EXPECT_LT(f.open_for_write("/APM/modules/a.apmod"), 0);
 }
 
 TEST(ModuleM4FileServer, ForgedAndStaleIdsAreBadDescriptors)
 {
     FileServerFixture f;
-    const int32_t id = f.open("/APM/rust/digits.apmod");
+    const int32_t id = f.open("/APM/modules/digits.apmod");
     ASSERT_GE(id, 256);
     const int32_t forged[] = { 0, 1, 255, -1, INT32_MIN, INT32_MAX, id + 1, id + (1 << 8), id | 0x7F, 257 };
     uint8_t buffer[4];
@@ -190,13 +190,13 @@ TEST(ModuleM4FileServer, ForgedAndStaleIdsAreBadDescriptors)
 TEST(ModuleM4FileServer, ResetMakesEarlierIdsStale)
 {
     FileServerFixture f;
-    const int32_t id = f.open("/APM/rust/digits.apmod");
+    const int32_t id = f.open("/APM/modules/digits.apmod");
     ASSERT_GE(id, 256);
     f.server.reset();
     EXPECT_TRUE(f.open_files.empty());
     uint8_t buffer[4];
     EXPECT_EQ(f.read(id, buffer, 1), -EBADF);
-    const int32_t again = f.open("/APM/rust/digits.apmod");
+    const int32_t again = f.open("/APM/modules/digits.apmod");
     ASSERT_GE(again, 256);
     EXPECT_NE(again, id);
     EXPECT_EQ(f.read(id, buffer, 1), -EBADF);
@@ -210,35 +210,35 @@ TEST(ModuleM4FileServer, SessionLimitOfOpenFiles)
     FileServerFixture f;
     int32_t ids[FILE_SLOTS];
     for (uint8_t i = 0; i < FILE_SLOTS; i++) {
-        ids[i] = f.open("/APM/rust/digits.apmod");
+        ids[i] = f.open("/APM/modules/digits.apmod");
         ASSERT_GE(ids[i], 256) << int(i);
     }
-    EXPECT_EQ(f.open("/APM/rust/digits.apmod"), -EMFILE);
+    EXPECT_EQ(f.open("/APM/modules/digits.apmod"), -EMFILE);
     EXPECT_EQ(f.close(ids[3]).result, 0);
-    EXPECT_GE(f.open("/APM/rust/digits.apmod"), 256);
+    EXPECT_GE(f.open("/APM/modules/digits.apmod"), 256);
 }
 
 TEST(ModuleM4FileServer, PathsFromTheM4AreChecked)
 {
     FileServerFixture f;
     // the three module directories
-    EXPECT_GE(f.open("rust/sitl.apmod"), 256);
-    EXPECT_GE(f.open("@ROMFS/rust/romfs.apmod"), 256);
-    EXPECT_EQ(f.open("/APM/rust/missing.apmod"), -ENOENT);
+    EXPECT_GE(f.open("modules/sitl.apmod"), 256);
+    EXPECT_GE(f.open("@ROMFS/modules/romfs.apmod"), 256);
+    EXPECT_EQ(f.open("/APM/modules/missing.apmod"), -ENOENT);
     // refused before the filesystem sees them
     const uint32_t opens = f.opens;
     EXPECT_EQ(f.open(nullptr), -EINVAL);
     EXPECT_EQ(f.open(""), -EACCES);
-    EXPECT_EQ(f.open("/APM/rust/../scripts/x.lua"), -EACCES);
-    EXPECT_EQ(f.open("/APM/rust/sub/a.apmod"), -EACCES);
+    EXPECT_EQ(f.open("/APM/modules/../scripts/x.lua"), -EACCES);
+    EXPECT_EQ(f.open("/APM/modules/sub/a.apmod"), -EACCES);
     EXPECT_EQ(f.open("@SYS/threads.txt"), -EACCES);
     std::string name(MAX_FS_PATH, 'n');
     EXPECT_EQ(f.open(name.c_str()), -ENAMETOOLONG);
-    EXPECT_EQ(f.open_for_write("/APM/rust/digits.apmod"), -EACCES);
-    EXPECT_EQ(f.server.open("/APM/rust/digits.apmod", O_RDWR), -EACCES);
+    EXPECT_EQ(f.open_for_write("/APM/modules/digits.apmod"), -EACCES);
+    EXPECT_EQ(f.server.open("/APM/modules/digits.apmod", O_RDWR), -EACCES);
     EXPECT_EQ(f.opens, opens);
     // reads above the frame's limit
-    const int32_t id = f.open("/APM/rust/pattern.apmod");
+    const int32_t id = f.open("/APM/modules/pattern.apmod");
     uint8_t buffer[FS_READ_MAX + 1];
     EXPECT_EQ(f.read(id, buffer, FS_READ_MAX + 1), -EINVAL);
     EXPECT_EQ(f.read(id, nullptr, 1), -EINVAL);

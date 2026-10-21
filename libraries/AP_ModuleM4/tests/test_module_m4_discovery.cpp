@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <AP_HAL/AP_HAL.h>
+#include <AP_Filesystem/AP_Filesystem_config.h>
 #include <AP_ModuleM4/AP_ModuleM4_Discovery.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
@@ -82,6 +83,27 @@ TEST(ModuleM4Discovery, FindsOnlyApmodFiles)
     EXPECT_TRUE(module_path_allowed(files[0].path));
 }
 
+TEST(ModuleM4Discovery, DirectoriesAreAP_Modules)
+{
+    // AP_Module Runtime: ROMFS modules/, then /APM/modules (./modules in SITL)
+    EXPECT_STREQ(ROMFS_MODULE_DIRECTORY, "@ROMFS/modules");
+#if HAL_OS_FATFS_IO || HAL_OS_LITTLEFS_IO
+    EXPECT_STREQ(WRITABLE_MODULE_DIRECTORY, "/APM/modules");
+#else
+    EXPECT_STREQ(WRITABLE_MODULE_DIRECTORY, "modules");
+#endif
+    FakeLister fake;
+    fake.add("@ROMFS/rust", "old.apmod");
+    fake.add("rust", "old.apmod");
+    fake.add("/APM/rust", "old.apmod");
+    fake.add(WRITABLE_MODULE_DIRECTORY, "new.apmod");
+    ModuleFile files[8];
+    DiscoveryError error;
+    ASSERT_EQ(discover_modules(fake.lister(), 8, files, 8, error), 1U);
+    EXPECT_STREQ(files[0].name, "new.apmod");
+    EXPECT_TRUE(module_path_allowed(files[0].path));
+}
+
 TEST(ModuleM4Discovery, RomfsWinsADuplicate)
 {
     FakeLister fake;
@@ -93,7 +115,7 @@ TEST(ModuleM4Discovery, RomfsWinsADuplicate)
     EXPECT_EQ(error, DiscoveryError::None);
     EXPECT_TRUE(files[0].romfs);
     EXPECT_EQ(files[0].size, 10U);
-    EXPECT_STREQ(files[0].path, "@ROMFS/rust/airshow.apmod");
+    EXPECT_STREQ(files[0].path, "@ROMFS/modules/airshow.apmod");
     EXPECT_TRUE(module_path_allowed(files[0].path));
     ASSERT_EQ(fake.duplicates.size(), 1U);
     EXPECT_EQ(fake.duplicates[0], "airshow.apmod");

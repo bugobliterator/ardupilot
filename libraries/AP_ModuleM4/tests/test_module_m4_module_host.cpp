@@ -182,7 +182,7 @@ struct FakeM7 {
             ListModulesReply reply {};
             reply.count = list_count;
             strcpy(reply.modules[0].name, FILE_NAME);
-            strcpy(reply.modules[0].path, "/APM/rust/m4_test.apmod");
+            strcpy(reply.modules[0].path, "/APM/modules/m4_test.apmod");
             reply.modules[0].size = listed_size;
             memcpy(link.reply, &reply, sizeof(reply));
             result = reply_header(link, SystemMethod::ListModules, list_count, sizeof(reply));
@@ -192,7 +192,7 @@ struct FakeM7 {
         case SystemMethod::FsOpen: {
             FsOpenRequest open;
             memcpy(&open, link.request, sizeof(open));
-            EXPECT_STREQ(open.path, "/APM/rust/m4_test.apmod");
+            EXPECT_STREQ(open.path, "/APM/modules/m4_test.apmod");
             result = reply_header(link, SystemMethod::FsOpen, 3, sizeof(SystemReplyHeader));
             break;
         }

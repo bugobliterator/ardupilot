@@ -6,42 +6,52 @@ using namespace ModuleM4;
 TEST(ModuleM4Files, ModulePathsOnly)
 {
     // the module directories the in-process runtime discovers
-    EXPECT_TRUE(module_path_allowed("rust/airshow.apmod"));
-    EXPECT_TRUE(module_path_allowed("@ROMFS/rust/airshow.apmod"));
-    EXPECT_TRUE(module_path_allowed("/APM/rust/airshow.apmod"));
-    EXPECT_TRUE(module_path_allowed("/APM/rust/a.apmod"));
+    EXPECT_TRUE(module_path_allowed("modules/airshow.apmod"));
+    EXPECT_TRUE(module_path_allowed("@ROMFS/modules/airshow.apmod"));
+    EXPECT_TRUE(module_path_allowed("/APM/modules/airshow.apmod"));
+    EXPECT_TRUE(module_path_allowed("/APM/modules/a.apmod"));
     // anything else: other directories, other suffixes, subdirectories, climbing
     EXPECT_FALSE(module_path_allowed(nullptr));
     EXPECT_FALSE(module_path_allowed(""));
     EXPECT_FALSE(module_path_allowed("airshow.apmod"));
-    EXPECT_FALSE(module_path_allowed("/rust/airshow.apmod"));
-    EXPECT_FALSE(module_path_allowed("APM/rust/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("/modules/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("APM/modules/airshow.apmod"));
     EXPECT_FALSE(module_path_allowed("/APM/scripts/airshow.apmod"));
-    EXPECT_FALSE(module_path_allowed("/@ROMFS/rust/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("/@ROMFS/modules/airshow.apmod"));
     EXPECT_FALSE(module_path_allowed("@SYS/threads.txt"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/airshow.lua"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/airshow.apmod.bak"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/airshow.APMOD"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/.apmod"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/sub/airshow.apmod"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust/../LOGS/x.apmod"));
-    EXPECT_FALSE(module_path_allowed("rust/..\\x.apmod"));
-    EXPECT_FALSE(module_path_allowed("/APM/rust//airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/airshow.lua"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/airshow.apmod.bak"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/airshow.APMOD"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/.apmod"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/sub/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules/../LOGS/x.apmod"));
+    EXPECT_FALSE(module_path_allowed("modules/..\\x.apmod"));
+    EXPECT_FALSE(module_path_allowed("/APM/modules//airshow.apmod"));
+}
+
+TEST(ModuleM4Files, OldRustDirectoryRefused)
+{
+    // AP_Module reads modules/ only; the earlier rust/ directory is not served
+    EXPECT_FALSE(module_path_allowed("rust/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("@ROMFS/rust/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("/APM/rust/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("modulesx/airshow.apmod"));
+    EXPECT_FALSE(module_path_allowed("/APM/modulesx/airshow.apmod"));
 }
 
 TEST(ModuleM4Files, ModuleNameLength)
 {
     // the in-process runtime keeps a name in 64 bytes, terminator included
-    char path[sizeof("/APM/rust/") + MODULE_NAME_MAX + 1];
-    const size_t prefix = strlen("/APM/rust/");
-    memcpy(path, "/APM/rust/", prefix);
+    char path[sizeof("/APM/modules/") + MODULE_NAME_MAX + 1];
+    const size_t prefix = strlen("/APM/modules/");
+    memcpy(path, "/APM/modules/", prefix);
     for (size_t length = 7; length < MODULE_NAME_MAX + 2; length++) {
         memset(path + prefix, 'a', length - 6);
         memcpy(path + prefix + length - 6, ".apmod", 7);
         EXPECT_EQ(module_path_allowed(path), length < MODULE_NAME_MAX) << length;
     }
-    EXPECT_LT(strlen("@ROMFS/rust/") + MODULE_NAME_MAX, size_t(MAX_FS_PATH));
+    EXPECT_LT(strlen("@ROMFS/modules/") + MODULE_NAME_MAX, size_t(MAX_FS_PATH));
 }
 
 TEST(ModuleM4Files, OpenFlagsAreReadOnly)

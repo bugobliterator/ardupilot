@@ -3,7 +3,7 @@
 /*
   The module files of an M4 session, found on the M7 by the in-process
   runtime's rules (AP_Module Runtime::load_generation()): *.apmod directly in
-  @ROMFS/rust and in the writable module directory (/APM/rust; ./rust in
+  @ROMFS/modules and in the writable module directory (/APM/modules; ./modules in
   SITL), a ROMFS file overriding a writable one of the same name, sorted by
   name, and more unique files than MOD_MAX_MOD a load failure. The
   directories are read through a DirectoryLister, so tests feed their own.
