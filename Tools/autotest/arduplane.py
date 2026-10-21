@@ -15,6 +15,7 @@ import time
 import zlib
 
 from pymavlink import mavextra
+from pymavlink import mavftp_op
 from pymavlink import mavutil
 from pymavlink import quaternion
 from pymavlink.rotmat import Vector3
@@ -7542,6 +7543,63 @@ return update()
         self.context_pop()
         self.reboot_sitl()
 
+    def module_m4_watch_delay(self, change, value, timeout=20):
+        '''simulated seconds from change() to the module's PMW named float equal to value'''
+        start = self.get_sim_time()
+        change()
+        while self.get_sim_time_cached() - start < timeout:
+            m = self.mav.recv_match(type='NAMED_VALUE_FLOAT', blocking=True, timeout=1)
+            if m is None:
+                continue
+            name = m.name.decode() if isinstance(m.name, bytes) else m.name
+            if name.rstrip('\x00') == 'PMW' and abs(m.value - value) < 1e-6:
+                return m.time_boot_ms / 1000.0 - start
+        raise NotAchievedException('PMW %s not seen within %u s' % (value, timeout))
+
+    def module_m4_ftp_param_upload(self, name, value):
+        '''one float parameter through MAVFTP @PARAM/param.pck: the save_sync() path'''
+        record = bytes([4, (len(name) - 1) << 4]) + name.encode('ascii') + struct.pack('<f', value)
+        data = struct.pack('<HHH', 0x671b, 1, 6 + len(record)) + record
+        seq = self.ftp_reset_sessions()
+        reply = self.ftp_op(seq, mavftp_op.OP_CreateFile, self.ftp_path_bytes('@PARAM/param.pck'))
+        self.assert_ftp_ack(reply, 'CreateFile')
+        reply = self.ftp_op(reply.seq, mavftp_op.OP_WriteFile, data, offset=0)
+        self.assert_ftp_ack(reply, 'WriteFile')
+        reply = self.ftp_op(reply.seq, mavftp_op.OP_TerminateSession)
+        self.assert_ftp_ack(reply, 'TerminateSession')
+
+    def ModuleM4ParamMirror(self):
+        '''Modules on the M4 (SITL two-process): GCS and MAVFTP parameter changes reach the M4 mirror
+        within the bound, and the module reads its own writes at once'''
+        if not self.module_m4_build():
+            raise NotAchievedException('needs a --enable-m4-modules SITL build')
+        self.context_push()
+        self.install_rust_test_module_context('m4_param_watch.rs')
+        self.context_collect('STATUSTEXT')
+        # the M4 process runs on wall-clock time: the bound is measured at real time
+        self.set_parameters(dict(self.MODULE_M4_PARAMETERS, SIM_SPEEDUP=1))
+        self.reboot_sitl()
+        self.wait_text('pmw ready', check_context=True, timeout=60)
+        # raw param_set_send writes below are not restored by the context: start from known values
+        self.set_parameters({'PMW_VALUE': 0, 'PMW_CMD': 0})
+        bound = 0.1
+        delays = []
+        for value in (7.0, 8.0):
+            delays.append(self.module_m4_watch_delay(lambda v=value: self.mav.mav.param_set_send(
+                self.sysid_thismav(), 1, b'PMW_VALUE', v, mavutil.mavlink.MAV_PARAM_TYPE_REAL32), value))
+        delays.append(self.module_m4_watch_delay(lambda: self.module_m4_ftp_param_upload('PMW_VALUE', 9.0), 9.0))
+        self.progress('mirror delays (s): %s' % delays)
+        if max(delays) > bound:
+            raise NotAchievedException('mirror delay %.3f s above %.1f s' % (max(delays), bound))
+        for command, text in ((1, 'pmw ryw name ok'), (2, 'pmw ryw handle ok'), (3, 'pmw ryw save ok')):
+            self.set_parameter('PMW_CMD', command)
+            self.wait_text(text, check_context=True, timeout=30)
+        texts = [m.text for m in self.context_collection('STATUSTEXT')]
+        if any('pmw ryw' in t and 'fail' in t for t in texts):
+            raise NotAchievedException('read-your-writes failed: %s' % texts)
+        self.context_pop()
+        self.reboot_sitl()
+
     def install_rust_lifecycle_context(self, mode):
         '''build lifecycle.rs with AP_MODULE_LIFECYCLE=mode (read by option_env! at build time)'''
         old = os.environ.get('AP_MODULE_LIFECYCLE')
@@ -7671,6 +7729,7 @@ return update()
         before = self.module_m4_counters()
         self.AerobaticsScripting_rust(m4=True)
         self.module_m4_checks(before)
+        self.module_m4_call_reduction_checks(before)
 
     def AerobaticsScripting_rust_mission_m4(self):
         '''Fly the native Rust NAV_SCRIPT_TIME AirShow with the module on the M4 (SITL two-process)'''
@@ -7679,6 +7738,7 @@ return update()
         before = self.module_m4_counters()
         self.AerobaticsScripting_rust_mission(m4=True)
         self.module_m4_checks(before)
+        self.module_m4_call_reduction_checks(before)
 
     def AerobaticsScripting_rust_soak(self):
         '''Fly the native Rust RC AirShow three times with MOD_RESTART between them (on the M4 with
@@ -7802,6 +7862,41 @@ return update()
         top = sorted(calls.items(), key=lambda item: -item[1])[:12]
         self.progress('Rust M4 checks: %u M4ST rows, restarts %s, Deny 0, SRPC calls %s' %
                       (supervisor_rows, sorted(restarts), ', '.join('%s=%u' % (name, n) for ((_, name), n) in top)))
+
+    def module_m4_call_reduction_checks(self, before):
+        '''from the DataFlash logs the test added: no SRPC row for Parameter.get, logger.write marked
+        posted, no forwarded get once the module runs, no posted error; calls/s per binding printed'''
+        logs = [path for path in self.log_list() if path not in before]
+        calls = {}
+        posted = {}
+        span = [None, None]
+        misses = []
+        post_errors = 0
+        for path in logs:
+            dfreader = self.dfreader_for_path(path)
+            while True:
+                m = dfreader.recv_match(type=['SRPC', 'M4MR'])
+                if m is None:
+                    break
+                if m.get_type() == 'SRPC':
+                    calls[m.Name] = calls.get(m.Name, 0) + m.N
+                    posted[m.Name] = posted.get(m.Name, 0) | m.Post
+                    span[0] = m.TimeUS if span[0] is None else span[0]
+                    span[1] = m.TimeUS
+                else:
+                    misses.append(m.MirMiss)
+                    post_errors += m.PErr
+        seconds = max((span[1] - span[0]) / 1e6, 1.0) if span[0] is not None else 1.0
+        for name, count in sorted(calls.items(), key=lambda kv: -kv[1]):
+            self.progress('SRPC %-32s %8.1f/s%s' % (name, count / seconds, ' posted' if posted[name] else ''))
+        if 'Parameter.get' in calls:
+            raise NotAchievedException('Parameter.get still served by the M7: %u calls' % calls['Parameter.get'])
+        if not posted.get('logger.write'):
+            raise NotAchievedException('logger.write row not marked posted: %s' % sorted(posted.items()))
+        if sum(misses[5:]) != 0:   # the first rows cover the module's start (INITs, first gets)
+            raise NotAchievedException('mirror misses after start: %s' % misses)
+        if post_errors != 0:
+            raise NotAchievedException('posted errors: %u' % post_errors)
 
     # the libm.rs values of the in-process run (RustBindings), as float32 bits: the M4 must match them
     RUST_LIBM_REFERENCE = {
@@ -11605,6 +11700,7 @@ return update()
             self.AerobaticsScripting_rust_mission_m4,
             self.AerobaticsScripting_rust_soak,
             self.RustBindings,
+            self.ModuleM4ParamMirror,
             self.ModuleM4Bindings,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
@@ -12050,6 +12146,7 @@ return update()
             "ModuleM4Lifecycle": "Requires --enable-m4-modules SITL build",
             "ModuleM4Panic": "Requires --enable-m4-modules SITL build",
             "ModuleM4Containment": "Requires --enable-m4-modules SITL build",
+            "ModuleM4ParamMirror": "Requires --enable-m4-modules SITL build",
         }
         if not self.mavproxy_ftp_module_has_command("crccmp"):
             # added to MAVProxy in 328d7de20 (2026-07-27) and not in any
