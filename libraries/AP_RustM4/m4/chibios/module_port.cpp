@@ -354,6 +354,9 @@ static void sys_panic(struct port_extctx *ctx)
 
 static void sys_binding_call(struct port_extctx *ctx)
 {
+    if (call_probe.enabled.load(std::memory_order_relaxed)) {
+        call_probe.svc_cycles = DWT->CYCCNT;
+    }
     // the arguments lie on the module stack: checked there, then copied before use
     if (active == nullptr || !active->ranges.stack.contains(ctx->r0, sizeof(BindingCallArgs))) {
         ctx->r0 = uint32_t(STATUS_INVALID);

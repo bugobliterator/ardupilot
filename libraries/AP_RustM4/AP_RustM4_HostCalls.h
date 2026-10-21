@@ -72,11 +72,18 @@ inline void *module_token(uint16_t index)
 inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, const HostPlatform &p)
 {
     M4CallProbe *probe = probing(p.probe) ? p.probe : nullptr;
+    uint32_t entry_cycles = 0, svc_cycles = 0;
+    if (probe != nullptr) {
+        entry_cycles = probe_cycles_now(*probe);
+        svc_cycles = probe->svc_cycles;
+        probe->svc_cycles = 0;
+    }
     if (probe != nullptr && !probe->memset_measured) {
         // once per M4 start, outside any call's stages; the link buffers are free here
         measure_memset(*probe, m.request, m.reply, MAX_FRAME);
     }
     const uint32_t entry_us = probe != nullptr ? probe->clock_us() : 0;
+    const uint32_t checks_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
     if (m.stop.load()) {
         return STATUS_STOPPED;
     }
@@ -127,8 +134,11 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
                         p.mirror_pending != nullptr && p.mirror_settle != nullptr;
     // probed when the trailer fits the frame
     CallProbeTrailer trailer {};
+    uint32_t begin_cycles = 0, begun_cycles = 0;
     if (probe != nullptr && a.input_size + sizeof(trailer) <= MAX_CALL_INPUT) {
+        begin_cycles = probe_cycles_now(*probe);
         trailer = begin_probed_call(*probe, entry_us);
+        begun_cycles = probe_cycles_now(*probe);
     } else {
         probe = nullptr;
     }
@@ -142,7 +152,13 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
         return STATUS_INVALID;
     }
     if (probe != nullptr) {
-        probe_stamp(*probe, probe->current.packed_us, PROBE_STAMP_PACKED);
+        const uint32_t packed_cycles = probe_cycles_now(*probe);
+        M4CallStamps &current = probe->current;
+        current.svc_to_entry_cycles = svc_cycles != 0 ? cycles_between(svc_cycles, entry_cycles) : 0;
+        current.checks_cycles = cycles_between(checks_cycles, begin_cycles);
+        current.begin_probe_cycles = cycles_between(begin_cycles, begun_cycles);
+        current.pack_cycles = cycles_between(begun_cycles, packed_cycles);
+        probe_stamp(*probe, current.packed_us, PROBE_STAMP_PACKED);
     }
     if (settle) {
         p.mirror_pending(p.platform, m.index, token);

@@ -118,6 +118,12 @@ struct __attribute__((packed)) CallProbeTrailer {
     // the link buffers (privileged RAM), 1000 times each at the session's first probed call; 0 before
     uint16_t memset_small_centicycles;
     uint16_t memset_large_centicycles;
+    // that call's M4 core cycles before its frame was packed: SVC entry to the host call, the host's
+    // checks, begin_probed_call() and pack_binding_call(); 0 without a cycle counter
+    uint16_t prev_svc_to_entry_cycles;
+    uint16_t prev_checks_cycles;
+    uint16_t prev_begin_probe_cycles;
+    uint16_t prev_pack_cycles;
 };
 // CallProbeTrailer::prev_stamps, the values of AP_Rust::CALL_STAMP_M4_* (AP_Rust/CallLatency.h)
 static const uint16_t PROBE_STAMP_PACKED = 1U << 4;

@@ -72,7 +72,7 @@ static uint32_t probe_cycles()
     return uint32_t(monotonic_us() * 1000U);   // nanoseconds: SITL figures are not representative
 }
 
-static M4CallProbe call_probe { probe_clock_us, probe_cycles, 0, {false}, false, false, 0, 0, {}, {} };
+static M4CallProbe call_probe { probe_clock_us, probe_cycles, 0, 0, {false}, false, false, 0, 0, {}, {} };
 
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
@@ -221,6 +221,9 @@ static void host_api_panic(void *context, const uint8_t *message, uint32_t lengt
 static int32_t host_api_binding_call(void *context, uint32_t id, const uint8_t *input, uint32_t input_size,
                                      uint8_t *output, uint32_t output_size)
 {
+    if (call_probe.enabled.load(std::memory_order_relaxed)) {
+        call_probe.svc_cycles = probe_cycles();
+    }
     if (active == nullptr) {
         return STATUS_INVALID;
     }

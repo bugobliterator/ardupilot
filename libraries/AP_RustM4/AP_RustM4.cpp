@@ -686,6 +686,11 @@ void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_S
     if (_probe_pending.complete(previous, trace, &completed)) {
         log.record(trace);
         log.record_substages(trace.id, completed);
+        const uint16_t pre_cycles[AP_Rust::M4_PRE_PARTS] {
+            trailer.prev_svc_to_entry_cycles, trailer.prev_checks_cycles, trailer.prev_begin_probe_cycles,
+            trailer.prev_pack_cycles
+        };
+        log.record_m4_pre_cycles(trace.id, pre_cycles);
     }
     AP_Rust::CallStamps stamps { trailer.svc_entry_us, trailer.pre_send_us, 0, _pass_us, _frame_received_us,
                                  served.dispatch, served.lock_wait, served.adapter, served.adapter_done,
