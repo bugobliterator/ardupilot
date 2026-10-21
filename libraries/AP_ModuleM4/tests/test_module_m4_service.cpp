@@ -13,6 +13,7 @@
 #include <AP_ModuleM4_CallStatus.h>
 #include <AP_ModuleM4_Layout.h>
 #include <m4_service.h>
+#include <module_poll.h>
 
 using namespace ModuleM4;
 using CubePilotFW::Channel;
@@ -1157,6 +1158,145 @@ TEST(ModuleM4Service, HousekeepingStepStillTimesOutCalls)
     EXPECT_EQ(call_link.result, -ETIMEDOUT);
     EXPECT_EQ(service.lost(), 1U);
     millis_ahead = 0;
+}
+
+// the module thread's poll: each counter read is one pass, and poll_event runs the M7's side at it
+static uint32_t poll_reads;
+static void (*poll_event)(uint32_t read);
+static uint32_t poll_cycles()
+{
+    poll_reads++;
+    if (poll_event != nullptr) {
+        poll_event(poll_reads);
+    }
+    return poll_reads * 100U;
+}
+static const uint32_t POLL_BOUND = 100000U;   // 1000 passes
+static uint32_t poll_call_seq;
+static std::atomic<bool> poll_stop;
+
+static bool m4_marked_asleep()
+{
+    const void *shared = window + CubePilotFW::PeerHeader::kSize;
+    const auto *control = static_cast<const Channel::Control *>(shared);
+    return control->asleep[uint8_t(CubePilotFW::PeerHeader::Core::M4)].load() != 0;
+}
+
+// a call Sent with the service asleep (its doorbell armed), then polled for
+static void post_sent_call_for_poll()
+{
+    send_ready(7);
+    service.drain_step();
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    poll_call_seq = call.header.seq;
+    ASSERT_TRUE(service.prepare_module_sleep());
+    poll_reads = 0;
+    poll_stop = false;
+}
+
+// the reply lands while the module thread polls: the poll drains it, with no wake of the module
+// thread and the M4 read as awake (the M7's send rang no doorbell)
+TEST(ModuleM4Service, PollTakesTheReplyWithoutAWake)
+{
+    start();
+    post_sent_call_for_poll();
+    poll_event = [](uint32_t read) {
+        if (read == 5) {
+            EXPECT_FALSE(m4_marked_asleep());
+            m7_reply(poll_call_seq, 0x33);
+        }
+    };
+    const uint32_t wakes = module_wakes.load();
+    bool wake_service = false;
+    EXPECT_EQ(poll_for_reply(service, call_link, poll_stop, poll_cycles, POLL_BOUND, wake_service), PollEnd::Done);
+    poll_event = nullptr;
+    EXPECT_FALSE(wake_service);
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, int32_t(sizeof(BindingReplyHeader) + 4));
+    EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x33);
+    EXPECT_LE(poll_reads, 6U);
+    // complete() runs the platform's wake, which the ChibiOS port skips on the module thread
+    EXPECT_EQ(module_wakes.load(), wakes + 1);
+    EXPECT_TRUE(service.prepare_module_sleep());   // re-armed after the call, as port_call() does
+    m4.wake();
+}
+
+// frames other than the reply are handled by the poll's drain as they come
+TEST(ModuleM4Service, PollHandlesOtherFrames)
+{
+    start();
+    post_sent_call_for_poll();
+    poll_event = [](uint32_t read) {
+        if (read == 3) {
+            ControlMsg control {};
+            fill_header(control.header, MsgType::Control, sizeof(control), 7);
+            control.action = CONTROL_STOP;
+            ASSERT_EQ(m7.send(&control, sizeof(control)), 0);
+        } else if (read == 5) {
+            EXPECT_EQ(stops.load(), 1U);
+            EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+            FaultInjectMsg inject {};
+            fill_header(inject.header, MsgType::FaultInject, sizeof(inject), 7);
+            inject.kind = uint32_t(FaultKind::Stall);
+            ASSERT_EQ(m7.send(&inject, sizeof(inject)), 0);
+        } else if (read == 7) {
+            m7_reply(poll_call_seq, 0x44);
+        }
+    };
+    bool wake_service = false;
+    EXPECT_EQ(poll_for_reply(service, call_link, poll_stop, poll_cycles, POLL_BOUND, wake_service), PollEnd::Done);
+    poll_event = nullptr;
+    EXPECT_EQ(stops.load(), 1U);
+    // the Stall is the service's to inject
+    EXPECT_TRUE(wake_service);
+    EXPECT_EQ(injected.load(), 0U);
+    service.drain_step();
+    EXPECT_EQ(injected.load(), uint32_t(FaultKind::Stall));
+    EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x44);
+}
+
+// a stop request ends the poll at its next pass; the call stays Sent for the sleep that follows
+TEST(ModuleM4Service, StopEndsThePoll)
+{
+    start();
+    post_sent_call_for_poll();
+    poll_event = [](uint32_t read) {
+        if (read == 4) {
+            poll_stop = true;
+        }
+    };
+    bool wake_service = false;
+    EXPECT_EQ(poll_for_reply(service, call_link, poll_stop, poll_cycles, POLL_BOUND, wake_service),
+              PollEnd::Stopped);
+    poll_event = nullptr;
+    EXPECT_EQ(poll_reads, 4U);
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    m7_reply(poll_call_seq, 0x55);
+    EXPECT_FALSE(service.drain_step_for_module(false, false, 0, 0));
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+}
+
+// no reply within the bound: the poll gives up, and the doorbell path completes the call
+TEST(ModuleM4Service, PollFallsBackToTheDoorbellWait)
+{
+    start();
+    post_sent_call_for_poll();
+    bool wake_service = false;
+    EXPECT_EQ(poll_for_reply(service, call_link, poll_stop, poll_cycles, POLL_BOUND, wake_service),
+              PollEnd::Expired);
+    EXPECT_EQ(poll_reads, POLL_BOUND / 100U + 1U);
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Sent);
+    // port_call()'s sleep: armed, then the reply's doorbell (none rung in this process) ends it
+    EXPECT_TRUE(service.prepare_module_sleep());
+    EXPECT_TRUE(m4_marked_asleep());
+    m4.wake();
+    m7_reply(poll_call_seq, 0x66);
+    EXPECT_FALSE(service.drain_step_for_module(false, false, 0, 0));
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.reply[sizeof(BindingReplyHeader)], 0x66);
 }
 
 #endif  // AP_MODULE_M4_ENABLED

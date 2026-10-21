@@ -64,6 +64,11 @@ public:
     // the module thread, before it sleeps for its reply while the service sleeps: the Channel's
     // prepareSleep(), so the M7 rings again (once per sleep). False if a frame is waiting
     bool prepare_module_sleep() { return _channel->prepareSleep(); }
+    // the module thread, as it starts polling for its reply: the M4 reads as awake, so the M7's
+    // send() rings no doorbell. prepare_module_sleep() arms it again
+    void module_awake() { _channel->wake(); }
+    // a frame from the M7 is on the ring (its indices only, nothing read)
+    bool frame_waiting() const;
     // the platform CRC's results of this session, computed at init(), which faults (HardFault)
     // when they are not zlib's
     const CrcSelfCheck &crc_self_check() const { return _crc_self_check; }

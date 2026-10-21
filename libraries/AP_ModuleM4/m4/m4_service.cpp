@@ -108,6 +108,15 @@ bool M4Service::peer_asleep() const
     return control->asleep[uint8_t(PeerHeader::Core::M7)].load() == 1;
 }
 
+bool M4Service::frame_waiting() const
+{
+    const void *shared = _channel->header() + PeerHeader::kSize;
+    const auto *control = static_cast<const Channel::Control *>(shared);
+    // mirrored indices: equal only when the ring is empty
+    return control->m7ToM4.head.value.load(std::memory_order_acquire) !=
+           control->m7ToM4.tail.value.load(std::memory_order_relaxed);
+}
+
 uint32_t M4Service::probe_cycles() const
 {
     const M4CallProbe *probe = _platform.probe;
