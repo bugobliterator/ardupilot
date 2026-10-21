@@ -184,6 +184,21 @@ bool m7_receive_call(BindingCallHeader &call)
     return m7_receive(frame, len) && parse_binding_call(frame, len, call);
 }
 
+// the next Stats row in the ring, other frames skipped; false if there is none
+bool m7_receive_stats(StatsMsg &stats)
+{
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    while (m7.receive(frame, MAX_FRAME, &len) == 0) {
+        MsgHeader header;
+        if (parse_header(frame, len, header) && MsgType(header.type) == MsgType::Stats && len == sizeof(stats)) {
+            memcpy(&stats, frame, sizeof(stats));
+            return true;
+        }
+    }
+    return false;
+}
+
 void m7_reply(uint32_t seq, uint8_t fill)
 {
     const uint8_t output[4] = { fill, fill, fill, fill };
@@ -598,6 +613,45 @@ TEST(ModuleM4Service, InitOfAnExistingTokenIsForwardedUntilItsFrame)
     float got;
     memcpy(&got, out + 1, 4);
     EXPECT_EQ(got, 1.0f);
+}
+
+TEST(ModuleM4Service, PostedBindingIsTimedAndMarked)
+{
+    start();
+    send_ready(7);
+    service.step();
+    uint8_t input[16] {};
+    call_link.request_len = pack_binding_call(call_link.request, MAX_FRAME, 0, 0, CALL_FLAG_NOTIFY, BINDING, input,
+                                              sizeof(input), 0);
+    call_link.state.store(ModuleLink::Posted);
+    fake_cycles = 0;
+    ASSERT_TRUE(service.forward_posted());
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(call_link.result, 0);
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    EXPECT_EQ(call.flags, CALL_FLAG_NOTIFY);
+    millis_ahead = millis_ahead.load() + 1000;
+    service.step();   // the Stats window
+    StatsMsg stats;
+    ASSERT_TRUE(m7_receive_stats(stats));
+    EXPECT_EQ(stats.method, BINDING);
+    EXPECT_EQ(stats.count, 1U);
+    EXPECT_EQ(stats.reserved & STATS_ROW_POSTED, STATS_ROW_POSTED);
+}
+
+TEST(ModuleM4Service, PostedFrameDroppedAfterTheTimeoutCountsPostDrop)
+{
+    start();   // no Ready: the frame cannot go out
+    uint8_t input[16] {};
+    call_link.request_len = pack_binding_call(call_link.request, MAX_FRAME, 0, 0, CALL_FLAG_NOTIFY, BINDING, input,
+                                              sizeof(input), 0);
+    call_link.state.store(ModuleLink::Posted);
+    service.step();
+    millis_ahead = millis_ahead.load() + CALL_TIMEOUT_MS + 1;
+    service.step();
+    EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(service.post_drops(), 1U);
 }
 
 #endif  // AP_MODULE_M4_ENABLED

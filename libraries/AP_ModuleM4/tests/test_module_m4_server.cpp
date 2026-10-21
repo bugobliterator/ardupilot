@@ -294,6 +294,51 @@ TEST(ModuleM4Server, ParameterHandlesAreBoundedAndFreed)
     server.reset(2, 1);
     EXPECT_EQ(server.parameter_handles(), 0U);
 }
+static uint16_t posted_call(uint8_t *frame, uint32_t id, uint16_t in_size)
+{
+    static uint8_t input[MAX_CALL_INPUT];
+    return pack_binding_call(frame, MAX_FRAME, 42, 0, CALL_FLAG_NOTIFY, id, input, in_size, 0);
+}
+
+TEST(ModuleM4Server, PostedFramesGetNoReply)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    uint8_t frame[MAX_FRAME], reply[MAX_FRAME];
+    const uint32_t write = uint32_t(AP_Module::BindingId::LOGGER_WRITE);
+    ASSERT_NE(AP_Module::M4_BINDING_POLICY[write].flags & AP_Module::M4_FLAG_POSTED, 0);
+    uint16_t len = posted_call(frame, write, 400);
+    EXPECT_TRUE(server.frame_is_posted(frame, len));
+    EXPECT_EQ(server.serve_binding(frame, len, reply, sizeof(reply), 1000), 0U);
+    EXPECT_TRUE(server.last_posted_outcome() == AP_ModuleM4_Server::PostedOutcome::Served ||
+                server.last_posted_outcome() == AP_ModuleM4_Server::PostedOutcome::Failed);
+    // a notify of an id without the posted flag is not run
+    const uint32_t get = uint32_t(AP_Module::BindingId::PARAMETER_GET);
+    len = posted_call(frame, get, 8);
+    EXPECT_FALSE(server.frame_is_posted(frame, len));
+    EXPECT_EQ(server.serve_binding(frame, len, reply, sizeof(reply), 1000), 0U);
+    EXPECT_EQ(server.last_posted_outcome(), AP_ModuleM4_Server::PostedOutcome::Refused);
+    EXPECT_FALSE(server.last_dispatch_ran());
+    // an ordinary call is NotPosted and gets its reply
+    len = call(frame, get, 8, 5);
+    EXPECT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000), 0U);
+    EXPECT_EQ(server.last_posted_outcome(), AP_ModuleM4_Server::PostedOutcome::NotPosted);
+}
+
+TEST(ModuleM4Server, PostedQuotaRefusalIsADrop)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    uint8_t frame[MAX_FRAME], reply[MAX_FRAME];
+    const uint16_t len = posted_call(frame, uint32_t(AP_Module::BindingId::LOGGER_WRITE), 400);
+    bool dropped = false;
+    for (uint32_t i = 0; i < 10000 && !dropped; i++) {   // the Log bucket runs out within one millisecond
+        IGNORE_RETURN(server.serve_binding(frame, len, reply, sizeof(reply), 1000));
+        dropped = server.last_posted_outcome() == AP_ModuleM4_Server::PostedOutcome::Dropped;
+    }
+    EXPECT_TRUE(dropped);
+}
+
 #endif
 
 AP_GTEST_MAIN()

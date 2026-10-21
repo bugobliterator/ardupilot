@@ -66,6 +66,8 @@ public:
     void mirror_refresh(uint16_t module, uint64_t token, const uint8_t *out5);
     uint32_t mirror_hits() const { return _mirror_hits; }
     uint32_t mirror_misses() const { return _mirror_misses; }
+    // posted binding frames that timed out before reaching the ring; their module already got OK
+    uint32_t post_drops() const { return _post_drops; }
 
     // Stats keys: a BindingId below SYSTEM_KEY; a system method is SYSTEM_KEY | method
     static const uint16_t SYSTEM_KEY = 0x8000;
@@ -76,6 +78,7 @@ public:
 private:
     struct MethodStats {
         bool used;
+        bool posted;   // in the padding after used
         uint16_t key;
         BindingHistogram round_trips;
         uint32_t total_us;
@@ -107,6 +110,8 @@ private:
     void send_config(uint32_t now_ms);
     void handle_config_reply(const uint8_t *buf, uint16_t len);
     void count_lost();
+    void record_posted(uint16_t key, uint32_t post_us);
+    bool posted_binding_on_link() const;
 
     void step_locked();
     void drain();
@@ -134,6 +139,8 @@ private:
     uint16_t _call_key;
     uint8_t _call_reply_type;   // MsgType the Sent call is answered with
     uint32_t _call_sent_cycles;
+    uint32_t _call_posted_cycles;   // when _call_posted_ms was taken: a posted binding's round trip
+    uint32_t _post_drops;
     uint32_t _last_stats_ms;
     uint32_t _lost;
     uint32_t _call_posted_ms;   // when step() first saw the call Posted

@@ -72,6 +72,16 @@ public:
     bool last_call_wrote_parameters() const { return _last_call_wrote_parameters; }
     // module of the last serve_binding() that parsed, -1 if it did not
     int16_t last_call_module() const { return _last_call_module; }
+    enum class PostedOutcome : uint8_t {
+        NotPosted,   // an ordinary call: its reply was packed
+        Served,      // a posted frame, run with status OK; no reply
+        Failed,      // a posted frame, run with another status; no reply
+        Dropped,     // a posted frame refused by its quota; no reply
+        Refused,     // CALL_FLAG_NOTIFY on an id without the posted flag: not run, no reply
+    };
+    PostedOutcome last_posted_outcome() const { return _last_posted_outcome; }
+    // a BindingCall with CALL_FLAG_NOTIFY of a posted id
+    bool frame_is_posted(const uint8_t *frame, uint16_t len) const;
 
 #if AP_MODULE_M4_TEST_HOOKS
     // dispatch id with both buffers guarded past ModuleM4::MAX_FRAME: false if the adapter wrote there
@@ -127,6 +137,7 @@ private:
     uint32_t _session = 0;
     bool _last_call_wrote_parameters = false;
     int16_t _last_call_module = -1;
+    PostedOutcome _last_posted_outcome = PostedOutcome::NotPosted;
 #if AP_MODULE_M4_TEST_HOOKS
     uint16_t _last_input_end = 0;   // one past the last non-zero input byte at the last dispatch
     bool _last_dispatch_ran = false;
