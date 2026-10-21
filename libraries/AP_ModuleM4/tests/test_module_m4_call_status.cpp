@@ -22,7 +22,7 @@ TEST(ModuleM4CallStatus, AdapterStatusPassesAndOutputCopiesOnlyOnOk)
     EXPECT_FALSE(o.copy_output);
 }
 
-TEST(ModuleM4CallStatus, DutyCapRefusalIsBusy)
+TEST(ModuleM4CallStatus, BusyStatusPassesWithoutOutput)
 {
     const auto o = call_outcome(28, reply(ReplyStatus::Ok, STATUS_BUSY, 0), 4);
     EXPECT_EQ(o.status, STATUS_BUSY);

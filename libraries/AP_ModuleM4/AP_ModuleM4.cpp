@@ -140,8 +140,7 @@ void AP_ModuleM4::init(const AP_Module::Runtime::Config &config)
     IGNORE_RETURN(AP_Param::set_change_observer(&AP_ModuleM4::parameter_changed));
     // the slow worker first: the host hands it every frame the fast lane does not serve. It runs
     // the heavy bindings (files, logs, parameters, mission, texts) below io 58, storage/log_io 59,
-    // UART/net 60 and the io - 1 threads (OA path planner, mount POI); its CPU is charged to the
-    // duty cap too
+    // UART/net 60 and the io - 1 threads (OA path planner, mount POI)
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ModuleM4::worker_thread, void),
                                       "ModuleM4W", 8192, AP_HAL::Scheduler::PRIORITY_IO,
                                       ModuleM4::WORKER_PRIORITY_OFFSET)) {
@@ -150,8 +149,7 @@ void AP_ModuleM4::init(const AP_Module::Runtime::Config &config)
     }
     // binding calls run vehicle code on this thread. Above the I/O-class threads (io 58,
     // storage/log_io 59, UART/net 60) so a call is not queued behind logging; below every
-    // vehicle-timing thread (I2C 176 and up). The duty cap bounds the CPU share a flooding M4
-    // can take from those threads
+    // vehicle-timing thread (I2C 176 and up)
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ModuleM4::host_thread, void),
                                       "ModuleM4", 8192, AP_HAL::Scheduler::PRIORITY_UART,
                                       ModuleM4::HOST_PRIORITY_OFFSET)) {
@@ -202,12 +200,8 @@ void AP_ModuleM4::host_thread()
                 log_supervisor(off_ms, off_ms - _stats_start_ms);
                 _stats_start_ms = off_ms;
                 _host_busy_us = 0;
-                _host_cpu_us = 0;
-                _pass_cpu_max_us = 0;
                 _slow_requests = 0;
                 _slow_max_us = 0;
-                _slow_cpu_max_us = 0;
-                _slow_refused = 0;
                 _m4_mirror_hits = 0;
                 _m4_mirror_misses = 0;
                 _m4_post_drops = 0;
@@ -221,22 +215,13 @@ void AP_ModuleM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
-        const uint32_t cap_wait_us = _duty_cap.wait_us(AP_HAL::micros());
         const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
-        const ModuleM4::HostWait wait = ModuleM4::host_wait_after(cap_wait_us, last == ServeResult::Busy,
-                                                              last == ServeResult::Stuck, ring_empty);
+        const ModuleM4::HostWait wait = ModuleM4::host_wait_after(last == ServeResult::Busy, last == ServeResult::Stuck,
+                                                              ring_empty);
         woke_on_timeout = false;
         bool doorbell_wait = false;
         uint32_t woke_cycles = 0;
         switch (wait) {
-        case ModuleM4::HostWait::DutyCap:
-            // the host's share of the M7 ran out: serve nothing until credit returns, however many
-            // frames are pending. An empty ring keeps listening, so its next doorbell is not missed
-            _duty_cap_hits++;
-            pause_for_duty_cap(MIN(cap_wait_us, platform_wait_us()), ring_empty);
-            // frames pending after the pause are served at once (the cap still comes first)
-            last = ServeResult::Idle;
-            break;
         case ModuleM4::HostWait::Backoff:
             // the budget ran out with frames left: pause so a flooding M4 costs bounded M7 time.
             // No doorbell is needed while we pause
@@ -254,8 +239,6 @@ void AP_ModuleM4::host_thread()
             }
             break;
         }
-        // a doorbell wake: the frames between the pass's two CPU readings. The rest waits for a
-        // timed-out wait or the next housekeeping period
         const uint32_t wake_cycles = _probing ? CallLatencyLog::cycles() : 0;
         _channel->wake();
         if (_probing) {
@@ -270,7 +253,6 @@ void AP_ModuleM4::host_thread()
         if (_probing) {
             _pass_us = CallLatencyLog::clock_us();
             _pass_frames = 0;
-            _pass_cap_paused = wait == ModuleM4::HostWait::DutyCap;
             // the doorbell interrupt that ended this wait, if any
             _pass_doorbell = _doorbell_probed;
             _pass_doorbell_us = _doorbell_probe_us;
@@ -279,12 +261,7 @@ void AP_ModuleM4::host_thread()
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
-        // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
-        // runs every platform_wait_us()) serves nothing. ChibiOS: the wait, the wake and the
-        // switch before this pass are charged after the decision
-        if (ModuleM4::pass_after_wake(_duty_cap, _woke_us, [this]() { IGNORE_RETURN(charge_cpu(false)); })) {
-            last = serve();
-        }
+        last = serve();
         const uint32_t served_cycles = _probing ? CallLatencyLog::cycles() : 0;
         if (_state == State::Running && _server.mirror_dirty()) {
             mirror_on_worker();
@@ -293,8 +270,7 @@ void AP_ModuleM4::host_thread()
             _housekeeping_us = _woke_us;
             housekeeping();
         }
-        const uint32_t charge_cycles = _probing ? CallLatencyLog::cycles() : 0;
-        const uint32_t busy_us = charge_cpu(true) - _woke_us;
+        const uint32_t busy_us = AP_HAL::micros() - _woke_us;
         _host_busy_us += busy_us;
         if (busy_us > LONG_PASS_US) {
             _long_passes++;
@@ -303,8 +279,7 @@ void AP_ModuleM4::host_thread()
             _pass_end_pending = false;
             if (_probing) {
                 CallLatencyLog::get().record_m7_cycle(_pass_end_id, AP_Module::M7CyclePart::PassEnd,
-                                                      (served_cycles - _pass_end_from_cycles) +
-                                                      (CallLatencyLog::cycles() - charge_cycles));
+                                                      served_cycles - _pass_end_from_cycles);
             }
         }
     }
@@ -343,14 +318,9 @@ void AP_ModuleM4::housekeeping()
         _protocol_errors = 0;
         _dropped = 0;
         _host_busy_us = 0;
-        _duty_cap_hits = 0;
-        _host_cpu_us = 0;
         _long_passes = 0;
-        _pass_cpu_max_us = 0;
         _slow_requests = 0;
         _slow_max_us = 0;
-        _slow_cpu_max_us = 0;
-        _slow_refused = 0;
         _m4_mirror_hits = 0;
         _m4_mirror_misses = 0;
         _m4_post_drops = 0;
@@ -363,32 +333,11 @@ void AP_ModuleM4::housekeeping()
     }
 }
 
-// charge the duty cap the host's CPU since its previous reading (HostCpuCharge); at a pass end
-// that is the pass, the largest of which M4HP logs
-uint32_t AP_ModuleM4::charge_cpu(bool pass_end)
-{
-    uint64_t cpu_us;
-    const bool reset = platform_thread_cpu_us(cpu_us);
-    const uint32_t wall_us = AP_HAL::micros();
-    const uint32_t used_us = pass_end ? _cpu_charge.pass_end(cpu_us, reset, wall_us) :
-                                        _cpu_charge.pass_start(cpu_us, reset, wall_us);
-    _host_cpu_us += used_us;
-    _duty_cap.charge(used_us);
-    if (pass_end) {
-        _pass_cpu_max_us = MAX(_pass_cpu_max_us, used_us);
-    }
-    return wall_us;
-}
-
-// the slow worker: one frame at a time, handed over by the host, which waits until it is served.
-// The CPU the frame used goes to the host, which charges it to the duty cap
+// the slow worker: one frame at a time, handed over by the host, which waits until it is served
 void AP_ModuleM4::worker_thread()
 {
     while (true) {
         IGNORE_RETURN(_worker_request.wait_blocking());
-        uint64_t cpu_us;
-        bool reset = platform_thread_cpu_us(cpu_us);
-        IGNORE_RETURN(_worker_cpu_charge.pass_start(cpu_us, reset, AP_HAL::micros()));
         switch (_worker_job) {
         case WorkerJob::Discover:
             discover();
@@ -405,9 +354,7 @@ void AP_ModuleM4::worker_thread()
                 _worker_handback_len = ModuleM4::serve_posted_batch(
                     _rx_frame,
                     [this](uint16_t &len) { return _channel->receive(_rx_frame, sizeof(_rx_frame), &len); },
-                    [this](const uint8_t *frame, uint16_t len) {
-                        return _server.frame_is_posted(frame, len) && !_duty_cap.refuses_slow_bindings();
-                    },
+                    [this](const uint8_t *frame, uint16_t len) { return _server.frame_is_posted(frame, len); },
                     [this](uint16_t len) {
                         _posted_batched++;
                         handle_message(_rx_frame, len);
@@ -417,8 +364,6 @@ void AP_ModuleM4::worker_thread()
             break;
         }
         }
-        reset = platform_thread_cpu_us(cpu_us);
-        _worker_used_us = _worker_cpu_charge.pass_end(cpu_us, reset, AP_HAL::micros());
         _worker_done.signal();
     }
 }
@@ -432,11 +377,6 @@ void AP_ModuleM4::serve_on_worker(uint16_t len)
     IGNORE_RETURN(_worker_done.wait_blocking());
     _slow_requests++;
     _slow_max_us = MAX(_slow_max_us, AP_HAL::micros() - start_us);
-    // the worker's CPU counts against the same share as the host's: a module looping a heavy
-    // binding is paused like a flooding one
-    _host_cpu_us += _worker_used_us;
-    _duty_cap.charge(_worker_used_us);
-    _slow_cpu_max_us = MAX(_slow_cpu_max_us, _worker_used_us);
 }
 
 // the directory reads at a session's start run on the slow worker, as the file calls do; the host
@@ -446,8 +386,6 @@ void AP_ModuleM4::discover_on_worker()
     _worker_job = WorkerJob::Discover;
     _worker_request.signal();
     IGNORE_RETURN(_worker_done.wait_blocking());
-    _host_cpu_us += _worker_used_us;
-    _duty_cap.charge(_worker_used_us);
 }
 
 // the AP_Param change observer: any thread, lock-free (AP_ModuleM4_Server::mark_changed())
@@ -464,8 +402,6 @@ void AP_ModuleM4::mirror_on_worker()
     _worker_job = WorkerJob::Mirror;
     _worker_request.signal();
     IGNORE_RETURN(_worker_done.wait_blocking());
-    _host_cpu_us += _worker_used_us;
-    _duty_cap.charge(_worker_used_us);
 }
 
 // ParameterChanged frames until no dirty slot has a change; a full ring leaves the rest dirty for
@@ -522,61 +458,6 @@ void AP_ModuleM4::load_error(const char *reason)
     GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%s", _load_error);
 }
 
-/*
-  In a pass the duty cap allows while its debt is beyond MAX_DEBT_US: a binding call that would go
-  to the slow worker is not run but answered BUSY at once. False for anything else (system calls,
-  which do bounded work per frame, and frames that do not parse), which the worker serves as usual
- */
-bool AP_ModuleM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
-{
-    ModuleM4::BindingCallHeader call;
-    if (!ModuleM4::parse_binding_call(buf, len, call)) {
-        return false;
-    }
-    if (_server.frame_is_posted(buf, len)) {
-        _post_drops++;   // a posted frame gets no BUSY reply: the M4 already answered OK
-        return true;
-    }
-    _requests++;
-    _session_calls++;
-    _slow_refused++;
-    send_frame(_tx_frame, ModuleM4::pack_binding_reply(_tx_frame, sizeof(_tx_frame), call.header.seq,
-                                                     ModuleM4::ReplyStatus::Ok, ModuleM4::STATUS_BUSY, nullptr, 0,
-                                                     _wake_latency_us, 0));
-    if (_probing) {
-        // unrun: no dispatch, lock or adapter stages
-        const uint32_t now_us = CallLatencyLog::clock_us();
-        const AP_ModuleM4_Server::ServeProbe unrun { now_us, now_us, now_us, now_us, 0, 0, 0, 0, 0, 0 };
-        probe_served(buf, len, unrun, AP_Module::CALL_REFUSED);
-    }
-    return true;
-}
-
-static_assert(ModuleM4::ServeDutyCap::MAX_PAUSE_US <= ModuleM4::CALL_TIMEOUT_MS * 1000U * 3U / 5U,
-              "a duty-cap pause leaves the M4's next call time to be served");
-
-// listening: the ring was empty with the asleep flag set, so the M4 rings for its next frame
-void AP_ModuleM4::pause_for_duty_cap(uint32_t pause_us, bool listening)
-{
-    const uint32_t until_us = AP_HAL::micros() + pause_us;
-    if (!listening) {
-        _channel->wake();   // frames are pending: no doorbell is needed while we pause
-    }
-    while (true) {
-        const uint32_t now_us = AP_HAL::micros();
-        if (int32_t(until_us - now_us) <= 0) {
-            break;
-        }
-        const uint32_t remaining_us = until_us - now_us;
-        if (!listening) {
-            hal.scheduler->delay_microseconds(uint16_t(MIN(remaining_us, uint32_t(UINT16_MAX))));
-        } else if (_doorbell.wait(remaining_us)) {
-            listening = false;   // heard: the frame is served when the pause ends, no more doorbells
-            _channel->wake();
-        }
-    }
-}
-
 // serve a bounded batch of M4 messages
 AP_ModuleM4::ServeResult AP_ModuleM4::serve()
 {
@@ -625,8 +506,6 @@ AP_ModuleM4::ServeResult AP_ModuleM4::serve()
                 }
                 if (fast) {
                     handle_message(_rx_frame, len);
-                    len = 0;
-                } else if (_duty_cap.refuses_slow_bindings() && refuse_slow_binding(_rx_frame, len)) {
                     len = 0;
                 } else {
                     serve_on_worker(len);
@@ -818,7 +697,7 @@ void AP_ModuleM4::probe_frame(uint32_t seq, uint32_t id, const ModuleM4::CallPro
     partial.time_us = AP_HAL::micros64();
     partial.seq = seq;
     partial.id = uint16_t(MIN(id, uint32_t(UINT16_MAX)));
-    partial.flags = uint16_t(flags | _frame_flags | (_pass_cap_paused ? AP_Module::CALL_CAP_PAUSED : 0));
+    partial.flags = uint16_t(flags | _frame_flags);
     if (_probe_pending.hold(partial, stamps, trace)) {
         log.record(trace);
     }
@@ -1358,35 +1237,39 @@ void AP_ModuleM4::take_counters(const uint8_t *buf)
 // @Field: Drop: frames dropped because the M4's ring was full
 // @Field: Lost: M4 calls without a reply since the previous row
 // @Field: QHit: binding calls refused by their quota since the previous row (answered OK unrun: a bool result reads false)
-// @Field: Cap: pauses the host's duty cap (10 % of the M7's CPU) forced in the last second
-// @Field: CPU: host thread and slow worker CPU time in the last second, per mille of the M7 (what the duty cap charges)
+// @Field: Cap: unused, 0
+// @Field: CPU: host thread CPU time in the last second, per mille of the M7 (since a statistics reset if one came in the window)
 // @Field: Lng: host passes over 50 ms of wall time in the last second (blocked in a binding, or preempted)
 void AP_ModuleM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
 {
 #if HAL_LOGGING_ENABLED
+    // one reading of the host thread's CPU clock per window
+    uint32_t cpu;
+    const bool cpu_reset = platform_thread_cpu(cpu);
+    const uint32_t host_cpu_us = (cpu_reset ? cpu : cpu - _host_cpu_reading) / CPU_TICKS_PER_US;
+    _host_cpu_reading = cpu;
     AP::logger().WriteStreaming("M4ST", "TimeUS,St,HB,Ses,Rst,Flt,FPC,Req,PErr,Drop,Lost,QHit,Cap,CPU,Lng",
                                 "s--------------", "F--------------", "QBIIBIIIHHIIHHH",
                                 AP_HAL::micros64(), uint8_t(_state), _m4_heartbeat, _m4_session,
                                 _restarts_used, _m4_fault_count, _m4_fault_pc, _requests,
                                 _protocol_errors, _dropped, _m4_calls_lost, _server.take_quota_hits(),
-                                _duty_cap_hits,
-                                uint16_t(MIN(_host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
+                                uint16_t(0),
+                                uint16_t(MIN(host_cpu_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
                                 _long_passes);
     // @LoggerMessage: M4HP
     // @Description: M4 module host thread passes, once per second (M4 builds)
     // @Field: TimeUS: Time since system startup
-    // @Field: PassMax: the largest CPU time of one fast-lane pass in the last second, in microseconds (what the duty cap charges)
+    // @Field: PassMax: unused, 0
     // @Field: WallBusy: host thread wall time from wake to the end of each pass in the last second, per mille (thread statistics do not feed it; preemption and waits on the slow worker count, the switch around a pass does not)
-    // @Field: StatsReset: thread statistics resets seen in the last second, host and slow worker (an interval with one is charged the CPU since the reset plus 200 us, at most its wall time)
+    // @Field: StatsReset: host thread statistics resets seen in the last second (M4ST.CPU then counts from the reset)
     // @Field: SlowReq: frames the slow worker served in the last second
     // @Field: SlowMax: the longest of them, wall time in microseconds
-    // @Field: SlowCPU: the largest CPU time of one of them, in microseconds (charged to the duty cap with the host's)
-    // @Field: Deny: binding calls for the slow worker refused unrun in the last second, the duty cap's debt being beyond 50 ms
+    // @Field: SlowCPU: unused, 0
+    // @Field: Deny: unused, 0
     AP::logger().WriteStreaming("M4HP", "TimeUS,PassMax,WallBusy,StatsReset,SlowReq,SlowMax,SlowCPU,Deny", "s-------",
-                                "F-------", "QIHHIIII", AP_HAL::micros64(), _pass_cpu_max_us,
+                                "F-------", "QIHHIIII", AP_HAL::micros64(), uint32_t(0),
                                 uint16_t(MIN(_host_busy_us / MAX(elapsed_ms, 1U), uint32_t(UINT16_MAX))),
-                                uint16_t(_cpu_charge.take_resets() + _worker_cpu_charge.take_resets()), _slow_requests,
-                                _slow_max_us, _slow_cpu_max_us, _slow_refused);
+                                uint16_t(cpu_reset ? 1 : 0), _slow_requests, _slow_max_us, uint32_t(0), uint32_t(0));
     // @LoggerMessage: M4MR
     // @Description: M4 module Parameter mirror and posted calls, once per second (M4 builds)
     // @Field: TimeUS: Time since system startup
@@ -1396,25 +1279,13 @@ void AP_ModuleM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     // @Field: MirEnt: Parameter values those frames carried
     // @Field: MirRsy: ParameterChanged frames that did not fit the ring (the module's gets are forwarded until resent)
     // @Field: PErr: posted calls the M7 ran with a status other than OK
-    // @Field: PDrop: posted calls dropped (M4 timeout, quota or duty-cap refusal)
+    // @Field: PDrop: posted calls dropped (M4 timeout or quota)
     // @Field: PBat: posted calls the slow worker served in a batch after the one handed to it
     AP::logger().WriteStreaming("M4MR", "TimeUS,MirHit,MirMiss,MirTx,MirEnt,MirRsy,PErr,PDrop,PBat",
                                 "s--------", "F--------", "QIIIIIIII", AP_HAL::micros64(), _m4_mirror_hits,
                                 _m4_mirror_misses, _mirror_frames_sent, _mirror_entries_sent, _mirror_failed_sends,
                                 _post_errors, _post_drops + _m4_post_drops, _posted_batched);
 #endif
-    switch (_refusal_notice.update(now_ms, _slow_refused)) {
-    case ModuleM4::RefusalNotice::Text::Refused:
-        // within one 50-character STATUSTEXT
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Module: M4 calls refused, M7 duty cap %u/s",
-                      unsigned(MIN(_slow_refused, 99999U)));
-        break;
-    case ModuleM4::RefusalNotice::Text::ServedAgain:
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Module: M4 calls served again");
-        break;
-    case ModuleM4::RefusalNotice::Text::None:
-        break;
-    }
     _m4_calls_lost = 0;
     if ((uint8_t(_options.get()) & OPTION_RPC_SUMMARY) == 0 || _state != State::Running ||
         now_ms - _last_summary_ms < 10000) {
