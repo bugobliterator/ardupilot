@@ -213,4 +213,110 @@ TEST(RustCallLatency, PendingCallWithoutCompletionIsRecordedMissing)
     EXPECT_FALSE(pending.take_missing(taken));
 }
 
+static int32_t sub(const int32_t (&subs)[CALL_SUBSTAGES], CallSubstage which)
+{
+    return subs[uint8_t(which)];
+}
+
+TEST(RustCallLatency, SubstagesSplitTheirStages)
+{
+    CallStamps s { 100, 120, 130, 160, 170, 171, 180, 181, 190, 200, 260, 300 };
+    s.chk_parsed = 173;
+    s.chk_quota = 174;
+    s.chk_copied = 178;
+    s.m7_doorbell = 140;
+    s.m4_packed = 105;
+    s.m4_posted = 108;
+    s.m4_forward_returned = 133;
+    s.m4_reply_isr = 210;
+    s.m4_reply_wake = 230;
+    s.m4_signalled = 270;
+    s.m4_resumed = 290;
+    s.taken = CALL_STAMP_CHK_PARSED | CALL_STAMP_CHK_QUOTA | CALL_STAMP_CHK_COPIED | CALL_STAMP_M7_DOORBELL |
+              CALL_STAMPS_M4;
+    int32_t subs[CALL_SUBSTAGES];
+    EXPECT_EQ(call_substages(s, subs), (1U << CALL_SUBSTAGES) - 1U);
+    int32_t stages[CALL_STAGES];
+    call_stages(s, stages);
+    // each split adds up to its stage
+    EXPECT_EQ(sub(subs, CallSubstage::ChkParse) + sub(subs, CallSubstage::ChkQuota) + sub(subs, CallSubstage::ChkCopy) +
+              sub(subs, CallSubstage::ChkRest), stage(stages, CallStage::Check));
+    EXPECT_EQ(sub(subs, CallSubstage::RcvIsr) + sub(subs, CallSubstage::RcvWake) + sub(subs, CallSubstage::RcvTake),
+              stage(stages, CallStage::Receive));
+    EXPECT_EQ(sub(subs, CallSubstage::PrePack) + sub(subs, CallSubstage::PrePost) + sub(subs, CallSubstage::PreForward),
+              stage(stages, CallStage::Pre));
+    EXPECT_EQ(sub(subs, CallSubstage::BckIsr) + sub(subs, CallSubstage::BckWake) + sub(subs, CallSubstage::BckDrain),
+              stage(stages, CallStage::Back));
+    EXPECT_EQ(sub(subs, CallSubstage::RetSignal) + sub(subs, CallSubstage::RetSwitch) + sub(subs, CallSubstage::RetCopy),
+              stage(stages, CallStage::Return));
+    EXPECT_EQ(sub(subs, CallSubstage::ChkCopy), 4);
+    EXPECT_EQ(sub(subs, CallSubstage::RcvIsr), 10);
+    EXPECT_EQ(sub(subs, CallSubstage::RcvWake), 20);
+    EXPECT_EQ(sub(subs, CallSubstage::SndUnlock), 3);
+    EXPECT_EQ(sub(subs, CallSubstage::BckWake), 20);
+    EXPECT_EQ(sub(subs, CallSubstage::RetSwitch), 20);
+}
+
+TEST(RustCallLatency, SubstagesNeedBothStamps)
+{
+    CallStamps s { 100, 120, 130, 160, 170, 171, 180, 181, 190, 200, 260, 300 };
+    s.m4_posted = 108;
+    s.m4_signalled = 270;
+    s.taken = CALL_STAMP_M4_POSTED | CALL_STAMP_M4_SIGNALLED;   // no packed, no resumed
+    int32_t subs[CALL_SUBSTAGES];
+    const uint32_t valid = call_substages(s, subs);
+    EXPECT_EQ(valid, (1U << uint8_t(CallSubstage::PreForward)) | (1U << uint8_t(CallSubstage::RetSignal)));
+    EXPECT_EQ(sub(subs, CallSubstage::PreForward), 12);
+    EXPECT_EQ(sub(subs, CallSubstage::PrePost), 0);
+    EXPECT_EQ(sub(subs, CallSubstage::RetSwitch), 0);
+}
+
+TEST(RustCallLatency, SubstageTotalsMeanAndMax)
+{
+    SubstageTotals totals {};
+    int32_t subs[CALL_SUBSTAGES] {};
+    subs[0] = 40;
+    subs[1] = -2;
+    totals.add(subs, 3U);
+    subs[0] = 45;
+    subs[1] = -5;
+    totals.add(subs, 3U);
+    subs[0] = 1000;
+    totals.add(subs, 2U);   // ChkParse not taken this time
+    EXPECT_EQ(totals.count[0], 2U);
+    EXPECT_EQ(totals.mean_us(0), 43);   // 42.5 rounds up
+    EXPECT_EQ(totals.max_us[0], 45);
+    EXPECT_EQ(totals.count[1], 3U);
+    EXPECT_EQ(totals.mean_us(1), -4);   // -12 / 3
+    EXPECT_EQ(totals.max_us[1], -2);
+    EXPECT_EQ(totals.count[2], 0U);
+    EXPECT_EQ(totals.mean_us(2), 0);
+}
+
+TEST(RustCallLatency, CompletionCarriesTheM4SubstageStamps)
+{
+    PendingCall pending;
+    CallStamps stamps { 100, 120, 0, 160, 170, 171, 180, 181, 190, 200, 0, 0 };
+    stamps.chk_parsed = 173;
+    stamps.taken = CALL_STAMP_CHK_PARSED | CALL_STAMP_M4_RESUMED;   // a stale M4 bit is replaced
+    CallTrace evicted;
+    EXPECT_FALSE(pending.hold(trace_of(5, 390, 0), stamps, evicted));
+    M4Completion done {};
+    done.seq = 5;
+    done.sent = 130;
+    done.reply_seen = 260;
+    done.svc_return = 300;
+    done.taken = CALL_STAMP_M4_PACKED | CALL_STAMP_M4_REPLY_WAKE | CALL_STAMP_CHK_COPIED;   // M7 bits ignored
+    done.packed = 105;
+    done.reply_isr = 210;
+    done.reply_wake = 230;
+    CallTrace trace;
+    CallStamps whole;
+    ASSERT_TRUE(pending.complete(done, trace, &whole));
+    EXPECT_EQ(whole.taken, CALL_STAMP_CHK_PARSED | CALL_STAMP_M4_PACKED | CALL_STAMP_M4_REPLY_WAKE);
+    EXPECT_EQ(whole.m4_packed, 105U);
+    EXPECT_EQ(whole.m4_reply_wake, 230U);
+    EXPECT_EQ(stage(trace.stage_us, CallStage::Total), 200);
+}
+
 AP_GTEST_MAIN()

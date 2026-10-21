@@ -29,6 +29,131 @@ struct CallStamps {
     uint32_t reply_sent;    // t6: the reply is on the ring, doorbell rung (M7)
     uint32_t reply_seen;    // t7: the M4 service took the reply off the ring
     uint32_t svc_return;    // t8: the binding call returns to the module
+    // the sub-stage stamps, each valid only with its CALL_STAMP_* bit in taken
+    uint32_t chk_parsed;          // M7: frame parsed, module, id and lane checked
+    uint32_t chk_quota;           // M7: quota checked
+    uint32_t chk_copied;          // M7: serve buffers cleared, input copied
+    uint32_t m7_doorbell;         // M7: the doorbell interrupt that woke the pass (first frame of the pass)
+    uint32_t m4_packed;           // M4: frame packed, before the platform call
+    uint32_t m4_posted;           // M4: the link posted, before forward_posted()
+    uint32_t m4_forward_returned; // M4: forward_posted() returned with the call sent
+    uint32_t m4_reply_isr;        // M4: the doorbell interrupt before the reply was seen
+    uint32_t m4_reply_wake;       // M4: the service thread resumed after that doorbell
+    uint32_t m4_signalled;        // M4: complete() signalled the module thread
+    uint32_t m4_resumed;          // M4: the module thread resumed after its wait
+    uint32_t taken;               // CALL_STAMP_*
+};
+
+// CallStamps::taken
+static const uint32_t CALL_STAMP_CHK_PARSED = 1U << 0;
+static const uint32_t CALL_STAMP_CHK_QUOTA = 1U << 1;
+static const uint32_t CALL_STAMP_CHK_COPIED = 1U << 2;
+static const uint32_t CALL_STAMP_M7_DOORBELL = 1U << 3;
+static const uint32_t CALL_STAMP_M4_PACKED = 1U << 4;
+static const uint32_t CALL_STAMP_M4_POSTED = 1U << 5;
+static const uint32_t CALL_STAMP_M4_FORWARD_RETURNED = 1U << 6;
+static const uint32_t CALL_STAMP_M4_REPLY_WAKE = 1U << 7;   // m4_reply_isr and m4_reply_wake
+static const uint32_t CALL_STAMP_M4_SIGNALLED = 1U << 8;
+static const uint32_t CALL_STAMP_M4_RESUMED = 1U << 9;
+// the M4's bits, as its trailer carries them
+static const uint32_t CALL_STAMPS_M4 = CALL_STAMP_M4_PACKED | CALL_STAMP_M4_POSTED | CALL_STAMP_M4_FORWARD_RETURNED |
+                                       CALL_STAMP_M4_REPLY_WAKE | CALL_STAMP_M4_SIGNALLED | CALL_STAMP_M4_RESUMED;
+
+/*
+  Sub-stages of Chk, Rcv, Pre, Send, Back and Return, from the sub-stage stamps. A sub-stage
+  counts only for calls that took both of its stamps; the three of Rcv, Pre, Back and Return add
+  up to their stage for the calls that have all three.
+ */
+enum class CallSubstage : uint8_t {
+    ChkParse,    // dispatch -> chk_parsed: parse, module, id and lane checks
+    ChkQuota,    // chk_parsed -> chk_quota
+    ChkCopy,     // chk_quota -> chk_copied: clearing the serve buffers, copying the input
+    ChkRest,     // chk_copied -> lock_wait: the M7 exec timer, the lock lookup
+    RcvIsr,      // sent -> m7_doorbell: M4 send to the M7 doorbell interrupt
+    RcvWake,     // m7_doorbell -> m7_pass: interrupt to the host thread's pass
+    RcvTake,     // m7_pass -> m7_received: the pass until the frame is off the ring
+    PrePack,     // svc_entry -> m4_packed: checks and framing
+    PrePost,     // m4_packed -> m4_posted: copy to the link, post
+    PreForward,  // m4_posted -> pre_send: service lock, frame checks
+    SndUnlock,   // sent -> m4_forward_returned: from the send to forward_posted()'s return
+    BckIsr,      // reply_sent -> m4_reply_isr: M7 send to the M4 doorbell interrupt
+    BckWake,     // m4_reply_isr -> m4_reply_wake: interrupt to the service thread
+    BckDrain,    // m4_reply_wake -> reply_seen: the service step until the reply is off the ring
+    RetSignal,   // reply_seen -> m4_signalled: reply copy to the link, signalling the module thread
+    RetSwitch,   // m4_signalled -> m4_resumed: until the module thread runs
+    RetCopy,     // m4_resumed -> svc_return: reply checks, output copy, return
+};
+static const uint8_t CALL_SUBSTAGES = 17;
+static const char *const CALL_SUBSTAGE_NAMES[CALL_SUBSTAGES] = {
+    "ChkParse", "ChkQuota", "ChkCopy", "ChkRest", "RcvIsr", "RcvWake", "RcvTake", "PrePack", "PrePost",
+    "PreForward", "SndUnlock", "BckIsr", "BckWake", "BckDrain", "RetSignal", "RetSwitch", "RetCopy",
+};
+
+// the sub-stages of one call; returns the mask of those it took both stamps of (bit per CallSubstage)
+inline uint32_t call_substages(const CallStamps &s, int32_t (&sub_us)[CALL_SUBSTAGES])
+{
+    struct Span {
+        uint32_t from, to, needs;
+    };
+    const Span spans[CALL_SUBSTAGES] = {
+        { s.dispatch, s.chk_parsed, CALL_STAMP_CHK_PARSED },
+        { s.chk_parsed, s.chk_quota, CALL_STAMP_CHK_PARSED | CALL_STAMP_CHK_QUOTA },
+        { s.chk_quota, s.chk_copied, CALL_STAMP_CHK_QUOTA | CALL_STAMP_CHK_COPIED },
+        { s.chk_copied, s.lock_wait, CALL_STAMP_CHK_COPIED },
+        { s.sent, s.m7_doorbell, CALL_STAMP_M7_DOORBELL },
+        { s.m7_doorbell, s.m7_pass, CALL_STAMP_M7_DOORBELL },
+        { s.m7_pass, s.m7_received, CALL_STAMP_M7_DOORBELL },
+        { s.svc_entry, s.m4_packed, CALL_STAMP_M4_PACKED },
+        { s.m4_packed, s.m4_posted, CALL_STAMP_M4_PACKED | CALL_STAMP_M4_POSTED },
+        { s.m4_posted, s.pre_send, CALL_STAMP_M4_POSTED },
+        { s.sent, s.m4_forward_returned, CALL_STAMP_M4_FORWARD_RETURNED },
+        { s.reply_sent, s.m4_reply_isr, CALL_STAMP_M4_REPLY_WAKE },
+        { s.m4_reply_isr, s.m4_reply_wake, CALL_STAMP_M4_REPLY_WAKE },
+        { s.m4_reply_wake, s.reply_seen, CALL_STAMP_M4_REPLY_WAKE },
+        { s.reply_seen, s.m4_signalled, CALL_STAMP_M4_SIGNALLED },
+        { s.m4_signalled, s.m4_resumed, CALL_STAMP_M4_SIGNALLED | CALL_STAMP_M4_RESUMED },
+        { s.m4_resumed, s.svc_return, CALL_STAMP_M4_RESUMED },
+    };
+    uint32_t valid = 0;
+    for (uint8_t i = 0; i < CALL_SUBSTAGES; i++) {
+        const bool taken = (s.taken & spans[i].needs) == spans[i].needs;
+        sub_us[i] = taken ? int32_t(spans[i].to - spans[i].from) : 0;
+        if (taken) {
+            valid |= 1U << i;
+        }
+    }
+    return valid;
+}
+
+// count, sum and max of each sub-stage of one binding
+struct SubstageTotals {
+    uint32_t count[CALL_SUBSTAGES];
+    int64_t sum_us[CALL_SUBSTAGES];
+    int32_t max_us[CALL_SUBSTAGES];
+
+    void add(const int32_t (&sub_us)[CALL_SUBSTAGES], uint32_t valid)
+    {
+        for (uint8_t i = 0; i < CALL_SUBSTAGES; i++) {
+            if ((valid & (1U << i)) == 0) {
+                continue;
+            }
+            if (count[i] == 0 || sub_us[i] > max_us[i]) {
+                max_us[i] = sub_us[i];
+            }
+            count[i]++;
+            sum_us[i] += sub_us[i];
+        }
+    }
+
+    // mean rounded to the nearest microsecond; 0 without samples
+    int32_t mean_us(uint8_t i) const
+    {
+        if (count[i] == 0) {
+            return 0;
+        }
+        const int64_t half = sum_us[i] >= 0 ? int64_t(count[i] / 2) : -int64_t(count[i] / 2);
+        return int32_t((sum_us[i] + half) / int64_t(count[i]));
+    }
 };
 
 // the logged stages; Pass lies inside Receive, the others add up to Total
@@ -217,6 +342,15 @@ struct M4Completion {
     uint32_t reply_seen;
     uint32_t svc_return;
     uint16_t flags;
+    // the M4's sub-stage stamps, valid per CALL_STAMP_M4_* bit in taken
+    uint32_t taken;
+    uint32_t packed;
+    uint32_t posted;
+    uint32_t forward_returned;
+    uint32_t reply_isr;
+    uint32_t reply_wake;
+    uint32_t signalled;
+    uint32_t resumed;
 };
 
 class PendingCall {
@@ -235,8 +369,8 @@ public:
         return had;
     }
 
-    // the completion of the pending call: true with the whole trace if its seq matches
-    bool complete(const M4Completion &done, CallTrace &trace)
+    // the completion of the pending call: true with the whole trace (and its stamps) if its seq matches
+    bool complete(const M4Completion &done, CallTrace &trace, CallStamps *stamps = nullptr)
     {
         if (!_valid || done.seq != _trace.seq) {
             return false;
@@ -244,6 +378,17 @@ public:
         _stamps.sent = done.sent;
         _stamps.reply_seen = done.reply_seen;
         _stamps.svc_return = done.svc_return;
+        _stamps.m4_packed = done.packed;
+        _stamps.m4_posted = done.posted;
+        _stamps.m4_forward_returned = done.forward_returned;
+        _stamps.m4_reply_isr = done.reply_isr;
+        _stamps.m4_reply_wake = done.reply_wake;
+        _stamps.m4_signalled = done.signalled;
+        _stamps.m4_resumed = done.resumed;
+        _stamps.taken = (_stamps.taken & ~CALL_STAMPS_M4) | (done.taken & CALL_STAMPS_M4);
+        if (stamps != nullptr) {
+            *stamps = _stamps;
+        }
         trace = _trace;
         trace.flags |= done.flags;
         call_stages(_stamps, trace.stage_us);

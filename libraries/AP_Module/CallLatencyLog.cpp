@@ -106,10 +106,12 @@ bool CallLatencyLog::start()
     }
     auto *traces = static_cast<CallTrace *>(calloc(CALL_TRACE_COUNT, sizeof(CallTrace)));
     auto *scratch = static_cast<int32_t *>(calloc(CALL_TRACE_COUNT, sizeof(int32_t)));
+    auto *substages = static_cast<SubstageTotals *>(calloc(SUMMARY_IDS, sizeof(SubstageTotals)));
     auto *ring = traces != nullptr ? NEW_NOTHROW CallTraceRing<CALL_TRACE_COUNT>(traces) : nullptr;
-    if (scratch == nullptr || ring == nullptr) {
+    if (scratch == nullptr || ring == nullptr || substages == nullptr) {
         free(traces);
         free(scratch);
+        free(substages);
         delete ring;
         return false;
     }
@@ -131,28 +133,34 @@ bool CallLatencyLog::start()
     _stamp_cycles = stamp_cycles;
     _lock_pair_cycles = lock_pair_cycles;
     _scratch = scratch;
+    _substages = substages;
     _log_tokens_milli = LOG_ROWS_BURST * 1000U;
     _log_refill_ms = AP_HAL::millis();
     _ring = ring;
     return true;
 }
 
+int8_t CallLatencyLog::id_slot(uint32_t id)
+{
+    for (uint8_t i = 0; i < _id_count; i++) {
+        if (_ids[i].id == id) {
+            return int8_t(i);
+        }
+    }
+    if (_id_count == SUMMARY_IDS) {
+        return -1;
+    }
+    _ids[_id_count] = IdTotals { id, 0, INT32_MIN, 0 };
+    return int8_t(_id_count++);
+}
+
 void CallLatencyLog::note_id(const CallTrace &trace)
 {
-    IdTotals *slot = nullptr;
-    for (uint8_t i = 0; i < _id_count; i++) {
-        if (_ids[i].id == trace.id) {
-            slot = &_ids[i];
-            break;
-        }
+    const int8_t index = id_slot(trace.id);
+    if (index < 0) {
+        return;
     }
-    if (slot == nullptr) {
-        if (_id_count == SUMMARY_IDS) {
-            return;
-        }
-        slot = &_ids[_id_count++];
-        *slot = IdTotals { trace.id, 0, INT32_MIN, 0 };
-    }
+    IdTotals *slot = &_ids[index];
     slot->count++;
     slot->flags = trace.flags;
     if ((trace.flags & CALL_M4_MISSING) == 0) {
@@ -168,6 +176,20 @@ void CallLatencyLog::record(const CallTrace &trace)
     }
     _ring->push(trace);
     note_id(trace);
+}
+
+void CallLatencyLog::record_substages(uint32_t id, const CallStamps &stamps)
+{
+    int32_t sub_us[CALL_SUBSTAGES];
+    const uint32_t valid = call_substages(stamps, sub_us);
+    WITH_SEMAPHORE(_sem);
+    if (_ring == nullptr || valid == 0) {
+        return;
+    }
+    const int8_t index = id_slot(id);
+    if (index >= 0) {
+        _substages[index].add(sub_us, valid);
+    }
 }
 
 void CallLatencyLog::add_overhead(uint32_t overhead_cycles)
@@ -240,11 +262,16 @@ void CallLatencyLog::summary(ExpandingString &str)
                (unsigned long)_stamp_cycles, (unsigned long)_lock_pair_cycles, (unsigned long)_m4_stamp_cycles,
                (unsigned long)(_overhead_calls != 0 ? _overhead_cycles / _overhead_calls : 0),
                (unsigned long)_overhead_max_cycles, (unsigned long)per_us);
+    str.printf("memset cost: M7 4096 B of the serve input %lu cycles, M4 64 B %u.%02u and 4 KB %u.%02u cycles/byte "
+               "(0: not measured)\n",
+               (unsigned long)_m7_memset_cycles, unsigned(_m4_memset_small_centicycles / 100U),
+               unsigned(_m4_memset_small_centicycles % 100U), unsigned(_m4_memset_large_centicycles / 100U),
+               unsigned(_m4_memset_large_centicycles % 100U));
     static const char *const lanes[] = { "in-process", "fast", "slow", "?" };
     for (uint8_t i = 0; i < _id_count; i++) {
         const IdTotals &totals = _ids[i];
-        str.printf("id %lu %s: calls %lu, max Tot %ld us; window p50/p99/max us:\n", (unsigned long)totals.id,
-                   lanes[totals.flags & CALL_LANE_MASK], (unsigned long)totals.count, long(totals.max_total_us));
+        str.printf("id %lu %s: calls %lu, max Tot %ld us; window p50/p99/max us, sub mean/max us since start:\n",
+                   (unsigned long)totals.id, lanes[totals.flags & CALL_LANE_MASK], (unsigned long)totals.count, long(totals.max_total_us));
         for (uint8_t stage = 0; stage < CALL_STAGES; stage++) {
             const StageSummary s = summarize_stage(*_ring, totals.id, CallStage(stage), _scratch);
             if (s.count == 0) {
@@ -252,6 +279,15 @@ void CallLatencyLog::summary(ExpandingString &str)
             }
             str.printf("  %s n %u %ld %ld %ld\n", CALL_STAGE_NAMES[stage], unsigned(s.count), long(s.p50_us),
                        long(s.p99_us), long(s.max_us));
+        }
+        // since start, not the window
+        const SubstageTotals &sub = _substages[i];
+        for (uint8_t substage = 0; substage < CALL_SUBSTAGES; substage++) {
+            if (sub.count[substage] == 0) {
+                continue;
+            }
+            str.printf("  sub %s n %lu mean %ld max %ld\n", CALL_SUBSTAGE_NAMES[substage],
+                       (unsigned long)sub.count[substage], long(sub.mean_us(substage)), long(sub.max_us[substage]));
         }
     }
 }
