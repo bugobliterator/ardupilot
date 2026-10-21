@@ -35,6 +35,13 @@ namespace PeerHeader = CubePilotFW::PeerHeader;
 
 // the host thread runs at UART priority + 1, the interrupt only signals it
 static const uint8_t HSEM_IRQ_PRIORITY = 12;
+#if AP_MODULE_M4_PRIORITY_TEST
+static constexpr int HOST_PRIORITY = APM_MAIN_PRIORITY_BOOST + ModuleM4::HOST_PRIORITY_OFFSET;
+static constexpr int WORKER_PRIORITY = APM_MAIN_PRIORITY_BOOST + ModuleM4::WORKER_PRIORITY_OFFSET;
+static_assert(HOST_PRIORITY == 183 && WORKER_PRIORITY == 182 && HOST_PRIORITY > APM_TIMER_PRIORITY &&
+              WORKER_PRIORITY > APM_TIMER_PRIORITY && HOST_PRIORITY <= HIGHPRIO,
+              "priority test: host and worker above the main loop and the timer thread");
+#else
 static constexpr int HOST_PRIORITY = APM_UART_PRIORITY + ModuleM4::HOST_PRIORITY_OFFSET;
 static constexpr int WORKER_PRIORITY = APM_IO_PRIORITY + ModuleM4::WORKER_PRIORITY_OFFSET;
 static_assert(HOST_PRIORITY > APM_STORAGE_PRIORITY && HOST_PRIORITY > APM_IO_PRIORITY &&
@@ -45,6 +52,7 @@ static_assert(HOST_PRIORITY > APM_STORAGE_PRIORITY && HOST_PRIORITY > APM_IO_PRI
 static_assert(WORKER_PRIORITY < APM_IO_PRIORITY - 1 && WORKER_PRIORITY < APM_STORAGE_PRIORITY &&
               WORKER_PRIORITY < APM_UART_PRIORITY && WORKER_PRIORITY > APM_STARTUP_PRIORITY && WORKER_PRIORITY > LOWPRIO,
               "the M4 slow worker sits below the I/O threads and their io - 1 peers");
+#endif
 
 bool AP_ModuleM4::platform_start(char *reason, size_t reason_len)
 {

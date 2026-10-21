@@ -122,7 +122,7 @@ void AP_ModuleM4::init(const AP_Module::Runtime::Config &config)
     // UART/net 60 and the io - 1 threads (OA path planner, mount POI); its CPU is charged to the
     // duty cap too
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ModuleM4::worker_thread, void),
-                                      "ModuleM4W", 8192, AP_HAL::Scheduler::PRIORITY_IO,
+                                      "ModuleM4W", 8192, ModuleM4::WORKER_PRIORITY_BASE,
                                       ModuleM4::WORKER_PRIORITY_OFFSET)) {
         go_off("no worker thread");
         return;
@@ -132,7 +132,7 @@ void AP_ModuleM4::init(const AP_Module::Runtime::Config &config)
     // vehicle-timing thread (I2C 176 and up). The duty cap bounds the CPU share a flooding M4
     // can take from those threads
     if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_ModuleM4::host_thread, void),
-                                      "ModuleM4", 8192, AP_HAL::Scheduler::PRIORITY_UART,
+                                      "ModuleM4", 8192, ModuleM4::HOST_PRIORITY_BASE,
                                       ModuleM4::HOST_PRIORITY_OFFSET)) {
         go_off("no host thread");
     }
@@ -1370,6 +1370,13 @@ void AP_ModuleM4::check_started(uint32_t now_ms)
         enter(State::Running, now_ms);
         GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Module: started on M4 (%u module%s, M4 RAM %uKB)", unsigned(_module_count),
                       _module_count == 1 ? "" : "s", unsigned(AP_MODULE_M4_MODULE_AREA_SIZE / 1024U));
+#if AP_MODULE_M4_PRIORITY_TEST
+        static bool priority_test_sent;
+        if (!priority_test_sent) {
+            priority_test_sent = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Module: M4 host prio test (host 183, worker 182)");
+        }
+#endif
         // the M4 forwards module calls only after this
         send_ready(now_ms);
         return;

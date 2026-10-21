@@ -11,3 +11,9 @@
 #ifndef AP_MODULE_M4_FAULT_INJECTION_ENABLED
 #define AP_MODULE_M4_FAULT_INJECTION_ENABLED AP_MODULE_M4_ENABLED
 #endif
+
+// test-only: the host thread at main boost + 1 (183) and the worker at main boost (182), above
+// the main loop and the timer thread, to measure the transport without their preemption
+#ifndef AP_MODULE_M4_PRIORITY_TEST
+#define AP_MODULE_M4_PRIORITY_TEST 0
+#endif

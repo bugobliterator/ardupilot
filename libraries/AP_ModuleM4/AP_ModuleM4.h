@@ -30,10 +30,19 @@ class Channel;
   semaphore, with a timeout.
  */
 namespace ModuleM4 {
-// thread_create() offsets: the host on PRIORITY_UART, the slow worker on PRIORITY_IO (on ChibiOS
-// 61 and 56; the bounds are checked in AP_ModuleM4_ChibiOS.cpp)
+// thread_create() bases and offsets: the host on PRIORITY_UART, the slow worker on PRIORITY_IO (on
+// ChibiOS 61 and 56; the bounds are checked in AP_ModuleM4_ChibiOS.cpp)
+#if AP_MODULE_M4_PRIORITY_TEST
+static const AP_HAL::Scheduler::priority_base HOST_PRIORITY_BASE = AP_HAL::Scheduler::PRIORITY_BOOST;
+static const AP_HAL::Scheduler::priority_base WORKER_PRIORITY_BASE = AP_HAL::Scheduler::PRIORITY_BOOST;
+static const int8_t HOST_PRIORITY_OFFSET = 1;
+static const int8_t WORKER_PRIORITY_OFFSET = 0;
+#else
+static const AP_HAL::Scheduler::priority_base HOST_PRIORITY_BASE = AP_HAL::Scheduler::PRIORITY_UART;
+static const AP_HAL::Scheduler::priority_base WORKER_PRIORITY_BASE = AP_HAL::Scheduler::PRIORITY_IO;
 static const int8_t HOST_PRIORITY_OFFSET = 1;
 static const int8_t WORKER_PRIORITY_OFFSET = -2;
+#endif
 }
 
 class AP_ModuleM4 {
