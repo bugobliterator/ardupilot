@@ -13,8 +13,9 @@ namespace AP_Rust {
 
 /*
   The stamps of one call, in the order they are taken. In-process calls have
-  no frame, ring or second core: every stamp from svc_entry to dispatch is the
-  dispatch entry, and reply_sent and reply_seen are adapter_done.
+  no frame, ring or second core: svc_entry is the host's binding call entry,
+  every stamp from pre_send to dispatch is the dispatch entry, and reply_sent
+  and reply_seen are adapter_done.
  */
 struct CallStamps {
     uint32_t svc_entry;     // t0: the module's binding call enters the host (M4: the SVC body)
@@ -216,8 +217,8 @@ static const char *const CALL_STAGE_NAMES[CALL_STAGES] = {
 // CallTrace flags
 static const uint16_t CALL_LANE_MASK = 0x3;           // CallLane
 static const uint16_t CALL_M4_SLEPT = 1U << 2;        // the module thread slept for its reply
-static const uint16_t CALL_M4_POLL_WAKE = 1U << 3;    // the M4 service's wait before the reply timed out (no doorbell)
-static const uint16_t CALL_M4_SENT_BY_STEP = 1U << 4; // the service's step sent it, not the module thread
+static const uint16_t CALL_M4_POLL_WAKE = 1U << 3;    // the M4 wait before the reply was drained timed out (no doorbell)
+static const uint16_t CALL_M4_SENT_BY_STEP = 1U << 4; // a later drain sent it, not forward_posted()
 static const uint16_t CALL_CAP_PAUSED = 1U << 5;      // the pass that served it followed a duty-cap pause
 static const uint16_t CALL_REFUSED = 1U << 6;         // refused unrun (duty-cap debt): no adapter stages
 static const uint16_t CALL_QUOTA = 1U << 7;           // over its quota: answered unrun, no adapter stages
@@ -258,11 +259,11 @@ inline void call_stages(const CallStamps &s, int32_t (&stage_us)[CALL_STAGES])
     stage_us[uint8_t(CallStage::Total)] = stamp_delta(s.svc_entry, s.svc_return);
 }
 
-// the in-process form of CallStamps: dispatch entry, lock wait, adapter, adapter done, return
-inline CallStamps in_process_stamps(uint32_t entry, uint32_t lock_wait, uint32_t adapter, uint32_t adapter_done,
-                                    uint32_t returned)
+// the in-process form of CallStamps: host entry, dispatch entry, lock wait, adapter, adapter done, return
+inline CallStamps in_process_stamps(uint32_t host_entry, uint32_t entry, uint32_t lock_wait, uint32_t adapter,
+                                    uint32_t adapter_done, uint32_t returned)
 {
-    return CallStamps { entry, entry, entry, entry, entry, entry, lock_wait, adapter, adapter_done,
+    return CallStamps { host_entry, entry, entry, entry, entry, entry, lock_wait, adapter, adapter_done,
                         adapter_done, adapter_done, returned };
 }
 
