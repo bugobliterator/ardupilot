@@ -364,7 +364,7 @@ int main(void)
     // module area writes are privileged writes through region 1
     const ModuleHostPlatform host_platform {
         &call_link, reinterpret_cast<uint8_t *>(AP_MODULE_M4_MODULE_AREA_BASE), AP_MODULE_M4_MODULE_AREA_BASE,
-        AP_MODULE_M4_MODULE_AREA_SIZE, { 40, AP_MODULE_ABI_VERSION, 1, 0, AP_MODULE_API_FINGERPRINT },
+        AP_MODULE_M4_MODULE_AREA_SIZE, { 40, AP_MODULE_ABI_VERSION, 1, 0, AP_MODULE_API_FINGERPRINT, 0 },
         // the PR's thumbv7em host callback margin (Module.cpp)
         4096, nullptr, host_config, host_binding_name, host_unpublish, nullptr, host_start, host_request_stop
     };

@@ -282,7 +282,7 @@ int main(int argc, char **argv)
     // the PR's x86-64 identity and host callback margin (Module.cpp); no area: no module loads
     const ModuleHostPlatform host_platform {
         &call_link, area, uint32_t(uintptr_t(area)), AP_MODULE_M4_MODULE_AREA_SIZE,
-        { 62, AP_MODULE_ABI_VERSION, 2, 0, AP_MODULE_API_FINGERPRINT }, 16384, nullptr, host_config,
+        { 62, AP_MODULE_ABI_VERSION, 2, 0, AP_MODULE_API_FINGERPRINT, 0 }, 16384, nullptr, host_config,
         host_binding_name, nullptr, host_publish, host_start, host_request_stop
     };
     module_host.init(host_platform);
