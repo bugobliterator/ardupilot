@@ -21,7 +21,7 @@ define AP_RUST_M4_ENABLED 1
 # modules run on the M4: no executable memory on the M7
 define HAL_EXECUTABLE_MEMORY_ENABLED 0
 
-# per-thread CPU time (ChibiOS statistics): the M4 host thread's duty cap charges it
+# per-thread CPU time (ChibiOS statistics): @SYS/threads.txt and the M4 host thread's M4ST.CPU
 define HAL_ENABLE_THREAD_STATISTICS 1
 
 # SITL physics on the M7: the aerobatic plane model
