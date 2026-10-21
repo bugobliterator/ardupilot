@@ -2,7 +2,15 @@
 # Runs one command in the linux/amd64 SITL container, in /work: a copy of this
 # worktree refreshed before every run (build/ persists in the volume, so the
 # Mac's build/sitl is never shared). usage: run.sh '<command>'
+# run.sh --udp-out '<command>': the command also gets
+# MODULE_M4_SITL_OUT=udp:host.docker.internal:14550, the host's UDP port 14550, for a SITL
+# MAVLink output (outbound only: no port is published)
 set -euo pipefail
+ENVIRONMENT=()
+if [ "${1:-}" = --udp-out ]; then
+    ENVIRONMENT=(-e MODULE_M4_SITL_OUT=udp:host.docker.internal:14550)
+    shift
+fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 # the tag follows the Dockerfile, so an edited Dockerfile builds a new image
@@ -18,7 +26,7 @@ if docker container inspect "$NAME" > /dev/null 2>&1; then
     docker rm -f "$NAME" > /dev/null
 fi
 # waf reads the version from git: /work gets a one-commit repository of its own
-exec docker run --rm --init --platform linux/amd64 --name "$NAME" \
+exec docker run --rm --init --platform linux/amd64 --name "$NAME" ${ENVIRONMENT[@]+"${ENVIRONMENT[@]}"} \
     -v "$ROOT:/src:ro" -v "$VOLUME:/work" -w /work "$IMAGE" bash -c '
     set -e
     rsync -a --delete --exclude /build/ --exclude .git --exclude __pycache__/ /src/ /work/
