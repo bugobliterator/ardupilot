@@ -273,6 +273,7 @@ static const uint16_t CALL_QUOTA = 1U << 7;           // over its quota: answere
 static const uint16_t CALL_LOCK_TAKEN = 1U << 8;      // the probe took the adapter's lock first: Lock is its wait
 static const uint16_t CALL_LOCK_UNKNOWN = 1U << 9;    // the adapter takes a lock the probe cannot: inside Adapter
 static const uint16_t CALL_M4_MISSING = 1U << 10;     // no M4 completion arrived: Back and Return are 0
+static const uint16_t CALL_M4_POLLED = 1U << 11;      // the M4 module thread's poll took the reply, it never slept
 static const uint8_t CALL_POSITION_SHIFT = 12;        // frames served before it in its pass, up to 15
 
 enum class CallLane : uint8_t { InProcess = 0, Fast = 1, Slow = 2 };
