@@ -27,6 +27,9 @@ struct BindingCallArgs {
     uint32_t output_size;
 };
 
+// binding_mirror_role() values (generator m4_binding.py ROLE_VALUES)
+enum class MirrorRole : uint8_t { None = 0, Get = 1, HandleWriter = 2, NameWriter = 3 };
+
 struct HostPlatform {
     // a whole call frame; the reply copied, its length returned, or -errno with no reply
     int32_t (*call)(void *platform, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap);
@@ -35,6 +38,15 @@ struct HostPlatform {
     bool (*local_wire)(uint32_t id, uint32_t &input_size, uint32_t &output_size);
     int32_t (*local)(uint32_t id, const uint8_t *input, uint32_t input_size, uint8_t *output, uint32_t output_size);
     void *platform;
+    // the Parameter mirror and posted ids; null: every call goes to the M7
+    uint8_t (*mirror_role)(uint32_t id);
+    // the module's Parameter.get answered from the mirror into out5; false on a miss (nothing written)
+    bool (*mirror_get)(void *platform, uint16_t module, uint64_t token, uint8_t *out5);
+    void (*mirror_pending)(void *platform, uint16_t module, uint64_t token);
+    void (*mirror_settle)(void *platform, uint16_t module, uint64_t token);
+    // a forwarded Parameter.get answered OK: out5 refreshes the module's STALE entry (never inserts)
+    void (*mirror_refresh)(void *platform, uint16_t module, uint64_t token, const uint8_t *out5);
+    bool (*is_posted)(uint32_t id);
 };
 
 struct ModuleContext {
@@ -82,22 +94,47 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     if (a.input_size > MAX_CALL_INPUT || a.output_size > MAX_REPLY_OUTPUT) {
         return STATUS_INVALID;
     }
+    const MirrorRole role = p.mirror_role != nullptr ? MirrorRole(p.mirror_role(a.id)) : MirrorRole::None;
+    uint64_t token = 0;
+    if ((role == MirrorRole::Get || role == MirrorRole::HandleWriter) && a.input_size >= sizeof(token)) {
+        memcpy(&token, a.input, sizeof(token));   // the PR wire: the receiver token first
+    }
+    // exactly the PR wire (8 B token in, [bound, f32] out); any other size goes to the M7 as before
+    if (role == MirrorRole::Get && a.input_size == 8 && a.output_size == 5 && p.mirror_get != nullptr &&
+        p.mirror_get(p.platform, m.index, token, a.output)) {
+        return STATUS_OK;
+    }
+    const bool settle = role == MirrorRole::HandleWriter && a.input_size >= sizeof(token) &&
+                        p.mirror_pending != nullptr && p.mirror_settle != nullptr;
     const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, 0, a.id, a.input,
                                               uint16_t(a.input_size), uint16_t(a.output_size));
     if (length == 0) {
         return STATUS_INVALID;
     }
+    if (settle) {
+        p.mirror_pending(p.platform, m.index, token);
+    }
     const int32_t result = p.call(p.platform, m.request, length, m.reply, MAX_FRAME);
+    int32_t status;
     BindingReplyHeader reply {};
     const uint8_t *body = nullptr;
     if (result > 0 && !parse_binding_reply(m.reply, uint16_t(result), reply, body)) {
-        return STATUS_HOST_ERROR;
+        status = STATUS_HOST_ERROR;
+    } else {
+        const CallOutcome outcome = call_outcome(result, reply, uint16_t(a.output_size));
+        if (outcome.copy_output && a.output_size != 0) {
+            memcpy(a.output, body, a.output_size);
+        }
+        status = outcome.status;
+        if (role == MirrorRole::Get && a.input_size == 8 && a.output_size == 5 && outcome.copy_output &&
+            status == STATUS_OK && p.mirror_refresh != nullptr) {
+            p.mirror_refresh(p.platform, m.index, token, a.output);
+        }
     }
-    const CallOutcome outcome = call_outcome(result, reply, uint16_t(a.output_size));
-    if (outcome.copy_output && a.output_size != 0) {
-        memcpy(a.output, body, a.output_size);
+    if (settle) {
+        p.mirror_settle(p.platform, m.index, token);
     }
-    return outcome.status;
+    return status;
 }
 
 // allocation after a stop is allowed: Rust destructors may still allocate (PR Module::allocate)

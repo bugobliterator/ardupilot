@@ -38,6 +38,10 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _config_pending = false;
     _config_ready = false;
     _config_seq = 0;
+    _mirror.clear();
+    _mirror_hits = 0;
+    _mirror_misses = 0;
+    _ended_modules = 0;
     compute_crc_self_check();
     // a CRC that disagrees with zlib would fail every ring frame: fault before the first beat,
     // so the M7 reports it as a start fault rather than this session running on bad CRCs
@@ -170,6 +174,7 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
         handle_reply(buf, len, header);
         return;
     case MsgType::ParameterChanged:
+        handle_parameter_changed(buf, len, header);
         return;
     case MsgType::Stats:
     case MsgType::BindingCall:
@@ -240,6 +245,7 @@ void M4Service::forward_call()
         memcpy(&call, _link->request, sizeof(call));
         key = uint16_t(SYSTEM_KEY | call.method);
         reply_type = uint8_t(MsgType::SystemReply);
+        forget_ended_module();
     }
     header.seq = ++_seq;
     memcpy(_link->request, &header, sizeof(header));
@@ -285,6 +291,9 @@ void M4Service::handle_ready(const MsgHeader &header)
         _config_pending = true;
         _config_ready = false;
         _config_seq = 0;
+        // a new M7 session has no handles
+        _mirror.clear();
+        _ended_modules = 0;
     }
     _session = header.seq;
     _have_session = true;
@@ -344,6 +353,11 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
         BindingReplyHeader reply;
         memcpy(&reply, buf, sizeof(reply));
         m7_us = reply.m7_wake_us + reply.m7_exec_us;
+        BindingCallHeader call;
+        memcpy(&call, _link->request, sizeof(call));
+        if ((reply.reserved2 & REPLY_FLAG_MIRROR_RESYNC) != 0 && call.module < MAX_MODULES) {
+            _mirror.mark_module_stale(uint8_t(call.module));   // a ParameterChanged did not reach us
+        }
     }
     MethodStats *stats = stats_for(_call_key);
     if (stats != nullptr) {
@@ -598,6 +612,100 @@ void M4Service::corrupt_tx_ring()
     // an unaligned producer index the M7's ring reader rejects (SpscRing::desynced)
     auto *control = reinterpret_cast<Channel::Control *>(reinterpret_cast<uintptr_t>(_window) + PeerHeader::kSize);
     control->m4ToM7.head.value.store(0x7FFFFFF1U);
+}
+
+// a token the mirror can hold: module addresses are 32-bit on the M4 image
+static bool token_fits(uint64_t token)
+{
+    return uint64_t(uintptr_t(token)) == token;
+}
+
+bool M4Service::mirror_get(uint16_t module, uint64_t token, uint8_t *out5)
+{
+    _platform.lock();
+    const bool hit = module < MAX_MODULES && token_fits(token) && _mirror.get(uint8_t(module), uintptr_t(token), out5);
+    if (hit) {
+        _mirror_hits++;
+    } else {
+        _mirror_misses++;
+    }
+    _platform.unlock();
+    return hit;
+}
+
+void M4Service::mirror_pending(uint16_t module, uint64_t token)
+{
+    _platform.lock();
+    if (module < MAX_MODULES && token_fits(token)) {
+        _mirror.mark_pending(uint8_t(module), uintptr_t(token));
+    }
+    _platform.unlock();
+}
+
+void M4Service::mirror_settle(uint16_t module, uint64_t token)
+{
+    _platform.lock();
+    if (module < MAX_MODULES && token_fits(token)) {
+        _mirror.settle(uint8_t(module), uintptr_t(token));
+    }
+    _platform.unlock();
+}
+
+void M4Service::mirror_refresh(uint16_t module, uint64_t token, const uint8_t *out5)
+{
+    float value;
+    memcpy(&value, out5 + 1, sizeof(value));
+    _platform.lock();
+    if (module < MAX_MODULES && token_fits(token)) {
+        _mirror.refresh(uint8_t(module), uintptr_t(token), value, out5[0] != 0);
+    }
+    _platform.unlock();
+}
+
+void M4Service::handle_parameter_changed(const uint8_t *buf, uint16_t len, const MsgHeader &header)
+{
+    ParameterChangedHeader changed;
+    if (!_have_session || header.seq != _session || !parse_parameter_changed(buf, len, changed)) {
+        _protocol_errors++;
+        return;
+    }
+    for (uint16_t i = 0; i < changed.count; i++) {
+        const ParameterValue entry = parameter_value_at(buf, i);
+        if (entry.module >= MAX_MODULES || !token_fits(entry.token)) {
+            _protocol_errors++;
+            continue;
+        }
+        if ((_ended_modules & (1U << entry.module)) != 0) {
+            continue;   // the M7 keeps an ended module's slots until its session resets
+        }
+        _mirror.upsert(uint8_t(entry.module), uintptr_t(entry.token), entry.value,
+                       (entry.flags & PARAMETER_VALUE_BOUND) != 0);
+    }
+}
+
+// a module's Returned, Panicked or Failed on its way to the M7: its handles are gone
+void M4Service::forget_ended_module()
+{
+    ModuleStateNotify notify;
+    if (_link->request_len != sizeof(notify)) {
+        return;
+    }
+    memcpy(&notify, _link->request, sizeof(notify));
+    if (notify.call.method != uint16_t(SystemMethod::ModuleState) || notify.module >= MAX_MODULES) {
+        return;
+    }
+    switch (ModuleStateKind(notify.state)) {
+    case ModuleStateKind::Returned:
+    case ModuleStateKind::Panicked:
+    case ModuleStateKind::Failed:
+        _mirror.remove_module(uint8_t(notify.module));
+        _ended_modules |= uint8_t(1U << notify.module);
+        break;
+    case ModuleStateKind::Loaded:
+    case ModuleStateKind::Started:
+        _ended_modules &= uint8_t(~(1U << notify.module));
+        break;
+    }
 }
 
 }  // namespace ModuleM4
