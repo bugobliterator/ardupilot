@@ -93,12 +93,17 @@ void M4Service::compute_crc_self_check()
     _crc_self_check.pattern_check = crc32_finish(crc);
 }
 
-void M4Service::step()
+void M4Service::drain_step()
 {
     // a reply is drained under the lock forward_posted() holds from send to Sent: it is never
     // seen before its call is Sent and dropped as stale
     _platform.lock();
-    step_locked();
+    drain();
+    if (_ready && _link->state.load() == ModuleLink::Posted) {
+        // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
+        time_posted_call();
+        forward_call(true);
+    }
     _platform.unlock();
 }
 
@@ -106,11 +111,7 @@ bool M4Service::forward_posted()
 {
     _platform.lock();
     if (_ready && _link->state.load() == ModuleLink::Posted) {
-        if (!_call_timed) {
-            _call_timed = true;
-            _call_posted_ms = _platform.millis();
-            _call_posted_cycles = _platform.cycles();
-        }
+        time_posted_call();
         forward_call(false);
     }
     const bool sent = _link->state.load() != ModuleLink::Posted;
@@ -118,13 +119,21 @@ bool M4Service::forward_posted()
     return sent;
 }
 
-void M4Service::step_locked()
+void M4Service::time_posted_call()
 {
-    drain();
+    if (!_call_timed) {
+        _call_timed = true;
+        _call_posted_ms = _platform.millis();
+        _call_posted_cycles = _platform.cycles();
+    }
+}
+
+void M4Service::housekeeping_step()
+{
+    _platform.lock();
     const uint32_t now_ms = _platform.millis();
     const uint8_t state = _link->state.load();
     if (state == ModuleLink::Posted && !_call_timed) {
-        // the call timeout runs from posting: waiting for Ready or ring space counts too
         _call_timed = true;
         _call_posted_ms = now_ms;
         _call_posted_cycles = _platform.cycles();
@@ -137,8 +146,7 @@ void M4Service::step_locked()
         }
         complete(-ETIMEDOUT);
     } else if (_ready && state == ModuleLink::Posted) {
-        // calls wait for the M7's Ready: frames sent before its re-handshake would be dropped
-        forward_call(true);
+        forward_call(true);   // the ring was full at the last try
     }
     // sent again if its reply did not come (the M7's ring was full)
     if (_ready && _config_pending && (_config_seq == 0 || now_ms - _config_sent_ms > CALL_TIMEOUT_MS)) {
@@ -159,6 +167,7 @@ void M4Service::step_locked()
     if (!_rx_stalled) {
         PeerHeader::beat(_window, PeerHeader::Core::M4);
     }
+    _platform.unlock();
 }
 
 void M4Service::drain()
