@@ -14,6 +14,7 @@
 #include "BindingNetwork.h"
 #include "BindingONVIF.h"
 #include "BindingSerialLED.h"
+#include "CallLatencyLog.h"
 #include <AP_Filesystem/AP_Filesystem.h>
 #include <GCS_MAVLink/GCS.h>
 #ifdef HAL_HAVE_AP_ROMFS_EMBEDDED_APMOD
@@ -102,8 +103,8 @@ const AP_Param::GroupInfo Runtime::var_info[] = {
 
     // @Param: DEBUG_OPTS
     // @DisplayName: Native module debug options
-    // @Description: Disable module pre-arm checks, save current loaded and running checksums, or disable heap expansion. The save bit clears after storing both values. Changes to the heap expansion option take effect on module restart.
-    // @Bitmask: 4:Disable pre-arm checks,5:Save checksums,6:Disable heap expansion
+    // @Description: Disable module pre-arm checks, save current loaded and running checksums, disable heap expansion, or time every binding call (M4LT log rows, @SYS/module_latency.txt). The save bit clears after storing both values. Changes to the heap expansion and call latency options take effect on module restart.
+    // @Bitmask: 3:Call latency probe,4:Disable pre-arm checks,5:Save checksums,6:Disable heap expansion
     // @User: Advanced
     AP_GROUPINFO("DEBUG_OPTS", 9, Runtime, _debug_options, 0),
     AP_GROUPEND
@@ -272,8 +273,44 @@ bool Runtime::pop_mission_command(MissionCommand &command)
 }
 #endif // AP_MISSION_ENABLED
 
+// MOD_DEBUG_OPTS bit 3: binding_dispatch timed by the call latency probe, with the adapter's lock
+// taken first so that its wait is a stage of its own. Ret is the lock's give and the probe's record
+static int32_t probed_binding_dispatch(void *context, BindingId id, const uint8_t *input, uint32_t input_size,
+                                       uint8_t *output, uint32_t output_size)
+{
+    static uint32_t calls;
+    CallLatencyLog &probe = CallLatencyLog::get();
+    const uint32_t start_cycles = CallLatencyLog::cycles();
+    const uint32_t entry = CallLatencyLog::clock_us();
+    uint16_t flags = uint16_t(CallLane::InProcess);
+    AP_HAL::Semaphore *lock = CallLatencyLog::adapter_lock(uint32_t(id), flags);
+    const uint32_t lock_wait = CallLatencyLog::clock_us();
+    const uint32_t lock_cycles = CallLatencyLog::cycles();
+    if (lock != nullptr) {
+        lock->take_blocking();
+    }
+    const uint32_t adapter = CallLatencyLog::clock_us();
+    const int32_t result = binding_dispatch(context, id, input, input_size, output, output_size);
+    const uint32_t adapter_done = CallLatencyLog::clock_us();
+    const uint32_t done_cycles = CallLatencyLog::cycles();
+    if (lock != nullptr) {
+        lock->give();
+    }
+    const uint32_t returned = CallLatencyLog::clock_us();
+    CallTrace trace {};
+    trace.time_us = AP_HAL::micros64();
+    trace.seq = ++calls;
+    trace.id = uint16_t(id);
+    trace.flags = flags;
+    call_stages(in_process_stamps(entry, lock_wait, adapter, adapter_done, returned), trace.stage_us);
+    probe.record(trace);
+    probe.add_overhead((lock_cycles - start_cycles) + (CallLatencyLog::cycles() - done_cycles));
+    return result;
+}
+
 Module *Runtime::load_bytes(const uint8_t *bytes, uint32_t length, const ModuleFile &file, Slot &slot)
 {
+    const bool probing = (uint8_t(_debug_options.get()) & (1U << 3)) != 0 && CallLatencyLog::get().start();
     Module::Error error;
     uint64_t missing_import = 0;
     const char *missing_import_name = nullptr;
@@ -281,7 +318,8 @@ Module *Runtime::load_bytes(const uint8_t *bytes, uint32_t length, const ModuleF
     auto *module = Module::load(bytes, length, file.name, _limits,
                                 {
                                     &slot, text
-                                }, error, {&slot, binding_dispatch, binding_resolve}, &missing_import,
+                                }, error, {&slot, probing ? probed_binding_dispatch : binding_dispatch, binding_resolve},
+                                &missing_import,
                                 &missing_import_name,
                                 file.source == ModuleSource::ROMFS ? Module::Source::ROMFS : Module::Source::File,
                                 &error_detail);
@@ -601,6 +639,9 @@ void Runtime::manager()
     while (true) {
         drain_messages();
         poll_modules();
+        if (CallLatencyLog::get().active()) {
+            CallLatencyLog::get().flush(AP_HAL::millis());
+        }
         Phase phase;
         bool restart;
         {
