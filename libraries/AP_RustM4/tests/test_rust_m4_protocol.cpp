@@ -23,6 +23,15 @@ TEST(RustM4Protocol, AcceptsWholeKnownMessages)
     EXPECT_TRUE(parse_header(buf, sizeof(inject), header));
 }
 
+TEST(RustM4Protocol, CountersFrameHasItsSize)
+{
+    CountersMsg counters {};
+    fill_header(counters.header, MsgType::Counters, sizeof(counters), 3);
+    MsgHeader header;
+    EXPECT_TRUE(parse_header(reinterpret_cast<const uint8_t *>(&counters), sizeof(counters), header));
+    EXPECT_FALSE(parse_header(reinterpret_cast<const uint8_t *>(&counters), sizeof(counters) - 1, header));
+}
+
 TEST(RustM4Protocol, RejectsShortWrongLengthAndUnknown)
 {
     uint8_t buf[MAX_FRAME + 4] {};

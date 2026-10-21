@@ -12,8 +12,9 @@ namespace RustM4 {
 
 // Stats rows the M4 sends per one-second window: one for each of the STATS_REPORTED methods with
 // the most round-trip time, then m4:other and m4:sysother
-static const uint8_t STATS_REPORTED = 8;
-static const uint8_t STATS_ROWS_PER_WINDOW = STATS_REPORTED + 2;
+static const uint8_t STATS_REPORTED = 16;
+// the 16 busiest, m4:other, m4:sysother and the Counters frame
+static const uint8_t STATS_ROWS_PER_WINDOW = STATS_REPORTED + 3;
 // StatsRow::flags, sent in StatsMsg.reserved: the row's binding is posted (round trip = post to ring copy)
 static const uint8_t STATS_ROW_POSTED = 1;
 

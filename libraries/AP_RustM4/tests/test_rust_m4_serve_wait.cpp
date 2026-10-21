@@ -850,6 +850,18 @@ TEST(RustM4ServeWait, NotifiesAheadOfACallDoNotEndThePass)
     worst.push_back(binding_frame(101));
     EXPECT_EQ(frames_in_one_pass(worst), worst.size() - 1);
     EXPECT_EQ(worst.size() - 1, size_t(MAX_EXEMPT_PER_PASS) + 1U);
+    EXPECT_EQ(size_t(MAX_EXEMPT_PER_PASS), size_t(STATS_ROWS_PER_WINDOW) + MAX_MODULES);
+    EXPECT_EQ(size_t(MAX_EXEMPT_PER_PASS), 27U);
+}
+
+TEST(RustM4ServeWait, CountersFrameIsExemptFromPassTime)
+{
+    CountersMsg counters {};
+    fill_header(counters.header, MsgType::Counters, sizeof(counters), 1);
+    EXPECT_TRUE(frame_exempt_from_pass_time(reinterpret_cast<const uint8_t *>(&counters), sizeof(counters)));
+    // served on the host like Stats, never handed to the worker
+    EXPECT_TRUE(frame_on_fast_lane(reinterpret_cast<const uint8_t *>(&counters), sizeof(counters),
+                                   [](uint32_t) { return false; }));
 }
 
 // binding calls, system calls that wait for a reply and frames that do not parse end a pass on
