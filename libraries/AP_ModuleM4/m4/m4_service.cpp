@@ -42,6 +42,9 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _mirror_hits = 0;
     _mirror_misses = 0;
     _post_drops = 0;
+    _reported_mirror_hits = 0;
+    _reported_mirror_misses = 0;
+    _reported_post_drops = 0;
     _ended_modules = 0;
     compute_crc_self_check();
     // a CRC that disagrees with zlib would fail every ring frame: fault before the first beat,
@@ -182,6 +185,7 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
         handle_parameter_changed(buf, len, header);
         return;
     case MsgType::Stats:
+    case MsgType::Counters:
     case MsgType::BindingCall:
     case MsgType::SystemCall:
         break;   // M4 -> M7 only
@@ -635,6 +639,17 @@ void M4Service::send_stats(uint32_t now_ms)
             }
         }
     }
+    CountersMsg counters {};
+    fill_header(counters.header, MsgType::Counters, sizeof(counters), ++_seq);
+    counters.mirror_hits = _mirror_hits - _reported_mirror_hits;
+    counters.mirror_misses = _mirror_misses - _reported_mirror_misses;
+    counters.post_drops = _post_drops - _reported_post_drops;
+    if (_channel->send(&counters, sizeof(counters)) != 0) {
+        return;   // the next step sends them with the next window's
+    }
+    _reported_mirror_hits = _mirror_hits;
+    _reported_mirror_misses = _mirror_misses;
+    _reported_post_drops = _post_drops;
     _last_stats_ms = now_ms;
 }
 

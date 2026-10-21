@@ -160,6 +160,9 @@ private:
     ParamMirror _mirror;
     uint32_t _mirror_hits;
     uint32_t _mirror_misses;
+    uint32_t _reported_mirror_hits;     // the counters' values in the last Counters frame sent
+    uint32_t _reported_mirror_misses;
+    uint32_t _reported_post_drops;
     uint8_t _ended_modules;     // a bit per module index: Returned, Panicked or Failed this session
     static_assert(MAX_MODULES <= 8, "_ended_modules");
     uint8_t _rx[MAX_FRAME];

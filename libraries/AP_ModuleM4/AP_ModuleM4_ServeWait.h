@@ -125,7 +125,7 @@ inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
     if (buf == nullptr || !parse_header(buf, len, header)) {
         return false;
     }
-    if (MsgType(header.type) == MsgType::Stats) {
+    if (MsgType(header.type) == MsgType::Stats || MsgType(header.type) == MsgType::Counters) {
         return true;
     }
     if (MsgType(header.type) != MsgType::SystemCall) {
@@ -140,7 +140,7 @@ inline bool frame_exempt_from_pass_time(const uint8_t *buf, uint16_t len)
 // and one notify per module. More of them, e.g. forged by a faulty M4, end the pass as any other
 // frame; all are charged
 static const uint8_t MAX_EXEMPT_PER_PASS = STATS_ROWS_PER_WINDOW + MAX_MODULES;
-static_assert(MAX_EXEMPT_PER_PASS == 18, "10 Stats rows and 8 module notifies");
+static_assert(MAX_EXEMPT_PER_PASS == 27, "19 Stats and Counters frames and 8 module notifies");
 
 // a pass of the host thread: at most MAX_REQUESTS_PER_WAKE frames, ending once MAX_SERVE_US have
 // passed since the wake after a frame that may end it
@@ -218,7 +218,7 @@ inline uint16_t serve_posted_batch(const uint8_t *frame, Receive receive, IsPost
 /*
   Which thread serves a frame. The host's fast lane, above the I/O threads, takes only what does
   fixed work with no file, storage, SD or bus access: binding calls whose generated M4 lane is Fast
-  (binding_fast), the Noop notify, the Stats rows, and the M7 -> M4 types, which only count a
+  (binding_fast), the Noop notify, the Stats rows and Counters, and the M7 -> M4 types, which only count a
   protocol error. Everything else, the other system methods and frames that do not parse
   included, goes to the slow worker below the I/O threads.
  */
@@ -230,6 +230,7 @@ inline bool frame_on_fast_lane(const uint8_t *buf, uint16_t len, bool (*binding_
     }
     switch (MsgType(header.type)) {
     case MsgType::Stats:
+    case MsgType::Counters:
     case MsgType::FaultInject:
     case MsgType::Ready:
     case MsgType::BindingReply:
