@@ -10,5 +10,13 @@
     "mission.set_item": "Storage", "mission.clear": "Storage", "serialLED.send": "Led",
     "logger.log_file_content": "FileLog", "logger.write": "Log", "mavlink.send_chan": "MavTx",
     "CanBuffer.write_frame": "Can"
+  },
+  "posted": ["logger.write"],
+  "mirrored": {
+    "Parameter.get": "get",
+    "Parameter.init": "handle_writer", "Parameter.set": "handle_writer",
+    "Parameter.set_and_save": "handle_writer", "Parameter.set_default": "handle_writer",
+    "param.set": "name_writer", "param.set_and_save": "name_writer",
+    "param.set_default": "name_writer", "param.add_param": "name_writer"
   }
 }
