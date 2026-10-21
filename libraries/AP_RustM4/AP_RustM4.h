@@ -9,6 +9,8 @@
 #include <AP_HAL/Semaphores.h>
 #include <AP_Param/AP_Param.h>
 #include <AP_Rust/Runtime.h>
+#include "AP_RustM4_Discovery.h"
+#include "AP_RustM4_FileServer.h"
 #include "AP_RustM4_Protocol.h"
 #include "AP_RustM4_RunControl.h"
 #include "AP_RustM4_Server.h"
@@ -80,6 +82,16 @@ private:
     bool refuse_slow_binding(const uint8_t *buf, uint16_t len);
     void serve_binding(const uint8_t *buf, uint16_t len);
     void serve_system(const uint8_t *buf, uint16_t len);
+    // the session's module files, found on the slow worker before Ready (discover())
+    void discover_on_worker();
+    void discover();
+    void load_error(const char *reason);
+    // system calls, on the slow worker; each returns the reply's length in _tx_frame
+    uint16_t serve_config(const uint8_t *buf, uint16_t len, uint32_t seq);
+    uint16_t serve_list_modules(uint32_t seq);
+    uint16_t serve_file(RustM4::SystemMethod method, const uint8_t *buf, uint16_t len, uint32_t seq);
+    uint16_t pack_system_reply(RustM4::SystemMethod method, uint32_t seq, RustM4::ReplyStatus transport,
+                               int32_t result, uint16_t length);
     void send_frame(const uint8_t *buf, uint16_t len);
     void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
@@ -136,7 +148,11 @@ private:
     int16_t _observed_restart;        // RUST_RESTART when update() last looked
     RustM4::RunRequests _run_requests;   // RUST_RESTART changes, taken by the host thread
     RustM4::RunControl _run_control;
-    uint8_t _module_count;            // modules of the current session
+    uint8_t _module_count;            // modules of the current session: discovered, loadable
+    RustM4::ModuleFile _modules[RustM4::MAX_MODULES];   // their files, sorted by name
+    char _load_error[48];             // why this session loads no module, for the pre-arm check
+    bool _code_size_capped_sent;
+    AP_RustM4_FileServer _file_server { RustM4::filesystem_file_ops() };
     uint32_t _m4_session;             // M4 peer header session being served
     uint32_t _m4_fault_count;         // M4 fault count already handled
     uint32_t _m4_fault_pc;
@@ -181,7 +197,7 @@ private:
     // for it, so the M4 sees its replies in order and only one of the two threads serves at a time
     HAL_BinarySemaphore _worker_request;
     HAL_BinarySemaphore _worker_done;
-    uint16_t _worker_len;
+    uint16_t _worker_len;             // 0: discover() rather than a frame
     // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
     // after _worker_done
     RustM4::HostCpuCharge _worker_cpu_charge { false };
