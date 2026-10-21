@@ -1112,10 +1112,10 @@ void AP_RustM4::log_supervisor(uint32_t now_ms, uint32_t elapsed_ms)
     // @Field: MirTx: ParameterChanged frames sent in the last second
     // @Field: MirEnt: Parameter values those frames carried
     // @Field: MirRsy: ParameterChanged frames that did not fit the ring (the module's gets are forwarded until resent)
-    // @Field: PostErr: posted calls the M7 ran with a status other than OK
-    // @Field: PostDrop: posted calls dropped (M4 timeout, quota or duty-cap refusal)
-    // @Field: PostBat: posted calls the slow worker served in a batch after the one handed to it
-    AP::logger().WriteStreaming("M4MR", "TimeUS,MirHit,MirMiss,MirTx,MirEnt,MirRsy,PostErr,PostDrop,PostBat",
+    // @Field: PErr: posted calls the M7 ran with a status other than OK
+    // @Field: PDrop: posted calls dropped (M4 timeout, quota or duty-cap refusal)
+    // @Field: PBat: posted calls the slow worker served in a batch after the one handed to it
+    AP::logger().WriteStreaming("M4MR", "TimeUS,MirHit,MirMiss,MirTx,MirEnt,MirRsy,PErr,PDrop,PBat",
                                 "s--------", "F--------", "QIIIIIIII", AP_HAL::micros64(), _m4_mirror_hits,
                                 _m4_mirror_misses, _mirror_frames_sent, _mirror_entries_sent, _mirror_failed_sends,
                                 _post_errors, _post_drops + _m4_post_drops, _posted_batched);
