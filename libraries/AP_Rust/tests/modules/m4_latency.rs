@@ -10,7 +10,9 @@
 //! times rate (10/s, 200/s, 1000/s): profile = 1 + 3 * binding + rate index. 13 is the burst.
 //! 14 is vehicle.get_mode every 5013 us, a period that is not a multiple of the 2500 us main loop.
 //! 15-17 are ahrs.get_location at 10/s, 200/s, 1000/s; 18 is Location.offset at 200/s on a copy of
-//! the location taken at the profile start. LATP_PROF 0 runs 1 to 18 in turn, all but 14. Each profile's first call starts at time_us() % 2500 ==
+//! the location taken at the profile start. 19-21 are the probe's ping (Context::probe_ping(): the
+//! transport alone, no binding) at 10/s, 200/s, 1000/s. LATP_PROF 0 runs 1 to 21 in turn, all but 14.
+//! Each profile's first call starts at time_us() % 2500 ==
 //! LATP_OFFS % 2500; the achieved phase is in a 'LATPH profile phase' text and the end LATP row (Phs).
 #![no_std]
 #![no_main]
@@ -20,7 +22,7 @@ use ap_rust_sdk::{enums::MavSeverity, Context, Error, Location, LogValue as V, P
 ap_rust_sdk::module!(run);
 
 const TABLE_KEY: u8 = 77;
-const PROFILE_COUNT: u32 = 18;
+const PROFILE_COUNT: u32 = 21;
 const BURST_PROFILE: u32 = 13;
 const CONTROL_PROFILE: u32 = 14;
 const CONTROL_PERIOD_US: u64 = 5013;
@@ -28,10 +30,19 @@ const CONTROL_PERIOD_US: u64 = 5013;
 const LOOP_US: u64 = 2500;
 const RATES: [u32; 3] = [10, 200, 1000];
 // short names: the LAT text must fit the 50 characters of a STATUSTEXT
-const NAMES: [&str; 6] = ["param", "mode", "origin", "log", "getloc", "locoff"];
+const NAMES: [&str; 7] = ["param", "mode", "origin", "log", "getloc", "locoff", "ping"];
 const OFFSET_BINDING: usize = 5;
+const PING_BINDING: usize = 6;
 // profiles after the control: (profile, binding, rate)
-const LATER_PROFILES: [(u32, usize, u32); 4] = [(15, 4, 10), (16, 4, 200), (17, 4, 1000), (18, OFFSET_BINDING, 200)];
+const LATER_PROFILES: [(u32, usize, u32); 7] = [
+    (15, 4, 10),
+    (16, 4, 200),
+    (17, 4, 1000),
+    (18, OFFSET_BINDING, 200),
+    (19, PING_BINDING, 10),
+    (20, PING_BINDING, 200),
+    (21, PING_BINDING, 1000),
+];
 // the burst: 40 calls a tick at 30 Hz, Parameter.get first as the AirShow's tick does
 const BURST_CALLS: [(usize, u32); 4] = [(0, 22), (1, 6), (2, 6), (3, 6)];
 const BURST_RATE: u32 = 30;
@@ -78,6 +89,7 @@ impl Probe<'_, '_> {
                     core::hint::black_box(location);
                 })
             }
+            PING_BINDING => self.c.probe_ping(),
             _ => {
                 self.written = self.written.wrapping_add(1);
                 self.c.logger().write("LATW", "N", None, &[V::U32(self.written)])
