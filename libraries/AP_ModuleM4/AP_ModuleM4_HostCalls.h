@@ -142,9 +142,9 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     const bool settle = role == MirrorRole::HandleWriter && a.input_size >= sizeof(token) &&
                         p.mirror_pending != nullptr && p.mirror_settle != nullptr;
-    // probed when the trailer fits the frame. Read only after begin_probed_call() set it: not zeroed
-    // on every call
-    CallProbeTrailer trailer;
+    // probed when the trailer fits the frame; word-aligned for pack_binding_call()'s word copy. Read only
+    // after begin_probed_call() set it: not zeroed on every call
+    alignas(4) CallProbeTrailer trailer;
     uint32_t begin_cycles = 0, begun_cycles = 0;
     if (probe != nullptr && a.input_size + sizeof(trailer) <= MAX_CALL_INPUT) {
         begin_cycles = probe_cycles_now(*probe);
@@ -186,8 +186,8 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
         }
     } else {
         const CallOutcome outcome = call_outcome(result, reply, uint16_t(a.output_size));
-        if (outcome.copy_output && a.output_size != 0) {
-            memcpy(a.output, body, a.output_size);
+        if (outcome.copy_output) {
+            copy_frame_bytes(a.output, body, a.output_size);
         }
         status = outcome.status;
         if (role == MirrorRole::Get && a.input_size == 8 && a.output_size == 5 && outcome.copy_output &&
