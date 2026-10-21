@@ -737,3 +737,49 @@ def test_manual_sdk_operations_are_namespaced():
         accessor = bindings.naming.rust_identifier(namespace)
         assert f'pub fn {accessor}(&self)' in bindings_source
     assert 'pub(crate) context:' in bindings_source
+
+
+def lock_override_method(**change):
+    method = dict(api_name='vehicle.get_mode', api_aliases=[], lock='scheduler-semaphore',
+                  result=dict(type='uint8_t', output=False), arguments=[])
+    method.update(change)
+    return method
+
+
+OVERRIDE = {'vehicle.get_mode': {'lock': 'none', 'why': 'one byte load from a static object'}}
+
+
+def test_lock_override_marks_a_scalar_read():
+    method = lock_override_method()
+    bindings.apply_lock_overrides([method], OVERRIDE)
+    assert method['lock_override'] == 'none' and method['lock'] == 'scheduler-semaphore'
+
+
+@pytest.mark.parametrize('result', ['Location', 'Vector3f', 'Quaternion', 'fwstring', 'void'])
+def test_lock_override_rejects_non_scalar_results(result):
+    with pytest.raises(ValueError, match='is not a scalar'):
+        bindings.apply_lock_overrides([lock_override_method(result=dict(type=result, output=False))], OVERRIDE)
+
+
+def test_lock_override_rejects_output_arguments():
+    method = lock_override_method(result=dict(type='boolean', output=False),
+                                  arguments=[dict(type='float', output=True)])
+    with pytest.raises(ValueError, match='output arguments'):
+        bindings.apply_lock_overrides([method], OVERRIDE)
+
+
+@pytest.mark.parametrize('entry, match', [({'lock': 'none'}, 'needs exactly'), ({'lock': 'none', 'why': ' '}, 'why'),
+                                          ({'lock': 'none', 'why': None}, 'why'),
+                                          ({'lock': 'other', 'why': 'x'}, 'needs exactly'),
+                                          ({'lock': 'none', 'why': 'x', 'extra': 1}, 'needs exactly')])
+def test_lock_override_requires_none_and_a_reason(entry, match):
+    with pytest.raises(ValueError, match=match):
+        bindings.apply_lock_overrides([lock_override_method()], {'vehicle.get_mode': entry})
+
+
+def test_lock_override_rejects_stale_and_unlocked_methods():
+    with pytest.raises(ValueError, match='stale lock override'):
+        bindings.apply_lock_overrides([lock_override_method(api_name='vehicle.other')], OVERRIDE)
+    bindings.apply_lock_overrides([lock_override_method(api_name='vehicle.other')], OVERRIDE, require_all=False)
+    with pytest.raises(ValueError, match='takes no lock'):
+        bindings.apply_lock_overrides([lock_override_method(lock=None)], OVERRIDE)

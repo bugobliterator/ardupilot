@@ -90,3 +90,26 @@ def test_reject_invalid_specification(bad):
         spec['functions'][0]['name'] = 'not a name'
     with pytest.raises(ValueError):
         generate.generate(spec)
+
+
+def adapter(cpp, name):
+    start = cpp.index(f'int32_t binding_{name}(')
+    return cpp[start:cpp.index('\n}\n', start)]
+
+
+def test_lock_overrides_drop_only_their_adapter_locks():
+    import bindings
+    policy = bindings.lock_policies()
+    # Copter's ModeAuto::mode_number() reads auto_RTL after the flightmode pointer: get_mode stays locked
+    assert set(policy) == {'vehicle.get_control_mode_reason'}
+    assert all(entry['why'].strip() for entry in policy.values())
+    outputs = generate.generate(specification())
+    cpp = outputs['Bindings_generated.cpp']
+    assert 'BindingLock' not in adapter(cpp, 'vehicle_get_control_mode_reason')
+    assert 'ud->get_control_mode_reason()' in adapter(cpp, 'vehicle_get_control_mode_reason')
+    for locked in ('vehicle_get_mode', 'vehicle_get_likely_flying'):
+        assert 'BindingLock lock(scheduler->get_semaphore());' in adapter(cpp, locked)
+    ids = {m.group(1): m.group(2) for m in re.finditer(r'(\w+) = (\d+)U,', outputs['BindingIds.h'])}
+    header = outputs['BindingM4Policy_generated.h']
+    assert f'M4Lock::None, // {ids["VEHICLE_GET_CONTROL_MODE_REASON"]}\n' in header
+    assert f'M4Lock::Scheduler, // {ids["VEHICLE_GET_MODE"]}\n' in header

@@ -176,7 +176,7 @@ def cpp(method):
                      '        return AP_MODULE_STATUS_INVALID;', '    }']
             (dynamic_ranges if any(re.search(r'\bud\b', bound) for bound in arg['range']) else lines).extend(check)
         offset += size
-    if method['lock']:
+    if method['lock'] and method.get('lock_override') != 'none':
         lock = method['lock']
         if lock == 'scheduler-semaphore':
             lines += ['#if AP_SCHEDULER_ENABLED', '    auto *scheduler = AP_Scheduler::get_singleton();',
