@@ -34,6 +34,8 @@ const auto epoch = std::chrono::steady_clock::now();
 // millis_ahead skips past a call timeout or to the next Stats window
 std::atomic<uint32_t> fake_cycles;
 std::atomic<uint32_t> millis_ahead;
+std::atomic<uint32_t> m7_millis_given;
+std::atomic<uint32_t> m7_millis_calls;
 
 uint32_t millis_now()
 {
@@ -50,6 +52,11 @@ void inject_fault(FaultKind)
 void wake_module()
 {
     module_wakes++;
+}
+void m7_millis(uint32_t value)
+{
+    m7_millis_given = value;
+    m7_millis_calls++;
 }
 void lock_service()
 {
@@ -76,8 +83,10 @@ void start()
     module_wakes = 0;
     fake_cycles = 0;
     millis_ahead = 0;
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_module, nullptr, lock_service,
-                                unlock_service };
+    m7_millis_given = 0;
+    m7_millis_calls = 0;
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, wake_module, nullptr, m7_millis,
+                                lock_service, unlock_service };
     service.init(m4, window, call_link, platform);
 }
 
@@ -97,7 +106,18 @@ void post_call(uint32_t id)
     call_link.state.store(ModuleLink::Posted);
 }
 
-// the next M4 -> M7 frame other than Stats; false if the ring holds no other
+// the service's own Config request of a session
+bool is_config_request(const uint8_t *frame, uint16_t len)
+{
+    SystemCallHeader call;
+    if (len < sizeof(call)) {
+        return false;
+    }
+    memcpy(&call, frame, sizeof(call));
+    return call.header.type == uint8_t(MsgType::SystemCall) && call.method == uint16_t(SystemMethod::Config);
+}
+
+// the next M4 -> M7 frame other than Stats and Config; false if the ring holds no other
 bool m7_receive(uint8_t *frame, uint16_t &len)
 {
     while (m7.receive(frame, MAX_FRAME, &len) == 0) {
@@ -106,11 +126,42 @@ bool m7_receive(uint8_t *frame, uint16_t &len)
             ADD_FAILURE() << "unparseable frame";
             return false;
         }
-        if (MsgType(header.type) != MsgType::Stats) {
+        if (MsgType(header.type) != MsgType::Stats && !is_config_request(frame, len)) {
             return true;
         }
     }
     return false;
+}
+
+// the next Config request in the ring, other frames skipped; false if there is none
+bool m7_receive_config(ConfigRequest &request)
+{
+    uint8_t frame[MAX_FRAME];
+    uint16_t len = 0;
+    while (m7.receive(frame, MAX_FRAME, &len) == 0) {
+        if (is_config_request(frame, len)) {
+            EXPECT_EQ(len, sizeof(request));
+            memcpy(&request, frame, sizeof(request));
+            return len == sizeof(request);
+        }
+    }
+    return false;
+}
+
+void m7_config_reply(uint32_t seq, uint32_t m7_millis_value)
+{
+    ConfigReply reply {};
+    fill_header(reply.reply.header, MsgType::SystemReply, sizeof(reply), seq);
+    reply.reply.method = uint16_t(SystemMethod::Config);
+    reply.reply.transport = uint8_t(ReplyStatus::Ok);
+    reply.heap_size = 32768;
+    reply.code_size = 114688;
+    reply.stack_size = 16384;
+    reply.max_modules = 2;
+    reply.m4_options = 2;
+    reply.m7_millis = m7_millis_value;
+    reply.m7_micros = m7_millis_value * 1000U;
+    ASSERT_EQ(m7.send(&reply, sizeof(reply)), 0);
 }
 
 bool m7_receive_call(BindingCallHeader &call)
@@ -260,6 +311,9 @@ TEST(ModuleM4Service, StatsRowsAreKeyedAndNamedByBindingId)
     while (m7.receive(frame, sizeof(frame), &len) == 0) {
         MsgHeader header;
         ASSERT_TRUE(parse_header(frame, len, header));
+        if (is_config_request(frame, len)) {
+            continue;   // unanswered here: sent again after CALL_TIMEOUT_MS
+        }
         ASSERT_EQ(MsgType(header.type), MsgType::Stats);
         ASSERT_LT(row_count, 4);
         memcpy(&rows[row_count++], frame, sizeof(StatsMsg));
@@ -300,6 +354,56 @@ TEST(ModuleM4Service, NotifyCompletesAtOnce)
     ASSERT_TRUE(m7_receive(frame, len));
     EXPECT_EQ(len, sizeof(TextNotify));
     EXPECT_EQ(frame[0], uint8_t(MsgType::SystemCall));
+}
+
+TEST(ModuleM4Service, ConfigIsSentOncePerSessionAndCached)
+{
+    start();
+    ConfigRequest request;
+    service.step();
+    EXPECT_FALSE(m7_receive_config(request));   // not before Ready
+    send_ready(7);
+    service.step();
+    ASSERT_TRUE(m7_receive_config(request));
+    EXPECT_EQ(request.crc_short, CRC32_CHECK);
+    EXPECT_EQ(request.crc_pattern, CRC32_PATTERN_CHECK);
+    EXPECT_EQ(request.call.flags, 0);
+    EXPECT_FALSE(service.config_ready());
+    // another seq is not its reply
+    m7_config_reply(request.call.header.seq + 1, 5000);
+    service.step();
+    EXPECT_FALSE(service.config_ready());
+    m7_config_reply(request.call.header.seq, 5000);
+    service.step();
+    ASSERT_TRUE(service.config_ready());
+    EXPECT_EQ(service.config_reply().code_size, 114688);
+    EXPECT_EQ(service.config_reply().stack_size, 16384);
+    EXPECT_EQ(service.config_reply().m4_options, 2);
+    EXPECT_EQ(m7_millis_calls.load(), 1U);
+    EXPECT_EQ(m7_millis_given.load(), 5000U);
+    // the same session's Ready again: no second Config, even after the timeout
+    send_ready(7);
+    millis_ahead += CALL_TIMEOUT_MS + 1;
+    service.step();
+    EXPECT_FALSE(m7_receive_config(request));
+    EXPECT_TRUE(service.config_ready());
+    // a new session asks again, and keeps asking until it is answered
+    send_ready(8);
+    service.step();
+    EXPECT_FALSE(service.config_ready());
+    ASSERT_TRUE(m7_receive_config(request));
+    const uint32_t first_seq = request.call.header.seq;
+    service.step();
+    EXPECT_FALSE(m7_receive_config(request));
+    millis_ahead += CALL_TIMEOUT_MS + 1;
+    service.step();
+    ASSERT_TRUE(m7_receive_config(request));
+    EXPECT_NE(request.call.header.seq, first_seq);
+    m7_config_reply(request.call.header.seq, 6000);
+    service.step();
+    EXPECT_TRUE(service.config_ready());
+    EXPECT_EQ(m7_millis_given.load(), 6000U);
+    millis_ahead = 0;
 }
 
 #endif  // AP_MODULE_M4_ENABLED

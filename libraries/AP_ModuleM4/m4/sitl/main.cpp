@@ -207,8 +207,9 @@ int main(int argc, char **argv)
     }
 
     // the built-in thread-path selftest (MOD_M4_INJECT 17) is the M4 image's only
-    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, module_port_wake, nullptr, lock_service,
-                                unlock_service };
+    // time_us is this process's own clock: no M7 millis() to take
+    const M4Platform platform { millis_now, cycles_now, 1, inject_fault, module_port_wake, nullptr, nullptr,
+                                lock_service, unlock_service };
     module_port_init(call_link, service, nullptr);
     service.init(channel, window, call_link, platform);
     while (true) {
