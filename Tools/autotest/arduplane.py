@@ -11,6 +11,7 @@ import re
 import signal
 import subprocess
 import time
+import zlib
 
 from pymavlink import mavextra
 from pymavlink import mavutil
@@ -7453,6 +7454,29 @@ return update()
         '''true when the SITL build was configured with --enable-m4-modules (it builds bin/module_m4)'''
         return os.path.exists(os.path.join(self.rootdir(), 'build', 'sitl', 'bin', 'module_m4'))
 
+    # the SITL M4's staged loader takes at most 112 KB (the PR's default of 128 KB is capped)
+    MODULE_M4_PARAMETERS = {'MOD_ENABLE': 1, 'MOD_CODE_MAXSIZE': 114688}
+
+    def module_m4_pid(self):
+        '''the one module_m4 child of the SITL'''
+        m4 = subprocess.run(['pgrep', '-P', str(self.sitl.pid), '-f', 'module_m4'], capture_output=True, text=True)
+        pids = [int(p) for p in m4.stdout.split()]
+        if len(pids) != 1:
+            raise NotAchievedException('expected one module_m4 child, found %s' % pids)
+        return pids[0]
+
+    def wait_module_m4_started_after(self, pattern, timeout=60):
+        '''an M4 start text after the last collected text matching pattern'''
+        def started_after():
+            texts = [m.text for m in self.context_collection('STATUSTEXT')]
+            matches = [i for (i, t) in enumerate(texts) if re.match(pattern, t)]
+            return matches and any(t.startswith('Module: started on M4 (') for t in texts[matches[-1] + 1:])
+        tstart = self.get_sim_time()
+        while not started_after():
+            if self.get_sim_time_cached() - tstart > timeout:
+                raise NotAchievedException('M4 did not start after %s' % pattern)
+            self.delay_sim_time(0.5, reason='the M4 to start again')
+
     def ModuleM4Boot(self):
         '''Rust on the M4 (SITL two-process): the M4 process starts, beats and restarts on kill'''
         if not self.module_m4_build():
@@ -7463,40 +7487,165 @@ return update()
         self.reboot_sitl()
         self.wait_text(r'Module: started on M4 \(0 modules, M4 RAM 224KB\)', regex=True, check_context=True, timeout=30)
         # the M4 process dies: the supervisor restarts it with a new session
-        m4 = subprocess.run(['pgrep', '-P', str(self.sitl.pid), '-f', 'module_m4'], capture_output=True, text=True)
-        pids = [int(p) for p in m4.stdout.split()]
-        if len(pids) != 1:
-            raise NotAchievedException('expected one module_m4 child, found %s' % pids)
-        os.kill(pids[0], signal.SIGKILL)
+        os.kill(self.module_m4_pid(), signal.SIGKILL)
         fault = r'Module: M4 fault \(process exit\), restarting \(1/3\)'
         self.wait_text(fault, regex=True, check_context=True, timeout=30)
-
-        # the collection holds the first session's start text too: look only after the fault
-        def started_after_fault():
-            texts = [m.text for m in self.context_collection('STATUSTEXT')]
-            after = max(i for (i, t) in enumerate(texts) if re.match(fault, t)) + 1
-            return any(t.startswith('Module: started on M4 (') for t in texts[after:])
-        tstart = self.get_sim_time()
-        while not started_after_fault():
-            if self.get_sim_time_cached() - tstart > 30:
-                raise NotAchievedException('M4 did not start again after the kill')
-            self.delay_sim_time(0.5, reason='the M4 to start again')
+        # the collection holds the first session's start text too: look only after the fault. The
+        # restart waits 1 s of wall time (backoff), many seconds of sim time at speedup
+        self.wait_module_m4_started_after(fault, timeout=600)
         self.context_pop()
         self.reboot_sitl()
 
     def ModuleM4Load(self):
-        '''Rust on the M4 (SITL two-process): the m4_hello module loads, runs and talks'''
+        '''Rust on the M4 (SITL two-process): the m4_hello module loads, runs and talks; checksums'''
         if not self.module_m4_build():
             raise NotAchievedException('needs a --enable-m4-modules SITL build')
         self.context_push()
-        self.install_rust_test_module_context('m4_hello.rs')
+        installed = self.install_rust_test_module_context('m4_hello.rs')
         self.context_collect('STATUSTEXT')
-        self.set_parameters({'MOD_ENABLE': 1})
+        self.set_parameters(self.MODULE_M4_PARAMETERS)
         self.reboot_sitl()
         self.wait_text(r'Module: started on M4 \(1 module, M4 RAM 224KB\)', regex=True, check_context=True, timeout=30)
         self.wait_text('Module: loaded 1 modules', check_context=True, timeout=30)
         self.wait_text('Module: m4 hello', check_context=True, timeout=30)
         self.wait_text('m4 hello gcs', check_context=True, timeout=30)
+        texts = [m.text for m in self.context_collection('STATUSTEXT')]
+        if any('capped' in t for t in texts):
+            raise NotAchievedException('MOD_CODE_MAXSIZE capped: %s' % texts)
+        # the PR's checksums, of the bytes the M7 served: a wrong required value blocks arming,
+        # MOD_DEBUG_OPTS bit 5 saves the loaded and running ones
+        with open(installed, 'rb') as module:
+            checksum = zlib.crc32(module.read()) & 0x007FFFFF
+        self.set_parameter('MOD_LD_CSUM', checksum ^ 1)
+        self.assert_prearm_failure('Module: loaded checksum mismatch', other_prearm_failures_fatal=False)
+        self.set_parameters({'MOD_LD_CSUM': -1, 'MOD_RUN_CSUM': checksum ^ 1})
+        self.assert_prearm_failure('Module: running checksum mismatch', other_prearm_failures_fatal=False)
+        self.set_parameter('MOD_DEBUG_OPTS', 32)
+        self.wait_text('Module: saved checksums', check_context=True, timeout=30)
+        self.assert_parameter_values({'MOD_LD_CSUM': checksum, 'MOD_RUN_CSUM': checksum, 'MOD_DEBUG_OPTS': 0})
+        self.wait_ready_to_arm()
+        self.context_pop()
+        self.reboot_sitl()
+
+    def install_rust_lifecycle_context(self, mode):
+        '''build lifecycle.rs with AP_MODULE_LIFECYCLE=mode (read by option_env! at build time)'''
+        old = os.environ.get('AP_MODULE_LIFECYCLE')
+        os.environ['AP_MODULE_LIFECYCLE'] = mode
+        try:
+            self.install_rust_test_module_context('lifecycle.rs')
+        finally:
+            if old is None:
+                del os.environ['AP_MODULE_LIFECYCLE']
+            else:
+                os.environ['AP_MODULE_LIFECYCLE'] = old
+
+    def request_rust_restart(self):
+        '''a MOD_RESTART change: a requested warm restart of the M4'''
+        self.set_parameter('MOD_RESTART', (int(self.get_parameter('MOD_RESTART')) + 1) % 32768)
+
+    def ModuleM4Lifecycle(self):
+        '''Rust on the M4 (SITL two-process): MOD_RESTART stops the module, then reloads it'''
+        if not self.module_m4_build():
+            raise NotAchievedException('needs a --enable-m4-modules SITL build')
+        # None: the default lifecycle.rs, which stops when asked
+        for mode in (None, 'return', 'never'):
+            self.progress('lifecycle mode %s' % mode)
+            self.context_push()
+            if mode is None:
+                if 'AP_MODULE_LIFECYCLE' in os.environ:
+                    raise NotAchievedException('AP_MODULE_LIFECYCLE set in the environment')
+                self.install_rust_test_module_context('lifecycle.rs')
+            else:
+                self.install_rust_lifecycle_context(mode)
+            self.context_collect('STATUSTEXT')
+            self.set_parameters(self.MODULE_M4_PARAMETERS)
+            self.reboot_sitl()
+            self.wait_text('Module: loaded 1 modules', check_context=True, timeout=60)
+            self.wait_text('Module: ready', check_context=True, timeout=60)
+            if mode == 'return':
+                self.wait_text('Module: exited lifecycle.apmod', check_context=True, timeout=60)
+            self.context_clear_collection('STATUSTEXT')
+            requested = time.time()
+            self.request_rust_restart()
+            if mode == 'never':
+                # the M7 waits MODULE_STOP_TIMEOUT_MS of wall time for the stop, then restarts the M4
+                self.wait_text('Module: lifecycle.apmod did not stop, M4 restarted', check_context=True, timeout=1200)
+                waited = time.time() - requested
+                if waited < 9:
+                    raise NotAchievedException('forced restart after %.1f s, not 10 s' % waited)
+            elif mode is None:
+                self.wait_text('Module: exited lifecycle.apmod', check_context=True, timeout=60)
+            self.wait_text('Module: loaded 1 modules', check_context=True, timeout=600)
+            self.wait_text('Module: ready', check_context=True, timeout=60)
+            texts = [m.text for m in self.context_collection('STATUSTEXT')]
+            unexpected = [t for t in texts if 'M4 fault' in t or 'off until reboot' in t or
+                          (mode != 'never' and 'did not stop' in t)]
+            if unexpected:
+                raise NotAchievedException('lifecycle %s: %s' % (mode, unexpected))
+            self.context_pop()
+        self.reboot_sitl()
+
+    def ModuleM4Panic(self):
+        '''Rust on the M4 (SITL two-process): a panic parks the module until MOD_RESTART'''
+        if not self.module_m4_build():
+            raise NotAchievedException('needs a --enable-m4-modules SITL build')
+        if 'AP_MODULE_PANIC_TEST' in os.environ:
+            raise NotAchievedException('AP_MODULE_PANIC_TEST set in the environment')
+        self.context_push()
+        self.install_rust_test_module_context('panic.rs')
+        self.context_collect('STATUSTEXT')
+        self.set_parameters(self.MODULE_M4_PARAMETERS)
+        self.reboot_sitl()
+        self.wait_text('Module: loaded 1 modules', check_context=True, timeout=60)
+        self.wait_text('Module: panic.apmod panic; set MOD_RESTART', check_context=True, timeout=60)
+        self.wait_text('Module fatal: P', check_context=True, timeout=60)
+        self.assert_prearm_failure('Module: panic.apmod panic; set MOD_RESTART', other_prearm_failures_fatal=False)
+        # the parked module is reclaimed by a requested restart: no fault budget spent
+        self.context_clear_collection('STATUSTEXT')
+        self.request_rust_restart()
+        self.wait_text('Module: loaded 1 modules', check_context=True, timeout=60)
+        self.wait_text('Module fatal: P', check_context=True, timeout=60)
+        texts = [m.text for m in self.context_collection('STATUSTEXT')]
+        unexpected = [t for t in texts if 'M4 fault' in t or 'did not stop' in t]
+        if unexpected:
+            raise NotAchievedException('panic restart: %s' % unexpected)
+        self.context_pop()
+        self.reboot_sitl()
+
+    def ModuleM4Containment(self):
+        '''Rust on the M4 (SITL two-process): M4 deaths spend the restart budget with backoff'''
+        if not self.module_m4_build():
+            raise NotAchievedException('needs a --enable-m4-modules SITL build')
+        self.context_push()
+        self.context_collect('STATUSTEXT')
+        # wall time of each text's arrival: the backoff counts wall time in SITL
+        received = []
+
+        def record_text(mav, m):
+            if m.get_type() == 'STATUSTEXT':
+                received.append((time.time(), m.text))
+        self.install_message_hook_context(record_text)
+        self.set_parameters({'MOD_ENABLE': 1, 'MOD_M4_RST_MAX': 3})
+        self.reboot_sitl()
+        self.wait_text(r'Module: started on M4 \(0 modules', regex=True, check_context=True, timeout=30)
+        for used in (1, 2, 3):
+            os.kill(self.module_m4_pid(), signal.SIGKILL)
+            fault = 'Module: M4 fault (process exit), restarting (%u/3)' % used
+            self.wait_text(fault, check_context=True, timeout=60)
+            self.wait_module_m4_started_after(re.escape(fault), timeout=600)
+            # the restart waited restart_backoff_ms(used) of wall time: 1, 2, 4 s
+            fault_at = [t for (t, text) in received if text == fault][-1]
+            started_at = min(t for (t, text) in received if t >= fault_at and text.startswith('Module: started on M4 ('))
+            backoff = 2 ** (used - 1)
+            self.progress('restart %u after %.1f s (backoff %u s)' % (used, started_at - fault_at, backoff))
+            if started_at - fault_at < backoff * 0.8:
+                raise NotAchievedException('restart %u after %.1f s, before its %u s backoff' %
+                                           (used, started_at - fault_at, backoff))
+        self.context_clear_collection('STATUSTEXT')
+        os.kill(self.module_m4_pid(), signal.SIGKILL)
+        self.wait_text('Module: M4 fault (process exit)', check_context=True, timeout=60)
+        self.wait_text('Module: M4 fault limit, off until reboot', check_context=True, timeout=60)
+        self.assert_prearm_failure('Module: M4 not running', other_prearm_failures_fatal=False)
         self.context_pop()
         self.reboot_sitl()
 
@@ -11039,6 +11188,9 @@ return update()
             self.AerobaticsScripting_rust_mission_control,
             self.ModuleM4Boot,
             self.ModuleM4Load,
+            self.ModuleM4Lifecycle,
+            self.ModuleM4Panic,
+            self.ModuleM4Containment,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
             self.SagetechMXS,
@@ -11480,6 +11632,9 @@ return update()
             "SoaringClimbRate": "very bad sink rate",
             "ModuleM4Boot": "Requires --enable-m4-modules SITL build",
             "ModuleM4Load": "Requires --enable-m4-modules SITL build",
+            "ModuleM4Lifecycle": "Requires --enable-m4-modules SITL build",
+            "ModuleM4Panic": "Requires --enable-m4-modules SITL build",
+            "ModuleM4Containment": "Requires --enable-m4-modules SITL build",
         }
         if not self.mavproxy_ftp_module_has_command("crccmp"):
             # added to MAVProxy in 328d7de20 (2026-07-27) and not in any
