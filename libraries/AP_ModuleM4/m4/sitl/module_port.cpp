@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <AP_Module/Bindings.h>
+#include <AP_Module/BindingM4Policy_generated.h>
 #include "../module_port.h"
 
 using namespace ModuleM4;
@@ -137,10 +138,13 @@ static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const u
 }
 
 static const HostPlatform host_platform {
-    port_call, port_notify, AP_Module::binding_local_wire, AP_Module::binding_local_dispatch, nullptr,
-    AP_Module::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
-    AP_Module::binding_is_posted, &call_probe
+    port_call, port_notify, AP_Module::M4_CALL_POLICY, AP_Module::M4_CALL_POLICY_FIRST, AP_Module::M4_CALL_POLICY_COUNT,
+    AP_Module::M4_LOCAL_WIRES, AP_Module::binding_local_dispatch, nullptr, port_mirror_get, port_mirror_pending,
+    port_mirror_settle, port_mirror_refresh, &call_probe
 };
+static_assert(CALL_POLICY_POSTED == AP_Module::M4_CALL_POSTED && CALL_POLICY_ROLE_SHIFT == AP_Module::M4_CALL_ROLE_SHIFT &&
+              CALL_POLICY_ROLE_MASK == AP_Module::M4_CALL_ROLE_MASK && CALL_POLICY_WIRE_SHIFT == AP_Module::M4_CALL_WIRE_SHIFT,
+              "one call policy encoding");
 
 static bool own_context(void *context)
 {
