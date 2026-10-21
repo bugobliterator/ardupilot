@@ -114,7 +114,11 @@ private:
     bool send_frame(const uint8_t *buf, uint16_t len);
     void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
-    void charge_cpu(bool pass_end);
+    // the host's work besides frames, at most once per HOUSEKEEPING_PERIOD_US after doorbell
+    // passes (RustM4::housekeeping_due())
+    void housekeeping();
+    // returns the wall time of the reading
+    uint32_t charge_cpu(bool pass_end);
     void handle_message(const uint8_t *buf, uint16_t len);
     void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
@@ -215,6 +219,7 @@ private:
     RustM4::StartFault _start_fault;
     uint32_t _woke_us;
     uint32_t _wake_latency_us;
+    uint32_t _housekeeping_us;        // the wake after which housekeeping() last ran
 
     // the call latency probe (RUST_M4_OPTS bit 2): the stamps of this pass and of the frame being
     // served, on the probe's counter

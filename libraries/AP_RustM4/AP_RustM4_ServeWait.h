@@ -342,10 +342,11 @@ inline uint64_t read_thread_cycles(ThreadStatsClock &clock, uint32_t now, bool &
 }
 
 /*
-  What the duty cap charges for the host's CPU, from readings of its CPU clock at the start and
-  the end of each pass. charges_waits (ChibiOS, where waits sleep): all CPU since the previous
-  reading, so the wake, the switch and the bookkeeping around a pass are charged too. Otherwise
-  (SITL, whose waits spin on the simulated clock): each pass only. An interval with a reset is
+  What the duty cap charges for the host's CPU, from readings of its CPU clock. charges_waits
+  (ChibiOS, where waits sleep): one reading at each pass end, charging all CPU since the previous
+  one, so the wake, the switch and the bookkeeping around a pass are charged too. Otherwise (SITL,
+  whose waits spin on the simulated clock): readings at the start and the end of each pass, which
+  charge each pass only. An interval with a reset is
   charged as interval_cpu_us() says; the first reading only starts the clock.
  */
 class HostCpuCharge {
@@ -377,6 +378,11 @@ public:
         return used_us;
     }
 
+    // whether the host reads its CPU clock at a pass start. Where waits are charged, the reading at
+    // the previous pass end starts the interval: a pass reads the clock once, at its end, and that
+    // charges the wait's wake and switch with the pass (the thread accrues no CPU while it waits)
+    bool reads_at_pass_start() const { return !_charges_waits; }
+
     // resets seen since the last call
     uint16_t take_resets()
     {
@@ -406,6 +412,18 @@ private:
     uint32_t _wall_us = 0;
     uint16_t _resets = 0;
 };
+
+/*
+  The host's work besides serving frames (heartbeat, supervision, texts, run control, statistics)
+  runs after a wait that timed out, and after a pass a doorbell started only once period has
+  passed since it last ran, so a stream of calls is served by frame work alone. now and last are
+  on one wrapping clock; a timed-out wait bounds the gap between runs
+ */
+static const uint32_t HOUSEKEEPING_PERIOD_US = 1000;
+inline bool housekeeping_due(uint32_t now, uint32_t last, uint32_t period, bool woke_on_timeout)
+{
+    return woke_on_timeout || now - last >= period;
+}
 
 enum class HostWait { DutyCap, Doorbell, Backoff, Timeout };
 

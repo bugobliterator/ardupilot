@@ -401,7 +401,12 @@ struct FakeThreadStats {
             clock.best = UINT32_MAX;
         }
     }
-    uint64_t read(uint32_t now, bool &reset) { return read_thread_cycles(clock, now, reset); }
+    uint64_t read(uint32_t now, bool &reset)
+    {
+        reads++;
+        return read_thread_cycles(clock, now, reset);
+    }
+    uint32_t reads = 0;
 };
 
 // the bench's binding_bench.lua: 416 synchronous calls back to back once a second, each pass
@@ -471,9 +476,10 @@ TEST(RustM4ServeWait, PassRunsRightAfterAPause)
     EXPECT_NE(cap.wait_us(now), 0U);
 }
 
-// the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading, a pass, a
-// reading, overhead, sleep. Readings come from FakeThreadStats; returns the CPU charged and the
-// CPU used. reset_every: a reset in every pass (0: none). marks_best: Util::thread_info's fix
+// the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading where the charge
+// asks for one at a pass start, a pass, a reading, overhead, sleep. Readings come from
+// FakeThreadStats; returns the CPU charged and the CPU used. reset_kind: a reset in the pass (1)
+// or in the sleep (2), 0: none. marks_best: Util::thread_info's fix
 struct HostModel {
     FakeThreadStats stats;
     HostCpuCharge charge { true };
@@ -487,8 +493,11 @@ struct HostModel {
         stats.switch_in(now);
         now += wake_overhead;
         bool reset;
-        uint64_t cpu = stats.read(now, reset);
-        charged += charge.pass_start(cpu, reset, now);
+        uint64_t cpu;
+        if (charge.reads_at_pass_start()) {
+            cpu = stats.read(now, reset);
+            charged += charge.pass_start(cpu, reset, now);
+        }
         now += pass / 2;
         if (reset_kind == 1) {
             stats.reset_from_this_thread(marks_best);   // the pass generated @SYS/threads.txt itself
@@ -512,13 +521,30 @@ TEST(RustM4ServeWait, ChibiOSChargesAllHostCpu)
 {
     HostModel host;
     host.iteration(5, 20, 4, 500, 0);   // the first reading only starts the clock
+    const uint64_t charged_before = host.charged;
     const uint64_t used_before = host.used;
     for (int i = 0; i < 100; i++) {
         host.iteration(5, 20, 4, 500, 0);
     }
-    // the first iteration charged its pass only (20 us): its reading started the clock
-    EXPECT_EQ(host.charged - 20U, host.used - used_before);
+    EXPECT_EQ(host.charged - charged_before, host.used - used_before);
     EXPECT_EQ(host.charge.take_resets(), 0U);
+}
+
+// ChibiOS: a pass a doorbell starts reads the thread's statistics once, at its end; that reading
+// charges the wait's wake and switch with the pass (fails if the host reads at the pass start too)
+TEST(RustM4ServeWait, DoorbellPassChargesOncePerPass)
+{
+    HostModel host;
+    host.iteration(5, 20, 4, 500, 0);
+    const uint32_t reads_before = host.stats.reads;
+    const uint64_t charged_before = host.charged;
+    for (int i = 0; i < 10; i++) {
+        host.iteration(5, 20, 4, 500, 0);
+    }
+    EXPECT_EQ(host.stats.reads - reads_before, 10U);
+    EXPECT_EQ(host.charged - charged_before, 10U * (4U + 5U + 20U));
+    // SITL, whose waits spin, still reads at both ends so that only the pass is charged
+    EXPECT_TRUE(HostCpuCharge { false }.reads_at_pass_start());
 }
 
 // SITL charges passes only: the overhead around them is not charged
@@ -976,6 +1002,36 @@ TEST(RustM4ServeWait, PostedBatchStopsOnTime)
     EXPECT_EQ(run_batch(ring, MAX_SERVE_US + 1), 0U);
     EXPECT_EQ(ring.served, 0U);
     EXPECT_EQ(ring.next, 0U);
+// doorbell wakes 100 us apart for 5 ms: the housekeeping runs once a millisecond, not after each
+// wake (fails without the period)
+TEST(RustM4ServeWait, HousekeepingRunsWithinOneMillisecond)
+{
+    for (const uint32_t start : { 1000U, UINT32_MAX - 2500U }) {
+        uint32_t last = start;   // it ran at the start
+        uint32_t runs = 0;
+        for (uint32_t elapsed = 100; elapsed <= 5000; elapsed += 100) {
+            const uint32_t now = start + elapsed;
+            if (housekeeping_due(now, last, HOUSEKEEPING_PERIOD_US, false)) {
+                runs++;
+                last = now;
+            }
+        }
+        EXPECT_GE(runs, 4U) << start;
+        EXPECT_LE(runs, 6U) << start;
+    }
+}
+
+// a wait that timed out on an empty ring runs the housekeeping, however soon after its last run
+// (fails if only the period decides)
+TEST(RustM4ServeWait, TimeoutWakeRunsHousekeeping)
+{
+    uint32_t runs = 0;
+    const uint32_t last = 5000;
+    if (housekeeping_due(last + 10U, last, HOUSEKEEPING_PERIOD_US, true)) {
+        runs++;
+    }
+    EXPECT_EQ(runs, 1U);
+    EXPECT_FALSE(housekeeping_due(last + 10U, last, HOUSEKEEPING_PERIOD_US, false));
 }
 
 AP_GTEST_MAIN()
