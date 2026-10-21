@@ -46,7 +46,8 @@ AIRSPEED_CRUISE 24.00
 AIRSPEED_MAX    30
 ROLL_LIMIT_DEG 70.00
 
-# the largest module image the M4's staged loader places at the default stack and heap
+# the largest module image the M4's staged loader places with any module within the
+# default MOD_STACK_MAX and MOD_HEAP_MAX caps
 MOD_CODE_MAXSIZE 114688
 
 # desk bench
