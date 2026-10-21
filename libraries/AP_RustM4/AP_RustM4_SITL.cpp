@@ -164,11 +164,11 @@ uint32_t AP_RustM4::platform_wait_us() const
 }
 
 // the host thread is a pthread: its own CPU clock, which nothing resets
-bool AP_RustM4::platform_thread_cpu_us(uint64_t &cpu_us)
+bool AP_RustM4::platform_thread_cpu(uint32_t &cpu)
 {
     struct timespec ts;
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-    cpu_us = uint64_t(ts.tv_sec) * 1000000U + uint64_t(ts.tv_nsec) / 1000U;
+    cpu = uint32_t(uint64_t(ts.tv_sec) * 1000000U + uint64_t(ts.tv_nsec) / 1000U);   // microseconds
     return false;
 }
 

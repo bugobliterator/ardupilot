@@ -145,8 +145,8 @@ private:
     // the host's work besides frames, at most once per HOUSEKEEPING_PERIOD_US after doorbell
     // passes (RustM4::housekeeping_due())
     void housekeeping();
-    // returns the wall time of the reading
-    uint32_t charge_cpu(bool pass_end);
+    // charge the duty cap the host's CPU since its previous reading, wall_us the time of this one
+    void charge_cpu(bool pass_end, uint32_t wall_us);
     void handle_message(const uint8_t *buf, uint16_t len);
     void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
@@ -185,9 +185,15 @@ private:
     bool platform_m4_exited();
     void platform_stop();
     uint32_t platform_wait_us() const;
-    // CPU time this thread has used, in microseconds; true when the clock was reset (statistics
-    // cleared) since the previous call, so the difference to that reading is not the CPU used
-    bool platform_thread_cpu_us(uint64_t &cpu_us);
+    // CPU time this thread has used, in CPU_TICKS_PER_US ticks modulo 2^32; true when the clock
+    // was reset (statistics cleared) since the previous call, so the difference to that reading is
+    // not the CPU used
+    bool platform_thread_cpu(uint32_t &cpu);
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+    static const uint32_t CPU_TICKS_PER_US = HAL_EXPECTED_SYSCLOCK / 1000000U;   // DWT cycles
+#else
+    static const uint32_t CPU_TICKS_PER_US = 1;
+#endif
     // the clock the start and restart timeouts count: the vehicle's on ChibiOS, wall-clock time in
     // SITL, where the M4 process runs on wall-clock time whatever SIM_SPEEDUP is
     uint32_t platform_timeout_ms() const;
@@ -328,7 +334,7 @@ private:
     // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
     RustM4::ServeDutyCap _duty_cap;
     // ChibiOS charges all the host's CPU (its waits sleep); SITL only its passes (its waits spin)
-    RustM4::HostCpuCharge _cpu_charge { CONFIG_HAL_BOARD != HAL_BOARD_SITL };
+    RustM4::HostCpuCharge _cpu_charge { CONFIG_HAL_BOARD != HAL_BOARD_SITL, CPU_TICKS_PER_US };
 
     // the slow worker, below the I/O threads, serves the frames the fast lane does not
     // (AP_RustM4_Server::frame_on_fast_lane()): the host hands it one frame (_rx_frame) and waits
@@ -342,7 +348,7 @@ private:
     uint16_t _worker_handback_len;
     // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
     // after _worker_done
-    RustM4::HostCpuCharge _worker_cpu_charge { false };
+    RustM4::HostCpuCharge _worker_cpu_charge { false, CPU_TICKS_PER_US };
     uint32_t _worker_used_us;
 
     struct {

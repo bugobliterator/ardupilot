@@ -325,19 +325,47 @@ TEST(RustM4ServeWait, SemaphoreWaitsAtNormalRateAreNotCapped)
     }
 }
 
+// interval_us() on a microsecond clock, no carry
+static uint32_t interval_us(uint32_t start, uint32_t end, bool reset, uint32_t wall_us)
+{
+    uint32_t carry = 0;
+    return interval_cpu_us(start, end, reset, wall_us, 1U, carry);
+}
+
 // the CPU clock read before and after an interval: a reset, or a clock that went back, charges
 // the interval's wall time, never less than the thread used
 TEST(RustM4ServeWait, IntervalCpuFromClockReadings)
 {
-    EXPECT_EQ(interval_cpu_us(1000U, 1250U, false, 400U), 250U);
-    EXPECT_EQ(interval_cpu_us(1000U, 1000U, false, 400U), 0U);
+    EXPECT_EQ(interval_us(1000U, 1250U, false, 400U), 250U);
+    EXPECT_EQ(interval_us(1000U, 1000U, false, 400U), 0U);
     // reset seen, or the clock went back: the reading since the reset plus RESET_ALLOWANCE_US,
     // at most the wall time
-    EXPECT_EQ(interval_cpu_us(1000U, 1250U, true, 400U), 400U);
-    EXPECT_EQ(interval_cpu_us(1000U, 50U, true, 10000U), 50U + RESET_ALLOWANCE_US);
-    EXPECT_EQ(interval_cpu_us(5000000U, 300U, false, 400U), 400U);
-    EXPECT_EQ(interval_cpu_us(5000000U, 300U, false, 10000U), 300U + RESET_ALLOWANCE_US);
-    EXPECT_EQ(interval_cpu_us(0U, uint64_t(UINT32_MAX) + 10U, false, 400U), UINT32_MAX);
+    EXPECT_EQ(interval_us(1000U, 1250U, true, 400U), 400U);
+    EXPECT_EQ(interval_us(1000U, 50U, true, 10000U), 50U + RESET_ALLOWANCE_US);
+    EXPECT_EQ(interval_us(5000000U, 300U, false, 400U), 400U);
+    EXPECT_EQ(interval_us(5000000U, 300U, false, 10000U), 300U + RESET_ALLOWANCE_US);
+    // the clock is read modulo 2^32: an interval across the wrap reads forward
+    EXPECT_EQ(interval_us(UINT32_MAX - 99U, 150U, false, 400U), 250U);
+}
+
+// cycles to microseconds: the cycles short of a microsecond count in the next interval, so
+// intervals of 1.5 us are charged 1, then 2 (fails if the remainder is dropped)
+TEST(RustM4ServeWait, IntervalCarriesPartMicroseconds)
+{
+    uint32_t carry = 0;
+    EXPECT_EQ(interval_cpu_us(1000U, 1600U, false, 10U, 400U, carry), 1U);
+    EXPECT_EQ(interval_cpu_us(1600U, 2200U, false, 10U, 400U, carry), 2U);
+    EXPECT_EQ(carry, 0U);
+    uint64_t charged = 0;
+    uint32_t clock = UINT32_MAX - 5000U;   // across the wrap
+    for (int i = 0; i < 1000; i++) {
+        charged += interval_cpu_us(clock, clock + 999U, false, 10U, 400U, carry);
+        clock += 999U;
+    }
+    EXPECT_EQ(charged, 999000U / 400U);
+    // a reset drops the carry and charges the reading since it plus the allowance
+    EXPECT_EQ(interval_cpu_us(clock, 4000U, true, 1000U, 400U, carry), 10U + RESET_ALLOWANCE_US);
+    EXPECT_EQ(carry, 0U);
 }
 
 /*
@@ -361,11 +389,11 @@ TEST(RustM4ServeWait, StatisticsResetEveryPassKeepsTheShare)
             continue;
         }
         ServeDutyCapTestAccess::pass_started(cap, uint32_t(elapsed));
-        const uint64_t start = 5000000U;   // the clock at the pass start
-        const uint64_t end = 150U;         // reset part way through, 150 us more after it
+        const uint32_t start = 5000000U;   // the clock at the pass start
+        const uint32_t end = 150U;         // reset part way through, 150 us more after it
         elapsed += 300U;
         used += 200U;
-        cap.charge(interval_cpu_us(start, end, true, 300U));
+        cap.charge(interval_us(start, end, true, 300U));
     }
     const uint64_t ppm = used * 1000000U / elapsed;
     EXPECT_LE(ppm, ServeDutyCap::SHARE_PERCENT * 10000U + (300U + ServeDutyCap::BURST_US) * uint64_t(1000000U) / duration);
@@ -375,8 +403,8 @@ TEST(RustM4ServeWait, StatisticsResetEveryPassKeepsTheShare)
 // reading's reset marker exists for
 TEST(RustM4ServeWait, UnflaggedResetWouldUnderCharge)
 {
-    EXPECT_EQ(interval_cpu_us(10U, 150U, false, 300U), 140U);   // 200 us used, 140 charged
-    EXPECT_EQ(interval_cpu_us(10U, 150U, true, 300U), 300U);
+    EXPECT_EQ(interval_us(10U, 150U, false, 300U), 140U);   // 200 us used, 140 charged
+    EXPECT_EQ(interval_us(10U, 150U, true, 300U), 300U);
 }
 
 // a ChibiOS thread's statistics clock (os/rt/src/chtm.c), in microseconds for clarity: the slice
@@ -401,7 +429,7 @@ struct FakeThreadStats {
             clock.best = UINT32_MAX;
         }
     }
-    uint64_t read(uint32_t now, bool &reset)
+    uint32_t read(uint32_t now, bool &reset)
     {
         reads++;
         return read_thread_cycles(clock, now, reset);
@@ -482,7 +510,7 @@ TEST(RustM4ServeWait, PassRunsRightAfterAPause)
 // Util::thread_info's fix
 struct HostModel {
     FakeThreadStats stats;
-    HostCpuCharge charge { true };
+    HostCpuCharge charge { true, 1U };
     uint64_t charged = 0;
     uint64_t used = 0;
     uint32_t pass_end_charge = 0;   // the last pass-end reading's charge (M4HP's max pass)
@@ -494,7 +522,7 @@ struct HostModel {
         stats.switch_in(now);
         now += wake_overhead;
         bool reset;
-        uint64_t cpu = stats.read(now, reset);
+        uint32_t cpu = stats.read(now, reset);
         charged += charge.pass_start(cpu, reset, now);
         now += pass / 2;
         if (reset_kind == 1) {
@@ -550,7 +578,7 @@ TEST(RustM4ServeWait, DoorbellPassReadsAtStartAndEnd)
 TEST(RustM4ServeWait, PassOnlyChargeLeavesOutOverhead)
 {
     FakeThreadStats stats;
-    HostCpuCharge charge { false };
+    HostCpuCharge charge { false, 1U };
     uint32_t now = 1000;
     uint64_t charged = 0;
     bool reset;
@@ -639,7 +667,7 @@ TEST(RustM4ServeWait, ResetDuringASleepKeepsTheBurst)
 TEST(RustM4ServeWait, ResetMidPassChargesThePassCpu)
 {
     FakeThreadStats stats;
-    HostCpuCharge charge { true };
+    HostCpuCharge charge { true, 1U };
     uint32_t now = 1000;
     bool reset;
     stats.switch_in(now);
@@ -696,10 +724,10 @@ TEST(RustM4ServeWait, WorkerCpuIsCharged)
 {
     for (const bool charge_worker : { true, false }) {
         ServeDutyCap cap;
-        HostCpuCharge worker { false };
+        HostCpuCharge worker { false, 1U };
         uint32_t now = 1000;
         uint64_t used = 0;
-        uint64_t worker_clock = 0;
+        uint32_t worker_clock = 0;
         EXPECT_EQ(cap.wait_us(now), 0U);
         const uint32_t start = now;
         while (now - start < 20000000U) {

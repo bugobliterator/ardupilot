@@ -282,7 +282,7 @@ void AP_RustM4::host_thread()
         // the only call of serve(): a pause shorter than the cap's wait (the supervisor still
         // runs every platform_wait_us()) serves nothing. ChibiOS: the wait, the wake and the
         // switch before this pass are charged after the decision
-        if (RustM4::pass_after_wake(_duty_cap, _woke_us, [this]() { IGNORE_RETURN(charge_cpu(false)); })) {
+        if (RustM4::pass_after_wake(_duty_cap, _woke_us, [this]() { charge_cpu(false, _woke_us); })) {
             last = serve();
         }
         const uint32_t served_cycles = _probing ? CallLatencyLog::cycles() : 0;
@@ -294,7 +294,9 @@ void AP_RustM4::host_thread()
             housekeeping();
         }
         const uint32_t charge_cycles = _probing ? CallLatencyLog::cycles() : 0;
-        const uint32_t busy_us = charge_cpu(true) - _woke_us;
+        const uint32_t end_us = AP_HAL::micros();
+        charge_cpu(true, end_us);
+        const uint32_t busy_us = end_us - _woke_us;
         _host_busy_us += busy_us;
         if (busy_us > LONG_PASS_US) {
             _long_passes++;
@@ -365,19 +367,17 @@ void AP_RustM4::housekeeping()
 
 // charge the duty cap the host's CPU since its previous reading (HostCpuCharge); at a pass end
 // that is the pass, the largest of which M4HP logs
-uint32_t AP_RustM4::charge_cpu(bool pass_end)
+void AP_RustM4::charge_cpu(bool pass_end, uint32_t wall_us)
 {
-    uint64_t cpu_us;
-    const bool reset = platform_thread_cpu_us(cpu_us);
-    const uint32_t wall_us = AP_HAL::micros();
-    const uint32_t used_us = pass_end ? _cpu_charge.pass_end(cpu_us, reset, wall_us) :
-                                        _cpu_charge.pass_start(cpu_us, reset, wall_us);
+    uint32_t cpu;
+    const bool reset = platform_thread_cpu(cpu);
+    const uint32_t used_us = pass_end ? _cpu_charge.pass_end(cpu, reset, wall_us) :
+                                        _cpu_charge.pass_start(cpu, reset, wall_us);
     _host_cpu_us += used_us;
     _duty_cap.charge(used_us);
     if (pass_end) {
         _pass_cpu_max_us = MAX(_pass_cpu_max_us, used_us);
     }
-    return wall_us;
 }
 
 // the slow worker: one frame at a time, handed over by the host, which waits until it is served.
@@ -386,9 +386,9 @@ void AP_RustM4::worker_thread()
 {
     while (true) {
         IGNORE_RETURN(_worker_request.wait_blocking());
-        uint64_t cpu_us;
-        bool reset = platform_thread_cpu_us(cpu_us);
-        IGNORE_RETURN(_worker_cpu_charge.pass_start(cpu_us, reset, AP_HAL::micros()));
+        uint32_t cpu;
+        bool reset = platform_thread_cpu(cpu);
+        IGNORE_RETURN(_worker_cpu_charge.pass_start(cpu, reset, AP_HAL::micros()));
         switch (_worker_job) {
         case WorkerJob::Discover:
             discover();
@@ -417,8 +417,8 @@ void AP_RustM4::worker_thread()
             break;
         }
         }
-        reset = platform_thread_cpu_us(cpu_us);
-        _worker_used_us = _worker_cpu_charge.pass_end(cpu_us, reset, AP_HAL::micros());
+        reset = platform_thread_cpu(cpu);
+        _worker_used_us = _worker_cpu_charge.pass_end(cpu, reset, AP_HAL::micros());
         _worker_done.signal();
     }
 }
