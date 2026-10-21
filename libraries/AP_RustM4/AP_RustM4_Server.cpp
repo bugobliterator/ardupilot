@@ -62,6 +62,10 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         AP_Rust::M4_BINDING_POLICY[call.id].lane == AP_Rust::M4Lane::Local) {
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::UnknownMethod, 0, nullptr, 0, 0, 0);
     }
+    if (probe != nullptr) {
+        probe->chk_parsed = CallLatencyLog::clock_us();
+        probe->taken |= AP_Rust::CALL_STAMP_CHK_PARSED;
+    }
     _quotas.new_session(now_ms);   // full buckets at the first call of the boot
     const uint8_t quota = AP_Rust::M4_BINDING_POLICY[call.id].quota;
     if (quota != 0 && !_quotas.allow(QuotaClass(quota), now_ms)) {
@@ -72,9 +76,17 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         memset(_out, 0, call.out_size);
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, STATUS_OK, _out, call.out_size, 0, 0);
     }
+    if (probe != nullptr) {
+        probe->chk_quota = CallLatencyLog::clock_us();
+        probe->taken |= AP_Rust::CALL_STAMP_CHK_QUOTA;
+    }
     memset(_in, 0, sizeof(_in));
     memcpy(_in, frame + sizeof(call), call.in_size);
     memset(_out, 0, sizeof(_out));
+    if (probe != nullptr) {
+        probe->chk_copied = CallLatencyLog::clock_us();
+        probe->taken |= AP_Rust::CALL_STAMP_CHK_COPIED;
+    }
     const uint32_t start_us = AP_HAL::micros();
     int32_t status;
     if (probe == nullptr) {
@@ -127,6 +139,17 @@ int32_t AP_RustM4_Server::dispatch(uint16_t module, uint32_t id, uint16_t in_siz
         // PARAMETER_LAYOUT, which reports sizeof and alignof(Parameter), included
         return AP_Rust::binding_dispatch(&_slots[module], AP_Rust::BindingId(id), _in, in_size, _out, out_size);
     }
+}
+
+uint32_t AP_RustM4_Server::input_memset_cycles()
+{
+    static const uint8_t ROUNDS = 16;
+    const uint32_t start = AP_Rust::CallLatencyLog::cycles();
+    for (uint8_t i = 0; i < ROUNDS; i++) {
+        memset(_in, 0, sizeof(_in));
+        __asm__ volatile("" : : "r"(_in) : "memory");
+    }
+    return (AP_Rust::CallLatencyLog::cycles() - start) / ROUNDS;
 }
 
 AP_RustM4_Server::AP_RustM4_Server()

@@ -215,6 +215,11 @@ private:
     bool _pass_cap_paused;            // this pass followed a duty-cap pause
     uint32_t _pass_us;
     uint8_t _pass_frames;
+    volatile uint32_t _doorbell_probe_us;   // the doorbell interrupt, on the probe's counter
+    volatile bool _doorbell_probed;
+    bool _pass_doorbell;                    // this pass woke on a stamped doorbell
+    uint32_t _pass_doorbell_us;
+    bool _input_memset_measured;
     uint32_t _frame_received_us;
     uint16_t _frame_flags;            // its lane and its position in the pass
     uint32_t _frame_overhead_cycles;

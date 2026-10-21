@@ -73,7 +73,7 @@ TEST(RustM4Frames, ReplyCarriesOutputOnlyWithOk)
 
 TEST(RustM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
 {
-    EXPECT_EQ(sizeof(CallProbeTrailer), 32U);
+    EXPECT_EQ(sizeof(CallProbeTrailer), 64U);
     uint8_t frame[MAX_FRAME];
     const uint8_t input[3] = { 1, 2, 3 };
     CallProbeTrailer trailer {};
@@ -81,6 +81,16 @@ TEST(RustM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
     trailer.prev_seq = 5;
     trailer.prev_reply_seen_us = 0xFFFFFFF0U;
     trailer.prev_flags = PROBE_M4_SLEPT;
+    trailer.prev_stamps = PROBE_STAMP_PACKED | PROBE_STAMP_RESUMED;
+    trailer.prev_packed_us = 21;
+    trailer.prev_posted_us = 22;
+    trailer.prev_forward_returned_us = 23;
+    trailer.prev_reply_isr_us = 24;
+    trailer.prev_reply_wake_us = 25;
+    trailer.prev_signalled_us = 26;
+    trailer.prev_resumed_us = 27;
+    trailer.memset_small_centicycles = 125;
+    trailer.memset_large_centicycles = 410;
     const uint16_t len = pack_binding_call(frame, sizeof(frame), 9, 0, 0, 242, input, 3, 1, &trailer);
     ASSERT_EQ(len, sizeof(BindingCallHeader) + 3 + sizeof(trailer));
     BindingCallHeader h;
@@ -94,6 +104,16 @@ TEST(RustM4Frames, ProbedCallCarriesItsTrailerAfterTheInput)
     EXPECT_EQ(out.prev_seq, 5U);
     EXPECT_EQ(out.prev_reply_seen_us, 0xFFFFFFF0U);
     EXPECT_EQ(out.prev_flags, PROBE_M4_SLEPT);
+    EXPECT_EQ(out.prev_stamps, PROBE_STAMP_PACKED | PROBE_STAMP_RESUMED);
+    EXPECT_EQ(out.prev_packed_us, 21U);
+    EXPECT_EQ(out.prev_posted_us, 22U);
+    EXPECT_EQ(out.prev_forward_returned_us, 23U);
+    EXPECT_EQ(out.prev_reply_isr_us, 24U);
+    EXPECT_EQ(out.prev_reply_wake_us, 25U);
+    EXPECT_EQ(out.prev_signalled_us, 26U);
+    EXPECT_EQ(out.prev_resumed_us, 27U);
+    EXPECT_EQ(out.memset_small_centicycles, 125);
+    EXPECT_EQ(out.memset_large_centicycles, 410);
     // the same frame without the flag: its length disagrees with its input size
     BindingCallHeader unflagged = h;
     unflagged.flags = 0;
