@@ -251,6 +251,11 @@ void M4Service::drain()
             return;
         }
         handle(_rx, len);
+        // the module thread's call is answered: frames after its reply are left to the service,
+        // which the module thread's prepare_module_sleep() then wakes
+        if (_module_draining && _link->state.load() == ModuleLink::Done) {
+            return;
+        }
     }
 }
 

@@ -56,8 +56,9 @@ public:
     bool forward_posted();
     // the module thread, woken while it waits for its call's reply: drain_step() with that wait,
     // not the service's last one, in the probe's stamps (isr_to_thread_cycles: the doorbell interrupt
-    // to this thread's return from its wait, 0 if not taken). A fault injection drained here is left
-    // to the service's next drain_step(): true if the service must be woken for it
+    // to this thread's return from its wait, 0 if not taken). It stops at the frame that completes
+    // the call; the caller's prepare_module_sleep() then sees any frame left. A fault injection
+    // drained here is left to the service's next drain_step(): true if the service must be woken for it
     bool drain_step_for_module(bool poll_timeout, bool stamped, uint32_t isr_us, uint32_t wake_us,
                                uint16_t isr_to_thread_cycles = 0);
     // the module thread, before it sleeps for its reply while the service sleeps: the Channel's

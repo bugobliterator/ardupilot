@@ -1047,6 +1047,38 @@ TEST(ModuleM4Service, ModuleSleepIsRefusedWhileAFrameWaits)
     m4.wake();
 }
 
+// the module thread's drain stops at its reply; the frame after it waits for the service, and the
+// module thread's re-arm sees it
+TEST(ModuleM4Service, ModuleDrainStopsAtItsReply)
+{
+    start();
+    send_ready(7);
+    service.drain_step();
+    post_call(BINDING);
+    ASSERT_TRUE(service.forward_posted());
+    BindingCallHeader call;
+    ASSERT_TRUE(m7_receive_call(call));
+    m7_reply(call.header.seq, 0x11);
+    ControlMsg control {};
+    fill_header(control.header, MsgType::Control, sizeof(control), 7);
+    control.action = CONTROL_STOP;
+    ASSERT_EQ(m7.send(&control, sizeof(control)), 0);
+    EXPECT_FALSE(service.drain_step_for_module(false, false, 0, 0));
+    ASSERT_EQ(call_link.state.load(), ModuleLink::Done);
+    EXPECT_EQ(stops.load(), 0U);
+    EXPECT_FALSE(service.prepare_module_sleep());
+    service.drain_step();
+    EXPECT_EQ(stops.load(), 1U);
+    // with no call Done, the module thread's drain takes every frame
+    call_link.state.store(ModuleLink::Idle);
+    ASSERT_EQ(m7.send(&control, sizeof(control)), 0);
+    ASSERT_EQ(m7.send(&control, sizeof(control)), 0);
+    EXPECT_FALSE(service.drain_step_for_module(false, false, 0, 0));
+    EXPECT_EQ(stops.load(), 3U);
+    EXPECT_TRUE(service.prepare_module_sleep());
+    m4.wake();
+}
+
 TEST(ModuleM4Service, UnprobedCallsLeaveTheProbeAlone)
 {
     M4CallProbe probe {};
