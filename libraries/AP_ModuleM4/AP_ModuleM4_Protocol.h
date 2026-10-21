@@ -355,23 +355,25 @@ inline uint16_t pack_parameter_changed(uint8_t *frame, uint16_t cap, uint32_t se
 }
 
 /*
-  dst[0, size) = src[0, size), word by word when both are 4-byte aligned and size is a multiple of 4, byte
-  by byte otherwise. The volatile stores keep GCC -Os from folding the loops into a memcpy call, which is a
+  dst[0, size) = src[0, size): word by word at any alignment, then the last size % 4 bytes. The Cortex-M4
+  loads and stores unaligned words in normal memory (CCR.UNALIGN_TRP is clear); the frame buffers are never
+  device memory. The volatile stores keep GCC -Os from folding the loops into a memcpy call, which is a
   byte loop in newlib-nano. The buffers must not overlap.
  */
+struct __attribute__((packed, may_alias)) UnalignedWord {
+    uint32_t value;
+};
+
 inline void copy_frame_bytes(uint8_t *dst, const uint8_t *src, uint32_t size)
 {
-    if (((uintptr_t(dst) | uintptr_t(src) | size) & 3U) == 0) {
-        volatile uint32_t *word = static_cast<volatile uint32_t *>(static_cast<volatile void *>(dst));
-        for (uint32_t i = 0; i < size; i += 4) {
-            uint32_t value;
-            memcpy(&value, src + i, sizeof(value));
-            *word++ = value;
-        }
-        return;
+    uint32_t i = 0;
+    for (; i + 4 <= size; i += 4) {
+        uint32_t value;
+        memcpy(&value, src + i, sizeof(value));
+        reinterpret_cast<volatile UnalignedWord *>(dst + i)->value = value;
     }
     volatile uint8_t *byte = dst;
-    for (uint32_t i = 0; i < size; i++) {
+    for (; i < size; i++) {
         byte[i] = src[i];
     }
 }
