@@ -10,6 +10,7 @@
 #include <CubePilotFW/Channel.h>
 #include <CubePilotFW/PeerHeader.h>
 #include "AP_ModuleM4_Layout.h"
+#include "AP_ModuleM4_LoadLayout.h"
 
 static_assert(HAL_WITH_EKF_DOUBLE && HAL_WITH_POSTYPE_DOUBLE,
               "the M4 computes Location math in double (m4/shim/AP_HAL/AP_HAL_Boards.h)");
@@ -257,7 +258,11 @@ void AP_ModuleM4::worker_thread()
         uint64_t cpu_us;
         bool reset = platform_thread_cpu_us(cpu_us);
         IGNORE_RETURN(_worker_cpu_charge.pass_start(cpu_us, reset, AP_HAL::micros()));
-        handle_message(_rx_frame, _worker_len);
+        if (_worker_len == 0) {
+            discover();
+        } else {
+            handle_message(_rx_frame, _worker_len);
+        }
         reset = platform_thread_cpu_us(cpu_us);
         _worker_used_us = _worker_cpu_charge.pass_end(cpu_us, reset, AP_HAL::micros());
         _worker_done.signal();
@@ -277,6 +282,52 @@ void AP_ModuleM4::serve_on_worker(uint16_t len)
     _host_cpu_us += _worker_used_us;
     _duty_cap.charge(_worker_used_us);
     _slow_cpu_max_us = MAX(_slow_cpu_max_us, _worker_used_us);
+}
+
+// the directory reads at a session's start run on the slow worker, as the file calls do; the host
+// waits for them before it sends Ready
+void AP_ModuleM4::discover_on_worker()
+{
+    _worker_len = 0;
+    _worker_request.signal();
+    IGNORE_RETURN(_worker_done.wait_blocking());
+    _host_cpu_us += _worker_used_us;
+    _duty_cap.charge(_worker_used_us);
+}
+
+// the in-process runtime's discovery (AP_ModuleM4_Discovery.h); the milestone runs one module
+void AP_ModuleM4::discover()
+{
+    _load_error[0] = 0;
+    const AP_Module::Runtime *runtime = AP_Module::Runtime::get_singleton();
+    const int8_t max_modules = runtime != nullptr ? runtime->config().max_modules : 0;
+    ModuleM4::DiscoveryError error;
+    uint8_t count = ModuleM4::discover_modules(ModuleM4::filesystem_lister(),
+                                             uint8_t(constrain_int16(max_modules, 0, ModuleM4::MAX_MODULES)),
+                                             _modules, ARRAY_SIZE(_modules), error);
+    switch (error) {
+    case ModuleM4::DiscoveryError::None:
+        break;
+    case ModuleM4::DiscoveryError::DirectoryUnavailable:
+        load_error("module directory unavailable");
+        break;
+    case ModuleM4::DiscoveryError::TooMany:
+    case ModuleM4::DiscoveryError::NameTooLong:
+        load_error("directory read, name length or module count");
+        break;
+    }
+    if (count > 1) {
+        load_error("M4 runs 1 module");
+        count = 0;
+    }
+    _module_count = count;
+}
+
+// a load failure of this session, in the PR's form ("Module: <reason>"), kept for the pre-arm check
+void AP_ModuleM4::load_error(const char *reason)
+{
+    hal.util->snprintf(_load_error, sizeof(_load_error), "Module: %s", reason);
+    GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "%s", _load_error);
 }
 
 /*
@@ -408,13 +459,158 @@ void AP_ModuleM4::serve_system(const uint8_t *buf, uint16_t len)
         return;
     }
     _session_calls++;
+    const ModuleM4::SystemMethod method = ModuleM4::SystemMethod(call.method);
+    uint16_t reply_len;
+    switch (method) {
+    case ModuleM4::SystemMethod::Config:
+        reply_len = serve_config(buf, len, call.header.seq);
+        break;
+    case ModuleM4::SystemMethod::ListModules:
+        reply_len = serve_list_modules(call.header.seq);
+        break;
+    case ModuleM4::SystemMethod::FsOpen:
+    case ModuleM4::SystemMethod::FsRead:
+    case ModuleM4::SystemMethod::FsSeek:
+    case ModuleM4::SystemMethod::FsClose:
+        reply_len = serve_file(method, buf, len, call.header.seq);
+        break;
+    default:
+        reply_len = pack_system_reply(method, call.header.seq, ModuleM4::ReplyStatus::UnknownMethod, -ENOSYS,
+                                      sizeof(ModuleM4::SystemReplyHeader));
+        break;
+    }
+    send_frame(_tx_frame, reply_len);
+}
+
+// the reply's header at the start of _tx_frame; the method's contents follow it there
+uint16_t AP_ModuleM4::pack_system_reply(ModuleM4::SystemMethod method, uint32_t seq, ModuleM4::ReplyStatus transport,
+                                      int32_t result, uint16_t length)
+{
     ModuleM4::SystemReplyHeader reply {};
-    ModuleM4::fill_header(reply.header, MsgType::SystemReply, sizeof(reply), call.header.seq);
-    reply.method = call.method;
-    reply.transport = uint8_t(ModuleM4::ReplyStatus::UnknownMethod);
-    reply.result = -ENOSYS;
+    ModuleM4::fill_header(reply.header, MsgType::SystemReply, length, seq);
+    reply.method = uint16_t(method);
+    reply.transport = uint8_t(transport);
+    reply.result = result;
     memcpy(_tx_frame, &reply, sizeof(reply));
-    send_frame(_tx_frame, sizeof(reply));
+    return length;
+}
+
+// the M4's Config: the module limits and the M7 clock
+uint16_t AP_ModuleM4::serve_config(const uint8_t *buf, uint16_t len, uint32_t seq)
+{
+    ModuleM4::ConfigRequest request;
+    if (len != sizeof(request)) {
+        return pack_system_reply(ModuleM4::SystemMethod::Config, seq, ModuleM4::ReplyStatus::Malformed, -EINVAL,
+                                 sizeof(ModuleM4::SystemReplyHeader));
+    }
+    memcpy(&request, buf, sizeof(request));
+    ModuleM4::ConfigReply reply {};
+    const AP_Module::Runtime *runtime = AP_Module::Runtime::get_singleton();
+    if (runtime != nullptr) {
+        const AP_Module::Runtime::Config config = runtime->config();
+        reply.heap_size = config.heap_size;
+        reply.stack_size = config.stack_size;
+        reply.max_modules = uint8_t(config.max_modules);
+        reply.debug_options = uint8_t(config.debug_options);
+        // the PR rounds MOD_CODE_MAXSIZE up to whole 4096 B; the staged loader takes at most its cap
+        const uint32_t code_size = config.code_size > 0 ? (uint32_t(config.code_size) + 4095U) & ~4095U : 0;
+        const uint32_t cap = ModuleM4::staged_code_size_cap(AP_MODULE_M4_MODULE_AREA_SIZE,
+                                                          uint32_t(MAX(config.stack_size, int32_t(0))),
+                                                          uint32_t(MAX(config.heap_size, int32_t(0))));
+        reply.code_size = int32_t(MIN(code_size, cap));
+        if (code_size > cap && !_code_size_capped_sent) {
+            _code_size_capped_sent = true;
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Module: MOD_CODE_MAXSIZE capped at %uKB on M4", unsigned(cap / 1024U));
+        }
+    }
+    reply.m4_options = uint8_t(_options.get());
+    reply.m7_millis = AP_HAL::millis();
+    reply.m7_micros = AP_HAL::micros();
+    const uint16_t length = pack_system_reply(ModuleM4::SystemMethod::Config, seq, ModuleM4::ReplyStatus::Ok, 0,
+                                              sizeof(reply));
+    memcpy(&reply.reply, _tx_frame, sizeof(reply.reply));
+    memcpy(_tx_frame, &reply, sizeof(reply));
+    return length;
+}
+
+// this session's discovery. Built in _tx_frame: the reply is too large for the worker's stack frame
+uint16_t AP_ModuleM4::serve_list_modules(uint32_t seq)
+{
+    using ModuleM4::ListModulesReply;
+    using ModuleM4::ModuleEntry;
+    static_assert(sizeof(ListModulesReply) <= sizeof(_tx_frame), "the reply fits");
+    static_assert(sizeof(ListModulesReply::modules) / sizeof(ModuleEntry) >= ModuleM4::MAX_MODULES, "every module listed");
+    static_assert(sizeof(ModuleEntry::name) == sizeof(ModuleM4::ModuleFile::name) &&
+                  sizeof(ModuleEntry::path) == sizeof(ModuleM4::ModuleFile::path), "names and paths fit");
+    const uint8_t count = _module_count;
+    memset(_tx_frame, 0, sizeof(ListModulesReply));
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t *entry = _tx_frame + offsetof(ListModulesReply, modules) + i * sizeof(ModuleEntry);
+        memcpy(entry + offsetof(ModuleEntry, name), _modules[i].name, sizeof(ModuleEntry::name));
+        memcpy(entry + offsetof(ModuleEntry, path), _modules[i].path, sizeof(ModuleEntry::path));
+        memcpy(entry + offsetof(ModuleEntry, size), &_modules[i].size, sizeof(ModuleEntry::size));
+    }
+    _tx_frame[offsetof(ListModulesReply, count)] = count;
+    return pack_system_reply(ModuleM4::SystemMethod::ListModules, seq, ModuleM4::ReplyStatus::Ok, count,
+                             sizeof(ListModulesReply));
+}
+
+// module files, read only and in order (AP_ModuleM4_FileServer); the request is untrusted
+uint16_t AP_ModuleM4::serve_file(ModuleM4::SystemMethod method, const uint8_t *buf, uint16_t len, uint32_t seq)
+{
+    const uint16_t header = sizeof(ModuleM4::SystemReplyHeader);
+    switch (method) {
+    case ModuleM4::SystemMethod::FsOpen: {
+        ModuleM4::FsOpenRequest request;
+        if (len != sizeof(request)) {
+            break;
+        }
+        memcpy(&request, buf, sizeof(request));
+        // one byte past the M4's: a path without a terminator in it is too long
+        char path[sizeof(request.path) + 1];
+        memcpy(path, request.path, sizeof(request.path));
+        path[sizeof(request.path)] = 0;
+        return pack_system_reply(method, seq, ModuleM4::ReplyStatus::Ok,
+                                 _file_server.open(path, ModuleM4::MODULE_OPEN_FLAGS), header);
+    }
+    case ModuleM4::SystemMethod::FsRead: {
+        ModuleM4::FsReadRequest request;
+        if (len != sizeof(request)) {
+            break;
+        }
+        memcpy(&request, buf, sizeof(request));
+        static_assert(sizeof(ModuleM4::SystemReplyHeader) + ModuleM4::FS_READ_MAX <= sizeof(_tx_frame), "read fits");
+        const int32_t n = _file_server.read(request.fd, _tx_frame + header, request.count);
+        return pack_system_reply(method, seq, ModuleM4::ReplyStatus::Ok, n, header + uint16_t(MAX(n, int32_t(0))));
+    }
+    case ModuleM4::SystemMethod::FsSeek: {
+        ModuleM4::FsSeekRequest request;
+        if (len != sizeof(request)) {
+            break;
+        }
+        memcpy(&request, buf, sizeof(request));
+        return pack_system_reply(method, seq, ModuleM4::ReplyStatus::Ok,
+                                 _file_server.seek(request.fd, request.offset), header);
+    }
+    case ModuleM4::SystemMethod::FsClose: {
+        ModuleM4::FsCloseRequest request;
+        if (len != sizeof(request)) {
+            break;
+        }
+        memcpy(&request, buf, sizeof(request));
+        const AP_ModuleM4_FileServer::Closed closed = _file_server.close(request.fd);
+        ModuleM4::FsCloseReply reply {};
+        pack_system_reply(method, seq, ModuleM4::ReplyStatus::Ok, closed.result, sizeof(reply));
+        memcpy(&reply.reply, _tx_frame, sizeof(reply.reply));
+        reply.crc = closed.crc;
+        reply.served = closed.served;
+        memcpy(_tx_frame, &reply, sizeof(reply));
+        return sizeof(reply);
+    }
+    default:
+        break;
+    }
+    return pack_system_reply(method, seq, ModuleM4::ReplyStatus::Malformed, -EINVAL, header);
 }
 
 // a reply to the M4; len 0 (it did not pack) sends nothing
@@ -623,6 +819,11 @@ void AP_ModuleM4::check_started(uint32_t now_ms)
     }
     if (status == PeerHeader::Status::Compatible && view.restarts == _restart_grants &&
         (_state == State::Starting || view.session != _m4_session)) {
+        // this session's modules, found before it is Ready (the start text counts them); the M4
+        // waits meanwhile, and the heartbeat is taken after
+        _file_server.reset();
+        discover_on_worker();
+        now_ms = AP_HAL::millis();
         _m4_session = view.session;
         // a fault restart has been charged: a fault the M4 recorded on its way down is the same
         // incident. A fault the new session recorded after its publish() and before this read
@@ -639,7 +840,6 @@ void AP_ModuleM4::check_started(uint32_t now_ms)
         // re-handshake: drop whatever either side queued before this start
         _channel->resetAfterRestart();
         _session_calls = 0;
-        _module_count = 0;
         // the previous session's modules are gone: their slots end, through the PR's cleanups
         _server.reset(_m4_session, _module_count);
         memset(&_rpc_summary, 0, sizeof(_rpc_summary));
@@ -763,8 +963,9 @@ void AP_ModuleM4::failure(const char *reason, const char *detail)
 // spend none of MOD_M4_RST_MAX (_restarts_used)
 void AP_ModuleM4::grant_restart()
 {
-    // the session's modules end with it
+    // the session's modules and files end with it
     _server.reset(0, 0);
+    _file_server.reset();
     _restart_grants++;
     // the new session starts without the old one's protocol errors
     _protocol_errors = 0;
@@ -817,6 +1018,7 @@ void AP_ModuleM4::go_off(const char *reason)
     // after run_permit: stopping rings the restart doorbell, which the M4 reads as park
     platform_stop();
     _server.reset(0, 0);
+    _file_server.reset();
     enter(State::Off, AP_HAL::millis());
 }
 
@@ -839,6 +1041,10 @@ bool AP_ModuleM4::arming_checks(size_t buflen, char *buffer) const
     }
     if (_state != State::Running) {
         hal.util->snprintf(buffer, buflen, "Module: M4 modules not started");
+        return false;
+    }
+    if (_load_error[0] != 0) {
+        hal.util->snprintf(buffer, buflen, "%s", _load_error);
         return false;
     }
     return true;
