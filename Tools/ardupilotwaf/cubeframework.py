@@ -48,9 +48,10 @@ def configure(cfg):
 def cubeframework(bld):
     '''M7 side of the CubeFramework transport, as a static library'''
     if bld.env.BOARD_CLASS == 'ChibiOS':
+        # the ring frame CRC is off on the board: the M4 Makefile defines the same value
         return bld.stlib(name='cubeframework', target='cubeframework',
                          source=_cf(CF_CHIBIOS_SOURCES), features=['ch_ap_library'],
-                         defines=['USE_CHIBIOS=1'], includes=[bld.bldnode.abspath()],
+                         defines=['USE_CHIBIOS=1', 'CF_SPSC_RING_CRC=0'], includes=[bld.bldnode.abspath()],
                          cxxflags=CF_CXXFLAGS,
                          use=[])  # ap_library's compile database dry run reads .use
     # HSEM.h picks the M7 semaphore mapping from __CORTEX_M
