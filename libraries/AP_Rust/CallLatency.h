@@ -156,6 +156,43 @@ struct SubstageTotals {
     }
 };
 
+/*
+  The M4's core cycles of a probed call before its frame is packed (its CallProbeTrailer), counted
+  without the probe's clock reads in between: in DWT cycles they split PrePack finer than its stamps.
+ */
+enum class M4PrePart : uint8_t {
+    SvcEntry,    // SVC handler entry to host_binding_call(): the argument copy
+    Checks,      // the host's checks after the entry stamp, up to begin_probed_call()
+    BeginProbe,  // begin_probed_call(): the trailer
+    Pack,        // pack_binding_call()
+};
+static const uint8_t M4_PRE_PARTS = 4;
+static const char *const M4_PRE_PART_NAMES[M4_PRE_PARTS] = { "SvcEntry", "Checks", "BeginProbe", "Pack" };
+
+// count, sum and max of the M4PrePart cycles of one binding
+struct M4PreCycleTotals {
+    uint32_t count;
+    uint64_t sum[M4_PRE_PARTS];
+    uint16_t max[M4_PRE_PARTS];
+
+    void add(const uint16_t (&cycles)[M4_PRE_PARTS])
+    {
+        for (uint8_t i = 0; i < M4_PRE_PARTS; i++) {
+            sum[i] += cycles[i];
+            if (cycles[i] > max[i]) {
+                max[i] = cycles[i];
+            }
+        }
+        count++;
+    }
+
+    // mean rounded to the nearest cycle; 0 without samples
+    uint32_t mean(uint8_t i) const
+    {
+        return count != 0 ? uint32_t((sum[i] + count / 2) / count) : 0;
+    }
+};
+
 // the logged stages; Pass lies inside Receive, the others add up to Total
 enum class CallStage : uint8_t {
     Pre,       // svc_entry -> pre_send: host checks, framing, service lock

@@ -107,11 +107,13 @@ bool CallLatencyLog::start()
     auto *traces = static_cast<CallTrace *>(calloc(CALL_TRACE_COUNT, sizeof(CallTrace)));
     auto *scratch = static_cast<int32_t *>(calloc(CALL_TRACE_COUNT, sizeof(int32_t)));
     auto *substages = static_cast<SubstageTotals *>(calloc(SUMMARY_IDS, sizeof(SubstageTotals)));
+    auto *m4_pre = static_cast<M4PreCycleTotals *>(calloc(SUMMARY_IDS, sizeof(M4PreCycleTotals)));
     auto *ring = traces != nullptr ? NEW_NOTHROW CallTraceRing<CALL_TRACE_COUNT>(traces) : nullptr;
-    if (scratch == nullptr || ring == nullptr || substages == nullptr) {
+    if (scratch == nullptr || ring == nullptr || substages == nullptr || m4_pre == nullptr) {
         free(traces);
         free(scratch);
         free(substages);
+        free(m4_pre);
         delete ring;
         return false;
     }
@@ -134,6 +136,7 @@ bool CallLatencyLog::start()
     _lock_pair_cycles = lock_pair_cycles;
     _scratch = scratch;
     _substages = substages;
+    _m4_pre = m4_pre;
     _log_tokens_milli = LOG_ROWS_BURST * 1000U;
     _log_refill_ms = AP_HAL::millis();
     _ring = ring;
@@ -189,6 +192,18 @@ void CallLatencyLog::record_substages(uint32_t id, const CallStamps &stamps)
     const int8_t index = id_slot(id);
     if (index >= 0) {
         _substages[index].add(sub_us, valid);
+    }
+}
+
+void CallLatencyLog::record_m4_pre_cycles(uint32_t id, const uint16_t (&cycles)[M4_PRE_PARTS])
+{
+    WITH_SEMAPHORE(_sem);
+    if (_ring == nullptr) {
+        return;
+    }
+    const int8_t index = id_slot(id);
+    if (index >= 0) {
+        _m4_pre[index].add(cycles);
     }
 }
 
@@ -270,7 +285,8 @@ void CallLatencyLog::summary(ExpandingString &str)
     static const char *const lanes[] = { "in-process", "fast", "slow", "?" };
     for (uint8_t i = 0; i < _id_count; i++) {
         const IdTotals &totals = _ids[i];
-        str.printf("id %lu %s: calls %lu, max Tot %ld us; window p50/p99/max us, sub mean/max us since start:\n",
+        str.printf("id %lu %s: calls %lu, max Tot %ld us; window p50/p99/max us, sub mean/max us and m4cyc "
+                   "mean/max M4 cycles since start:\n",
                    (unsigned long)totals.id, lanes[totals.flags & CALL_LANE_MASK], (unsigned long)totals.count, long(totals.max_total_us));
         for (uint8_t stage = 0; stage < CALL_STAGES; stage++) {
             const StageSummary s = summarize_stage(*_ring, totals.id, CallStage(stage), _scratch);
@@ -288,6 +304,12 @@ void CallLatencyLog::summary(ExpandingString &str)
             }
             str.printf("  sub %s n %lu mean %ld max %ld\n", CALL_SUBSTAGE_NAMES[substage],
                        (unsigned long)sub.count[substage], long(sub.mean_us(substage)), long(sub.max_us[substage]));
+        }
+        // M4 core cycles, since start
+        const M4PreCycleTotals &pre = _m4_pre[i];
+        for (uint8_t part = 0; part < M4_PRE_PARTS && pre.count != 0; part++) {
+            str.printf("  m4cyc %s n %lu mean %lu max %u\n", M4_PRE_PART_NAMES[part], (unsigned long)pre.count,
+                       (unsigned long)pre.mean(part), unsigned(pre.max[part]));
         }
     }
 }
