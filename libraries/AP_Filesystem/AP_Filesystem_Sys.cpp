@@ -26,6 +26,7 @@
 #include <AP_CANManager/AP_CANManager.h>
 #include <AP_Scheduler/AP_Scheduler.h>
 #include <AP_Common/ExpandingString.h>
+#include <AP_Module/CallLatencyLog.h>
 
 #ifndef AP_CRASHDUMP_FLASH_ENABLED
 #define AP_CRASHDUMP_FLASH_ENABLED 0
@@ -57,6 +58,9 @@ static const SysFileList sysfs_file_list[] = {
     {"storage.bin"},
 #if AP_FILESYSTEM_SYS_FLASH_ENABLED
     {"flash.bin"},
+#endif
+#if AP_MODULE_ENABLED
+    {"module_latency.txt"},
 #endif
 };
 
@@ -123,6 +127,11 @@ int AP_Filesystem_Sys::open(const char *fname, int flags, bool allow_absolute_pa
     if (strcmp(fname, "timers.txt") == 0) {
         hal.util->timer_info(*r.str);
     }
+#if AP_MODULE_ENABLED
+    if (strcmp(fname, "module_latency.txt") == 0) {
+        AP_Module::CallLatencyLog::get().summary(*r.str);
+    }
+#endif
 #if HAL_NUM_CAN_IFACES > 0
     int8_t can_stats_num = -1;
     if (strcmp(fname, "can0_stats.txt") == 0) {
