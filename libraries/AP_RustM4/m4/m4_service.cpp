@@ -24,6 +24,7 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     // a new session: no names, statistics or M7 session yet
     memset(_stats, 0, sizeof(_stats));
     memset(&_untimed, 0, sizeof(_untimed));
+    _round_trip = RoundTrip {};
     _name_count = 0;
     _session = 0;
     _have_session = false;
@@ -391,6 +392,7 @@ void M4Service::forward_call(bool from_step)
         }
     }
     if ((flags & CALL_FLAG_NOTIFY) != 0) {
+        fold_round_trip();
         if (MsgType(header.type) == MsgType::BindingCall) {
             // a posted binding: its round trip is the time from posting to the ring copy
             record_posted(key, (sent_cycles - _call_posted_cycles) / _platform.cycles_per_us);
@@ -412,6 +414,8 @@ void M4Service::forward_call(bool from_step)
     _call_reply_type = reply_type;
     _call_sent_cycles = sent_cycles;
     _link->state.store(ModuleLink::Sent);
+    // the previous reply's Stats, while the M7 serves this call
+    fold_round_trip();
 }
 
 // the M7 asks a module to stop; seq carries its session, so a stop of an older one is dropped
@@ -523,7 +527,7 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
     }
     wake.stamped = false;   // one wait's stamps for one reply
     wake.isr_to_thread_cycles = 0;
-    const uint32_t round_trip_us = (_platform.cycles() - _call_sent_cycles) / _platform.cycles_per_us;
+    const uint32_t round_trip_cycles = _platform.cycles() - _call_sent_cycles;
     uint32_t m7_us = 0;
     if (MsgType(header.type) == MsgType::BindingReply) {
         BindingReplyHeader reply;
@@ -535,7 +539,31 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
             _mirror.mark_module_stale(uint8_t(call.module));   // a ParameterChanged did not reach us
         }
     }
-    MethodStats *stats = stats_for(_call_key);
+    // one reply per Sent call, and every Sent call folds the one before
+    if (_round_trip.pending) {
+        fold_round_trip();
+    }
+    _round_trip = RoundTrip { true, _call_key, round_trip_cycles, m7_us };
+    const uint32_t copy_cycles = _call_probed && _received_cycles != 0 ? probe_cycles_now(*_platform.probe) : 0;
+    memcpy(_link->reply, buf, len);
+    if (copy_cycles != 0) {
+        M4CallStamps &current = _platform.probe->current;
+        probe_cycle_part(current, M4CyclePart::DrainParse, _received_cycles, copy_cycles);
+        current.drain_copied_cycles = probe_cycles_now(*_platform.probe);
+        probe_cycle_part(current, M4CyclePart::DrainCopy, copy_cycles, current.drain_copied_cycles);
+    }
+    complete(len);
+}
+
+void M4Service::fold_round_trip()
+{
+    if (!_round_trip.pending) {
+        return;
+    }
+    _round_trip.pending = false;
+    const uint32_t round_trip_us = _round_trip.cycles / _platform.cycles_per_us;
+    const uint32_t m7_us = _round_trip.m7_us;
+    MethodStats *stats = stats_for(_round_trip.key);
     if (stats != nullptr) {
         stats->round_trips.add(round_trip_us);
         stats->total_us += round_trip_us;
@@ -553,19 +581,11 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
             _untimed.m7_max_us = m7_us;
         }
     }
-    const uint32_t copy_cycles = _call_probed && _received_cycles != 0 ? probe_cycles_now(*_platform.probe) : 0;
-    memcpy(_link->reply, buf, len);
-    if (copy_cycles != 0) {
-        M4CallStamps &current = _platform.probe->current;
-        probe_cycle_part(current, M4CyclePart::DrainParse, _received_cycles, copy_cycles);
-        current.drain_copied_cycles = probe_cycles_now(*_platform.probe);
-        probe_cycle_part(current, M4CyclePart::DrainCopy, copy_cycles, current.drain_copied_cycles);
-    }
-    complete(len);
 }
 
 void M4Service::count_lost()
 {
+    fold_round_trip();
     _lost++;
     MethodStats *stats = stats_for(_call_key);
     if (stats != nullptr) {
@@ -750,6 +770,7 @@ bool M4Service::send_row(const StatsRow &row)
 
 void M4Service::send_stats(uint32_t now_ms)
 {
+    fold_round_trip();
     // the slots with calls this window, most round-trip time first
     uint32_t totals[STATS_SLOTS];
     uint8_t slot_of[STATS_SLOTS];
