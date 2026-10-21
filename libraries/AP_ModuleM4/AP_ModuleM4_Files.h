@@ -3,7 +3,7 @@
 /*
   The M4's files on the M7 (AP_ModuleM4_FileServer): the per-session table of
   AP_Filesystem descriptors behind the ids the M4 holds, and the check of
-  every path the M4 sends. The M4 only reads module files: rust/<name>.apmod
+  every path the M4 sends. The M4 only reads module files: modules/<name>.apmod
   in ROMFS or in the writable module directory, as the in-process runtime
   discovers them. An id carries a per-slot serial, so the id of a closed
   file, or of an earlier M4 session, never reaches a descriptor.
@@ -26,12 +26,12 @@ static const uint8_t MODULE_NAME_MAX = 64;
 // the only flags the M4 opens a file with
 static const int MODULE_OPEN_FLAGS = O_RDONLY;
 
-// true if the M4 may read path: "rust/<name>.apmod", "@ROMFS/rust/<name>.apmod" or
-// "/APM/rust/<name>.apmod", with <name> not empty and without a separator ('/', or '\', which
+// true if the M4 may read path: "modules/<name>.apmod", "@ROMFS/modules/<name>.apmod" or
+// "/APM/modules/<name>.apmod", with <name> not empty and without a separator ('/', or '\', which
 // FatFs also takes), and the file name shorter than MODULE_NAME_MAX. Nothing else
 inline bool module_path_allowed(const char *path)
 {
-    static const char *const directories[] = { "rust/", "@ROMFS/rust/", "/APM/rust/" };
+    static const char *const directories[] = { "modules/", "@ROMFS/modules/", "/APM/modules/" };
     static const char suffix[] = ".apmod";
     const size_t suffix_length = sizeof(suffix) - 1;
     if (path == nullptr) {

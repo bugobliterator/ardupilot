@@ -10,12 +10,12 @@
 
 namespace ModuleM4 {
 
-const char ROMFS_MODULE_DIRECTORY[] = "@ROMFS/rust";
+const char ROMFS_MODULE_DIRECTORY[] = "@ROMFS/modules";
 #if HAL_OS_FATFS_IO || HAL_OS_LITTLEFS_IO
-const char WRITABLE_MODULE_DIRECTORY[] = "/APM/rust";
+const char WRITABLE_MODULE_DIRECTORY[] = "/APM/modules";
 #else
-// the PR's "./rust", spelled as module_path_allowed() takes it
-const char WRITABLE_MODULE_DIRECTORY[] = "rust";
+// the PR's "./modules", spelled as module_path_allowed() takes it
+const char WRITABLE_MODULE_DIRECTORY[] = "modules";
 #endif
 
 static const char MODULE_SUFFIX[] = ".apmod";
@@ -77,7 +77,7 @@ void add_entry(void *state, const DirectoryEntry &entry)
 uint8_t discover_modules(const DirectoryLister &lister, uint8_t max_modules, ModuleFile *out, uint8_t capacity,
                          DiscoveryError &error)
 {
-    static_assert(sizeof("@ROMFS/rust/") - 1 + MODULE_NAME_MAX <= MODULE_PATH_MAX, "every module path fits");
+    static_assert(sizeof("@ROMFS/modules/") - 1 + MODULE_NAME_MAX <= MODULE_PATH_MAX, "every module path fits");
     Walk walk {};
     walk.lister = &lister;
     walk.max_modules = max_modules < capacity ? max_modules : capacity;
