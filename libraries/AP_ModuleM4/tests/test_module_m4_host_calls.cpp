@@ -16,6 +16,7 @@ struct FakeM7 {
     uint32_t gets, pendings, settles, refreshes;
     uint64_t last_token;
     uint8_t refresh_in[5];
+    uint8_t last_notify_flags;
 };
 
 static int32_t fake_call(void *platform, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
@@ -31,7 +32,14 @@ static int32_t fake_call(void *platform, const uint8_t *request, uint16_t len, u
     }
     return m7.answer_len;
 }
-static void fake_notify(void *platform, const uint8_t *, uint16_t) { static_cast<FakeM7 *>(platform)->notifies++; }
+static void fake_notify(void *platform, const uint8_t *frame, uint16_t len)
+{
+    auto &m7 = *static_cast<FakeM7 *>(platform);
+    m7.notifies++;
+    BindingCallHeader call {};
+    memcpy(&call, frame, len < sizeof(call) ? len : sizeof(call));
+    m7.last_notify_flags = call.flags;
+}
 // id 5 is local with the wire of libm.sinf: 4 B in, 4 B out
 static bool fake_local_wire(uint32_t id, uint32_t &input_size, uint32_t &output_size)
 {
@@ -69,6 +77,11 @@ static void fake_mirror_pending(void *platform, uint16_t, uint64_t token)
     static_cast<FakeM7 *>(platform)->pendings++;
     static_cast<FakeM7 *>(platform)->last_token = token;
 }
+// id 30 is posted
+static bool fake_is_posted(uint32_t id)
+{
+    return id == 30;
+}
 static void fake_mirror_settle(void *platform, uint16_t, uint64_t)
 {
     static_cast<FakeM7 *>(platform)->settles++;
@@ -92,7 +105,7 @@ struct Fixture {
     FakeM7 m7 {};
     ModuleContext m;
     HostPlatform platform { fake_call, fake_notify, fake_local_wire, fake_local, &m7, fake_mirror_role, fake_mirror_get,
-                            fake_mirror_pending, fake_mirror_settle, fake_mirror_refresh, nullptr };
+                            fake_mirror_pending, fake_mirror_settle, fake_mirror_refresh, fake_is_posted };
     Fixture()
     {
         local_calls = 0;
@@ -312,6 +325,33 @@ TEST(ModuleM4HostCalls, HandleWriterMarksPendingAndSettles)
     // a name writer has no token: no PENDING
     IGNORE_RETURN(host_binding_call(f.m, f.args(22, f.rw, 21, f.stack, 1), f.platform));
     EXPECT_EQ(f.m7.pendings, 2U);
+}
+
+
+TEST(ModuleM4HostCalls, PostedIdReturnsOkAfterTheNotify)
+{
+    Fixture f;
+    EXPECT_EQ(host_binding_call(f.m, f.args(30, f.rw, 16, nullptr, 0), f.platform), STATUS_OK);
+    EXPECT_EQ(f.m7.notifies, 1U);
+    EXPECT_EQ(f.m7.calls, 0U);
+    EXPECT_EQ(f.m7.last_notify_flags, CALL_FLAG_NOTIFY);
+}
+
+TEST(ModuleM4HostCalls, PostedIdWithAnOutputGoesTheCallPath)
+{
+    Fixture f;
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, MAX_FRAME, 0, ReplyStatus::Ok, STATUS_OK, f.rw, 4, 0, 0);
+    IGNORE_RETURN(host_binding_call(f.m, f.args(30, f.rw, 16, f.stack, 4), f.platform));
+    EXPECT_EQ(f.m7.notifies, 0U);
+    EXPECT_EQ(f.m7.calls, 1U);
+}
+
+TEST(ModuleM4HostCalls, StopComesBeforePosting)
+{
+    Fixture f;
+    f.m.stop.store(true);
+    EXPECT_EQ(host_binding_call(f.m, f.args(30, f.rw, 16, nullptr, 0), f.platform), STATUS_STOPPED);
+    EXPECT_EQ(f.m7.notifies, 0U);
 }
 
 AP_GTEST_MAIN()

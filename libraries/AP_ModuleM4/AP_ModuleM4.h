@@ -231,6 +231,11 @@ private:
     uint32_t _mirror_frames_sent;
     uint32_t _mirror_entries_sent;
     uint32_t _mirror_failed_sends;
+    // posted logger.write frames: run with a status other than OK, and refused unrun (quota, duty cap)
+    uint32_t _post_errors;
+    uint32_t _post_drops;
+    bool _post_error_reported;        // the GCS text of a failed one, once per module load
+    uint32_t _posted_batched;         // posted frames the worker served after the one handed to it
     uint32_t _ready_sent_ms;
 
     // counters of the current one-second window
@@ -261,6 +266,8 @@ private:
     enum class WorkerJob : uint8_t { Frame, Discover, Mirror };
     WorkerJob _worker_job;
     uint16_t _worker_len;             // the frame's length for WorkerJob::Frame
+    // after a posted batch: the length of the first other frame, left in _rx_frame for the host
+    uint16_t _worker_handback_len;
     // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
     // after _worker_done
     ModuleM4::HostCpuCharge _worker_cpu_charge { false };
