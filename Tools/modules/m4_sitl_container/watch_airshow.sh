@@ -19,10 +19,10 @@ if [ "$MODE" = in-process ]; then
 fi
 W=/work/watch
 rm -rf "$W"
-mkdir -p "$W/rust" "$W/scripts"
+mkdir -p "$W/modules" "$W/scripts"
 python3 Tools/modules/rust/build.py libraries/AP_Module/applets/aerobatics/main.rs "$W/airshow.apmod" \
     --target x86_64-unknown-linux-gnu --stack-size 16384 --heap-size 28672 > /tmp/watch-module.log
-cp "$W/airshow.apmod" "$W/rust/airshow.apmod"
+cp "$W/airshow.apmod" "$W/modules/airshow.apmod"
 cp libraries/AP_Module/applets/aerobatics/AirShow.txt "$W/scripts/trick72.txt"
 cat > "$W/watch.parm" << PARM
 MOD_ENABLE 1
