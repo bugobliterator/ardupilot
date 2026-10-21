@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+import bindings
+import contracts
 import generate
 import m4_binding
 from bindings import ROOT
@@ -190,3 +192,86 @@ def test_full_generation_emits_the_m4_files():
     header = outputs['BindingM4Policy_generated.h']
     assert header.count('M4Lock::Scheduler,') > 0 and header.count('M4Lock::Ahrs,') > 0
     assert header.count('    M4Lock::') == header.count('    { M4Lane::')
+
+
+# wire bytes of a contract type, read from the contract alone: the generator's M4_BINDING_WIRE must
+# agree for every adapter it claims to know
+CONTRACT_SCALARS = {'bool-u8': 1, 'u8': 1, 'i8': 1, 'u16-le': 2, 'i16-le': 2, 'u32-le': 4, 'i32-le': 4,
+                    'f32-le': 4, 'u64-le': 8, 'void': 0}
+OUTPUT_DIRECTIONS = ('out', 'optional-out', 'inout')
+
+
+def contract_size(kind):
+    if isinstance(kind, dict):
+        if 'fields' in kind:
+            return sum(contract_size(field) for _, field in kind['fields'])
+        if 'wire' in kind:
+            return contract_size(kind['wire'])
+        if kind.get('name') == 'FirmwareString':
+            return contract_size(kind['length']) + contract_size(kind['data'])
+        return None
+    head = kind.split(',')[0]
+    if head in CONTRACT_SCALARS:
+        return CONTRACT_SCALARS[head]
+    if head == 'Parameter':
+        return 8
+    if '-zero-pad' in head:
+        return int(head.rsplit('-zero-pad', 1)[1])
+    return None
+
+
+def contract_wire(contract):
+    inputs = outputs = 0
+    for argument in contract['arguments']:
+        size = contract_size(argument['type']) if argument['type'] != 'literal' else 0
+        if argument['direction'] in OUTPUT_DIRECTIONS:
+            outputs += size
+        if argument['direction'] not in ('out', 'optional-out'):
+            inputs += size
+    return inputs, contract_size(contract['result']) + outputs
+
+
+def full_wires():
+    spec = bindings.specification()
+    entries = contracts.describe(spec)
+    return spec, entries, m4_binding.wire_sizes(spec, entries)
+
+
+def test_wire_table_matches_the_contracts():
+    spec, entries, wires = full_wires()
+    known = {method['id'] for method in spec['methods']} | {method['id'] for method in spec['parameter']['methods']}
+    known.add(spec['parameter']['layout']['id'])
+    checked = 0
+    for entry in entries:
+        if entry['id'] in known:
+            assert wires[entry['id']] == contract_wire(entry['contract']), entry['contract']['name']
+            checked += 1
+    assert checked > 350
+    names = {entry['contract']['name']: entry['id'] for entry in entries}
+    assert wires[names['Parameter.get']] == (8, 5) and wires[names['Parameter.init']] == (25, 1)
+    assert wires[names['Parameter.__layout']] == (0, 8)
+    assert wires[names['ahrs.get_origin']][1] == 18          # presence + the 17 B Location
+    for name, size in m4_binding.local_sizes(spec).items():
+        assert wires[name] == size
+
+
+def test_hand_written_adapters_are_known_by_their_scalar_result_only():
+    spec, entries, wires = full_wires()
+    names = {entry['contract']['name']: entry['id'] for entry in entries}
+    unknown = m4_binding.WIRE_UNKNOWN
+    assert wires[names['logger.write']] == (unknown, 0)
+    assert wires[names['SerialPort.available']] == (unknown, 4)
+    assert wires[names['gps.time_epoch_usec']] == (unknown, 8)
+    # a structured or optional result is not derived
+    for name in ('file.read_at', 'filesystem.dir_entry', 'mission.receive', 'mavlink.send_chan', 'efi.get_backend'):
+        assert wires[names[name]] == (unknown, unknown), name
+    assert all(output <= 2048 for _, output in wires.values() if output != unknown)
+
+
+def test_header_lists_every_wire():
+    wires = {1: (4, 13), 9: (m4_binding.WIRE_UNKNOWN, 0)}
+    header = m4_binding.policy_header(m4_binding.policy_table(ENTRIES, POLICY, LOCAL), 0, wires=wires)
+    assert 'static const uint16_t M4_WIRE_UNKNOWN = 0xFFFFU;' in header
+    assert '    { 4U, 13U }, // 1\n' in header and '    { 65535U, 0U }, // 9\n' in header
+    assert '    { 65535U, 65535U }, // 7\n' in header       # an id gap
+    assert header.count('U }, // ') == 13

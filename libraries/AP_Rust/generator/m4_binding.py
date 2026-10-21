@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import math_binding
+import singleton_binding
 
 POLICY_PATH = Path(__file__).with_name('m4_policy.json')
 # libraries/AP_RustM4/AP_RustM4_Quota.h QuotaClass
@@ -29,6 +30,14 @@ CALL_POSTED = 1
 CALL_ROLE_SHIFT = 1
 CALL_WIRE_SHIFT = 3
 CALL_WIRE_MAX = 0xFF >> CALL_WIRE_SHIFT
+# M4_BINDING_WIRE entry of a size the generator does not know (a hand-written adapter's wire)
+WIRE_UNKNOWN = 0xFFFF
+# exact wire bytes of a hand-written adapter's scalar result (the first token of its contract type)
+SCALAR_WIRES = {'void': 0, 'bool-u8': 1, 'u8': 1, 'i8': 1, 'u16-le': 2, 'i16-le': 2, 'u32-le': 4, 'i32-le': 4,
+                'f32-le': 4, 'u64-le': 8}
+# argument directions of a hand-written contract that only carry input
+INPUT_DIRECTIONS = {'in', 'host-constant', 'borrowed-receiver', 'borrowed-receiver,nonzero', 'module-owned-receiver',
+                    'revalidated-backend-index', 'complete-owned-copy', 'copied', 'target-node'}
 
 
 def read_policy():
@@ -45,6 +54,51 @@ def local_sizes(contract):
                                         for fields in (inputs, outputs))
     for method in contract['libm']:
         sizes[method['id']] = (method['arity'] * 4, 4)
+    return sizes
+
+
+def parameter_sizes(parameter):
+    '''{id: (input bytes, output bytes)} of the Parameter adapters: the u64 receiver token and the inputs,
+    the bool result and the optional outputs'''
+    def size(value):
+        return singleton_binding.TYPES[value['kind']][1]
+    sizes = {}
+    for method in parameter['methods']:
+        arguments = method['arguments']
+        sizes[method['id']] = (8 + sum(size(a) for a in arguments if not a['nullable']),
+                               size(method['result']) + sum(size(a) for a in arguments if a['nullable']))
+    sizes[parameter['layout']['id']] = (0, 8)
+    return sizes
+
+
+def hand_written_output(contract):
+    '''output bytes of a hand-written adapter whose contract is a plain scalar result with no output
+    arguments, else None'''
+    result = contract['result']
+    if not isinstance(result, str) or result.split(',')[0] not in SCALAR_WIRES:
+        return None
+    for argument in contract['arguments']:
+        if not isinstance(argument, dict) or argument.get('direction', 'in') not in INPUT_DIRECTIONS:
+            return None
+    return SCALAR_WIRES[result.split(',')[0]]
+
+
+def wire_sizes(spec, entries):
+    '''{id: (input bytes, output bytes)} of each M7 adapter: the exact input it reads and the most output
+    it writes; WIRE_UNKNOWN where the generator does not know them'''
+    sizes = {method['id']: singleton_binding.sizes(method) for method in spec['methods']}
+    sizes.update(parameter_sizes(spec['parameter']))
+    sizes.update(local_sizes(spec))
+    if any(size >= WIRE_UNKNOWN for wire in sizes.values() for size in wire):
+        raise ValueError('an adapter wire does not fit M4_BINDING_WIRE')
+    outputs = {}
+    for entry in entries:
+        if entry['id'] not in sizes:
+            outputs.setdefault(entry['id'], set()).add(hand_written_output(entry['contract']))
+    for binding_id, found in outputs.items():
+        # every public name of an id must agree
+        output = found.pop() if len(found) == 1 else None
+        sizes[binding_id] = (WIRE_UNKNOWN, WIRE_UNKNOWN if output is None else output)
     return sizes
 
 
@@ -141,8 +195,9 @@ def catalogue_hash(entries, local, table=None):
     return state
 
 
-def policy_header(table, local_hash, locks=None, policy=None):
+def policy_header(table, local_hash, locks=None, policy=None, wires=None):
     locks = locks if locks is not None else {}
+    wires = wires if wires is not None else {}
     lines = ['#pragma once', '#include <stdint.h>', '', 'namespace AP_Rust', '{',
              'enum class M4Lane : uint8_t { Unknown = 0, Fast = 1, Slow = 2, Local = 3 };',
              'enum class M4Lock : uint8_t { ' + ', '.join(f'{name} = {value}' for name, value in LOCKS) + ' };',
@@ -157,6 +212,13 @@ def policy_header(table, local_hash, locks=None, policy=None):
     lines += ['};', '// the lock the generated adapter of each id takes',
               'static const M4Lock M4_BINDING_LOCK[M4_BINDING_COUNT] = {']
     lines += [f'    M4Lock::{locks.get(binding_id, "None")}, // {binding_id}' for binding_id in sorted(table)]
+    lines += ['};', '// [input, output] bytes of the M7 adapter of each id: the input it reads and the most output it',
+              '// writes; M4_WIRE_UNKNOWN where the generator does not know a hand-written adapter\'s wire',
+              f'static const uint16_t M4_WIRE_UNKNOWN = 0x{WIRE_UNKNOWN:04X}U;',
+              'static const uint16_t M4_BINDING_WIRE[M4_BINDING_COUNT][2] = {']
+    lines += [f'    {{ {ni}U, {no}U }}, // {binding_id}'
+              for binding_id in sorted(table)
+              for ni, no in [wires.get(binding_id, (WIRE_UNKNOWN, WIRE_UNKNOWN))]]
     lines += ['};', f'static const uint32_t M4_LOCAL_CATALOGUE_HASH = 0x{local_hash:08X}U;']
     lines += call_policy_declarations(*policy) if policy is not None else []
     lines += ['}', '']
@@ -249,6 +311,6 @@ def emit(contract, entries):
     table = policy_table(entries, read_policy(), local)
     locks = lock_table(contract['methods'], len(table))
     return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local, table), locks,
-                                                         call_policy(table, sizes)),
+                                                         call_policy(table, sizes), wire_sizes(contract, entries)),
             'BindingLocal_generated.cpp': local_dispatch(contract['libm'], sizes, entries) + '\n' +
             policy_functions(table, sizes)}
