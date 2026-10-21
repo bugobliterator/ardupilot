@@ -210,9 +210,11 @@ void M4Service::housekeeping_step()
     }
     if ((state == ModuleLink::Posted || state == ModuleLink::Sent) && now_ms - _call_posted_ms > CALL_TIMEOUT_MS) {
         if (state == ModuleLink::Sent) {
-            count_lost();   // its reply, if it still comes, is dropped by seq
+            count_lost(_call_key);   // its reply, if it still comes, is dropped by seq
         } else if (posted_binding_on_link()) {
             _post_drops++;   // the module got OK; its frame never reached the ring
+        } else {
+            count_lost(link_call_key());   // it never reached the ring: no reply
         }
         complete(-ETIMEDOUT);
     } else if (_ready && state == ModuleLink::Posted) {
@@ -445,7 +447,7 @@ void M4Service::handle_ready(const MsgHeader &header)
 {
     // the M7 repeats Ready with its session in seq; a new session cannot answer this one's call
     if (_have_session && header.seq != _session && _link->state.load() == ModuleLink::Sent) {
-        count_lost();
+        count_lost(_call_key);
         complete(-ECONNRESET);
     }
     if (!_have_session || header.seq != _session) {
@@ -592,16 +594,36 @@ void M4Service::fold_round_trip()
     }
 }
 
-void M4Service::count_lost()
+void M4Service::count_lost(uint16_t key)
 {
     fold_round_trip();
     _lost++;
-    MethodStats *stats = stats_for(_call_key);
+    MethodStats *stats = stats_for(key);
     if (stats != nullptr) {
         stats->lost++;
     } else {
         _untimed.lost++;
     }
+}
+
+// the Stats key of the call on the link, as forward_call() keys it; KEY_OTHER if it does not parse
+uint16_t M4Service::link_call_key() const
+{
+    MsgHeader header;
+    if (_link->request_len > MAX_FRAME || !parse_header(_link->request, _link->request_len, header)) {
+        return KEY_OTHER;
+    }
+    if (MsgType(header.type) == MsgType::BindingCall && _link->request_len >= sizeof(BindingCallHeader)) {
+        BindingCallHeader call;
+        memcpy(&call, _link->request, sizeof(call));
+        return call.id < KEY_OTHER ? uint16_t(call.id) : KEY_OTHER;
+    }
+    if (MsgType(header.type) == MsgType::SystemCall && _link->request_len >= sizeof(SystemCallHeader)) {
+        SystemCallHeader call;
+        memcpy(&call, _link->request, sizeof(call));
+        return uint16_t(SYSTEM_KEY | call.method);
+    }
+    return KEY_OTHER;
 }
 
 bool M4Service::posted_binding_on_link() const
