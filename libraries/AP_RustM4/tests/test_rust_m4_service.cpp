@@ -772,6 +772,8 @@ TEST(RustM4Service, PostedFrameDroppedAfterTheTimeoutCountsPostDrop)
     step_both();
     EXPECT_EQ(call_link.state.load(), ModuleLink::Done);
     EXPECT_EQ(service.post_drops(), 1U);
+}
+
 TEST(RustM4Service, ProbeIsOnOnlyWhenTheConfigAsksForIt)
 {
     M4CallProbe probe {};

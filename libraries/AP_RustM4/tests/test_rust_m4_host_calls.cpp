@@ -352,6 +352,8 @@ TEST(RustM4HostCalls, StopComesBeforePosting)
     f.m.stop.store(true);
     EXPECT_EQ(host_binding_call(f.m, f.args(30, f.rw, 16, nullptr, 0), f.platform), STATUS_STOPPED);
     EXPECT_EQ(f.m7.notifies, 0U);
+}
+
 // the probe's counter: each read moves it on by 10
 static uint32_t probe_now;
 static uint32_t probe_clock()

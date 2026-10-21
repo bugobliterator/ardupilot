@@ -1002,6 +1002,8 @@ TEST(RustM4ServeWait, PostedBatchStopsOnTime)
     EXPECT_EQ(run_batch(ring, MAX_SERVE_US + 1), 0U);
     EXPECT_EQ(ring.served, 0U);
     EXPECT_EQ(ring.next, 0U);
+}
+
 // doorbell wakes 100 us apart for 5 ms: the housekeeping runs once a millisecond, not after each
 // wake (fails without the period)
 TEST(RustM4ServeWait, HousekeepingRunsWithinOneMillisecond)
