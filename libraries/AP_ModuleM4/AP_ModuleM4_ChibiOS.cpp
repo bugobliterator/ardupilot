@@ -143,15 +143,13 @@ uint32_t AP_ModuleM4::platform_wait_us() const
 }
 
 #if CH_DBG_STATISTICS != TRUE
-#error "the M4 host duty cap charges ChibiOS thread statistics: define HAL_ENABLE_THREAD_STATISTICS"
+#error "M4ST.CPU reads ChibiOS thread statistics: define HAL_ENABLE_THREAD_STATISTICS"
 #endif
 
 bool AP_ModuleM4::platform_thread_cpu(uint32_t &cpu)
 {
     // a reset of this thread's statistics sets best to all ones: chTMObjectInit() from a thread
-    // reading @SYS/threads.txt, or Util::thread_info() on this thread. The M4 cannot reach that
-    // file (module_path_allowed()); an interval with a reset is charged the CPU since it plus
-    // RESET_ALLOWANCE_US (interval_cpu_us())
+    // reading @SYS/threads.txt, or Util::thread_info() on this thread
     time_measurement_t &stats = chThdGetSelfX()->stats;
     volatile rtcnt_t &last = stats.last;
     // the low word of cumulative (little endian), one 32-bit load

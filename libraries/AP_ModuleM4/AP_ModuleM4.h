@@ -95,11 +95,10 @@ private:
     void host_thread();
     void worker_thread();
     void serve_on_worker(uint16_t len);
-    bool refuse_slow_binding(const uint8_t *buf, uint16_t len);
     void serve_binding(const uint8_t *buf, uint16_t len);
     // the AP_Param change observer: any thread, lock-free (AP_ModuleM4_Server::mark_changed())
     static void parameter_changed(const AP_Param *param);
-    // the dirty slots' values on the slow worker, charged to the duty cap like a worker frame
+    // the dirty slots' values on the slow worker
     void mirror_on_worker();
     void send_mirror_changes();
     // a probed call's M7 stages are done (its reply sent): records the previous call its trailer
@@ -140,13 +139,10 @@ private:
                                int32_t result, uint16_t length);
     // true when sent
     bool send_frame(const uint8_t *buf, uint16_t len);
-    void pause_for_duty_cap(uint32_t pause_us, bool listening);
     ServeResult serve();
     // the host's work besides frames, at most once per HOUSEKEEPING_PERIOD_US after doorbell
     // passes (ModuleM4::housekeeping_due())
     void housekeeping();
-    // charge the duty cap the host's CPU since its previous reading, wall_us the time of this one
-    void charge_cpu(bool pass_end, uint32_t wall_us);
     void handle_message(const uint8_t *buf, uint16_t len);
     void send_ready(uint32_t now_ms);
     void log_rpc_stats(const uint8_t *buf);
@@ -186,8 +182,8 @@ private:
     void platform_stop();
     uint32_t platform_wait_us() const;
     // CPU time this thread has used, in CPU_TICKS_PER_US ticks modulo 2^32; true when the clock
-    // was reset (statistics cleared) since the previous call, so the difference to that reading is
-    // not the CPU used
+    // was reset (statistics cleared) since the previous call, so the reading is the CPU since the
+    // reset
     bool platform_thread_cpu(uint32_t &cpu);
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
     static const uint32_t CPU_TICKS_PER_US = HAL_EXPECTED_SYSCLOCK / 1000000U;   // DWT cycles
@@ -260,7 +256,6 @@ private:
     // the call latency probe (MOD_M4_OPTS bit 2): the stamps of this pass and of the frame being
     // served, on the probe's counter
     bool _probing;
-    bool _pass_cap_paused;            // this pass followed a duty-cap pause
     uint32_t _pass_us;
     uint8_t _pass_frames;
     volatile uint32_t _doorbell_probe_us;   // the doorbell interrupt, on the probe's counter
@@ -277,7 +272,7 @@ private:
     volatile uint32_t _doorbell_isr_cycles;   // the doorbell interrupt's entry
     uint32_t _pass_cycles[AP_Module::M7_CYCLE_PARTS];
     uint32_t _pass_cycles_taken;
-    uint32_t _pass_woken_cycles;              // after the wake (CapWait's start)
+    uint32_t _pass_woken_cycles;              // after the wake (CapWait's start: the pass stamps)
     uint32_t _frame_cycles[AP_Module::M7_CYCLE_PARTS];
     uint32_t _frame_cycles_taken;
     // PassEnd: from the last probed frame's record to the end of serve(), for that frame's id
@@ -307,7 +302,7 @@ private:
     uint32_t _mirror_frames_sent;
     uint32_t _mirror_entries_sent;
     uint32_t _mirror_failed_sends;
-    // posted logger.write frames: run with a status other than OK, and refused unrun (quota, duty cap)
+    // posted logger.write frames: run with a status other than OK, and refused unrun (quota)
     uint32_t _post_errors;
     uint32_t _post_drops;
     bool _post_error_reported;        // the GCS text of a failed one, once per module load
@@ -324,19 +319,10 @@ private:
     uint16_t _protocol_errors;
     uint16_t _dropped;
     uint32_t _host_busy_us;
-    uint16_t _duty_cap_hits;           // pauses the duty cap forced
-    uint32_t _host_cpu_us;             // host and slow worker CPU time, what the duty cap charges
+    uint32_t _host_cpu_reading;        // the host thread's CPU clock at the window's start
     uint16_t _long_passes;             // passes over LONG_PASS_US of wall time
-    uint32_t _pass_cpu_max_us;         // the largest CPU time of one pass
     uint32_t _slow_requests;           // frames the slow worker served
     uint32_t _slow_max_us;             // the longest of them, wall time
-    uint32_t _slow_cpu_max_us;         // the most CPU one of them used
-    uint32_t _slow_refused;            // binding calls for the worker refused unrun: duty-cap debt too deep
-    ModuleM4::RefusalNotice _refusal_notice;   // GCS texts about those refusals
-    // the host's share of the M7: it runs above the I/O threads, a flooding M4 must not starve them
-    ModuleM4::ServeDutyCap _duty_cap;
-    // ChibiOS charges all the host's CPU (its waits sleep); SITL only its passes (its waits spin)
-    ModuleM4::HostCpuCharge _cpu_charge { CONFIG_HAL_BOARD != HAL_BOARD_SITL, CPU_TICKS_PER_US };
 
     // the slow worker, below the I/O threads, serves the frames the fast lane does not
     // (AP_ModuleM4_Server::frame_on_fast_lane()): the host hands it one frame (_rx_frame) and waits
@@ -348,10 +334,6 @@ private:
     uint16_t _worker_len;             // the frame's length for WorkerJob::Frame
     // after a posted batch: the length of the first other frame, left in _rx_frame for the host
     uint16_t _worker_handback_len;
-    // the worker's CPU per frame (pass only, as its waits are not the host's), read by the host
-    // after _worker_done
-    ModuleM4::HostCpuCharge _worker_cpu_charge { false, CPU_TICKS_PER_US };
-    uint32_t _worker_used_us;
 
     struct {
         uint32_t count;           // calls timed since the last summary
