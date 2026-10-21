@@ -293,6 +293,23 @@ TEST(RustCallLatency, SubstageTotalsMeanAndMax)
     EXPECT_EQ(totals.mean_us(2), 0);
 }
 
+TEST(RustCallLatency, M4PreCycleTotalsMeanAndMax)
+{
+    M4PreCycleTotals totals {};
+    EXPECT_EQ(totals.mean(0), 0U);
+    const uint16_t first[M4_PRE_PARTS] = { 100, 400, 50, 0xFFFF };
+    const uint16_t second[M4_PRE_PARTS] = { 101, 200, 50, 1 };
+    totals.add(first);
+    totals.add(second);
+    EXPECT_EQ(totals.count, 2U);
+    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::SvcEntry)), 101U);   // 100.5 rounds up
+    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::Checks)), 300U);
+    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::BeginProbe)), 50U);
+    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::Pack)), 32768U);
+    EXPECT_EQ(totals.max[uint8_t(M4PrePart::Checks)], 400);
+    EXPECT_EQ(totals.max[uint8_t(M4PrePart::Pack)], 0xFFFF);
+}
+
 TEST(RustCallLatency, CompletionCarriesTheM4SubstageStamps)
 {
     PendingCall pending;

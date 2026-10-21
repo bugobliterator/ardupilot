@@ -47,6 +47,8 @@ public:
     void add_overhead(uint32_t cycles);
     // the sub-stages of a recorded call (its stamps), summed per binding for the summary
     void record_substages(uint32_t id, const CallStamps &stamps);
+    // the M4's cycles before the frame of a probed call of id was packed, as its trailer reports it
+    void record_m4_pre_cycles(uint32_t id, const uint16_t (&cycles)[M4_PRE_PARTS]);
     // the M4's cost of one stamp, as its trailers report it
     void set_m4_stamp_cycles(uint32_t cycles) { _m4_stamp_cycles = cycles; }
     // the M4's memset cost in hundredths of a cycle per byte (64 B on its stack, 4 KB of its link
@@ -83,6 +85,7 @@ private:
     int32_t *_scratch;
     IdTotals _ids[SUMMARY_IDS];
     SubstageTotals *_substages;    // SUMMARY_IDS of them, by id slot
+    M4PreCycleTotals *_m4_pre;     // SUMMARY_IDS of them, by id slot
     uint8_t _id_count;
     uint32_t _logged;
     uint32_t _log_tokens_milli;
