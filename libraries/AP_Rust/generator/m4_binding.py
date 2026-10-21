@@ -1,7 +1,8 @@
 # AP_FLAKE8_CLEAN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""M4 build of native modules: which lane serves each BindingId on the M7, its quota class, and the
-local set (libm and the AP_Math value adapters) the M4 answers itself."""
+"""M4 build of native modules: which lane serves each BindingId on the M7, its quota class, the lock
+its generated adapter takes, and the local set (libm and the AP_Math value adapters) the M4 answers
+itself."""
 
 import json
 from pathlib import Path
@@ -66,6 +67,29 @@ def policy_table(entries, policy, local):
     return table
 
 
+# the lock a generated singleton adapter takes (singleton_binding.py BindingLock), for the call
+# latency probe: the scheduler's and AP_AHRS's semaphores are named, any other is Other
+LOCKS = [('None', 0), ('Scheduler', 1), ('Ahrs', 2), ('Other', 3)]
+
+
+def lock_table(methods, count):
+    '''{id: lock name} for every id below count; hand-written adapters are None'''
+    table = {binding_id: 'None' for binding_id in range(count)}
+    for method in methods:
+        lock = method.get('lock')
+        if lock is None:
+            continue
+        if lock == 'scheduler-semaphore':
+            name = 'Scheduler'
+        elif lock == 'semaphore' and method['owner'] == 'AP_AHRS':
+            name = 'Ahrs'
+        else:
+            name = 'Other'
+        if method['id'] in table:
+            table[method['id']] = name
+    return table
+
+
 def catalogue_hash(entries, local):
     state = FNV_OFFSET
     for binding_id, binding_hash in sorted({(e['id'], e['hash']) for e in entries if e['id'] in local}):
@@ -74,13 +98,18 @@ def catalogue_hash(entries, local):
     return state
 
 
-def policy_header(table, local_hash):
+def policy_header(table, local_hash, locks=None):
+    locks = locks if locks is not None else {}
     lines = ['#pragma once', '#include <stdint.h>', '', 'namespace AP_Rust', '{',
              'enum class M4Lane : uint8_t { Unknown = 0, Fast = 1, Slow = 2, Local = 3 };',
+             'enum class M4Lock : uint8_t { ' + ', '.join(f'{name} = {value}' for name, value in LOCKS) + ' };',
              'struct M4BindingPolicy {', '    M4Lane lane;', '    uint8_t quota;', '};',
              f'static const uint32_t M4_BINDING_COUNT = {len(table)}U;',
              'static const M4BindingPolicy M4_BINDING_POLICY[M4_BINDING_COUNT] = {']
     lines += [f'    {{ M4Lane::{lane}, {quota} }}, // {binding_id}' for binding_id, (lane, quota) in sorted(table.items())]
+    lines += ['};', '// the lock the generated adapter of each id takes',
+              'static const M4Lock M4_BINDING_LOCK[M4_BINDING_COUNT] = {']
+    lines += [f'    M4Lock::{locks.get(binding_id, "None")}, // {binding_id}' for binding_id in sorted(table)]
     lines += ['};', f'static const uint32_t M4_LOCAL_CATALOGUE_HASH = 0x{local_hash:08X}U;', '}', '']
     return '\n'.join(lines)
 
@@ -126,5 +155,6 @@ def emit(contract, entries):
     sizes = local_sizes(contract)
     local = set(sizes)
     table = policy_table(entries, read_policy(), local)
-    return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local)),
+    locks = lock_table(contract['methods'], len(table))
+    return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local), locks),
             'BindingLocal_generated.cpp': local_dispatch(contract['libm'], sizes, entries)}

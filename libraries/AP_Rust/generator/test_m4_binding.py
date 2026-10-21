@@ -88,8 +88,23 @@ def test_local_import_table_lists_hashes_of_local_ids():
     assert 'M4_LOCAL_IMPORT_COUNT = 2U' in source
 
 
+def test_lock_table_names_the_probed_locks():
+    methods = [dict(id=1, owner='AP_AHRS', lock='semaphore'), dict(id=2, owner='AP_Vehicle', lock='scheduler-semaphore'),
+               dict(id=3, owner='AP_Camera', lock='semaphore'), dict(id=4, owner='AP_OSD_Backend', lock='semaphore-pointer'),
+               dict(id=5, owner='AP_Vehicle', lock=None), dict(id=40, owner='AP_AHRS', lock='semaphore')]
+    locks = m4_binding.lock_table(methods, 9)
+    assert locks == {0: 'None', 1: 'Ahrs', 2: 'Scheduler', 3: 'Other', 4: 'Other', 5: 'None', 6: 'None', 7: 'None',
+                     8: 'None'}
+    header = m4_binding.policy_header(m4_binding.policy_table(ENTRIES, POLICY, LOCAL), 0, locks)
+    assert 'enum class M4Lock : uint8_t { None = 0, Scheduler = 1, Ahrs = 2, Other = 3 };' in header
+    assert 'M4Lock::Ahrs, // 1' in header and 'M4Lock::Scheduler, // 2' in header and 'M4Lock::None, // 8' in header
+
+
 def test_full_generation_emits_the_m4_files():
     outputs = generate.generate(json.loads((ROOT / 'generator/host_api.json').read_text()))
     local_rows = outputs['BindingM4Policy_generated.h'].count('M4Lane::Local,')
     assert local_rows > 0
     assert outputs['BindingLocal_generated.cpp'].count('return AP_RUST_STATUS_INVALID;') == local_rows + 1
+    header = outputs['BindingM4Policy_generated.h']
+    assert header.count('M4Lock::Scheduler,') > 0 and header.count('M4Lock::Ahrs,') > 0
+    assert header.count('    M4Lock::') == header.count('    { M4Lane::')
