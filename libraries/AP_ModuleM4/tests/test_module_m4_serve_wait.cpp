@@ -476,15 +476,16 @@ TEST(ModuleM4ServeWait, PassRunsRightAfterAPause)
     EXPECT_NE(cap.wait_us(now), 0U);
 }
 
-// the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading where the charge
-// asks for one at a pass start, a pass, a reading, overhead, sleep. Readings come from
-// FakeThreadStats; returns the CPU charged and the CPU used. reset_kind: a reset in the pass (1)
-// or in the sleep (2), 0: none. marks_best: Util::thread_info's fix
+// the host as the M7 runs it: sleep, wake (switch-in plus overhead), a reading, a pass, a
+// reading, overhead, sleep. Readings come from FakeThreadStats; returns the CPU charged and the
+// CPU used. reset_kind: a reset in the pass (1) or in the sleep (2), 0: none. marks_best:
+// Util::thread_info's fix
 struct HostModel {
     FakeThreadStats stats;
     HostCpuCharge charge { true };
     uint64_t charged = 0;
     uint64_t used = 0;
+    uint32_t pass_end_charge = 0;   // the last pass-end reading's charge (M4HP's max pass)
     uint32_t now = 1000;
 
     void iteration(uint32_t wake_overhead, uint32_t pass, uint32_t sleep_overhead, uint32_t sleep,
@@ -493,18 +494,16 @@ struct HostModel {
         stats.switch_in(now);
         now += wake_overhead;
         bool reset;
-        uint64_t cpu;
-        if (charge.reads_at_pass_start()) {
-            cpu = stats.read(now, reset);
-            charged += charge.pass_start(cpu, reset, now);
-        }
+        uint64_t cpu = stats.read(now, reset);
+        charged += charge.pass_start(cpu, reset, now);
         now += pass / 2;
         if (reset_kind == 1) {
             stats.reset_from_this_thread(marks_best);   // the pass generated @SYS/threads.txt itself
         }
         now += pass - pass / 2;
         cpu = stats.read(now, reset);
-        charged += charge.pass_end(cpu, reset, now);
+        pass_end_charge = charge.pass_end(cpu, reset, now);
+        charged += pass_end_charge;
         now += sleep_overhead;
         stats.switch_out(now);
         used += wake_overhead + pass + sleep_overhead;
@@ -521,18 +520,19 @@ TEST(ModuleM4ServeWait, ChibiOSChargesAllHostCpu)
 {
     HostModel host;
     host.iteration(5, 20, 4, 500, 0);   // the first reading only starts the clock
-    const uint64_t charged_before = host.charged;
     const uint64_t used_before = host.used;
     for (int i = 0; i < 100; i++) {
         host.iteration(5, 20, 4, 500, 0);
     }
-    EXPECT_EQ(host.charged - charged_before, host.used - used_before);
+    // the first iteration charged its pass only (20 us): its reading started the clock
+    EXPECT_EQ(host.charged - 20U, host.used - used_before);
     EXPECT_EQ(host.charge.take_resets(), 0U);
 }
 
-// ChibiOS: a pass a doorbell starts reads the thread's statistics once, at its end; that reading
-// charges the wait's wake and switch with the pass (fails if the host reads at the pass start too)
-TEST(ModuleM4ServeWait, DoorbellPassChargesOncePerPass)
+// ChibiOS: a pass reads the thread's statistics at its start, after the serve decision, and at its
+// end. The start reading charges the wait's wake and switch; the end reading, and so M4HP's max
+// pass, holds the pass only (fails if the host reads only at the pass end)
+TEST(ModuleM4ServeWait, DoorbellPassReadsAtStartAndEnd)
 {
     HostModel host;
     host.iteration(5, 20, 4, 500, 0);
@@ -540,11 +540,10 @@ TEST(ModuleM4ServeWait, DoorbellPassChargesOncePerPass)
     const uint64_t charged_before = host.charged;
     for (int i = 0; i < 10; i++) {
         host.iteration(5, 20, 4, 500, 0);
+        EXPECT_EQ(host.pass_end_charge, 20U);
     }
-    EXPECT_EQ(host.stats.reads - reads_before, 10U);
+    EXPECT_EQ(host.stats.reads - reads_before, 20U);
     EXPECT_EQ(host.charged - charged_before, 10U * (4U + 5U + 20U));
-    // SITL, whose waits spin, still reads at both ends so that only the pass is charged
-    EXPECT_TRUE(HostCpuCharge { false }.reads_at_pass_start());
 }
 
 // SITL charges passes only: the overhead around them is not charged
