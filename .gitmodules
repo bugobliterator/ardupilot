@@ -42,3 +42,6 @@
 [submodule "modules/littlefs"]
 	path = modules/littlefs
 	url = https://github.com/ArduPilot/littlefs.git
+[submodule "modules/CubeFramework"]
+	path = modules/CubeFramework
+	url = git@github.com:CubePilot/CubeFramework.git
