@@ -109,6 +109,13 @@ private:
         uint32_t wake_us;
         uint16_t isr_to_thread_cycles;
     };
+    // a reply's round trip, kept until fold_round_trip() adds it to its Stats row
+    struct RoundTrip {
+        bool pending;
+        uint16_t key;
+        uint32_t cycles;
+        uint32_t m7_us;
+    };
     struct MethodStats {
         bool used;
         bool posted;   // in the padding after used
@@ -144,6 +151,9 @@ private:
     void handle_config_reply(const uint8_t *buf, uint16_t len);
     void count_lost();
     void record_posted(uint16_t key, uint32_t post_us);
+    // the last reply's round trip into its Stats row: before any other Stats change, and after the
+    // next call is on the ring, off the reply path
+    void fold_round_trip();
     bool posted_binding_on_link() const;
     // the M7 announced it sleeps: a send() now rings its doorbell (the probe's FwdBell)
     bool peer_asleep() const;
@@ -171,6 +181,7 @@ private:
     M4Platform _platform;
     MethodStats _stats[STATS_SLOTS];
     StatsRow _untimed;          // calls of this window that found no free slot (the m4:other share)
+    RoundTrip _round_trip;
     BindingName _names[BINDING_NAMES];
     uint8_t _name_count;
     uint32_t _seq;              // one counter per session: calls and Stats rows
