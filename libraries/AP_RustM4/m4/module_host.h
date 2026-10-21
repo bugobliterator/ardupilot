@@ -63,6 +63,8 @@ public:
     // one step of the load; waits for nothing
     void step();
     Step state() const { return _step; }
+    // a session's load and start, step by step: each step waits for the previous one's call
+    bool loading() const { return _step < Step::Running; }
     // the reason of a Failed load, as the M7 prints it after "Rust: "
     const char *failure() const { return _failure; }
     ModuleContext &module() { return _module; }

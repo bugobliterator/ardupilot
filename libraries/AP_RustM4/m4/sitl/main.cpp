@@ -23,6 +23,7 @@
 #include <CubePilotFW/pal/Posix.h>
 #include <CubePilotFW/pal/PosixChannel.h>
 #include <AP_RustM4_Layout.h>
+#include <AP_RustM4_ServeWait.h>
 
 #include "../m4_service.h"
 #include "../module_host.h"
@@ -288,16 +289,26 @@ int main(int argc, char **argv)
     if (area == nullptr) {
         fprintf(stderr, "rust_m4: no module area below 4 GB\n");
     }
+    uint32_t housekeeping_us = cycles_now();
+    bool slept = true;   // the first pass runs the housekeeping
     while (true) {
         if (getppid() != parent || block->run_permit.load() != 1) {
             _exit(0);   // not exit(): a module thread may still run on the statics
         }
-        service.step();
-        if (area != nullptr) {
+        // as the M4 image: the frames after every wake, the rest after a sleep or once a millisecond
+        service.drain_step();
+        const uint32_t now_us = cycles_now();
+        const bool housekeeping = housekeeping_due(now_us, housekeeping_us, HOUSEKEEPING_PERIOD_US, slept);
+        if (housekeeping) {
+            housekeeping_us = now_us;
+            service.housekeeping_step();
+        }
+        if (area != nullptr && (housekeeping || module_host.loading())) {
             module_host.step();
         }
         // POSIX HSEM has no interrupt: poll with a bounded sleep
-        if (channel.prepareSleep()) {
+        slept = channel.prepareSleep();
+        if (slept) {
             sleep_ms(1);
         }
         channel.wake();
