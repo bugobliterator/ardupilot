@@ -8,7 +8,9 @@
 //!
 //! Profiles: 1-12 are binding (Parameter.get, vehicle.get_mode, ahrs.get_origin, logger.write)
 //! times rate (10/s, 200/s, 1000/s): profile = 1 + 3 * binding + rate index. 13 is the burst.
-//! LATP_PROF 0 runs 1 to 13 in turn.
+//! 14 is vehicle.get_mode every 5013 us, a period that is not a multiple of the 2500 us main loop.
+//! LATP_PROF 0 runs 1 to 13 in turn. Each profile's first call starts at time_us() % 2500 ==
+//! LATP_OFFS % 2500; the achieved phase is in a 'LATPH profile phase' text and the end LATP row (Phs).
 #![no_std]
 #![no_main]
 
@@ -19,6 +21,10 @@ ap_rust_sdk::module!(run);
 const TABLE_KEY: u8 = 77;
 const PROFILE_COUNT: u32 = 13;
 const BURST_PROFILE: u32 = 13;
+const CONTROL_PROFILE: u32 = 14;
+const CONTROL_PERIOD_US: u64 = 5013;
+// the M7 main loop period (SCHED_LOOP_RATE 400) the start phase is taken against
+const LOOP_US: u64 = 2500;
 const RATES: [u32; 3] = [10, 200, 1000];
 const NAMES: [&str; 4] = ["param", "mode", "origin", "log"];
 // the burst: 40 calls a tick at 30 Hz, Parameter.get first as the AirShow's tick does
@@ -89,6 +95,9 @@ impl Probe<'_, '_> {
             }
             return Ok(());
         }
+        if profile == CONTROL_PROFILE {
+            return self.call(1, tally);
+        }
         self.call(((profile - 1) / 3) as usize, tally)
     }
 }
@@ -96,25 +105,38 @@ impl Probe<'_, '_> {
 fn rate_of(profile: u32) -> u32 {
     if profile == BURST_PROFILE {
         BURST_RATE
+    } else if profile == CONTROL_PROFILE {
+        (1_000_000 / CONTROL_PERIOD_US) as u32
     } else {
         RATES[((profile - 1) % 3) as usize]
+    }
+}
+
+fn period_of(profile: u32) -> u64 {
+    if profile == CONTROL_PROFILE {
+        CONTROL_PERIOD_US
+    } else {
+        1_000_000 / u64::from(rate_of(profile))
     }
 }
 
 fn name_of(profile: u32) -> &'static str {
     if profile == BURST_PROFILE {
         "burst40"
+    } else if profile == CONTROL_PROFILE {
+        "mode5013"
     } else {
         NAMES[((profile - 1) / 3) as usize]
     }
 }
 
-// LATP row: profile, phase (0 start, 1 end), and at the end the module's own figures
-fn log_profile(c: &Context<'_>, profile: u32, phase: u8, tally: &Tally) -> Result {
+// LATP row: profile, phase (0 start, 1 end), and at the end the module's own figures and the
+// achieved start phase
+fn log_profile(c: &Context<'_>, profile: u32, phase: u8, tally: &Tally, start_phase: u64) -> Result {
     let mean = if tally.calls != 0 { tally.total_us / u64::from(tally.calls) } else { 0 };
     match c.logger().write(
         "LATP",
-        "Prof,Ph,Rate,N,Busy,Err,Mean,Max",
+        "Prof,Ph,Rate,N,Busy,Err,Mean,Max,Phs",
         None,
         &[
             V::U8(profile as u8),
@@ -125,6 +147,7 @@ fn log_profile(c: &Context<'_>, profile: u32, phase: u8, tally: &Tally) -> Resul
             V::U32(tally.errors),
             V::U32(mean.min(u64::from(u32::MAX)) as u32),
             V::U32(tally.max_us.min(u64::from(u32::MAX)) as u32),
+            V::U16(start_phase as u16),
         ],
     ) {
         Err(Error::Stopped) => Err(Error::Stopped),
@@ -132,12 +155,30 @@ fn log_profile(c: &Context<'_>, profile: u32, phase: u8, tally: &Tally) -> Resul
     }
 }
 
-fn run_profile(probe: &mut Probe<'_, '_>, profile: u32, seconds: u32) -> Result {
+// wait until time_us() % LOOP_US == offset: sleep whole milliseconds, spin the last 1-2 ms
+fn align_phase(c: &Context<'_>, offset: u64) -> Result {
+    loop {
+        let now = c.time_us();
+        let target = now + (offset + LOOP_US - now % LOOP_US) % LOOP_US;
+        if target - now >= 2000 {
+            c.sleep_ms(((target - now) / 1000 - 1) as u32)?;
+            if c.time_us() > target {
+                continue;   // overslept: take the next loop period
+            }
+        }
+        while c.time_us() < target {}
+        return Ok(());
+    }
+}
+
+fn run_profile(probe: &mut Probe<'_, '_>, profile: u32, seconds: u32, offset: u64) -> Result {
     let c = probe.c;
     let mut tally = Tally::default();
-    log_profile(c, profile, 0, &tally)?;
-    let period = 1_000_000 / u64::from(rate_of(profile));
+    log_profile(c, profile, 0, &tally, 0)?;
+    let period = period_of(profile);
+    align_phase(c, offset)?;
     let start = c.time_us();
+    let start_phase = start % LOOP_US;
     let end = start + u64::from(seconds) * 1_000_000;
     let mut next = start;
     loop {
@@ -164,7 +205,7 @@ fn run_profile(probe: &mut Probe<'_, '_>, profile: u32, seconds: u32) -> Result 
             next = c.time_us() + period;   // too far behind: the rate is what the calls allow
         }
     }
-    log_profile(c, profile, 1, &tally)?;
+    log_profile(c, profile, 1, &tally, start_phase)?;
     let elapsed_ms = (c.time_us() - start) / 1000;
     let per_second = if elapsed_ms != 0 { u64::from(tally.calls) * 1000 / elapsed_ms } else { 0 };
     let mean = if tally.calls != 0 { tally.total_us / u64::from(tally.calls) } else { 0 };
@@ -181,7 +222,9 @@ fn run_profile(probe: &mut Probe<'_, '_>, profile: u32, seconds: u32) -> Result 
             mean,
             tally.max_us
         ),
-    )
+    )?;
+    // its own line: STATUSTEXT holds 50 characters, which the LAT line can fill
+    c.gcs().send_text_fmt(MavSeverity::INFO, format_args!("LATPH {} {}", profile, start_phase))
 }
 
 fn setting(c: &Context<'_>, name: &str, default: u32) -> Result<u32> {
@@ -192,14 +235,16 @@ fn setting(c: &Context<'_>, name: &str, default: u32) -> Result<u32> {
 }
 
 fn run(c: &Context<'_>) -> Result {
-    if c.param().add_table(TABLE_KEY, "LATP_", 3)? {
+    if c.param().add_table(TABLE_KEY, "LATP_", 4)? {
         c.param().add_param(TABLE_KEY, 1, "PROF", 0.0)?;
         c.param().add_param(TABLE_KEY, 2, "SECS", 10.0)?;
         c.param().add_param(TABLE_KEY, 3, "WAIT", 5.0)?;
+        c.param().add_param(TABLE_KEY, 4, "OFFS", 0.0)?;
     }
     let profile = setting(c, "LATP_PROF", 0)?;
     let seconds = setting(c, "LATP_SECS", 10)?.max(1);
     let wait = setting(c, "LATP_WAIT", 5)?;
+    let offset = u64::from(setting(c, "LATP_OFFS", 0)?.min(5000)) % LOOP_US;
     let parameter = c.parameter("SCHED_LOOP_RATE")?.ok_or(Error::Unavailable)?;
     let mut probe = Probe { c, parameter, written: 0 };
     c.sleep_ms(wait * 1000)?;
@@ -211,14 +256,14 @@ fn run(c: &Context<'_>) -> Result {
     let clock_cost = (c.time_us() - start) / 100;
     c.gcs().send_text_fmt(
         MavSeverity::INFO,
-        format_args!("LAT start prof {} {}s time_us {}us", profile, seconds, clock_cost),
+        format_args!("LAT start prof {} {}s time_us {}us offs {}", profile, seconds, clock_cost, offset),
     )?;
     let (first, last) = if profile == 0 { (1, PROFILE_COUNT) } else { (profile, profile) };
-    if first < 1 || last > PROFILE_COUNT {
+    if first < 1 || last > CONTROL_PROFILE {
         return Err(Error::Invalid);
     }
     for selected in first..=last {
-        run_profile(&mut probe, selected, seconds)?;
+        run_profile(&mut probe, selected, seconds, offset)?;
     }
     c.gcs().send_text(MavSeverity::INFO, "LAT done")
 }
