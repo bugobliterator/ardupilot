@@ -37,11 +37,30 @@ public:
     static const uint16_t PARAMETER_HANDLE_SLOTS = 256;
     static const uint16_t PARAMETER_HANDLES_MAX = 224;
 
+    // the call latency probe's stamps of one served binding call (AP_Module::CallStamps)
+    struct ServeProbe {
+        uint32_t dispatch;
+        uint32_t lock_wait;
+        uint32_t adapter;
+        uint32_t adapter_done;
+        uint16_t flags;            // AP_Module::CALL_QUOTA, CALL_LOCK_TAKEN, CALL_LOCK_UNKNOWN
+        uint32_t overhead_cycles;  // the probe's own cost in this call
+        // Chk's sub-stage stamps, each with its AP_Module::CALL_STAMP_CHK_* bit in taken
+        uint32_t chk_parsed;
+        uint32_t chk_quota;
+        uint32_t chk_copied;
+        uint32_t taken;
+    };
+    // cycles of one memset of the 4096 B input buffer (the probe's cost line); between frames only
+    uint32_t input_memset_cycles();
+
     // a new M4 session: ends every slot of the previous one, then module_count slots
     // (Discovery's count, at most ModuleM4::MAX_MODULES)
     void reset(uint32_t session, uint8_t module_count);
-    // one BindingCall frame, untrusted; the reply is packed into reply (cap bytes), its length returned
-    uint16_t serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap, uint32_t now_ms);
+    // one BindingCall frame, untrusted; the reply is packed into reply (cap bytes), its length returned.
+    // With probe, the stages are stamped and the adapter's lock is taken first, so its wait is timed
+    uint16_t serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap, uint32_t now_ms,
+                           ServeProbe *probe = nullptr);
     // a module of this session ended: the PR's session cleanups for its slot
     void end_module(uint16_t index);
     // whether the host thread serves this frame itself (ModuleM4::frame_on_fast_lane())

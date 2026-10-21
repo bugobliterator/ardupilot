@@ -11,6 +11,7 @@
 #include <atomic>
 #include <stdint.h>
 #include <string.h>
+#include "AP_ModuleM4_CallProbe.h"
 #include "AP_ModuleM4_CallStatus.h"
 #include "AP_ModuleM4_GranuleHeap.h"
 #include "AP_ModuleM4_ModuleRanges.h"
@@ -47,6 +48,7 @@ struct HostPlatform {
     // a forwarded Parameter.get answered OK: out5 refreshes the module's STALE entry (never inserts)
     void (*mirror_refresh)(void *platform, uint16_t module, uint64_t token, const uint8_t *out5);
     bool (*is_posted)(uint32_t id);
+    M4CallProbe *probe;   // the call latency probe; may be null
 };
 
 struct ModuleContext {
@@ -69,6 +71,19 @@ inline void *module_token(uint16_t index)
 
 inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, const HostPlatform &p)
 {
+    M4CallProbe *probe = probing(p.probe) ? p.probe : nullptr;
+    uint32_t entry_cycles = 0, svc_cycles = 0;
+    if (probe != nullptr) {
+        entry_cycles = probe_cycles_now(*probe);
+        svc_cycles = probe->svc_cycles;
+        probe->svc_cycles = 0;
+    }
+    if (probe != nullptr && !probe->memset_measured) {
+        // once per M4 start, outside any call's stages; the link buffers are free here
+        measure_memset(*probe, m.request, m.reply, MAX_FRAME);
+    }
+    const uint32_t entry_us = probe != nullptr ? probe->clock_us() : 0;
+    const uint32_t checks_cycles = probe != nullptr ? probe_cycles_now(*probe) : 0;
     if (m.stop.load()) {
         return STATUS_STOPPED;
     }
@@ -117,10 +132,34 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     const bool settle = role == MirrorRole::HandleWriter && a.input_size >= sizeof(token) &&
                         p.mirror_pending != nullptr && p.mirror_settle != nullptr;
+    // probed when the trailer fits the frame. Read only after begin_probed_call() set it: not zeroed
+    // on every call
+    CallProbeTrailer trailer;
+    uint32_t begin_cycles = 0, begun_cycles = 0;
+    if (probe != nullptr && a.input_size + sizeof(trailer) <= MAX_CALL_INPUT) {
+        begin_cycles = probe_cycles_now(*probe);
+        trailer = begin_probed_call(*probe, entry_us);
+        begun_cycles = probe_cycles_now(*probe);
+    } else {
+        probe = nullptr;
+    }
     const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, 0, a.id, a.input,
-                                              uint16_t(a.input_size), uint16_t(a.output_size));
+                                              uint16_t(a.input_size), uint16_t(a.output_size),
+                                              probe != nullptr ? &trailer : nullptr);
     if (length == 0) {
+        if (probe != nullptr) {
+            probe->in_call = false;
+        }
         return STATUS_INVALID;
+    }
+    if (probe != nullptr) {
+        const uint32_t packed_cycles = probe_cycles_now(*probe);
+        M4CallStamps &current = probe->current;
+        current.svc_to_entry_cycles = svc_cycles != 0 ? cycles_between(svc_cycles, entry_cycles) : 0;
+        current.checks_cycles = cycles_between(checks_cycles, begin_cycles);
+        current.begin_probe_cycles = cycles_between(begin_cycles, begun_cycles);
+        current.pack_cycles = cycles_between(begun_cycles, packed_cycles);
+        probe_stamp(*probe, current.packed_us, PROBE_STAMP_PACKED);
     }
     if (settle) {
         p.mirror_pending(p.platform, m.index, token);
@@ -131,6 +170,10 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     const uint8_t *body = nullptr;
     if (result > 0 && !parse_binding_reply(m.reply, uint16_t(result), reply, body)) {
         status = STATUS_HOST_ERROR;
+        if (probe != nullptr) {
+            probe->in_call = false;
+            probe = nullptr;
+        }
     } else {
         const CallOutcome outcome = call_outcome(result, reply, uint16_t(a.output_size));
         if (outcome.copy_output && a.output_size != 0) {
@@ -144,6 +187,9 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     if (settle) {
         p.mirror_settle(p.platform, m.index, token);
+    }
+    if (probe != nullptr) {
+        end_probed_call(*probe, result > 0, probe->clock_us());
     }
     return status;
 }

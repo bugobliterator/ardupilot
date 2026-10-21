@@ -65,6 +65,9 @@ static ModuleContext module_context;
 static uint32_t selftest_heap_used[2], selftest_heap_starts[2];
 static const uint32_t SELFTEST_HEAP_SIZE = 1024;
 
+// the call latency probe (MOD_M4_OPTS bit 2): its clock is set by module_port_init()
+static M4CallProbe call_probe;
+
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
     ModuleLink &link = *call_link_of;
@@ -75,14 +78,25 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         memcpy(link.request, request, len);
     }
     link.request_len = len;
+    const bool probed = call_probe.in_call;
+    if (probed) {
+        probe_stamp(call_probe, call_probe.current.posted_us, PROBE_STAMP_POSTED);
+    }
     link.state.store(ModuleLink::Posted);
     // sent from here when the service could; otherwise the service's next step sends it
     if (!service_of->forward_posted()) {
         wake_service_of();
+    } else if (probed) {
+        probe_stamp(call_probe, call_probe.current.forward_returned_us, PROBE_STAMP_FORWARD_RETURNED);
     }
     // the service completes every posted call; sent ones within CALL_TIMEOUT_MS
+    const bool waited = link.state.load() != ModuleLink::Done;
     while (link.state.load() != ModuleLink::Done) {
         (void)chBSemWaitTimeout(&call_done, TIME_MS2I(10));
+    }
+    if (probed && waited) {
+        call_probe.current.flags |= PROBE_M4_SLEPT;
+        probe_stamp(call_probe, call_probe.current.resumed_us, PROBE_STAMP_RESUMED);
     }
     int32_t result = link.result;
     if (result > 0) {
@@ -121,7 +135,7 @@ static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const u
 static const HostPlatform host_platform {
     port_call, port_notify, AP_Module::binding_local_wire, AP_Module::binding_local_dispatch, nullptr,
     AP_Module::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
-    AP_Module::binding_is_posted
+    AP_Module::binding_is_posted, &call_probe
 };
 
 /*
@@ -179,6 +193,17 @@ static bool m7_counter_started()
 }
 
 static_assert(CH_CFG_ST_FREQUENCY == 1000, "M7Clock takes this core's ticks as milliseconds");
+
+// the call latency probe's stamp: TIM5's count, the M7's AP_HAL::micros() and its probe's counter
+static uint32_t tim5_count()
+{
+    return read_outside_regions(OutsideRegister::Tim5Count);
+}
+
+static uint32_t dwt_cycles()
+{
+    return DWT->CYCCNT;
+}
 
 // the M7's micros64(), its wraps followed from the first read. The wraps are taken from the M7's
 // millis() in the session's Config; before that, the first read assumes the M7 ran less than one
@@ -293,6 +318,9 @@ static void sys_panic(struct port_extctx *ctx)
 
 static void sys_binding_call(struct port_extctx *ctx)
 {
+    if (call_probe.enabled.load(std::memory_order_relaxed)) {
+        call_probe.svc_cycles = DWT->CYCCNT;
+    }
     // the arguments lie on the module stack: checked there, then copied before use
     if (active == nullptr || !active->ranges.stack.contains(ctx->r0, sizeof(BindingCallArgs))) {
         ctx->r0 = uint32_t(STATUS_INVALID);
@@ -408,6 +436,30 @@ void ModuleM4::module_port_init(ModuleLink &link, M4Service &service, void (*wak
     chBSemObjectInit(&stop_wake, true);
     chSemObjectInit(&parked, 0);
     m7_counter_running = m7_counter_started();
+    // no probe without the M7's counter
+    call_probe.clock_us = m7_counter_running ? tim5_count : nullptr;
+    call_probe.cycles = dwt_cycles;
+}
+
+// the call latency probe's stamp from the doorbell interrupt (kernel-locked from the ISR)
+uint32_t ModuleM4::module_port_probe_stamp_from_isr()
+{
+    chSysLockFromISR();
+    const uint32_t control = MPU->CTRL;
+    MPU->CTRL = control | MPU_CTRL_PRIVDEFENA_Msk;
+    __DSB();
+    __ISB();
+    const uint32_t value = TIM5->CNT;
+    MPU->CTRL = control;
+    __DSB();
+    __ISB();
+    chSysUnlockFromISR();
+    return value;
+}
+
+M4CallProbe &ModuleM4::module_port_call_probe()
+{
+    return call_probe;
 }
 
 void ModuleM4::module_port_set_m7_millis(uint32_t m7_millis)

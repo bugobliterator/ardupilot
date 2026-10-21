@@ -5,6 +5,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Module/Bindings.h>
 #include <AP_Module/BindingM4Policy_generated.h>
+#include <AP_Module/CallLatency.h>
 #include <AP_Module/HostApi.h>
 #include <AP_ModuleM4/AP_ModuleM4_Server.h>
 
@@ -341,4 +342,56 @@ TEST(ModuleM4Server, PostedQuotaRefusalIsADrop)
 
 #endif
 
-AP_GTEST_MAIN()
+AP_GTEST_MAIN()TEST(ModuleM4Server, ProbeStampsTheDispatchInOrder)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    uint8_t frame[MAX_FRAME];
+    static uint8_t reply[MAX_FRAME];
+    // the scheduler's semaphore guards it, but no scheduler runs in this test: no lock is taken
+    uint16_t len = call(frame, uint32_t(AP_Module::BindingId::VEHICLE_GET_MODE), 0, 1);
+    ASSERT_EQ(AP_Module::M4_BINDING_LOCK[uint32_t(AP_Module::BindingId::VEHICLE_GET_MODE)], AP_Module::M4Lock::Scheduler);
+    ASSERT_EQ(AP_Module::M4_BINDING_LOCK[uint32_t(AP_Module::BindingId::AHRS_GET_ORIGIN)], AP_Module::M4Lock::Ahrs);
+    AP_ModuleM4_Server::ServeProbe probe {};
+    ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
+    EXPECT_GE(int32_t(probe.lock_wait - probe.dispatch), 0);
+    // Chk's sub-stages, in order inside it
+    EXPECT_EQ(probe.taken, AP_Module::CALL_STAMP_CHK_PARSED | AP_Module::CALL_STAMP_CHK_QUOTA |
+                           AP_Module::CALL_STAMP_CHK_COPIED);
+    EXPECT_GE(int32_t(probe.chk_parsed - probe.dispatch), 0);
+    EXPECT_GE(int32_t(probe.chk_quota - probe.chk_parsed), 0);
+    EXPECT_GE(int32_t(probe.chk_copied - probe.chk_quota), 0);
+    EXPECT_GE(int32_t(probe.lock_wait - probe.chk_copied), 0);
+    (void)server.input_memset_cycles();   // host clocks may read it as 0
+    EXPECT_GE(int32_t(probe.adapter - probe.lock_wait), 0);
+    EXPECT_GE(int32_t(probe.adapter_done - probe.adapter), 0);
+    EXPECT_EQ(probe.flags & (AP_Module::CALL_LOCK_TAKEN | AP_Module::CALL_LOCK_UNKNOWN), 0);
+    // an adapter on a lock the probe does not take
+    uint32_t other = UINT32_MAX;
+    for (uint32_t id = 0; id < AP_Module::M4_BINDING_COUNT; id++) {
+        if (AP_Module::M4_BINDING_LOCK[id] == AP_Module::M4Lock::Other && !AP_ModuleM4_Server::needs_vehicle(id) &&
+            AP_Module::M4_BINDING_POLICY[id].lane != AP_Module::M4Lane::Local) {
+            other = id;
+            break;
+        }
+    }
+    ASSERT_NE(other, UINT32_MAX);
+    len = call(frame, other, 0, 0);
+    probe = AP_ModuleM4_Server::ServeProbe {};
+    ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
+    EXPECT_NE(probe.flags & AP_Module::CALL_LOCK_UNKNOWN, 0);
+    // a probed frame serves its input, not its trailer
+    const AP_Module::BindingId get = AP_Module::BindingId::PARAMETER_GET;
+    uint8_t input[8] = {};
+    const CallProbeTrailer trailer {};
+    len = pack_binding_call(frame, MAX_FRAME, 42, 0, 0, uint32_t(get), input, sizeof(input), 5, &trailer);
+    probe = AP_ModuleM4_Server::ServeProbe {};
+    const uint16_t reply_len = server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe);
+    BindingReplyHeader h {};
+    const uint8_t *body = nullptr;
+    ASSERT_TRUE(parse_binding_reply(reply, reply_len, h, body));
+    EXPECT_EQ(h.transport, uint8_t(ReplyStatus::Ok));
+    EXPECT_EQ(h.status, AP_MODULE_STATUS_INVALID);   // token 0
+}
+
+

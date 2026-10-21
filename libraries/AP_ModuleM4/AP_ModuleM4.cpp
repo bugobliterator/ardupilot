@@ -6,6 +6,7 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_Module/Bindings.h>
+#include <AP_Module/CallLatencyLog.h>
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include <CubePilotFW/Channel.h>
@@ -26,6 +27,17 @@ extern const AP_HAL::HAL& hal;
 
 namespace PeerHeader = CubePilotFW::PeerHeader;
 using ModuleM4::MsgType;
+using AP_Module::CallLatencyLog;
+
+static_assert(ModuleM4::PROBE_M4_SLEPT == AP_Module::CALL_M4_SLEPT && ModuleM4::PROBE_M4_POLL_WAKE == AP_Module::CALL_M4_POLL_WAKE &&
+              ModuleM4::PROBE_M4_SENT_BY_STEP == AP_Module::CALL_M4_SENT_BY_STEP, "the M4's probe flags are the log's");
+static const uint16_t PROBE_M4_FLAGS = ModuleM4::PROBE_M4_SLEPT | ModuleM4::PROBE_M4_POLL_WAKE | ModuleM4::PROBE_M4_SENT_BY_STEP;
+static_assert(ModuleM4::PROBE_STAMP_PACKED == AP_Module::CALL_STAMP_M4_PACKED &&
+              ModuleM4::PROBE_STAMP_POSTED == AP_Module::CALL_STAMP_M4_POSTED &&
+              ModuleM4::PROBE_STAMP_FORWARD_RETURNED == AP_Module::CALL_STAMP_M4_FORWARD_RETURNED &&
+              ModuleM4::PROBE_STAMP_REPLY_WAKE == AP_Module::CALL_STAMP_M4_REPLY_WAKE &&
+              ModuleM4::PROBE_STAMP_SIGNALLED == AP_Module::CALL_STAMP_M4_SIGNALLED &&
+              ModuleM4::PROBE_STAMP_RESUMED == AP_Module::CALL_STAMP_M4_RESUMED, "the M4's stamp bits are the trace's");
 
 // after a pass that hit either limit with frames left: a flooding M4 gets one pass per pause
 static const uint32_t SERVE_BACKOFF_US = 500;
@@ -65,7 +77,7 @@ const AP_Param::GroupInfo AP_ModuleM4::var_info[] = {
     // @Param: OPTS
     // @DisplayName: Rust M4 options
     // @Description: Rust on the Cortex-M4 options
-    // @Bitmask: 0:GCS RPC summary every 10 s,1:GCS M4 CRC self-check values once per session
+    // @Bitmask: 0:GCS RPC summary every 10 s,1:GCS M4 CRC self-check values once per session,2:Call latency probe (M4LT log rows and @SYS/module_latency.txt, from the next M4 session)
     // @User: Advanced
     AP_GROUPINFO("OPTS", 3, AP_ModuleM4, _options, 0),
     AP_GROUPEND
@@ -147,6 +159,10 @@ void AP_ModuleM4::doorbell_isr(uint8_t group)
     (void)group;
     if (_singleton != nullptr) {
         _singleton->_doorbell_us = AP_HAL::micros();
+        if (_singleton->_probing) {
+            _singleton->_doorbell_probe_us = CallLatencyLog::clock_us();
+            _singleton->_doorbell_probed = true;
+        }
         _singleton->_doorbell.signal_ISR();
     }
 }
@@ -181,10 +197,17 @@ void AP_ModuleM4::host_thread()
             hal.scheduler->delay(100);
             continue;
         }
+        _probing = (uint8_t(_options.get()) & OPTION_CALL_PROBE) != 0 && CallLatencyLog::get().start();
+        if (_probing && !_input_memset_measured) {
+            // the slow worker is idle between the host's passes
+            _input_memset_measured = true;
+            CallLatencyLog::get().set_m7_memset_cycles(_server.input_memset_cycles());
+        }
         const uint32_t cap_wait_us = _duty_cap.wait_us(AP_HAL::micros());
         const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
-        switch (ModuleM4::host_wait_after(cap_wait_us, last == ServeResult::Busy, last == ServeResult::Stuck,
-                                        ring_empty)) {
+        const ModuleM4::HostWait wait = ModuleM4::host_wait_after(cap_wait_us, last == ServeResult::Busy,
+                                                              last == ServeResult::Stuck, ring_empty);
+        switch (wait) {
         case ModuleM4::HostWait::DutyCap:
             // the host's share of the M7 ran out: serve nothing until credit returns, however many
             // frames are pending. An empty ring keeps listening, so its next doorbell is not missed
@@ -210,6 +233,15 @@ void AP_ModuleM4::host_thread()
         }
         _channel->wake();
         _woke_us = AP_HAL::micros();
+        if (_probing) {
+            _pass_us = CallLatencyLog::clock_us();
+            _pass_frames = 0;
+            _pass_cap_paused = wait == ModuleM4::HostWait::DutyCap;
+            // the doorbell interrupt that ended this wait, if any
+            _pass_doorbell = _doorbell_probed;
+            _pass_doorbell_us = _doorbell_probe_us;
+            _doorbell_probed = false;
+        }
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
         _wake_latency_us = doorbell_us != 0 ? _woke_us - doorbell_us : 0;
@@ -239,6 +271,9 @@ void AP_ModuleM4::host_thread()
 #if AP_MODULE_M4_FAULT_INJECTION_ENABLED
         send_fault_inject();
 #endif
+        if (_probing) {
+            CallLatencyLog::get().flush(now_ms);
+        }
         const uint32_t busy_us = AP_HAL::micros() - _woke_us;
         _host_busy_us += busy_us;
         if (busy_us > LONG_PASS_US) {
@@ -452,6 +487,12 @@ bool AP_ModuleM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
     send_frame(_tx_frame, ModuleM4::pack_binding_reply(_tx_frame, sizeof(_tx_frame), call.header.seq,
                                                      ModuleM4::ReplyStatus::Ok, ModuleM4::STATUS_BUSY, nullptr, 0,
                                                      _wake_latency_us, 0));
+    if (_probing) {
+        // unrun: no dispatch, lock or adapter stages
+        const uint32_t now_us = CallLatencyLog::clock_us();
+        const AP_ModuleM4_Server::ServeProbe unrun { now_us, now_us, now_us, now_us, 0, 0, 0, 0, 0, 0 };
+        probe_served(buf, len, unrun, AP_Module::CALL_REFUSED);
+    }
     return true;
 }
 
@@ -492,7 +533,16 @@ AP_ModuleM4::ServeResult AP_ModuleM4::serve()
         [this](uint16_t len) {
             // a frame the worker's posted batch handed back is dispatched like any other
             while (len != 0) {
-                if (_server.frame_on_fast_lane(_rx_frame, len)) {
+                const bool fast = _server.frame_on_fast_lane(_rx_frame, len);
+                if (_probing) {
+                    const uint32_t start_cycles = CallLatencyLog::cycles();
+                    _frame_received_us = CallLatencyLog::clock_us();
+                    _frame_flags = uint16_t(fast ? AP_Module::CallLane::Fast : AP_Module::CallLane::Slow) |
+                                   uint16_t(MIN(_pass_frames, uint8_t(15)) << AP_Module::CALL_POSITION_SHIFT);
+                    _pass_frames = uint8_t(MIN(_pass_frames + 1, 255));
+                    _frame_overhead_cycles = CallLatencyLog::cycles() - start_cycles;
+                }
+                if (fast) {
                     handle_message(_rx_frame, len);
                     len = 0;
                 } else if (_duty_cap.refuses_slow_bindings() && refuse_slow_binding(_rx_frame, len)) {
@@ -553,7 +603,9 @@ void AP_ModuleM4::handle_message(const uint8_t *buf, uint16_t len)
 void AP_ModuleM4::serve_binding(const uint8_t *buf, uint16_t len)
 {
     _session_calls++;
-    const uint16_t reply_len = _server.serve_binding(buf, len, _tx_frame, sizeof(_tx_frame), AP_HAL::millis());
+    AP_ModuleM4_Server::ServeProbe served {};
+    const uint16_t reply_len = _server.serve_binding(buf, len, _tx_frame, sizeof(_tx_frame), AP_HAL::millis(),
+                                                     _probing ? &served : nullptr);
     if (_server.last_call_wrote_parameters()) {
         // the module reads its own write at once: the values go ahead of the reply, on the same ring
         _server.mark_all_live();
@@ -594,6 +646,63 @@ void AP_ModuleM4::serve_binding(const uint8_t *buf, uint16_t len)
     if (!send_frame(_tx_frame, reply_len) && resync) {
         _server.owe_resync(uint16_t(module));
     }
+    if (_probing) {
+        probe_served(buf, len, served, served.flags);
+    }
+}
+
+void AP_ModuleM4::probe_served(const uint8_t *buf, uint16_t len, const AP_ModuleM4_Server::ServeProbe &served,
+                             uint16_t flags)
+{
+    const uint32_t reply_sent_us = CallLatencyLog::clock_us();
+    const uint32_t start_cycles = CallLatencyLog::cycles();
+    ModuleM4::BindingCallHeader call;
+    ModuleM4::CallProbeTrailer trailer;
+    if (!ModuleM4::parse_binding_call(buf, len, call) || !ModuleM4::binding_call_trailer(buf, len, call, trailer)) {
+        return;   // the M4 does not probe this session, or the trailer did not fit the frame
+    }
+    CallLatencyLog &log = CallLatencyLog::get();
+    log.set_m4_stamp_cycles(trailer.stamp_cycles);
+    log.set_m4_memset(trailer.memset_small_centicycles, trailer.memset_large_centicycles);
+    AP_Module::CallTrace trace;
+    // the M4's stamps of its previous probed call, which the M7 holds
+    const AP_Module::M4Completion previous {
+        trailer.prev_seq, trailer.prev_sent_us, trailer.prev_reply_seen_us, trailer.prev_return_us,
+        uint16_t(trailer.prev_flags & PROBE_M4_FLAGS), uint32_t(trailer.prev_stamps) & AP_Module::CALL_STAMPS_M4,
+        trailer.prev_packed_us, trailer.prev_posted_us, trailer.prev_forward_returned_us, trailer.prev_reply_isr_us,
+        trailer.prev_reply_wake_us, trailer.prev_signalled_us, trailer.prev_resumed_us
+    };
+    AP_Module::CallStamps completed;
+    if (_probe_pending.complete(previous, trace, &completed)) {
+        log.record(trace);
+        log.record_substages(trace.id, completed);
+        const uint16_t pre_cycles[AP_Module::M4_PRE_PARTS] {
+            trailer.prev_svc_to_entry_cycles, trailer.prev_checks_cycles, trailer.prev_begin_probe_cycles,
+            trailer.prev_pack_cycles
+        };
+        log.record_m4_pre_cycles(trace.id, pre_cycles);
+    }
+    AP_Module::CallStamps stamps { trailer.svc_entry_us, trailer.pre_send_us, 0, _pass_us, _frame_received_us,
+                                 served.dispatch, served.lock_wait, served.adapter, served.adapter_done,
+                                 reply_sent_us, 0, 0 };
+    stamps.chk_parsed = served.chk_parsed;
+    stamps.chk_quota = served.chk_quota;
+    stamps.chk_copied = served.chk_copied;
+    stamps.taken = served.taken;
+    // the doorbell belongs to the first frame of the pass it woke
+    if (_pass_doorbell && (_frame_flags >> AP_Module::CALL_POSITION_SHIFT) == 0) {
+        stamps.m7_doorbell = _pass_doorbell_us;
+        stamps.taken |= AP_Module::CALL_STAMP_M7_DOORBELL;
+    }
+    AP_Module::CallTrace partial {};
+    partial.time_us = AP_HAL::micros64();
+    partial.seq = call.header.seq;
+    partial.id = uint16_t(MIN(call.id, uint32_t(UINT16_MAX)));
+    partial.flags = uint16_t(flags | _frame_flags | (_pass_cap_paused ? AP_Module::CALL_CAP_PAUSED : 0));
+    if (_probe_pending.hold(partial, stamps, trace)) {
+        log.record(trace);
+    }
+    log.add_overhead(_frame_overhead_cycles + served.overhead_cycles + (CallLatencyLog::cycles() - start_cycles));
 }
 
 // system calls: a module's text notify; a call of a method this M7 does not serve is answered

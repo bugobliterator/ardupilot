@@ -60,6 +60,20 @@ static struct timespec realtime_after_ms(uint32_t ms)
     return deadline;
 }
 
+// the call latency probe's stamp: CLOCK_MONOTONIC, the M7 process's probe counter too
+static uint32_t probe_clock_us()
+{
+    return uint32_t(monotonic_us());
+}
+
+// the call latency probe (MOD_M4_OPTS bit 2)
+static uint32_t probe_cycles()
+{
+    return uint32_t(monotonic_us() * 1000U);   // nanoseconds: SITL figures are not representative
+}
+
+static M4CallProbe call_probe { probe_clock_us, probe_cycles, 0, 0, {false}, false, false, 0, 0, {}, {} };
+
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
     ModuleLink &link = *call_link_of;
@@ -70,12 +84,23 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
         memcpy(link.request, request, len);
     }
     link.request_len = len;
+    const bool probed = call_probe.in_call;
+    if (probed) {
+        probe_stamp(call_probe, call_probe.current.posted_us, PROBE_STAMP_POSTED);
+    }
     link.state.store(ModuleLink::Posted);
     // sent from here when the service could; otherwise its next step (1 ms poll) sends it
-    (void)service_of->forward_posted();
+    if (service_of->forward_posted() && probed) {
+        probe_stamp(call_probe, call_probe.current.forward_returned_us, PROBE_STAMP_FORWARD_RETURNED);
+    }
     // the service completes every posted call within CALL_TIMEOUT_MS of posting
+    const bool waited = link.state.load() != ModuleLink::Done;
     while (link.state.load() != ModuleLink::Done) {
         wait_until(realtime_after_ms(10));
+    }
+    if (probed && waited) {
+        call_probe.current.flags |= PROBE_M4_SLEPT;
+        probe_stamp(call_probe, call_probe.current.resumed_us, PROBE_STAMP_RESUMED);
     }
     int32_t result = link.result;
     if (result > 0) {
@@ -114,7 +139,7 @@ static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const u
 static const HostPlatform host_platform {
     port_call, port_notify, AP_Module::binding_local_wire, AP_Module::binding_local_dispatch, nullptr,
     AP_Module::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
-    AP_Module::binding_is_posted
+    AP_Module::binding_is_posted, &call_probe
 };
 
 static bool own_context(void *context)
@@ -196,6 +221,9 @@ static void host_api_panic(void *context, const uint8_t *message, uint32_t lengt
 static int32_t host_api_binding_call(void *context, uint32_t id, const uint8_t *input, uint32_t input_size,
                                      uint8_t *output, uint32_t output_size)
 {
+    if (call_probe.enabled.load(std::memory_order_relaxed)) {
+        call_probe.svc_cycles = probe_cycles();
+    }
     if (active == nullptr) {
         return STATUS_INVALID;
     }
@@ -241,6 +269,11 @@ void ModuleM4::module_port_init(ModuleLink &link, M4Service &service, void (*)()
 {
     call_link_of = &link;
     service_of = &service;
+}
+
+M4CallProbe &ModuleM4::module_port_call_probe()
+{
+    return call_probe;
 }
 
 void ModuleM4::module_port_wake()

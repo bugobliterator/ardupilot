@@ -18,6 +18,7 @@
 #include <AP_ModuleM4_BindingHistogram.h>
 #include <AP_ModuleM4_ModuleTable.h>
 #include <AP_ModuleM4_ParamMirror.h>
+#include <AP_ModuleM4_CallProbe.h>
 #include "module_link.h"
 
 namespace ModuleM4 {
@@ -36,6 +37,8 @@ struct M4Platform {
     void (*unlock)();
     // a Control(CONTROL_STOP) of this session for that module; may be null
     void (*stop_module)(uint16_t module);
+    // the call latency probe the module port stamps; may be null
+    M4CallProbe *probe;
 };
 
 class M4Service {
@@ -55,6 +58,16 @@ public:
     const ConfigReply &config_reply() const { return _config_reply; }
     // the Stats name of a remote import of this session (cleared at init()); later rows are id:<n>
     void set_binding_name(uint32_t id, const char *name);
+    // the platform's wait before this step: true if it ended on its poll timeout, not a doorbell
+    // (the call latency probe flags a reply seen after one). stamped: the wait ended on a doorbell
+    // interrupt the probe stamped at isr_us, and the thread resumed at wake_us
+    void note_wake(bool poll_timeout, bool stamped = false, uint32_t isr_us = 0, uint32_t wake_us = 0)
+    {
+        _woke_on_poll = poll_timeout;
+        _wake_stamped = stamped;
+        _wake_isr_us = isr_us;
+        _wake_us = wake_us;
+    }
     // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
     uint32_t lost() const { return _lost; }
     // frames from the M7 dropped as not for this M4 (wrong type, stale seq or session)
@@ -118,7 +131,8 @@ private:
     void handle(const uint8_t *buf, uint16_t len);
     void handle_fault_inject(const uint8_t *buf);
     void handle_control(const uint8_t *buf, const MsgHeader &header);
-    void forward_call();
+    // from_step: the service's step sends it, not the module thread
+    void forward_call(bool from_step);
     void complete(int32_t result);
     void corrupt_tx_ring();
     void flood();
@@ -151,6 +165,11 @@ private:
     bool _call_timed;           // _call_posted_ms belongs to the current call
     bool _rx_stalled;
     bool _flooding;
+    bool _call_probed;          // the Sent call carries a probe trailer
+    bool _woke_on_poll;
+    bool _wake_stamped;
+    uint32_t _wake_isr_us;
+    uint32_t _wake_us;
     CrcSelfCheck _crc_self_check;
     ConfigReply _config_reply;
     uint32_t _config_seq;       // of the Config sent this session; 0: none sent yet

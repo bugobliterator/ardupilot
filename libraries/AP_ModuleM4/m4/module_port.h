@@ -20,6 +20,10 @@ namespace ModuleM4 {
 void module_port_init(ModuleLink &link, M4Service &service, void (*wake_service)());
 // M4Platform::wake_module: the call on the link is Done
 void module_port_wake();
+// M4Platform::probe: the call latency probe the module thread's binding calls fill in
+M4CallProbe &module_port_call_probe();
+// M4 image: the probe's counter read from an interrupt handler (the HSEM doorbell)
+uint32_t module_port_probe_stamp_from_isr();
 
 // starts the module: start(&module_host_api, module_token(context.index)) at entry (with the
 // Thumb bit on the M4) on its stack in the layout, with rw_base as its static base (r9 on the

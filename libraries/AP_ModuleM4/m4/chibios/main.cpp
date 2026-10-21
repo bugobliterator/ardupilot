@@ -104,9 +104,17 @@ void cubefw_pal_shMemcpy(void *dst, const void *src, size_t len)
 
 }  // extern "C"
 
+// the call latency probe: the last doorbell interrupt during the service's wait
+static volatile bool doorbell_stamped;
+static volatile uint32_t doorbell_stamp_us;
+
 static void doorbell_callback(uint8_t group)
 {
     (void)group;
+    if (probing(&module_port_call_probe())) {
+        doorbell_stamp_us = module_port_probe_stamp_from_isr();
+        doorbell_stamped = true;
+    }
     chSysLockFromISR();
     chBSemSignalI(&doorbell);
     chSysUnlockFromISR();
@@ -340,10 +348,11 @@ int main(void)
         inject_fault(FaultKind::HardFault);
     }
 
+    module_port_init(call_link, service, wake_service);
     const M4Platform platform { millis_now, cycles_now, AP_MODULE_M4_CORE_CLOCK_HZ / 1000000U,
                                 inject_fault, module_port_wake, module_port_start_selftest,
-                                module_port_set_m7_millis, lock_service, unlock_service, stop_module };
-    module_port_init(call_link, service, wake_service);
+                                module_port_set_m7_millis, lock_service, unlock_service, stop_module,
+                                &module_port_call_probe() };
     service.init(channel, window, call_link, platform);
     // module area writes are privileged writes through region 1
     const ModuleHostPlatform host_platform {
@@ -360,9 +369,20 @@ int main(void)
         service.step();
         module_host.step();
         // bounded sleep (Channel contract): a doorbell can be deferred while the HSEM is busy
+        bool poll_timeout = false;
+        bool slept = false;
+        doorbell_stamped = false;
         if (channel.prepareSleep()) {
-            (void)chBSemWaitTimeout(&doorbell, TIME_MS2I(5));
+            slept = true;
+            poll_timeout = chBSemWaitTimeout(&doorbell, TIME_MS2I(5)) == MSG_TIMEOUT;
         }
         channel.wake();
+        M4CallProbe &probe = module_port_call_probe();
+        if (slept && !poll_timeout && doorbell_stamped && probing(&probe)) {
+            // the service resumes here, before it reads the ring
+            service.note_wake(false, true, doorbell_stamp_us, probe.clock_us());
+        } else {
+            service.note_wake(poll_timeout);
+        }
     }
 }

@@ -105,7 +105,7 @@ struct Fixture {
     FakeM7 m7 {};
     ModuleContext m;
     HostPlatform platform { fake_call, fake_notify, fake_local_wire, fake_local, &m7, fake_mirror_role, fake_mirror_get,
-                            fake_mirror_pending, fake_mirror_settle, fake_mirror_refresh, fake_is_posted };
+                            fake_mirror_pending, fake_mirror_settle, fake_mirror_refresh, fake_is_posted, nullptr };
     Fixture()
     {
         local_calls = 0;
@@ -352,6 +352,186 @@ TEST(ModuleM4HostCalls, StopComesBeforePosting)
     f.m.stop.store(true);
     EXPECT_EQ(host_binding_call(f.m, f.args(30, f.rw, 16, nullptr, 0), f.platform), STATUS_STOPPED);
     EXPECT_EQ(f.m7.notifies, 0U);
+}
+
+// the probe's counter: each read moves it on by 10
+static uint32_t probe_now;
+static uint32_t probe_clock()
+{
+    probe_now += 10;
+    return probe_now;
+}
+
+// a call the M4 service sends and the M7 answers: the service's probe stamps
+static M4CallProbe *served_probe;
+static int32_t probed_call(void *platform, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
+{
+    if (served_probe != nullptr) {
+        served_probe->current.seq = 77;
+        served_probe->current.sent_us = probe_clock();
+        served_probe->current.reply_seen_us = probe_clock();
+        served_probe->current.flags |= PROBE_M4_SLEPT;
+    }
+    return fake_call(platform, request, len, reply, cap);
+}
+
+TEST(ModuleM4HostCalls, ProbedCallSendsTheLastCompletedCallInItsTrailer)
+{
+    Fixture f;
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.stamp_cycles = 48;
+    probe.enabled.store(true);
+    probe_now = 1000;
+    served_probe = &probe;
+    f.platform.call = probed_call;
+    f.platform.probe = &probe;
+    const uint8_t output[4] = { 1, 2, 3, 4 };
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    EXPECT_EQ(memcmp(f.stack, output, 4), 0);
+    BindingCallHeader sent {};
+    const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, len, sent));
+    CallProbeTrailer trailer;
+    ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
+    EXPECT_EQ(trailer.svc_entry_us, 1010U);
+    EXPECT_EQ(trailer.stamp_cycles, 48U);
+    EXPECT_EQ(trailer.prev_seq, 0U);   // the first probed call completes nothing
+    // its stamps: packed 1020, sent 1030, reply seen 1040, returned 1050
+    EXPECT_EQ(probe.last.seq, 77U);
+    EXPECT_EQ(probe.last.packed_us, 1020U);
+    EXPECT_EQ(probe.last.sent_us, 1030U);
+    EXPECT_EQ(probe.last.reply_seen_us, 1040U);
+    EXPECT_EQ(probe.last.return_us, 1050U);
+    EXPECT_EQ(probe.last.flags, PROBE_M4_SLEPT);
+    EXPECT_EQ(probe.last.stamps, PROBE_STAMP_PACKED);
+    EXPECT_FALSE(probe.in_call);
+    EXPECT_TRUE(probe.memset_measured);
+    // the next call carries them
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, len, sent));
+    ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
+    EXPECT_EQ(trailer.prev_seq, 77U);
+    EXPECT_EQ(trailer.prev_sent_us, 1030U);
+    EXPECT_EQ(trailer.prev_reply_seen_us, 1040U);
+    EXPECT_EQ(trailer.prev_return_us, 1050U);
+    EXPECT_EQ(trailer.prev_flags, PROBE_M4_SLEPT);
+    EXPECT_EQ(trailer.prev_stamps, PROBE_STAMP_PACKED);
+    EXPECT_EQ(trailer.prev_packed_us, 1020U);
+    // a call without its reply completes nothing
+    f.m7.answer_len = -110;
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_HOST_ERROR);
+    EXPECT_EQ(probe.last.seq, 0U);
+    served_probe = nullptr;
+}
+
+TEST(ModuleM4HostCalls, ProbeOffOrNoRoomSendsThePlainFrame)
+{
+    Fixture f;
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    f.platform.probe = &probe;
+    const uint8_t output[4] = { 1, 2, 3, 4 };
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    // not enabled by this session's Config
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    BindingCallHeader sent {};
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, sizeof(BindingCallHeader) + 4, sent));
+    EXPECT_EQ(sent.flags & CALL_FLAG_PROBE, 0);
+    // no counter to read
+    probe.enabled.store(true);
+    probe.clock_us = nullptr;
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, sizeof(BindingCallHeader) + 4, sent));
+    EXPECT_EQ(sent.flags & CALL_FLAG_PROBE, 0);
+    // local ids are never probed
+    probe.clock_us = probe_clock;
+    const uint32_t calls = f.m7.calls;
+    EXPECT_EQ(host_binding_call(f.m, f.args(5, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    EXPECT_EQ(f.m7.calls, calls);
+}
+
+// a cycle counter that moves on by 3 per call
+static uint32_t fake_cycles_now;
+static uint32_t fake_cycles()
+{
+    fake_cycles_now += 3;
+    return fake_cycles_now;
+}
+
+TEST(ModuleM4HostCalls, MemsetCostIsMeasuredOnceBeforeTheFirstProbedCall)
+{
+    Fixture f;
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.cycles = fake_cycles;
+    probe.enabled.store(true);
+    f.platform.probe = &probe;
+    const uint8_t output[4] = { 1, 2, 3, 4 };
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    memset(f.link_reply, 0x5A, sizeof(f.link_reply));
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    EXPECT_TRUE(probe.memset_measured);
+    // two reads of the counter 3 apart, over 64000 and 4096000 bytes: 0 hundredths per byte
+    EXPECT_EQ(probe.memset_small_centicycles, 0);
+    EXPECT_EQ(probe.memset_large_centicycles, 0);
+    EXPECT_EQ(centicycles_per_byte(128000, 64000), 200);
+    EXPECT_EQ(centicycles_per_byte(4096000, 4096000), 100);
+    EXPECT_EQ(centicycles_per_byte(0xFFFFFFFFU, 1), 0xFFFF);
+    // the reply buffer was cleared by the measurement, then received the answer
+    EXPECT_EQ(memcmp(f.stack, output, 4), 0);
+    const uint32_t reads = fake_cycles_now;
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    EXPECT_EQ(fake_cycles_now - reads, 5U * 3U);   // not again: only the five pre-pack cycle reads
+    // the trailer reports it
+    BindingCallHeader sent {};
+    const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, len, sent));
+    CallProbeTrailer trailer;
+    ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
+    EXPECT_EQ(trailer.memset_small_centicycles, probe.memset_small_centicycles);
+}
+
+TEST(ModuleM4HostCalls, PrePackCyclesReachTheNextTrailer)
+{
+    Fixture f;
+    M4CallProbe probe {};
+    probe.clock_us = probe_clock;
+    probe.cycles = fake_cycles;
+    probe.enabled.store(true);
+    probe.memset_measured = true;
+    served_probe = &probe;
+    f.platform.call = probed_call;
+    f.platform.probe = &probe;
+    const uint8_t output[4] = { 1, 2, 3, 4 };
+    f.m7.answer_len = pack_binding_reply(f.m7.answer, sizeof(f.m7.answer), 0, ReplyStatus::Ok, STATUS_OK, output, 4, 0, 0);
+    // the SVC handler's stamp, 40 cycles before the host call reads the counter
+    fake_cycles_now = 1000;
+    probe.svc_cycles = 963;
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    EXPECT_EQ(probe.svc_cycles, 0U);   // used once
+    // each read 3 on from the one before
+    EXPECT_EQ(probe.last.svc_to_entry_cycles, 40);
+    EXPECT_EQ(probe.last.checks_cycles, 3);
+    EXPECT_EQ(probe.last.begin_probe_cycles, 3);
+    EXPECT_EQ(probe.last.pack_cycles, 3);
+    // the next call carries them; without an SVC stamp its own SvcEntry is 0
+    EXPECT_EQ(host_binding_call(f.m, f.args(9, f.rw, 4, f.stack, 4), f.platform), STATUS_OK);
+    BindingCallHeader sent {};
+    const uint16_t len = sizeof(BindingCallHeader) + 4 + sizeof(CallProbeTrailer);
+    ASSERT_TRUE(parse_binding_call(f.m7.last_request, len, sent));
+    CallProbeTrailer trailer;
+    ASSERT_TRUE(binding_call_trailer(f.m7.last_request, len, sent, trailer));
+    EXPECT_EQ(trailer.prev_svc_to_entry_cycles, 40);
+    EXPECT_EQ(trailer.prev_checks_cycles, 3);
+    EXPECT_EQ(trailer.prev_begin_probe_cycles, 3);
+    EXPECT_EQ(trailer.prev_pack_cycles, 3);
+    EXPECT_EQ(probe.last.svc_to_entry_cycles, 0);
+    // a counter far behind saturates
+    EXPECT_EQ(cycles_between(0, 0x10000U), 0xFFFF);
+    EXPECT_EQ(cycles_between(0xFFFFFFFFU, 2), 3);
+    served_probe = nullptr;
 }
 
 AP_GTEST_MAIN()

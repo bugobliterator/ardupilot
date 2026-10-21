@@ -20,6 +20,7 @@
 #include <AP_Module/BindingSupport.h>
 #include <AP_Module/BindingSerialLED.h>
 #include <AP_Module/Bindings.h>
+#include <AP_Module/CallLatencyLog.h>
 #include <AP_Module/HostApi.h>
 #include "AP_ModuleM4_ServeWait.h"
 
@@ -47,11 +48,19 @@ bool AP_ModuleM4_Server::frame_is_posted(const uint8_t *frame, uint16_t len) con
 }
 
 uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap,
-                                         uint32_t now_ms)
+                                         uint32_t now_ms, ServeProbe *probe)
 {
     _last_posted_outcome = PostedOutcome::NotPosted;
     _last_call_wrote_parameters = false;
     _last_call_module = -1;
+    using AP_Module::CallLatencyLog;
+    if (probe != nullptr) {
+        // until the adapter runs, every later stage is the dispatch stamp: a frame answered before it
+        // has no lock or adapter time
+        const uint32_t start_cycles = CallLatencyLog::cycles();
+        probe->dispatch = probe->lock_wait = probe->adapter = probe->adapter_done = CallLatencyLog::clock_us();
+        probe->overhead_cycles += CallLatencyLog::cycles() - start_cycles;
+    }
 #if AP_MODULE_M4_TEST_HOOKS
     _last_dispatch_ran = false;
 #endif
@@ -74,6 +83,10 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
         _last_posted_outcome = PostedOutcome::Refused;
         return 0;
     }
+    if (probe != nullptr) {
+        probe->chk_parsed = CallLatencyLog::clock_us();
+        probe->taken |= AP_Module::CALL_STAMP_CHK_PARSED;
+    }
     _quotas.new_session(now_ms);   // full buckets at the first call of the boot
     const uint8_t quota = AP_Module::M4_BINDING_POLICY[call.id].quota;
     if (quota != 0 && !_quotas.allow(QuotaClass(quota), now_ms)) {
@@ -82,14 +95,45 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
             return 0;
         }
         // as M4 Lua: a refused call is answered OK and not run; a bool result reads false
+        if (probe != nullptr) {
+            probe->flags |= AP_Module::CALL_QUOTA;
+        }
         memset(_out, 0, call.out_size);
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, STATUS_OK, _out, call.out_size, 0, 0);
+    }
+    if (probe != nullptr) {
+        probe->chk_quota = CallLatencyLog::clock_us();
+        probe->taken |= AP_Module::CALL_STAMP_CHK_QUOTA;
     }
     memset(_in, 0, sizeof(_in));
     memcpy(_in, frame + sizeof(call), call.in_size);
     memset(_out, 0, sizeof(_out));
+    if (probe != nullptr) {
+        probe->chk_copied = CallLatencyLog::clock_us();
+        probe->taken |= AP_Module::CALL_STAMP_CHK_COPIED;
+    }
     const uint32_t start_us = AP_HAL::micros();
-    const int32_t status = dispatch(call.module, call.id, call.in_size, call.out_size);
+    int32_t status;
+    if (probe == nullptr) {
+        status = dispatch(call.module, call.id, call.in_size, call.out_size);
+    } else {
+        // the adapter's own take of its (recursive) lock then waits for nothing
+        uint32_t cycles = CallLatencyLog::cycles();
+        AP_HAL::Semaphore *lock = CallLatencyLog::adapter_lock(call.id, probe->flags);
+        probe->lock_wait = CallLatencyLog::clock_us();
+        probe->overhead_cycles += CallLatencyLog::cycles() - cycles;
+        if (lock != nullptr) {
+            lock->take_blocking();
+        }
+        probe->adapter = CallLatencyLog::clock_us();
+        status = dispatch(call.module, call.id, call.in_size, call.out_size);
+        probe->adapter_done = CallLatencyLog::clock_us();
+        cycles = CallLatencyLog::cycles();
+        if (lock != nullptr) {
+            lock->give();
+        }
+        probe->overhead_cycles += CallLatencyLog::cycles() - cycles;
+    }
     const uint32_t exec_us = AP_HAL::micros() - start_us;
     _last_call_wrote_parameters = (AP_Module::M4_BINDING_POLICY[call.id].flags &
                                    (AP_Module::M4_FLAG_MIRROR_HANDLE_WRITER | AP_Module::M4_FLAG_MIRROR_NAME_WRITER)) != 0;
@@ -270,6 +314,17 @@ void AP_ModuleM4_Server::snapshot_module(uint16_t module)
             set_dirty(slot);
         }
     }
+}
+
+uint32_t AP_ModuleM4_Server::input_memset_cycles()
+{
+    static const uint8_t ROUNDS = 16;
+    const uint32_t start = AP_Module::CallLatencyLog::cycles();
+    for (uint8_t i = 0; i < ROUNDS; i++) {
+        memset(_in, 0, sizeof(_in));
+        __asm__ volatile("" : : "r"(_in) : "memory");
+    }
+    return (AP_Module::CallLatencyLog::cycles() - start) / ROUNDS;
 }
 
 AP_ModuleM4_Server::AP_ModuleM4_Server()
