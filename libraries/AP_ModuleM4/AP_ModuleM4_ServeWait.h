@@ -209,6 +209,7 @@ inline bool frame_on_fast_lane(const uint8_t *buf, uint16_t len, bool (*binding_
     case MsgType::BindingReply:
     case MsgType::SystemReply:
     case MsgType::Control:
+    case MsgType::ParameterChanged:
         return true;
     case MsgType::BindingCall: {
         BindingCallHeader call;

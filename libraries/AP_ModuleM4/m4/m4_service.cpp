@@ -169,6 +169,8 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
     case MsgType::SystemReply:
         handle_reply(buf, len, header);
         return;
+    case MsgType::ParameterChanged:
+        return;
     case MsgType::Stats:
     case MsgType::BindingCall:
     case MsgType::SystemCall:

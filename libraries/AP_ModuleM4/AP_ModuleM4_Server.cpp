@@ -4,6 +4,7 @@
 
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
+#include <AP_Math/AP_Math.h>
 #include <AP_Module/BindingAnalogPWM.h>
 #include <AP_Module/BindingArming.h>
 #include <AP_Module/BindingCAN.h>
@@ -37,6 +38,8 @@ bool AP_ModuleM4_Server::frame_on_fast_lane(const uint8_t *frame, uint16_t len) 
 uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap,
                                          uint32_t now_ms)
 {
+    _last_call_wrote_parameters = false;
+    _last_call_module = -1;
 #if AP_MODULE_M4_TEST_HOOKS
     _last_dispatch_ran = false;
 #endif
@@ -49,6 +52,7 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
     if (call.module >= _module_count) {
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Malformed, 0, nullptr, 0, 0, 0);
     }
+    _last_call_module = int16_t(call.module);
     if (call.id >= AP_Module::M4_BINDING_COUNT || AP_Module::M4_BINDING_POLICY[call.id].lane == AP_Module::M4Lane::Unknown ||
         AP_Module::M4_BINDING_POLICY[call.id].lane == AP_Module::M4Lane::Local) {
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::UnknownMethod, 0, nullptr, 0, 0, 0);
@@ -66,6 +70,8 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
     const uint32_t start_us = AP_HAL::micros();
     const int32_t status = dispatch(call.module, call.id, call.in_size, call.out_size);
     const uint32_t exec_us = AP_HAL::micros() - start_us;
+    _last_call_wrote_parameters = (AP_Module::M4_BINDING_POLICY[call.id].flags &
+                                   (AP_Module::M4_FLAG_MIRROR_HANDLE_WRITER | AP_Module::M4_FLAG_MIRROR_NAME_WRITER)) != 0;
     return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, status, _out, call.out_size, 0, exec_us);
 }
 
@@ -97,6 +103,150 @@ int32_t AP_ModuleM4_Server::dispatch(uint16_t module, uint32_t id, uint16_t in_s
     }
 }
 
+static uint32_t slot_mask(uint16_t slot)
+{
+    return 1U << (slot & 31U);
+}
+
+void AP_ModuleM4_Server::set_dirty(uint16_t slot)
+{
+    _dirty_slots[slot / 32U].fetch_or(slot_mask(slot), std::memory_order_release);
+}
+
+void AP_ModuleM4_Server::set_sent(uint16_t slot, bool sent, bool bound)
+{
+    const uint32_t mask = slot_mask(slot);
+    _sent_slots[slot / 32U] = sent ? (_sent_slots[slot / 32U] | mask) : (_sent_slots[slot / 32U] & ~mask);
+    _sent_bound_slots[slot / 32U] = bound ? (_sent_bound_slots[slot / 32U] | mask) :
+                                            (_sent_bound_slots[slot / 32U] & ~mask);
+}
+
+void AP_ModuleM4_Server::mark_changed(const AP_Param *param)
+{
+    if (param == nullptr) {
+        return;
+    }
+    for (uint16_t slot = 0; slot < PARAMETER_HANDLE_SLOTS; slot++) {
+        if (_handle_param[slot].load(std::memory_order_relaxed) == param) {
+            set_dirty(slot);
+        }
+    }
+}
+
+void AP_ModuleM4_Server::mark_all_live()
+{
+    for (uint16_t slot = 0; slot < PARAMETER_HANDLE_SLOTS; slot++) {
+        if (_handle_module[slot] != HANDLE_FREE) {
+            set_dirty(slot);
+        }
+    }
+}
+
+bool AP_ModuleM4_Server::mirror_dirty() const
+{
+    for (const auto &word : _dirty_slots) {
+        if (word.load(std::memory_order_relaxed) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+uint16_t AP_ModuleM4_Server::pack_mirror_changes(uint8_t *frame, uint16_t cap)
+{
+    if (cap < sizeof(ParameterChangedHeader) + sizeof(ParameterValue)) {
+        return 0;
+    }
+    const uint16_t room = uint16_t(MIN(uint32_t(PARAMETER_CHANGED_MAX),
+                                       (uint32_t(cap) - sizeof(ParameterChangedHeader)) / sizeof(ParameterValue)));
+    uint16_t count = 0;
+    for (uint16_t word = 0; word < SLOT_WORDS && count < room; word++) {
+        uint32_t bits = _dirty_slots[word].exchange(0, std::memory_order_acquire);
+        while (bits != 0) {
+            const uint16_t bit = uint16_t(__builtin_ctz(bits));
+            bits &= bits - 1U;
+            const uint16_t slot = uint16_t(word * 32U + bit);
+            if (count == room) {
+                set_dirty(slot);   // for the next frame
+                continue;
+            }
+            if (_handle_module[slot] == HANDLE_FREE) {
+                continue;
+            }
+            float value = 0;
+            const bool bound = _handle[slot].get(value);
+            if (!bound) {
+                value = 0;
+            }
+            const uint32_t mask = slot_mask(slot);
+            if ((_sent_slots[word] & mask) != 0 && ((_sent_bound_slots[word] & mask) != 0) == bound &&
+                memcmp(&value, &_sent_value[slot], sizeof(value)) == 0) {
+                continue;
+            }
+            const ParameterValue entry { _handle_token[slot], value, _handle_module[slot],
+                                         uint8_t(bound ? PARAMETER_VALUE_BOUND : 0), 0 };
+            memcpy(frame + sizeof(ParameterChangedHeader) + uint32_t(count) * sizeof(entry), &entry, sizeof(entry));
+            count++;
+            _sent_value[slot] = value;
+            set_sent(slot, true, bound);
+        }
+    }
+    if (count == 0) {
+        return 0;
+    }
+    ParameterChangedHeader h {};
+    const uint16_t length = uint16_t(sizeof(h) + uint32_t(count) * sizeof(ParameterValue));
+    fill_header(h.header, MsgType::ParameterChanged, length, _session);
+    h.count = count;
+    memcpy(frame, &h, sizeof(h));
+    return length;
+}
+
+void AP_ModuleM4_Server::mirror_send_failed(const uint8_t *frame, uint16_t len)
+{
+    ParameterChangedHeader h;
+    if (!parse_parameter_changed(frame, len, h)) {
+        return;
+    }
+    for (uint16_t i = 0; i < h.count; i++) {
+        const ParameterValue entry = parameter_value_at(frame, i);
+        const int16_t slot = find_handle(entry.module, entry.token, false);
+        if (slot >= 0) {
+            set_sent(uint16_t(slot), false, false);
+            set_dirty(uint16_t(slot));
+        }
+        if (entry.module < ARRAY_SIZE(_resync_owed)) {
+            _resync_owed[entry.module] = true;
+        }
+    }
+}
+
+bool AP_ModuleM4_Server::take_resync(uint16_t module)
+{
+    if (module >= ARRAY_SIZE(_resync_owed) || !_resync_owed[module]) {
+        return false;
+    }
+    _resync_owed[module] = false;
+    return true;
+}
+
+void AP_ModuleM4_Server::owe_resync(uint16_t module)
+{
+    if (module < ARRAY_SIZE(_resync_owed)) {
+        _resync_owed[module] = true;
+    }
+}
+
+void AP_ModuleM4_Server::snapshot_module(uint16_t module)
+{
+    for (uint16_t slot = 0; slot < PARAMETER_HANDLE_SLOTS; slot++) {
+        if (_handle_module[slot] == module) {
+            set_sent(slot, false, false);
+            set_dirty(slot);
+        }
+    }
+}
+
 AP_ModuleM4_Server::AP_ModuleM4_Server()
 {
     clear_handles();
@@ -108,6 +258,15 @@ void AP_ModuleM4_Server::clear_handles()
     for (auto &parameter : _handle) {
         parameter = Parameter();
     }
+    for (auto &param : _handle_param) {
+        param.store(nullptr, std::memory_order_relaxed);
+    }
+    for (auto &word : _dirty_slots) {
+        word.store(0, std::memory_order_relaxed);
+    }
+    memset(_sent_slots, 0, sizeof(_sent_slots));
+    memset(_sent_bound_slots, 0, sizeof(_sent_bound_slots));
+    memset(_resync_owed, 0, sizeof(_resync_owed));
     _handle_count = 0;
 }
 
@@ -156,11 +315,18 @@ void AP_ModuleM4_Server::erase_handle(uint16_t slot)
             _handle_module[slot] = _handle_module[next];
             _handle_token[slot] = _handle_token[next];
             _handle[slot] = _handle[next];
+            _handle_param[slot].store(_handle_param[next].load(std::memory_order_relaxed), std::memory_order_relaxed);
+            _sent_value[slot] = _sent_value[next];
+            set_sent(slot, (_sent_slots[next / 32U] & slot_mask(next)) != 0,
+                     (_sent_bound_slots[next / 32U] & slot_mask(next)) != 0);
+            set_dirty(slot);   // a pending change of the moved entry is not left on its old slot
             slot = next;
         }
     }
     _handle_module[slot] = HANDLE_FREE;
     _handle[slot] = Parameter();
+    _handle_param[slot].store(nullptr, std::memory_order_relaxed);
+    set_sent(slot, false, false);
     _handle_count--;
 }
 
@@ -196,12 +362,16 @@ int32_t AP_ModuleM4_Server::serve_parameter(uint16_t module, uint32_t id)
             return AP_MODULE_STATUS_NO_MEMORY;
         }
         _handle[slot] = Parameter();
+        _handle_param[slot].store(nullptr, std::memory_order_relaxed);
+        set_sent(uint16_t(slot), false, false);   // the writer's own entry always goes out
 #if AP_MODULE_M4_TEST_HOOKS
         if (!_bind_parameters) {
             return AP_MODULE_STATUS_OK;
         }
 #endif
         _out[0] = _handle[slot].init(name);
+        enum ap_var_type type;
+        _handle_param[slot].store(_out[0] ? AP_Param::find(name, &type) : nullptr, std::memory_order_relaxed);
         return AP_MODULE_STATUS_OK;
     }
     const int16_t slot = find_handle(module, token, false);
@@ -221,6 +391,7 @@ int32_t AP_ModuleM4_Server::serve_parameter(uint16_t module, uint32_t id)
         _out[0] = parameter.configured();
         return AP_MODULE_STATUS_OK;
     }
+    set_sent(uint16_t(slot), false, false);   // a rejected or unchanged set still sends its entry
     const float value = AP_Module::BindingWire::read_float(_in + 8);
     if (!AP_Module::BindingParam::valid_value(parameter.type(), value)) {
         return AP_MODULE_STATUS_INVALID;
@@ -272,6 +443,7 @@ void AP_ModuleM4_Server::end_module(uint16_t index)
 
 void AP_ModuleM4_Server::reset(uint32_t session, uint8_t module_count)
 {
+    _session = session;
     for (uint16_t index = 0; index < _module_count; index++) {
         end_module(index);
     }
@@ -297,6 +469,12 @@ bool AP_ModuleM4_Server::dispatch_guarded(uint32_t id, uint16_t in_size, uint16_
         }
     }
     return true;
+}
+
+const AP_Param *AP_ModuleM4_Server::bound_param_for_test(uint16_t module, uint64_t token)
+{
+    const int16_t slot = find_handle(module, token, false);
+    return slot < 0 ? nullptr : _handle_param[slot].load(std::memory_order_relaxed);
 }
 
 void AP_ModuleM4_Server::fill_input_for_test(uint8_t byte)

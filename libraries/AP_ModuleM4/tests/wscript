@@ -39,6 +39,14 @@ def build(bld):
                                                  ('libraries/AP_ModuleM4', 'libraries/AP_ModuleM4/m4')]
         tg.cxxflags = tg.to_list(getattr(tg, 'cxxflags', [])) + ['-std=gnu++17']
     try:
+        tg = bld.get_tgen_by_name('tests/test_module_m4_param_mirror')
+    except Exception:
+        tg = None
+    if tg is not None:
+        # the server with its test hooks, against a test vehicle's parameter table
+        tg.source = tg.to_list(tg.source) + [bld.srcnode.find_node('libraries/AP_ModuleM4/AP_ModuleM4_Server.cpp')]
+        tg.defines = tg.to_list(getattr(tg, 'defines', [])) + ['AP_MODULE_M4_TEST_HOOKS=1']
+    try:
         tg = bld.get_tgen_by_name('tests/test_module_m4_local_math')
     except Exception:
         return   # not a Rust-enabled SITL configuration
