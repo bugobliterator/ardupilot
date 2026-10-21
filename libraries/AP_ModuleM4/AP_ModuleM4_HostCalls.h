@@ -69,6 +69,7 @@ struct ModuleContext {
     uint8_t *request;                // the ModuleLink's buffers, MAX_FRAME each
     uint8_t *reply;
     char panic_text[192];
+    uint32_t heap_needed {};         // the largest HeapNeeded reported for this load
 };
 
 // never null (the SDK's enter() refuses a null context) and never a privileged address
@@ -204,10 +205,36 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     return status;
 }
 
-// allocation after a stop is allowed: Rust destructors may still allocate (PR Module::allocate)
-inline uint8_t *host_allocate(ModuleContext &m, uint32_t size, uint32_t alignment)
+/*
+  allocation after a stop is allowed: Rust destructors may still allocate (PR Module::allocate).
+  The M4 heap does not expand as the PR's does: a failed valid request is reported to the M7 as the
+  initial heap the module needs, the heap plus the request, when that exceeds the last report and
+  the module is not stopping
+ */
+inline uint8_t *host_allocate(ModuleContext &m, uint32_t size, uint32_t alignment, const HostPlatform &p)
 {
-    return static_cast<uint8_t *>(m.heap.allocate(size, alignment));
+    uint8_t *allocation = static_cast<uint8_t *>(m.heap.allocate(size, alignment));
+    if (allocation != nullptr || size == 0 || alignment == 0 || alignment > GranuleHeap::MAX_ALIGNMENT ||
+        (alignment & (alignment - 1U)) != 0) {
+        return allocation;
+    }
+    const uint64_t granules = (uint64_t(size) + GranuleHeap::GRANULE - 1U) / GranuleHeap::GRANULE;
+    const uint64_t padding = alignment > GranuleHeap::GRANULE ? alignment - GranuleHeap::GRANULE : 0U;
+    const uint64_t needed = m.heap.capacity() + granules * GranuleHeap::GRANULE + padding;
+    const uint32_t needed32 = needed > UINT32_MAX ? UINT32_MAX : uint32_t(needed);
+    if (needed32 <= m.heap_needed || m.stop.load()) {
+        return nullptr;
+    }
+    m.heap_needed = needed32;
+    ModuleStateNotify notify {};
+    fill_header(notify.call.header, MsgType::SystemCall, sizeof(notify), 0);
+    notify.call.method = uint16_t(SystemMethod::ModuleState);
+    notify.call.flags = CALL_FLAG_NOTIFY;
+    notify.module = m.index;
+    notify.state = uint8_t(ModuleStateKind::HeapNeeded);
+    notify.heap_size = needed32;
+    p.notify(p.platform, reinterpret_cast<const uint8_t *>(&notify), sizeof(notify));
+    return nullptr;
 }
 
 inline bool host_deallocate(ModuleContext &m, uint8_t *allocation)

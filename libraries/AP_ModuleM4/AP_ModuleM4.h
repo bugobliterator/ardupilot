@@ -195,6 +195,8 @@ private:
     bool _module_loaded[ModuleM4::MAX_MODULES];
     bool _module_running[ModuleM4::MAX_MODULES];
     uint32_t _module_crc[ModuleM4::MAX_MODULES];   // the CRC-32 the M7 served the M4 for it
+    uint32_t _heap_needed[ModuleM4::MAX_MODULES];  // the largest HeapNeeded reported for it
+    uint32_t _heap_required;          // the largest of them, for the pre-arm check
     uint32_t _served_crc;             // of the last module file the M4 closed
     uint32_t _loaded_checksum;        // XOR of _module_crc of the loaded modules
     uint32_t _running_checksum;       // ... of the running ones

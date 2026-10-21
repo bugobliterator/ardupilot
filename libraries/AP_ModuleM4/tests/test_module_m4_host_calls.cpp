@@ -17,6 +17,7 @@ struct FakeM7 {
     uint64_t last_token;
     uint8_t refresh_in[5];
     uint8_t last_notify_flags;
+    uint8_t last_notify[MAX_FRAME];
 };
 
 static int32_t fake_call(void *platform, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
@@ -39,6 +40,7 @@ static void fake_notify(void *platform, const uint8_t *frame, uint16_t len)
     BindingCallHeader call {};
     memcpy(&call, frame, len < sizeof(call) ? len : sizeof(call));
     m7.last_notify_flags = call.flags;
+    memcpy(m7.last_notify, frame, len);
 }
 /*
   The call policy from id 5: id 5 is local with the wire of libm.sinf (4 B in, 4 B out), id 20 the mirrored
@@ -242,12 +244,52 @@ TEST(ModuleM4HostCalls, TextChecksAndStop)
 TEST(ModuleM4HostCalls, DeallocationOfAForeignPointerFails)
 {
     Fixture f;
-    uint8_t *p = host_allocate(f.m, 32, 8);
+    uint8_t *p = host_allocate(f.m, 32, 8, f.platform);
     ASSERT_NE(p, nullptr);
     EXPECT_FALSE(host_deallocate(f.m, p + 16));
     EXPECT_TRUE(host_deallocate(f.m, p));
     EXPECT_FALSE(host_deallocate(f.m, p));
     EXPECT_TRUE(host_deallocate(f.m, nullptr));
+}
+
+static ModuleStateNotify last_state(const FakeM7 &m7)
+{
+    ModuleStateNotify notify;
+    memcpy(&notify, m7.last_notify, sizeof(notify));
+    return notify;
+}
+
+// the PR's heap expansion report: the M4 heap cannot expand, so a failed request reports the
+// initial heap the module needs, each time that grows
+TEST(ModuleM4HostCalls, FailedAllocationReportsTheHeapNeeded)
+{
+    Fixture f;   // 256 B heap
+    ASSERT_NE(host_allocate(f.m, 200, 8, f.platform), nullptr);
+    EXPECT_EQ(f.m7.notifies, 0U);
+    EXPECT_EQ(host_allocate(f.m, 100, 8, f.platform), nullptr);
+    ASSERT_EQ(f.m7.notifies, 1U);
+    ModuleStateNotify notify = last_state(f.m7);
+    EXPECT_EQ(notify.call.method, uint16_t(SystemMethod::ModuleState));
+    EXPECT_EQ(notify.call.flags, CALL_FLAG_NOTIFY);
+    EXPECT_EQ(notify.module, 0U);
+    EXPECT_EQ(notify.state, uint8_t(ModuleStateKind::HeapNeeded));
+    EXPECT_EQ(notify.heap_size, 256U + 112U);
+    // a smaller need is not reported again
+    EXPECT_EQ(host_allocate(f.m, 50, 8, f.platform), nullptr);
+    EXPECT_EQ(f.m7.notifies, 1U);
+    // a larger one is, alignment padding included
+    EXPECT_EQ(host_allocate(f.m, 1000, 64, f.platform), nullptr);
+    ASSERT_EQ(f.m7.notifies, 2U);
+    EXPECT_EQ(last_state(f.m7).heap_size, 256U + 1008U + 48U);
+    // invalid requests are not a heap need
+    EXPECT_EQ(host_allocate(f.m, 0, 8, f.platform), nullptr);
+    EXPECT_EQ(host_allocate(f.m, 4096, 3, f.platform), nullptr);
+    EXPECT_EQ(host_allocate(f.m, 4096, 8192, f.platform), nullptr);
+    EXPECT_EQ(f.m7.notifies, 2U);
+    // a stopping module's destructors are not reported
+    f.m.stop.store(true);
+    EXPECT_EQ(host_allocate(f.m, 4096, 8, f.platform), nullptr);
+    EXPECT_EQ(f.m7.notifies, 2U);
 }
 
 TEST(ModuleM4HostCalls, PanicRecordsAndReportsOnce)

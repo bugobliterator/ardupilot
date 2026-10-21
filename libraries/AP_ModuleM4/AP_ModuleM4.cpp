@@ -1095,6 +1095,15 @@ void AP_ModuleM4::module_state(const uint8_t *buf, uint16_t len)
         load_error(reason);
         GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Module fatal: %.36s", notify.text);
         break;
+    case ModuleM4::ModuleStateKind::HeapNeeded:
+        // the PR's report of an armed heap expansion, which the M4 heap cannot make
+        if (!_module_loaded[index] || notify.heap_size <= _heap_needed[index]) {
+            break;
+        }
+        _heap_needed[index] = notify.heap_size;
+        _heap_required = MAX(_heap_required, notify.heap_size);
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Module: %.24s initial heap needs %u", name, unsigned(notify.heap_size));
+        break;
     }
 }
 
@@ -1115,6 +1124,8 @@ void AP_ModuleM4::clear_modules()
     memset(_module_loaded, 0, sizeof(_module_loaded));
     memset(_module_running, 0, sizeof(_module_running));
     memset(_module_crc, 0, sizeof(_module_crc));
+    memset(_heap_needed, 0, sizeof(_heap_needed));
+    _heap_required = 0;
     _served_crc = 0;
     _loaded_checksum = 0;
     _running_checksum = 0;
@@ -1633,6 +1644,10 @@ bool AP_ModuleM4::arming_checks(size_t buflen, char *buffer, const AP_Module::Ru
     }
     if (_load_error[0] != 0) {
         hal.util->snprintf(buffer, buflen, "%s", _load_error);
+        return false;
+    }
+    if (_heap_required != 0) {
+        hal.util->snprintf(buffer, buflen, "Module: rebuild with initial heap at least %u", unsigned(_heap_required));
         return false;
     }
     uint32_t loaded, running;

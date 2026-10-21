@@ -532,6 +532,7 @@ void ModuleHost::publish()
     m.request = _platform.link->request;
     m.reply = _platform.link->reply;
     m.panic_text[0] = 0;
+    m.heap_needed = 0;
     m.ranges.rx = { uintptr_t(pointer(_rx_base)), _image.code_size() };
     m.ranges.rw = { uintptr_t(pointer(_rw_base)), _image.rw_memory_size() };
     m.ranges.stack = { uintptr_t(pointer(_layout.stack_base)), _layout.stack_top - _layout.stack_base };

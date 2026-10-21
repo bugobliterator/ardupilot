@@ -203,7 +203,8 @@ struct __attribute__((packed)) ListModulesReply { SystemReplyHeader reply; uint8
 static const uint16_t RESOLVE_MAX = 250;
 struct __attribute__((packed)) ResolveRequest { SystemCallHeader call; uint16_t count; uint16_t reserved; uint64_t hashes[RESOLVE_MAX]; };
 struct __attribute__((packed)) ResolveReply { SystemReplyHeader reply; uint16_t count; uint16_t reserved; uint32_t ids[RESOLVE_MAX]; };
-enum class ModuleStateKind : uint8_t { Loaded = 1, Started = 2, Returned = 3, Panicked = 4, Failed = 5 };
+// HeapNeeded: an allocation failed; heap_size is the initial heap the module needs at least
+enum class ModuleStateKind : uint8_t { Loaded = 1, Started = 2, Returned = 3, Panicked = 4, Failed = 5, HeapNeeded = 6 };
 struct __attribute__((packed)) ModuleStateNotify {
     SystemCallHeader call;   // CALL_FLAG_NOTIFY
     uint16_t module; uint8_t state; uint8_t reserved;
