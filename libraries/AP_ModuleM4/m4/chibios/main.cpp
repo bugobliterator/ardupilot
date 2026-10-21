@@ -175,6 +175,19 @@ static void host_start(void *, ModuleContext &module, const LoadLayout &layout, 
     module_port_start(module, layout, entry, rw_base);
 }
 
+static void host_request_stop(void *, ModuleContext &module)
+{
+    module_port_request_stop(module);
+}
+
+// M4Platform::stop_module, on the service thread: the loader runs its one module
+static void stop_module(uint16_t module)
+{
+    if (module == module_host.module().index) {
+        module_host.request_stop();
+    }
+}
+
 // faults the service performs
 static void inject_fault(FaultKind kind)
 {
@@ -329,7 +342,7 @@ int main(void)
 
     const M4Platform platform { millis_now, cycles_now, AP_MODULE_M4_CORE_CLOCK_HZ / 1000000U,
                                 inject_fault, module_port_wake, module_port_start_selftest,
-                                module_port_set_m7_millis, lock_service, unlock_service };
+                                module_port_set_m7_millis, lock_service, unlock_service, stop_module };
     module_port_init(call_link, service, wake_service);
     service.init(channel, window, call_link, platform);
     // module area writes are privileged writes through region 1
@@ -337,7 +350,7 @@ int main(void)
         &call_link, reinterpret_cast<uint8_t *>(AP_MODULE_M4_MODULE_AREA_BASE), AP_MODULE_M4_MODULE_AREA_BASE,
         AP_MODULE_M4_MODULE_AREA_SIZE, { 40, AP_MODULE_ABI_VERSION, 1, 0, AP_MODULE_API_FINGERPRINT },
         // the PR's thumbv7em host callback margin (Module.cpp)
-        4096, nullptr, host_config, host_binding_name, host_unpublish, nullptr, host_start
+        4096, nullptr, host_config, host_binding_name, host_unpublish, nullptr, host_start, host_request_stop
     };
     module_host.init(host_platform);
     while (true) {

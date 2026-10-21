@@ -163,4 +163,15 @@ TEST(ModuleM4RunControl, RestartNeedsTheEnable)
     EXPECT_EQ(disabled.update(true, false, false, RUNNING), RunAction::Restart);
 }
 
+TEST(ModuleM4RunControl, BackoffDoublesToThirtySeconds)
+{
+    EXPECT_EQ(restart_backoff_ms(1), 1000U);
+    EXPECT_EQ(restart_backoff_ms(2), 2000U);
+    EXPECT_EQ(restart_backoff_ms(3), 4000U);
+    EXPECT_EQ(restart_backoff_ms(5), 16000U);
+    EXPECT_EQ(restart_backoff_ms(6), 30000U);
+    EXPECT_EQ(restart_backoff_ms(200), 30000U);
+    EXPECT_EQ(restart_backoff_ms(0), 0U);   // a requested restart waits for nothing
+}
+
 AP_GTEST_MAIN()

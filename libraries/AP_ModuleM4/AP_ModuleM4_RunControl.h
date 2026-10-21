@@ -48,6 +48,20 @@ enum class RunAction : uint8_t {
     Restart,   // restart the M4 into a session that loads the modules
 };
 
+// the wait before the restart that follows the n-th fault restart (restarts_used, from 1): 1 s,
+// doubling, at most 30 s. A requested restart (0) waits for nothing
+inline uint32_t restart_backoff_ms(uint8_t restarts_used)
+{
+    if (restarts_used == 0) {
+        return 0;
+    }
+    const uint32_t backoff = restarts_used >= 6 ? 30000U : 1000U << (restarts_used - 1U);
+    return backoff < 30000U ? backoff : 30000U;
+}
+
+// a running module that does not report its stop within this long is reclaimed by a forced restart
+static const uint32_t MODULE_STOP_TIMEOUT_MS = 10000;
+
 class RunControl {
 public:
     // one pass of the host thread while an M4 session runs. enabled: whether modules should run;

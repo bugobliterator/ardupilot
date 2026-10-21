@@ -132,7 +132,17 @@ void ModuleHost::init(const ModuleHostPlatform &platform)
     _name[0] = 0;
     _closing = false;
     _length = 0;
+    _rx_base = 0;
+    _stop_pending = false;
     _module.state.store(0);
+}
+
+void ModuleHost::request_stop()
+{
+    _stop_pending = true;
+    if (_step == Step::Running && _platform.request_stop != nullptr) {
+        _platform.request_stop(_platform.context, _module);
+    }
 }
 
 void ModuleHost::post(uint16_t length)
@@ -189,6 +199,8 @@ void ModuleHost::post_module_state(ModuleStateKind kind)
     notify.heap_size = uint32_t(_config.heap_size);
     notify.stack_size = uint32_t(_config.stack_size);
     notify.crc = _image.checksum();
+    notify.rx_base = _rx_base;
+    notify.stack_base = _rx_base != 0 ? _layout.stack_base : 0;
     if (kind == ModuleStateKind::Failed) {
         copy_terminated(notify.text, sizeof(notify.text), _failure, sizeof(_failure));
     }
@@ -548,6 +560,9 @@ void ModuleHost::start()
         return;
     }
     _step = Step::Running;
+    if (_stop_pending) {
+        request_stop();
+    }
 }
 
 }  // namespace ModuleM4
