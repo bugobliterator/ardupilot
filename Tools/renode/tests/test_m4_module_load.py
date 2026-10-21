@@ -23,7 +23,7 @@ from pymavlink import DFReader
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from m4_module_harness import (RCC_GCR, ROOT, START_TIMEOUT, start_m4,  # noqa: E402, F401
-                             stop_and_read_log, wait_all)
+                               stop_and_read_log, wait_all)
 import fat_image  # noqa: E402  (Tools/renode, on the path the harness sets)
 
 MODULES = ROOT / 'libraries' / 'AP_Module' / 'tests' / 'modules'
@@ -37,11 +37,13 @@ TOOLS_PYTHON = os.environ.get('RUST_TOOLS_PYTHON', shutil.which('python3') or sy
 
 
 def build_module(name, directory):
-    '''m4 build of a test module (stack 16384); fails on any f64 software-float routine in it.'''
+    '''m4 build of a test module (stack 16384, initial heap 4096: the test modules do not allocate);
+    fails on any f64 software-float routine in it.'''
     output = directory / (name + '.apmod')
     try:
         subprocess.run([TOOLS_PYTHON, str(ROOT / 'Tools' / 'modules' / 'rust' / 'build.py'), str(MODULES / (name + '.rs')),
-                        str(output), '--target', 'thumbv7em-none-eabihf', '--stack-size', '16384'],
+                        str(output), '--target', 'thumbv7em-none-eabihf', '--stack-size', '16384',
+                        '--heap-size', '4096'],
                        cwd=ROOT, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as error:
         pytest.fail('build.py %s failed:\n%s%s' % (name, error.stdout, error.stderr))
