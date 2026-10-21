@@ -14,6 +14,14 @@ QUOTA_CLASSES = [('None', 0), ('Text', 1), ('Storage', 2), ('Led', 3), ('FileLog
                  ('MavTx', 7), ('Log', 8), ('Osd', 9), ('OsdFrame', 10)]
 FNV_OFFSET = 2166136261
 FNV_PRIME = 16777619
+FLAG_POSTED = 1
+FLAG_MIRROR_GET = 2
+FLAG_MIRROR_HANDLE_WRITER = 4
+FLAG_MIRROR_NAME_WRITER = 8
+MIRROR_ROLES = {'get': FLAG_MIRROR_GET, 'handle_writer': FLAG_MIRROR_HANDLE_WRITER,
+                'name_writer': FLAG_MIRROR_NAME_WRITER}
+# binding_mirror_role() values on the M4 (AP_RustM4_HostCalls.h MirrorRole)
+ROLE_VALUES = ((FLAG_MIRROR_GET, 1), (FLAG_MIRROR_HANDLE_WRITER, 2), (FLAG_MIRROR_NAME_WRITER, 3))
 
 
 def read_policy():
@@ -37,18 +45,41 @@ def local_ids(contract):
     return set(local_sizes(contract))
 
 
+def check_posted(name, contract, policy):
+    '''a posted binding returns nothing the module waits for and is no vehicle command'''
+    namespace = name.split('.', 1)[0]
+    if namespace in policy['fast_namespaces'] or name in policy['slow_methods']:
+        raise ValueError(f'posted binding {name} is a vehicle command (fast namespace or slow method)')
+    outputs = [a for a in contract['arguments'] if 'out' in str(a.get('direction', ''))]
+    if contract['result'] != 'void' or outputs:
+        raise ValueError(f'posted binding {name} has an output')
+
+
 def policy_table(entries, policy, local):
     quota_values = dict(QUOTA_CLASSES)
     names = {entry['contract']['name']: entry['id'] for entry in entries}
+    contracts_by_name = {entry['contract']['name']: entry['contract'] for entry in entries}
     namespaces = {name.split('.', 1)[0] for name in names}
+    posted = policy.get('posted', [])
+    mirrored = policy.get('mirrored', {})
     stale = ([name for name in policy['slow_methods'] if name not in names] +
              [name for name in policy['quotas'] if name not in names] +
-             [name for name in policy['fast_namespaces'] if name not in namespaces])
+             [name for name in policy['fast_namespaces'] if name not in namespaces] +
+             [name for name in posted if name not in names] + [name for name in mirrored if name not in names])
     if stale:
         raise ValueError('stale M4 policy entries: ' + ', '.join(sorted(stale)))
     for name, quota in policy['quotas'].items():
         if quota not in quota_values:
             raise ValueError(f'unknown quota class {quota} for {name}')
+    for name, role in mirrored.items():
+        if role not in MIRROR_ROLES:
+            raise ValueError(f'unknown mirror role {role} for {name}')
+    flags = {}
+    for name in posted:
+        check_posted(name, contracts_by_name[name], policy)
+        flags[names[name]] = flags.get(names[name], 0) | FLAG_POSTED
+    for name, role in mirrored.items():
+        flags[names[name]] = flags.get(names[name], 0) | MIRROR_ROLES[role]
     lanes = {}
     quotas = {}
     for name, binding_id in names.items():
@@ -62,25 +93,35 @@ def policy_table(entries, policy, local):
         found = lanes.get(binding_id, set())
         # an alias (two public names, one id) is fast only if every name is
         lane = next((choice for choice in ('Local', 'Slow', 'Fast') if choice in found), 'Unknown')
-        table[binding_id] = (lane, quotas.get(binding_id, 0))
+        table[binding_id] = (lane, quotas.get(binding_id, 0), flags.get(binding_id, 0))
     return table
 
 
-def catalogue_hash(entries, local):
+def catalogue_hash(entries, local, table=None):
+    texts = [f'{binding_id}:{binding_hash};'
+             for binding_id, binding_hash in sorted({(e['id'], e['hash']) for e in entries if e['id'] in local})]
+    if table is not None:
+        mirror_mask = FLAG_MIRROR_GET | FLAG_MIRROR_HANDLE_WRITER | FLAG_MIRROR_NAME_WRITER
+        texts += [f'P{binding_id};' for binding_id, (_, _, flags) in sorted(table.items()) if flags & FLAG_POSTED]
+        texts += [f'M{binding_id}:{flags & mirror_mask};'
+                  for binding_id, (_, _, flags) in sorted(table.items()) if flags & mirror_mask]
     state = FNV_OFFSET
-    for binding_id, binding_hash in sorted({(e['id'], e['hash']) for e in entries if e['id'] in local}):
-        for byte in f'{binding_id}:{binding_hash};'.encode('ascii'):
-            state = ((state ^ byte) * FNV_PRIME) & 0xFFFFFFFF
+    for byte in ''.join(texts).encode('ascii'):
+        state = ((state ^ byte) * FNV_PRIME) & 0xFFFFFFFF
     return state
 
 
 def policy_header(table, local_hash):
     lines = ['#pragma once', '#include <stdint.h>', '', 'namespace AP_Rust', '{',
              'enum class M4Lane : uint8_t { Unknown = 0, Fast = 1, Slow = 2, Local = 3 };',
-             'struct M4BindingPolicy {', '    M4Lane lane;', '    uint8_t quota;', '};',
+             'struct M4BindingPolicy {', '    M4Lane lane;', '    uint8_t quota;', '    uint8_t flags;', '};',
+             'static const uint8_t M4_FLAG_POSTED = 1U;', 'static const uint8_t M4_FLAG_MIRROR_GET = 2U;',
+             'static const uint8_t M4_FLAG_MIRROR_HANDLE_WRITER = 4U;',
+             'static const uint8_t M4_FLAG_MIRROR_NAME_WRITER = 8U;',
              f'static const uint32_t M4_BINDING_COUNT = {len(table)}U;',
              'static const M4BindingPolicy M4_BINDING_POLICY[M4_BINDING_COUNT] = {']
-    lines += [f'    {{ M4Lane::{lane}, {quota} }}, // {binding_id}' for binding_id, (lane, quota) in sorted(table.items())]
+    lines += [f'    {{ M4Lane::{lane}, {quota}, {flags} }}, // {binding_id}'
+              for binding_id, (lane, quota, flags) in sorted(table.items())]
     lines += ['};', f'static const uint32_t M4_LOCAL_CATALOGUE_HASH = 0x{local_hash:08X}U;', '}', '']
     return '\n'.join(lines)
 
@@ -122,9 +163,25 @@ def local_dispatch(libm, sizes, entries):
     return '\n'.join(lines)
 
 
+def policy_functions(table):
+    posted = sorted(i for i, (_, _, flags) in table.items() if flags & FLAG_POSTED)
+    lines = ['namespace AP_Rust', '{', 'bool binding_is_posted(uint32_t id)', '{', '    switch (id) {']
+    lines += [f'    case {binding_id}:' for binding_id in posted]
+    lines += ['        return true;'] if posted else []
+    lines += ['    default:', '        return false;', '    }', '}', '',
+              'uint8_t binding_mirror_role(uint32_t id)', '{', '    switch (id) {']
+    for binding_id, (_, _, flags) in sorted(table.items()):
+        role = next((value for flag, value in ROLE_VALUES if flags & flag), 0)
+        if role:
+            lines.append(f'    case {binding_id}: return {role}U;')
+    lines += ['    default:', '        return 0U;', '    }', '}', '}', '']
+    return '\n'.join(lines)
+
+
 def emit(contract, entries):
     sizes = local_sizes(contract)
     local = set(sizes)
     table = policy_table(entries, read_policy(), local)
-    return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local)),
-            'BindingLocal_generated.cpp': local_dispatch(contract['libm'], sizes, entries)}
+    return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local, table)),
+            'BindingLocal_generated.cpp': local_dispatch(contract['libm'], sizes, entries) + '\n' +
+            policy_functions(table)}

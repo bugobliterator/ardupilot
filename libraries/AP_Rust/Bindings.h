@@ -22,6 +22,10 @@ bool binding_is_local(uint32_t id);
 bool binding_local_wire(uint32_t id, uint32_t &input_size, uint32_t &output_size);
 int32_t binding_local_dispatch(uint32_t id, const uint8_t *input, uint32_t input_size, uint8_t *output,
                                uint32_t output_size);
+// M4 builds: ids the M4 sends without waiting for a reply, and the Parameter mirror role of an id
+// (0 none, 1 Parameter.get, 2 a Parameter handle writer, 3 a by-name parameter writer)
+bool binding_is_posted(uint32_t id);
+uint8_t binding_mirror_role(uint32_t id);
 struct LocalImport {
     uint64_t hash;
     uint32_t id;
