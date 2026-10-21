@@ -340,10 +340,11 @@ int main(void)
         inject_fault(FaultKind::HardFault);
     }
 
+    module_port_init(call_link, service, wake_service);
     const M4Platform platform { millis_now, cycles_now, AP_RUST_M4_CORE_CLOCK_HZ / 1000000U,
                                 inject_fault, module_port_wake, module_port_start_selftest,
-                                module_port_set_m7_millis, lock_service, unlock_service, stop_module };
-    module_port_init(call_link, service, wake_service);
+                                module_port_set_m7_millis, lock_service, unlock_service, stop_module,
+                                &module_port_call_probe() };
     service.init(channel, window, call_link, platform);
     // module area writes are privileged writes through region 1
     const ModuleHostPlatform host_platform {
@@ -360,9 +361,11 @@ int main(void)
         service.step();
         module_host.step();
         // bounded sleep (Channel contract): a doorbell can be deferred while the HSEM is busy
+        bool poll_timeout = false;
         if (channel.prepareSleep()) {
-            (void)chBSemWaitTimeout(&doorbell, TIME_MS2I(5));
+            poll_timeout = chBSemWaitTimeout(&doorbell, TIME_MS2I(5)) == MSG_TIMEOUT;
         }
         channel.wake();
+        service.note_wake(poll_timeout);
     }
 }

@@ -85,6 +85,32 @@ enum class ReplyStatus : uint8_t {
 static const uint16_t CALL_FLAG_NOTIFY = 1;   // no reply
 // BindingReplyHeader.reserved2: a ParameterChanged for this module failed to go out since its last reply
 static const uint16_t REPLY_FLAG_MIRROR_RESYNC = 1;
+// a binding call with a CallProbeTrailer after its input (the call latency probe)
+static const uint16_t CALL_FLAG_PROBE = 2;
+// RUST_M4_OPTS bit, sent in ConfigReply::m4_options: the M4 probes this session's binding calls
+static const uint8_t M4_OPTION_CALL_PROBE = 1U << 2;
+
+/*
+  The M4's stamps of a probed binding call (TIM5's count, the counter the M7
+  stamps with too). The stamps the M4 takes after the send (sent, reply seen,
+  return) come in the trailer of the module's next probed call. Untrusted on
+  the M7: logged only.
+ */
+struct __attribute__((packed)) CallProbeTrailer {
+    uint32_t svc_entry_us;     // the module's call entered the host
+    uint32_t pre_send_us;      // set by the service as it sends the frame
+    uint32_t stamp_cycles;     // M4 core cycles of one counter read
+    uint32_t prev_seq;         // the previous probed call of this module; 0: none to complete
+    uint32_t prev_sent_us;
+    uint32_t prev_reply_seen_us;
+    uint32_t prev_return_us;
+    uint16_t prev_flags;       // PROBE_M4_* of that call
+    uint16_t reserved;
+};
+// CallProbeTrailer::prev_flags, the values of AP_Rust::CALL_M4_* (AP_Rust/CallLatency.h)
+static const uint16_t PROBE_M4_SLEPT = 1U << 2;          // the module thread slept for its reply
+static const uint16_t PROBE_M4_POLL_WAKE = 1U << 3;      // the service's wait before the reply timed out
+static const uint16_t PROBE_M4_SENT_BY_STEP = 1U << 4;   // the service's step sent it, not the module thread
 
 struct __attribute__((packed)) BindingCallHeader {
     MsgHeader header;   // BindingCall; seq set by the service
@@ -303,10 +329,18 @@ inline uint16_t pack_parameter_changed(uint8_t *frame, uint16_t cap, uint32_t se
     return uint16_t(length);
 }
 
+// with a trailer, CALL_FLAG_PROBE is set and the trailer follows the input
 inline uint16_t pack_binding_call(uint8_t *frame, uint16_t cap, uint32_t seq, uint16_t module, uint16_t flags,
-                                  uint32_t id, const uint8_t *input, uint16_t in_size, uint16_t out_size)
+                                  uint32_t id, const uint8_t *input, uint16_t in_size, uint16_t out_size,
+                                  const CallProbeTrailer *trailer = nullptr)
 {
-    const uint32_t length = uint32_t(sizeof(BindingCallHeader)) + in_size;
+    const uint32_t trailer_size = trailer != nullptr ? uint32_t(sizeof(CallProbeTrailer)) : 0U;
+    const uint32_t length = uint32_t(sizeof(BindingCallHeader)) + in_size + trailer_size;
+    if (trailer != nullptr) {
+        flags |= CALL_FLAG_PROBE;
+    } else {
+        flags = uint16_t(flags & ~CALL_FLAG_PROBE);
+    }
     if (length > MAX_FRAME || length > cap || out_size > MAX_REPLY_OUTPUT || (in_size != 0 && input == nullptr)) {
         return 0;
     }
@@ -321,6 +355,9 @@ inline uint16_t pack_binding_call(uint8_t *frame, uint16_t cap, uint32_t seq, ui
     if (in_size != 0) {
         memcpy(frame + sizeof(h), input, in_size);
     }
+    if (trailer != nullptr) {
+        memcpy(frame + sizeof(h) + in_size, trailer, sizeof(*trailer));
+    }
     return uint16_t(length);
 }
 
@@ -330,8 +367,20 @@ inline bool parse_binding_call(const uint8_t *frame, uint16_t len, BindingCallHe
         return false;
     }
     memcpy(&h, frame, sizeof(h));
+    const uint32_t trailer_size = (h.flags & CALL_FLAG_PROBE) != 0 ? uint32_t(sizeof(CallProbeTrailer)) : 0U;
     return h.header.type == uint8_t(MsgType::BindingCall) && h.header.length == len &&
-           uint32_t(sizeof(h)) + h.in_size == len && h.out_size <= MAX_REPLY_OUTPUT;
+           uint32_t(sizeof(h)) + h.in_size + trailer_size == len && h.out_size <= MAX_REPLY_OUTPUT;
+}
+
+// the trailer of a probed call that parse_binding_call() accepted; false if it has none
+inline bool binding_call_trailer(const uint8_t *frame, uint16_t len, const BindingCallHeader &h,
+                                 CallProbeTrailer &trailer)
+{
+    if ((h.flags & CALL_FLAG_PROBE) == 0 || len < sizeof(h) + sizeof(trailer)) {
+        return false;
+    }
+    memcpy(&trailer, frame + len - sizeof(trailer), sizeof(trailer));
+    return true;
 }
 
 inline uint16_t pack_binding_reply(uint8_t *frame, uint16_t cap, uint32_t seq, ReplyStatus transport, int32_t status,

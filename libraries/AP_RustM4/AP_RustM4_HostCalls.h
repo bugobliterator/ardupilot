@@ -11,6 +11,7 @@
 #include <atomic>
 #include <stdint.h>
 #include <string.h>
+#include "AP_RustM4_CallProbe.h"
 #include "AP_RustM4_CallStatus.h"
 #include "AP_RustM4_GranuleHeap.h"
 #include "AP_RustM4_ModuleRanges.h"
@@ -47,6 +48,7 @@ struct HostPlatform {
     // a forwarded Parameter.get answered OK: out5 refreshes the module's STALE entry (never inserts)
     void (*mirror_refresh)(void *platform, uint16_t module, uint64_t token, const uint8_t *out5);
     bool (*is_posted)(uint32_t id);
+    M4CallProbe *probe;   // the call latency probe; may be null
 };
 
 struct ModuleContext {
@@ -69,6 +71,8 @@ inline void *module_token(uint16_t index)
 
 inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, const HostPlatform &p)
 {
+    M4CallProbe *probe = probing(p.probe) ? p.probe : nullptr;
+    const uint32_t entry_us = probe != nullptr ? probe->clock_us() : 0;
     if (m.stop.load()) {
         return STATUS_STOPPED;
     }
@@ -117,8 +121,16 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     const bool settle = role == MirrorRole::HandleWriter && a.input_size >= sizeof(token) &&
                         p.mirror_pending != nullptr && p.mirror_settle != nullptr;
+    // probed when the trailer fits the frame
+    CallProbeTrailer trailer {};
+    if (probe != nullptr && a.input_size + sizeof(trailer) <= MAX_CALL_INPUT) {
+        trailer = begin_probed_call(*probe, entry_us);
+    } else {
+        probe = nullptr;
+    }
     const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, 0, a.id, a.input,
-                                              uint16_t(a.input_size), uint16_t(a.output_size));
+                                              uint16_t(a.input_size), uint16_t(a.output_size),
+                                              probe != nullptr ? &trailer : nullptr);
     if (length == 0) {
         return STATUS_INVALID;
     }
@@ -144,6 +156,9 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     if (settle) {
         p.mirror_settle(p.platform, m.index, token);
+    }
+    if (probe != nullptr) {
+        end_probed_call(*probe, result > 0, probe->clock_us());
     }
     return status;
 }
