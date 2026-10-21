@@ -25,8 +25,9 @@ static_assert(ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_POINTER_LOCK_FREE == 2,
 /*
   M7 side of a module's binding call: the PR's generated binding_dispatch() with the module's
   ModuleSlot as owner. The adapters do not all check their sizes, so whatever a frame says they
-  read a zeroed 4096 B input copy and write a 4096 B output buffer; the frame limits are the only
-  size checks. One thread at a time (the host thread or the slow worker it waits for).
+  write a 4096 B output buffer and read either the frame itself (when it carries the adapter's whole
+  generated input wire) or a zeroed 4096 B input copy; the frame limits are the only size checks.
+  One thread at a time (the host thread or the slow worker it waits for).
  */
 class AP_ModuleM4_Server {
 public:
@@ -120,6 +121,17 @@ public:
     void fill_input_for_test(uint8_t byte);
     // whether _in[from..SERVE_BUFFER_SIZE) was zero when the last adapter ran
     bool last_input_tail_zero(uint16_t from) const { return _last_input_end <= from; }
+    // whether the cleared head of _out was zero when the last adapter ran, and its length
+    bool output_was_zero_for_test() const { return _last_output_zero; }
+    uint16_t last_output_clear() const { return _last_output_clear; }
+    // whether the last adapter read its input from the frame instead of the copy
+    bool last_input_from_frame() const { return _last_input_from_frame; }
+    // bytes of _out cleared before an adapter of id runs with out_size requested
+    static uint16_t output_clear_size(uint32_t id, uint16_t out_size);
+    void fill_output_for_test(uint8_t byte);
+    // dispatch id with its exact wire sizes after clearing its output only; false if the adapter
+    // wrote past its generated output size
+    bool dispatch_within_wire(uint32_t id);
     bool last_dispatch_ran() const { return _last_dispatch_ran; }
     uint32_t ended_modules() const { return _ended_modules; }
     // binding_crsf_cleanup() creates and initialises AP_CRSF_Telem when disarmed, which a gtest
@@ -136,18 +148,20 @@ public:
 #endif
 
 private:
-    int32_t dispatch(uint16_t module, uint32_t id, uint16_t in_size, uint16_t out_size);
+    int32_t dispatch(uint16_t module, uint32_t id, const uint8_t *input, uint16_t in_size, uint16_t out_size);
     // the PR's Parameter.* adapters take the address of a Parameter in module memory and use
     // it: here the address is a token only, of an M7-owned Parameter of the module
-    int32_t serve_parameter(uint16_t module, uint32_t id);
+    int32_t serve_parameter(uint16_t module, uint32_t id, const uint8_t *input);
     int16_t find_handle(uint16_t module, uint64_t token, bool insert);
     void erase_handle(uint16_t slot);
     void release_handles(uint16_t module);
     void clear_handles();
     static uint16_t handle_home(uint16_t module, uint64_t token);
 
-    uint8_t _in[SERVE_BUFFER_SIZE];
-    uint8_t _out[SERVE_BUFFER_SIZE];
+    alignas(4) uint8_t _in[SERVE_BUFFER_SIZE];
+    alignas(4) uint8_t _out[SERVE_BUFFER_SIZE];
+    // leading bytes of _in that may be non-zero; everything past them is zero
+    uint16_t _in_dirty = SERVE_BUFFER_SIZE;
     ModuleM4::ModuleSlot _slots[ModuleM4::MAX_MODULES];
     uint8_t _module_count = 0;
     ModuleM4::Quota _quotas;
@@ -171,6 +185,9 @@ private:
     PostedOutcome _last_posted_outcome = PostedOutcome::NotPosted;
 #if AP_MODULE_M4_TEST_HOOKS
     uint16_t _last_input_end = 0;   // one past the last non-zero input byte at the last dispatch
+    bool _last_output_zero = false;
+    uint16_t _last_output_clear = 0;
+    bool _last_input_from_frame = false;
     bool _last_dispatch_ran = false;
     uint32_t _ended_modules = 0;
     bool _cleanups_run = true;

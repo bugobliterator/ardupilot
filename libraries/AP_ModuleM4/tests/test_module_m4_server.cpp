@@ -128,22 +128,180 @@ TEST(ModuleM4Server, NoAdapterWritesPastTheFrame)
     EXPECT_GT(served, 300U);
 }
 
+// a fast id a gtest can run whose generated input wire is longer than min_input: a frame of
+// min_input bytes gets the zero-padded copy
+static uint32_t fast_id_without_vehicle(uint16_t min_input = 64)
+{
+    uint32_t id = 0;
+    while (id < AP_Module::M4_BINDING_COUNT && (AP_Module::M4_BINDING_POLICY[id].lane != AP_Module::M4Lane::Fast ||
+                                              AP_ModuleM4_Server::needs_vehicle(id) ||
+                                              AP_Module::M4_BINDING_WIRE[id][0] <= min_input)) {
+        id++;
+    }
+    return id;
+}
+
 // a short frame's missing input reads as zeros, not as the previous call's bytes
 TEST(ModuleM4Server, ShortInputReadsZeros)
 {
     AP_ModuleM4_Server server;
     server.reset(1, 1);
     server.fill_input_for_test(0xCC);
-    uint32_t id = 0;
-    while (id < AP_Module::M4_BINDING_COUNT && (AP_Module::M4_BINDING_POLICY[id].lane != AP_Module::M4Lane::Fast ||
-                                              AP_ModuleM4_Server::needs_vehicle(id))) {
-        id++;
-    }
+    const uint32_t id = fast_id_without_vehicle();
     ASSERT_LT(id, AP_Module::M4_BINDING_COUNT);
     uint8_t frame[MAX_FRAME];
     serve(server, frame, call(frame, id, 4, 4));
     EXPECT_TRUE(server.last_dispatch_ran());
+    EXPECT_FALSE(server.last_input_from_frame());
     EXPECT_TRUE(server.last_input_tail_zero(4));
+}
+
+// the bytes of a longer earlier input are zero past a shorter later one
+TEST(ModuleM4Server, StaleInputIsZeroBeyondTheNewInput)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    const uint32_t id = fast_id_without_vehicle();
+    ASSERT_LT(id, AP_Module::M4_BINDING_COUNT);
+    uint8_t input[64];
+    memset(input, 0x11, sizeof(input));
+    uint8_t frame[MAX_FRAME];
+    serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, 64, 4));
+    EXPECT_FALSE(server.last_input_from_frame());
+    EXPECT_FALSE(server.last_input_tail_zero(8));
+    serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, 8, 4));
+    EXPECT_TRUE(server.last_dispatch_ran());
+    EXPECT_TRUE(server.last_input_tail_zero(8));
+}
+
+// an adapter's output does not reach the next call's output buffer
+TEST(ModuleM4Server, StaleOutputIsZeroBeforeTheNextCall)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    uint8_t frame[MAX_FRAME];
+    const uint32_t layout = uint32_t(AP_Module::BindingId::PARAMETER_LAYOUT);   // writes a non-zero size
+    serve(server, frame, call(frame, layout, 0, 8));
+    EXPECT_TRUE(server.output_was_zero_for_test());
+    serve(server, frame, call(frame, layout, 0, 8));
+    EXPECT_TRUE(server.output_was_zero_for_test());
+}
+
+TEST(ModuleM4Server, ResetClearsTheWholeBuffers)
+{
+    AP_ModuleM4_Server server;
+    server.run_cleanups_for_test(false);
+    server.reset(1, 1);
+    server.fill_input_for_test(0xFF);
+    server.reset(2, 1);
+    const uint32_t id = fast_id_without_vehicle();
+    ASSERT_LT(id, AP_Module::M4_BINDING_COUNT);
+    uint8_t frame[MAX_FRAME];
+    serve(server, frame, call(frame, id, 4, 4));
+    EXPECT_TRUE(server.last_input_tail_zero(4));
+    EXPECT_TRUE(server.output_was_zero_for_test());
+}
+
+// the output clear of an id is its generated output wire, or out_size if a frame asks for more; the
+// whole frame where the wire is not generated
+TEST(ModuleM4Server, OutputClearIsTheWireSize)
+{
+    uint32_t known = 0;
+    for (uint32_t id = 0; id < AP_Module::M4_BINDING_COUNT; id++) {
+        const uint16_t wire = AP_Module::M4_BINDING_WIRE[id][1];
+        if (wire == AP_Module::M4_WIRE_UNKNOWN) {
+            EXPECT_EQ(AP_ModuleM4_Server::output_clear_size(id, 0), MAX_FRAME);
+            continue;
+        }
+        ASSERT_LE(wire, MAX_REPLY_OUTPUT) << "id " << id;
+        EXPECT_EQ(AP_ModuleM4_Server::output_clear_size(id, wire), wire) << "id " << id;
+        EXPECT_EQ(AP_ModuleM4_Server::output_clear_size(id, 0), wire) << "id " << id;
+        EXPECT_EQ(AP_ModuleM4_Server::output_clear_size(id, uint16_t(wire + 7)), wire + 7U) << "id " << id;
+        known++;
+    }
+    EXPECT_GT(known, 450U);
+}
+
+// no adapter writes past its generated output wire, so clearing that much leaves no stale byte it
+// could return
+TEST(ModuleM4Server, AdaptersWriteWithinTheirOutputWire)
+{
+    AP_ModuleM4_Server server;
+    server.run_cleanups_for_test(false);
+    server.reset(1, 1);
+    uint32_t checked = 0;
+    for (uint32_t id = 0; id < AP_Module::M4_BINDING_COUNT; id++) {
+        const auto lane = AP_Module::M4_BINDING_POLICY[id].lane;
+        if (lane == AP_Module::M4Lane::Unknown || lane == AP_Module::M4Lane::Local ||
+            AP_Module::M4_BINDING_WIRE[id][1] == AP_Module::M4_WIRE_UNKNOWN || AP_ModuleM4_Server::needs_vehicle(id)) {
+            continue;
+        }
+        EXPECT_TRUE(server.dispatch_within_wire(id)) << "adapter " << id << " wrote past its output wire";
+        checked++;
+    }
+    EXPECT_GT(checked, 300U);
+}
+
+// a reply carries out_size bytes of _out, never more than the call cleared, all zero before the adapter
+TEST(ModuleM4Server, ReplyNeverReadsPastTheClear)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    static uint8_t frame[MAX_FRAME];
+    static uint8_t reply[MAX_FRAME];
+    static uint8_t input[MAX_CALL_INPUT];
+    uint32_t served = 0;
+    for (uint32_t id = 0; id < AP_Module::M4_BINDING_COUNT; id++) {
+        const uint16_t in_wire = AP_Module::M4_BINDING_WIRE[id][0];
+        const uint16_t out_wire = AP_Module::M4_BINDING_WIRE[id][1];
+        if (AP_Module::M4_BINDING_POLICY[id].lane != AP_Module::M4Lane::Fast || in_wire == AP_Module::M4_WIRE_UNKNOWN ||
+            out_wire == AP_Module::M4_WIRE_UNKNOWN || AP_ModuleM4_Server::needs_vehicle(id)) {
+            continue;
+        }
+        server.fill_output_for_test(0xA5);
+        const uint16_t len = pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, in_wire, out_wire);
+        const uint16_t reply_len = server.serve_binding(frame, len, reply, sizeof(reply), 1000);
+        BindingReplyHeader h {};
+        const uint8_t *body = nullptr;
+        ASSERT_TRUE(parse_binding_reply(reply, reply_len, h, body));
+        EXPECT_TRUE(server.last_dispatch_ran());
+        EXPECT_EQ(server.last_output_clear(), out_wire) << "id " << id;
+        EXPECT_TRUE(server.output_was_zero_for_test()) << "id " << id;
+        EXPECT_LE(reply_len - sizeof(BindingReplyHeader), server.last_output_clear()) << "id " << id;
+        served++;
+    }
+    EXPECT_GT(served, 150U);
+}
+
+// a frame with the adapter's whole input wire is read in place: no copy, the copy buffer untouched
+TEST(ModuleM4Server, FullInputIsReadFromTheFrame)
+{
+    AP_ModuleM4_Server server;
+    server.reset(1, 1);
+    const uint32_t id = fast_id_without_vehicle(4);
+    ASSERT_LT(id, AP_Module::M4_BINDING_COUNT);
+    const uint16_t wire = AP_Module::M4_BINDING_WIRE[id][0];
+    ASSERT_NE(wire, AP_Module::M4_WIRE_UNKNOWN);
+    server.fill_input_for_test(0xCC);
+    uint8_t input[MAX_CALL_INPUT] {};
+    uint8_t frame[MAX_FRAME];
+    serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, wire, 4));
+    EXPECT_TRUE(server.last_input_from_frame());
+    // one byte short: the copy, zero past the frame's input although the buffer was dirty
+    serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, id, input, uint16_t(wire - 1), 4));
+    EXPECT_FALSE(server.last_input_from_frame());
+    EXPECT_TRUE(server.last_input_tail_zero(uint16_t(wire - 1)));
+    // a hand-written adapter (no generated input wire) always gets the copy
+    uint32_t hand = 0;
+    while (hand < AP_Module::M4_BINDING_COUNT && (AP_Module::M4_BINDING_POLICY[hand].lane != AP_Module::M4Lane::Fast ||
+                                                AP_Module::M4_BINDING_WIRE[hand][0] != AP_Module::M4_WIRE_UNKNOWN ||
+                                                AP_ModuleM4_Server::needs_vehicle(hand))) {
+        hand++;
+    }
+    if (hand < AP_Module::M4_BINDING_COUNT) {
+        serve(server, frame, pack_binding_call(frame, MAX_FRAME, 42, 0, 0, hand, input, MAX_CALL_INPUT, 4));
+        EXPECT_FALSE(server.last_input_from_frame());
+    }
 }
 
 // a new session ends every slot of the old one, through every PR cleanup
