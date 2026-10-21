@@ -7752,7 +7752,7 @@ return update()
         lanes = {}
         with open(path) as header:
             for line in header:
-                m = re.match(r'\s*\{ M4Lane::(\w+), \d+ \}, // (\d+)$', line)
+                m = re.match(r'\s*\{ M4Lane::(\w+), \d+, \d+ \}, // (\d+)$', line)
                 if m is not None:
                     lanes[int(m.group(2))] = m.group(1)
         if not lanes:
