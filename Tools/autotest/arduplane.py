@@ -7503,7 +7503,7 @@ return update()
         self.wait_text(r'Module: started on M4 \(0 modules, M4 RAM 224KB\)', regex=True, check_context=True, timeout=30)
         # the M4 process dies: the supervisor restarts it with a new session
         os.kill(self.module_m4_pid(), signal.SIGKILL)
-        fault = r'Module: M4 fault \(process exit\), restarting \(1/3\)'
+        fault = r'Module: M4 fault \(process exit\), restart \(1/3\)'
         self.wait_text(fault, regex=True, check_context=True, timeout=30)
         # the collection holds the first session's start text too: look only after the fault. The
         # restart waits 1 s of wall time (backoff), many seconds of sim time at speedup
@@ -7645,7 +7645,7 @@ return update()
         self.wait_text(r'Module: started on M4 \(0 modules', regex=True, check_context=True, timeout=30)
         for used in (1, 2, 3):
             os.kill(self.module_m4_pid(), signal.SIGKILL)
-            fault = 'Module: M4 fault (process exit), restarting (%u/3)' % used
+            fault = 'Module: M4 fault (process exit), restart (%u/3)' % used
             self.wait_text(fault, check_context=True, timeout=60)
             self.wait_module_m4_started_after(re.escape(fault), timeout=600)
             # the restart waited restart_backoff_ms(used) of wall time: 1, 2, 4 s
@@ -7730,7 +7730,7 @@ return update()
         '''STATUSTEXT patterns (re.match) that end an M4 test at once: an M4 fault or restart'''
         return [
             r'Module: M4 (HardFault|MemManage|BusFault|UsageFault|heartbeat lost|protocol errors|fault)',
-            r'.*restarting',
+            r'.*, restart \(',
             r'.*off until reboot',
         ]
 
