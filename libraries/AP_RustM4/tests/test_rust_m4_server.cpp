@@ -158,6 +158,142 @@ TEST(RustM4Server, EndModuleCallsEveryCleanup)
     server.end_module(5);   // no such module: nothing
     EXPECT_EQ(server.ended_modules(), 2U);
 }
+
+// a Parameter.* call with the module's handle address in input[0..8) and, from 8, its argument
+static int32_t parameter_call(AP_RustM4_Server &server, AP_Rust::BindingId id, uint64_t token, const void *argument,
+                              uint16_t argument_size, uint16_t in_size, uint16_t out_size, uint8_t *out = nullptr,
+                              uint16_t module = 0)
+{
+    uint8_t input[64] {};
+    memcpy(input, &token, sizeof(token));
+    memcpy(input + 8, argument, argument_size);
+    uint8_t frame[MAX_FRAME];
+    static uint8_t reply[MAX_FRAME];
+    const uint16_t len = pack_binding_call(frame, MAX_FRAME, 42, module, 0, uint32_t(id), input, in_size, out_size);
+    const uint16_t reply_len = server.serve_binding(frame, len, reply, sizeof(reply), 1000);
+    BindingReplyHeader h {};
+    const uint8_t *body = nullptr;
+    EXPECT_TRUE(parse_binding_reply(reply, reply_len, h, body));
+    EXPECT_EQ(h.transport, uint8_t(ReplyStatus::Ok));
+    if (out != nullptr && body != nullptr) {
+        memcpy(out, body, h.out_size);
+    }
+    return h.status;
+}
+
+static int32_t parameter_init(AP_RustM4_Server &server, uint64_t token, uint16_t module = 0)
+{
+    char name[17] = "NO_SUCH_PARAM";
+    return parameter_call(server, AP_Rust::BindingId::PARAMETER_INIT, token, name, sizeof(name), 25, 1, nullptr,
+                          module);
+}
+
+static int32_t parameter_get(AP_RustM4_Server &server, uint64_t token, uint16_t module = 0)
+{
+    return parameter_call(server, AP_Rust::BindingId::PARAMETER_GET, token, nullptr, 0, 8, 5, nullptr, module);
+}
+
+// the module's Parameter address is a token: an address in M4 RAM or on this stack is never touched
+TEST(RustM4Server, ParameterAddressIsATokenOnly)
+{
+    AP_RustM4_Server server;
+    server.bind_parameters_for_test(false);
+    server.run_cleanups_for_test(false);
+    server.reset(1, 1);
+    alignas(16) uint8_t guard[64];
+    memset(guard, 0xA5, sizeof(guard));
+    const uint64_t tokens[] { 0x30010020ULL, uint64_t(uintptr_t(guard + 16)) };
+    for (const uint64_t token : tokens) {
+        EXPECT_EQ(parameter_init(server, token), AP_RUST_STATUS_OK);
+        uint8_t out[5] { 0xEE, 0xEE, 0xEE, 0xEE, 0xEE };
+        EXPECT_EQ(parameter_call(server, AP_Rust::BindingId::PARAMETER_GET, token, nullptr, 0, 8, 5, out),
+                  AP_RUST_STATUS_OK);
+        EXPECT_EQ(out[0], 0U);   // NO_SUCH_PARAM: unbound, as the PR's adapter answers
+        const float value = 1.0f;
+        IGNORE_RETURN(parameter_call(server, AP_Rust::BindingId::PARAMETER_SET, token, &value, sizeof(value), 12, 1));
+        IGNORE_RETURN(parameter_call(server, AP_Rust::BindingId::PARAMETER_SET_AND_SAVE, token, &value, sizeof(value),
+                                     12, 1));
+        IGNORE_RETURN(parameter_call(server, AP_Rust::BindingId::PARAMETER_SET_DEFAULT, token, &value, sizeof(value),
+                                     12, 1));
+        EXPECT_EQ(parameter_call(server, AP_Rust::BindingId::PARAMETER_CONFIGURED, token, nullptr, 0, 8, 1),
+                  AP_RUST_STATUS_OK);
+    }
+    for (const uint8_t byte : guard) {
+        EXPECT_EQ(byte, 0xA5);
+    }
+    EXPECT_EQ(server.parameter_handles(), 2U);
+    // a token that init never named, a misaligned one, zero, and another module's
+    EXPECT_EQ(parameter_get(server, 0x30010040ULL), AP_RUST_STATUS_INVALID);
+    EXPECT_EQ(parameter_get(server, 0x30010021ULL), AP_RUST_STATUS_INVALID);
+    EXPECT_EQ(parameter_get(server, 0), AP_RUST_STATUS_INVALID);
+    server.reset(2, 2);
+    EXPECT_EQ(parameter_init(server, 0x30010020ULL, 0), AP_RUST_STATUS_OK);
+    EXPECT_EQ(parameter_get(server, 0x30010020ULL, 1), AP_RUST_STATUS_INVALID);
+}
+
+// ending one module removes only its handles: every other module's still resolves
+TEST(RustM4Server, EndModuleKeepsOtherModulesHandles)
+{
+    AP_RustM4_Server server;
+    server.bind_parameters_for_test(false);
+    server.run_cleanups_for_test(false);
+    server.reset(1, 3);
+    for (uint32_t i = 0; i < 70; i++) {
+        for (uint16_t module = 0; module < 3; module++) {
+            EXPECT_EQ(parameter_init(server, 0x30010000ULL + i * 16, module), AP_RUST_STATUS_OK);
+        }
+    }
+    EXPECT_EQ(server.parameter_handles(), 210U);
+    server.end_module(1);
+    EXPECT_EQ(server.parameter_handles(), 140U);
+    for (uint32_t i = 0; i < 70; i++) {
+        EXPECT_EQ(parameter_get(server, 0x30010000ULL + i * 16, 0), AP_RUST_STATUS_OK);
+        EXPECT_EQ(parameter_get(server, 0x30010000ULL + i * 16, 1), AP_RUST_STATUS_INVALID);
+        EXPECT_EQ(parameter_get(server, 0x30010000ULL + i * 16, 2), AP_RUST_STATUS_OK);
+    }
+}
+
+// the AirShow's shape: the layout, then about 110 handles read every tick; freed at module end
+TEST(RustM4Server, ParameterHandlesAreBoundedAndFreed)
+{
+    AP_RustM4_Server server;
+    server.bind_parameters_for_test(false);
+    server.run_cleanups_for_test(false);
+    server.reset(1, 1);
+    uint8_t layout[8] {};
+    EXPECT_EQ(parameter_call(server, AP_Rust::BindingId::PARAMETER_LAYOUT, 0, nullptr, 0, 0, 8, layout),
+              AP_RUST_STATUS_OK);
+    uint32_t size, alignment;
+    memcpy(&size, layout, 4);
+    memcpy(&alignment, layout + 4, 4);
+    EXPECT_EQ(size, sizeof(Parameter));
+    EXPECT_EQ(alignment, alignof(Parameter));
+    const uint64_t base = 0x30010000ULL;
+    for (uint32_t i = 0; i < 110; i++) {
+        EXPECT_EQ(parameter_init(server, base + i * size), AP_RUST_STATUS_OK);
+    }
+    for (uint32_t tick = 0; tick < 3; tick++) {
+        for (uint32_t i = 0; i < 110; i++) {
+            EXPECT_EQ(parameter_get(server, base + i * size), AP_RUST_STATUS_OK);
+        }
+    }
+    // init again on a live handle rebinds it: no new entry
+    EXPECT_EQ(parameter_init(server, base), AP_RUST_STATUS_OK);
+    EXPECT_EQ(server.parameter_handles(), 110U);
+    server.end_module(0);
+    EXPECT_EQ(server.parameter_handles(), 0U);
+    EXPECT_EQ(parameter_get(server, base), AP_RUST_STATUS_INVALID);
+    for (uint32_t i = 0; i < AP_RustM4_Server::PARAMETER_HANDLES_MAX; i++) {
+        EXPECT_EQ(parameter_init(server, base + i * size), AP_RUST_STATUS_OK);
+    }
+    EXPECT_EQ(parameter_init(server, base + AP_RustM4_Server::PARAMETER_HANDLES_MAX * size),
+              AP_RUST_STATUS_NO_MEMORY);
+    for (uint32_t i = 0; i < AP_RustM4_Server::PARAMETER_HANDLES_MAX; i++) {
+        EXPECT_EQ(parameter_get(server, base + i * size), AP_RUST_STATUS_OK);
+    }
+    server.reset(2, 1);
+    EXPECT_EQ(server.parameter_handles(), 0U);
+}
 #endif
 
 AP_GTEST_MAIN()
