@@ -8159,6 +8159,116 @@ return update()
             raise NotAchievedException('needs a --enable-m4-modules SITL build')
         self.module_bindings(m4=True)
 
+    def ModuleCallLatencyProbe(self):
+        '''Rust call latency probe: m4_latency.rs runs its 20 sweep profiles, M4LT rows and @SYS/module_latency.txt
+        (on the M4 with a --enable-m4-modules build, MOD_M4_OPTS bit 2; else in process, MOD_DEBUG_OPTS
+        bit 3). SITL timings are not representative: the rows are checked for form only'''
+        m4 = self.module_m4_build()
+        self.context_push()
+        before = self.module_m4_counters()
+        self.install_rust_test_module_context('m4_latency.rs')
+        self.context_collect('STATUSTEXT')
+        parameters = dict(self.MODULE_M4_PARAMETERS) if m4 else {'MOD_ENABLE': 1}
+        parameters['MOD_M4_OPTS' if m4 else 'MOD_DEBUG_OPTS'] = 4 if m4 else 8
+        parameters['LOG_DISARMED'] = 1
+        # the module's profiles run on wall-clock time: so do the waits below
+        parameters['SIM_SPEEDUP'] = 1
+        self.set_parameters(parameters)
+        self.reboot_sitl()
+        # the first run adds LATP_*; one-second profiles from the restart on
+        self.wait_text(r'LAT start prof 0 10s', regex=True, check_context=True, timeout=120)
+        self.set_parameters({'LATP_SECS': 1, 'LATP_WAIT': 0})
+        self.set_parameter('MOD_RESTART', (int(self.get_parameter('MOD_RESTART')) + 1) % 32768)
+        self.wait_text(r'LAT start prof 0 1s', regex=True, check_context=True, timeout=600)
+        self.wait_text('LAT done', check_context=True, timeout=1200)
+        texts = [m.text for m in self.context_collection('STATUSTEXT')]
+        start = max(i for (i, t) in enumerate(texts) if t.startswith('LAT start prof 0 1s'))
+        lines = [t for t in texts[start:] if re.match(r'LAT \d+ ', t)]
+        if [int(t.split()[1]) for t in lines] != [p for p in range(1, 22) if p != 14]:
+            raise NotAchievedException('expected profiles 1-13 and 15-21, got %s' % lines)
+        for line in lines:
+            m = re.match(r'LAT (\d+) \w+ \d+/s n(\d+) b\d+ e(\d+) avg\d+ max\d+$', line)
+            if m is None or int(m.group(2)) == 0:
+                raise NotAchievedException('profile line %s' % line)
+            if int(m.group(3)) != 0:
+                raise NotAchievedException('binding errors in %s' % line)
+        phases = [t for t in texts[start:] if re.match(r'LATPH \d+ \d+$', t)]
+        if len(phases) != 20:
+            raise NotAchievedException('expected 20 LATPH lines, got %s' % phases)
+        for (profile, name) in [(15, 'getloc'), (16, 'getloc'), (17, 'getloc'), (18, 'locoff'),
+                                (19, 'ping'), (20, 'ping'), (21, 'ping')]:
+            if not any(t.startswith('LAT %u %s ' % (profile, name)) for t in lines):
+                raise NotAchievedException('no %s line for profile %u' % (name, profile))
+        # profile 14, the 5013 us control, with a start phase offset
+        self.set_parameters({'LATP_PROF': 14, 'LATP_OFFS': 1250})
+        self.set_parameter('MOD_RESTART', (int(self.get_parameter('MOD_RESTART')) + 1) % 32768)
+        self.wait_text(r'LAT start prof 14 1s time_us \d+us offs 1250', regex=True, check_context=True, timeout=600)
+        self.wait_text(r'LAT 14 mode5013 \d+/s n[1-9]\d* b\d+ e0 avg\d+ max\d+$', regex=True,
+                       check_context=True, timeout=120)
+        self.wait_text(r'LATPH 14 \d+$', regex=True, check_context=True, timeout=30)
+        # profile 26, 200 times sleep_ms(5): avg and max are the overshoot in us
+        self.set_parameters({'LATP_PROF': 26, 'LATP_OFFS': 0})
+        self.set_parameter('MOD_RESTART', (int(self.get_parameter('MOD_RESTART')) + 1) % 32768)
+        self.wait_text(r'LAT start prof 26 1s', regex=True, check_context=True, timeout=600)
+        self.wait_text(r'LAT 26 sleepprec \d+/s n200 b\d+ e0 avg\d+ max\d+$', regex=True,
+                       check_context=True, timeout=120)
+        summary = self.fetch_file_via_ftp('@SYS/module_latency.txt')
+        self.progress(summary)
+        if not re.search(r'^id \d+ %s: calls \d+' % ('(fast|slow)' if m4 else 'in-process'), summary, re.MULTILINE):
+            raise NotAchievedException('no binding in @SYS/module_latency.txt')
+        # the ping (id 65520) is served on the host thread, with the M4 and M7 cycle parts of each call
+        ping_id = 0xFFF0
+        if m4:
+            block = re.search(r'^id %u fast: calls \d+.*?(?=^id |\Z)' % ping_id, summary, re.MULTILINE | re.DOTALL)
+            if block is None:
+                raise NotAchievedException('no ping block in @SYS/module_latency.txt')
+            for part in ('m4cyc SvcEntry', 'm4cyc FwdLock', 'm4cyc DrainCopy', 'm4cyc RetCopy', 'm4cyc SvcReturn',
+                         'm7cyc Take', 'm7cyc Parse', 'm7cyc Adapter', 'm7cyc ReplyPack'):
+                if not re.search(r'^  %s n [1-9]\d* mean \d+ max \d+$' % part, block.group(0), re.MULTILINE):
+                    raise NotAchievedException('no %s line for the ping' % part)
+            if not re.search(r'^  m7cyc Adapter n \d+ mean 0 max 0$', block.group(0), re.MULTILINE):
+                raise NotAchievedException('the ping ran an adapter')
+            for part in ('FwdRing|FwdBell', 'ReplyRing|ReplyBell'):
+                if not re.search(r'^  m[47]cyc (%s) n [1-9]' % part, block.group(0), re.MULTILINE):
+                    raise NotAchievedException('no %s line for the ping' % part)
+        self.context_pop()
+        self.reboot_sitl()
+        logs = [path for path in self.log_list() if path not in before]
+        rows = 0
+        ping_rows = 0
+        lanes = set()
+        profiles = set()
+        stages = ('Pre', 'Snd', 'Rcv', 'Hof', 'Chk', 'Sem', 'Adp', 'Rpl', 'Bck', 'Ret')
+        for path in logs:
+            dfreader = self.dfreader_for_path(path)
+            while True:
+                m = dfreader.recv_match(type=['M4LT', 'LATP'])
+                if m is None:
+                    break
+                if m.get_type() == 'LATP':
+                    profiles.add(m.Prof)
+                    continue
+                rows += 1
+                if m.Id == ping_id:
+                    ping_rows += 1
+                lanes.add(m.Fl & 3)
+                if m.Fl & (1 << 10):
+                    continue   # its M4 completion never came: no total
+                # every stage but Pas adds up to the total
+                total = sum(getattr(m, stage) for stage in stages)
+                if total != m.Tot or m.Tot < (1 if m4 else 0):
+                    raise NotAchievedException('M4LT stages %s do not add up to Tot %d' % (
+                        [getattr(m, stage) for stage in stages], m.Tot))
+        if rows == 0:
+            raise NotAchievedException('no M4LT rows in %s' % logs)
+        if lanes != ({1, 2} if m4 else {0}):
+            raise NotAchievedException('M4LT lanes %s' % sorted(lanes))
+        if profiles != set(range(1, 22)) | {26}:
+            raise NotAchievedException('LATP rows for profiles %s' % sorted(profiles))
+        if m4 and ping_rows == 0:
+            raise NotAchievedException('no M4LT rows of the ping')
+        self.progress('%u M4LT rows (%u of the ping), lanes %s' % (rows, ping_rows, sorted(lanes)))
+
     def UniversalAutoLandScript(self):
         '''Test UniversalAutoLandScript'''
         applet_script = "UniversalAutoLand.lua"
@@ -11707,6 +11817,7 @@ return update()
             self.RustBindings,
             self.ModuleM4ParamMirror,
             self.ModuleM4Bindings,
+            self.ModuleCallLatencyProbe,
             self.MANUAL_CONTROL,
             self.SDCardWPTest,
             self.SagetechMXS,
