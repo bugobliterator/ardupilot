@@ -66,6 +66,14 @@ static void zero_bytes(uint8_t *p, uint32_t n)
     }
 }
 
+// bytes of _out an adapter of id may write or the reply may read: its generated output wire, or
+// out_size if larger; the whole frame where the generator does not know the adapter's wire
+static uint16_t output_clear(uint32_t id, uint16_t out_size)
+{
+    const uint16_t wire = AP_Module::M4_BINDING_WIRE[id][1];
+    return wire == AP_Module::M4_WIRE_UNKNOWN ? uint16_t(MAX_FRAME) : uint16_t(MIN(MAX(wire, out_size), MAX_FRAME));
+}
+
 uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap,
                                          uint32_t now_ms, ServeProbe *probe)
 {
@@ -127,17 +135,28 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
         probe->taken |= AP_Module::CALL_STAMP_CHK_QUOTA;
     }
     const uint32_t zero_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
-    // newlib-nano's memset stores one byte per iteration: clear only what earlier calls touched
-    if (_in_dirty > call.in_size) {
-        zero_bytes(_in + call.in_size, _in_dirty - call.in_size);
+    /*
+      A generated adapter reads exactly its input wire. When the frame carries all of it, the adapter
+      reads the frame in place: the input is const, and the frame buffer (the host's _rx_frame, also
+      the slow worker's while the host waits) is not received into again before this call's reply is
+      sent. A shorter input, or a hand-written adapter, gets the zero-padded copy
+     */
+    const uint16_t input_wire = AP_Module::M4_BINDING_WIRE[call.id][0];
+    const uint8_t *input = frame + sizeof(call);
+    uint32_t copy_cycles = zero_cycles;
+    if (input_wire == AP_Module::M4_WIRE_UNKNOWN || call.in_size < input_wire) {
+        // newlib-nano's memset stores one byte per iteration: clear only what earlier calls touched
+        if (_in_dirty > call.in_size) {
+            zero_bytes(_in + call.in_size, _in_dirty - call.in_size);
+        }
+        copy_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
+        memcpy(_in, input, call.in_size);
+        _in_dirty = call.in_size;
+        input = _in;
     }
-    const uint32_t copy_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
-    memcpy(_in, frame + sizeof(call), call.in_size);
-    _in_dirty = call.in_size;
     const uint32_t copied_cycles = probe != nullptr ? CallLatencyLog::cycles() : 0;
-    zero_bytes(_out, _out_dirty);
-    // adapters do not all honour out_size; none writes past MAX_FRAME (NoAdapterWritesPastTheFrame)
-    _out_dirty = MAX_FRAME;
+    // adapters do not all honour out_size: the clear covers the adapter's own output wire too
+    zero_bytes(_out, output_clear(call.id, call.out_size));
     if (probe != nullptr) {
         const uint32_t zeroed_cycles = CallLatencyLog::cycles();
         probe->cycle_part(M7CyclePart::Parse, entry_cycles, zero_cycles);
@@ -149,7 +168,7 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
     const uint32_t start_us = AP_HAL::micros();
     int32_t status;
     if (probe == nullptr) {
-        status = dispatch(call.module, call.id, call.in_size, call.out_size);
+        status = dispatch(call.module, call.id, input, call.in_size, call.out_size);
     } else {
         // the adapter's own take of its (recursive) lock then waits for nothing
         uint32_t cycles = CallLatencyLog::cycles();
@@ -161,7 +180,7 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
             lock->take_blocking();
         }
         probe->adapter = CallLatencyLog::clock_us();
-        status = dispatch(call.module, call.id, call.in_size, call.out_size);
+        status = dispatch(call.module, call.id, input, call.in_size, call.out_size);
         probe->adapter_done = CallLatencyLog::clock_us();
         cycles = CallLatencyLog::cycles();
         if (lock != nullptr) {
@@ -181,21 +200,24 @@ uint16_t AP_ModuleM4_Server::serve_binding(const uint8_t *frame, uint16_t len, u
     return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, status, _out, call.out_size, 0, exec_us);
 }
 
-// sizes within the frame limits, input already in _in. The buffers are passed even for an empty
-// input or output: most generated adapters ignore the sizes and would dereference a null pointer
-int32_t AP_ModuleM4_Server::dispatch(uint16_t module, uint32_t id, uint16_t in_size, uint16_t out_size)
+// sizes within the frame limits, input in _in or in the frame. The buffers are passed even for an
+// empty input or output: most generated adapters ignore the sizes and would dereference a null pointer
+int32_t AP_ModuleM4_Server::dispatch(uint16_t module, uint32_t id, const uint8_t *input, uint16_t in_size,
+                                   uint16_t out_size)
 {
 #if AP_MODULE_M4_TEST_HOOKS
+    _last_input_from_frame = input != _in;
     _last_input_end = 0;
-    for (uint16_t i = SERVE_BUFFER_SIZE; i > 0; i--) {
+    for (uint16_t i = SERVE_BUFFER_SIZE; i > 0 && input == _in; i--) {
         if (_in[i - 1] != 0) {
             _last_input_end = i;
             break;
         }
     }
+    _last_output_clear = id < AP_Module::M4_BINDING_COUNT ? output_clear(id, out_size) : uint16_t(MAX_FRAME);
     _last_output_zero = true;
-    for (const uint8_t byte : _out) {
-        if (byte != 0) {
+    for (uint16_t i = 0; i < _last_output_clear; i++) {
+        if (_out[i] != 0) {
             _last_output_zero = false;
             break;
         }
@@ -209,10 +231,10 @@ int32_t AP_ModuleM4_Server::dispatch(uint16_t module, uint32_t id, uint16_t in_s
     case AP_Module::BindingId::PARAMETER_SET_AND_SAVE:
     case AP_Module::BindingId::PARAMETER_SET_DEFAULT:
     case AP_Module::BindingId::PARAMETER_CONFIGURED:
-        return serve_parameter(module, id);
+        return serve_parameter(module, id, input);
     default:
         // PARAMETER_LAYOUT, which reports sizeof and alignof(Parameter), included
-        return AP_Module::binding_dispatch(&_slots[module], AP_Module::BindingId(id), _in, in_size, _out, out_size);
+        return AP_Module::binding_dispatch(&_slots[module], AP_Module::BindingId(id), input, in_size, _out, out_size);
     }
 }
 
@@ -393,7 +415,6 @@ void AP_ModuleM4_Server::clear_handles()
     memset(_resync_owed, 0, sizeof(_resync_owed));
     _handle_count = 0;
     _in_dirty = SERVE_BUFFER_SIZE;
-    _out_dirty = SERVE_BUFFER_SIZE;
 }
 
 uint16_t AP_ModuleM4_Server::handle_home(uint16_t module, uint64_t token)
@@ -469,17 +490,17 @@ void AP_ModuleM4_Server::release_handles(uint16_t module)
 }
 
 // the PR's generated Parameter adapters' wire and checks, on an M7-owned Parameter
-int32_t AP_ModuleM4_Server::serve_parameter(uint16_t module, uint32_t id)
+int32_t AP_ModuleM4_Server::serve_parameter(uint16_t module, uint32_t id, const uint8_t *input)
 {
     const AP_Module::BindingId binding = AP_Module::BindingId(id);
     memset(_out, 0, binding == AP_Module::BindingId::PARAMETER_GET ? 5 : 1);
-    const uint64_t token = uint64_t(AP_Module::BindingWire::read(_in, 4)) |
-                           (uint64_t(AP_Module::BindingWire::read(_in + 4, 4)) << 32);
+    const uint64_t token = uint64_t(AP_Module::BindingWire::read(input, 4)) |
+                           (uint64_t(AP_Module::BindingWire::read(input + 4, 4)) << 32);
     if (token == 0 || token > UINTPTR_MAX || token % alignof(Parameter) != 0) {
         return AP_MODULE_STATUS_INVALID;
     }
     if (binding == AP_Module::BindingId::PARAMETER_INIT) {
-        const char *name = AP_Module::BindingWire::read_string(_in + 8);
+        const char *name = AP_Module::BindingWire::read_string(input + 8);
         if (name == nullptr) {
             return AP_MODULE_STATUS_INVALID;
         }
@@ -518,7 +539,7 @@ int32_t AP_ModuleM4_Server::serve_parameter(uint16_t module, uint32_t id)
         return AP_MODULE_STATUS_OK;
     }
     set_sent(uint16_t(slot), false, false);   // a rejected or unchanged set still sends its entry
-    const float value = AP_Module::BindingWire::read_float(_in + 8);
+    const float value = AP_Module::BindingWire::read_float(input + 8);
     if (!AP_Module::BindingParam::valid_value(parameter.type(), value)) {
         return AP_MODULE_STATUS_INVALID;
     }
@@ -588,11 +609,38 @@ bool AP_ModuleM4_Server::dispatch_guarded(uint32_t id, uint16_t in_size, uint16_
     memset(_out, 0, MAX_FRAME);
     memset(_in + MAX_FRAME, 0xA5, SERVE_BUFFER_SIZE - MAX_FRAME);
     memset(_out + MAX_FRAME, 0xA5, SERVE_BUFFER_SIZE - MAX_FRAME);
-    IGNORE_RETURN(dispatch(0, id, in_size, out_size));
+    IGNORE_RETURN(dispatch(0, id, _in, in_size, out_size));
     _in_dirty = SERVE_BUFFER_SIZE;
-    _out_dirty = SERVE_BUFFER_SIZE;
     for (uint16_t i = MAX_FRAME; i < SERVE_BUFFER_SIZE; i++) {
         if (_in[i] != 0xA5 || _out[i] != 0xA5) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint16_t AP_ModuleM4_Server::output_clear_size(uint32_t id, uint16_t out_size)
+{
+    return output_clear(id, out_size);
+}
+
+void AP_ModuleM4_Server::fill_output_for_test(uint8_t byte)
+{
+    memset(_out, byte, sizeof(_out));
+}
+
+bool AP_ModuleM4_Server::dispatch_within_wire(uint32_t id)
+{
+    const uint16_t wire = AP_Module::M4_BINDING_WIRE[id][0];
+    const uint16_t in_size = wire == AP_Module::M4_WIRE_UNKNOWN ? uint16_t(MAX_CALL_INPUT) : wire;
+    const uint16_t out_size = AP_Module::M4_BINDING_WIRE[id][1];
+    memset(_in, 0, sizeof(_in));
+    memset(_out, 0xA5, sizeof(_out));
+    memset(_out, 0, out_size);
+    IGNORE_RETURN(dispatch(0, id, _in, in_size, out_size));
+    _in_dirty = SERVE_BUFFER_SIZE;
+    for (uint16_t i = out_size; i < SERVE_BUFFER_SIZE; i++) {
+        if (_out[i] != 0xA5) {
             return false;
         }
     }
