@@ -48,10 +48,11 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _ended_modules = 0;
     _call_probed = false;
     _woke_on_poll = false;
+    _wake_stamped = false;
     M4CallProbe *probe = _platform.probe;
     if (probe != nullptr) {
         probe->enabled.store(false);   // until this session's Config asks for it
-        probe->last_seq = 0;
+        probe->last.seq = 0;
         if (probe->clock_us != nullptr) {
             // the cost of one stamp, reported in every trailer
             static const uint32_t READS = 16;
@@ -298,10 +299,10 @@ void M4Service::forward_call(bool from_step)
     }
     _call_probed = probe != nullptr;
     if (probe != nullptr) {
-        probe->sent_us = probe->clock_us();
-        probe->seq = header.seq;
+        probe->current.sent_us = probe->clock_us();
+        probe->current.seq = header.seq;
         if (from_step) {
-            probe->flags |= PROBE_M4_SENT_BY_STEP;
+            probe->current.flags |= PROBE_M4_SENT_BY_STEP;
         }
     }
     _call_seq = header.seq;
@@ -399,11 +400,17 @@ void M4Service::handle_reply(const uint8_t *buf, uint16_t len, const MsgHeader &
     }
     if (_call_probed) {
         M4CallProbe &probe = *_platform.probe;
-        probe.reply_seen_us = probe.clock_us();
+        probe.current.reply_seen_us = probe.clock_us();
         if (_woke_on_poll) {
-            probe.flags |= PROBE_M4_POLL_WAKE;
+            probe.current.flags |= PROBE_M4_POLL_WAKE;
+        }
+        if (_wake_stamped) {
+            probe.current.reply_isr_us = _wake_isr_us;
+            probe.current.reply_wake_us = _wake_us;
+            probe.current.stamps |= PROBE_STAMP_REPLY_WAKE;
         }
     }
+    _wake_stamped = false;   // one wait's stamps for one reply
     const uint32_t round_trip_us = (_platform.cycles() - _call_sent_cycles) / _platform.cycles_per_us;
     uint32_t m7_us = 0;
     if (MsgType(header.type) == MsgType::BindingReply) {
@@ -475,6 +482,9 @@ void M4Service::complete(int32_t result)
     _link->state.store(ModuleLink::Done);
     if (_platform.wake_module != nullptr) {
         _platform.wake_module();
+    }
+    if (_call_probed && result > 0) {
+        probe_stamp(*_platform.probe, _platform.probe->current.signalled_us, PROBE_STAMP_SIGNALLED);
     }
 }
 

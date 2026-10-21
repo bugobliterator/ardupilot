@@ -59,8 +59,15 @@ public:
     // the Stats name of a remote import of this session (cleared at init()); later rows are id:<n>
     void set_binding_name(uint32_t id, const char *name);
     // the platform's wait before this step: true if it ended on its poll timeout, not a doorbell
-    // (the call latency probe flags a reply seen after one)
-    void note_wake(bool poll_timeout) { _woke_on_poll = poll_timeout; }
+    // (the call latency probe flags a reply seen after one). stamped: the wait ended on a doorbell
+    // interrupt the probe stamped at isr_us, and the thread resumed at wake_us
+    void note_wake(bool poll_timeout, bool stamped = false, uint32_t isr_us = 0, uint32_t wake_us = 0)
+    {
+        _woke_on_poll = poll_timeout;
+        _wake_stamped = stamped;
+        _wake_isr_us = isr_us;
+        _wake_us = wake_us;
+    }
     // sent calls that had no reply within CALL_TIMEOUT_MS or lost their session
     uint32_t lost() const { return _lost; }
     // frames from the M7 dropped as not for this M4 (wrong type, stale seq or session)
@@ -160,6 +167,9 @@ private:
     bool _flooding;
     bool _call_probed;          // the Sent call carries a probe trailer
     bool _woke_on_poll;
+    bool _wake_stamped;
+    uint32_t _wake_isr_us;
+    uint32_t _wake_us;
     CrcSelfCheck _crc_self_check;
     ConfigReply _config_reply;
     uint32_t _config_seq;       // of the Config sent this session; 0: none sent yet

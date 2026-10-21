@@ -32,6 +32,12 @@ using AP_Rust::CallLatencyLog;
 static_assert(RustM4::PROBE_M4_SLEPT == AP_Rust::CALL_M4_SLEPT && RustM4::PROBE_M4_POLL_WAKE == AP_Rust::CALL_M4_POLL_WAKE &&
               RustM4::PROBE_M4_SENT_BY_STEP == AP_Rust::CALL_M4_SENT_BY_STEP, "the M4's probe flags are the log's");
 static const uint16_t PROBE_M4_FLAGS = RustM4::PROBE_M4_SLEPT | RustM4::PROBE_M4_POLL_WAKE | RustM4::PROBE_M4_SENT_BY_STEP;
+static_assert(RustM4::PROBE_STAMP_PACKED == AP_Rust::CALL_STAMP_M4_PACKED &&
+              RustM4::PROBE_STAMP_POSTED == AP_Rust::CALL_STAMP_M4_POSTED &&
+              RustM4::PROBE_STAMP_FORWARD_RETURNED == AP_Rust::CALL_STAMP_M4_FORWARD_RETURNED &&
+              RustM4::PROBE_STAMP_REPLY_WAKE == AP_Rust::CALL_STAMP_M4_REPLY_WAKE &&
+              RustM4::PROBE_STAMP_SIGNALLED == AP_Rust::CALL_STAMP_M4_SIGNALLED &&
+              RustM4::PROBE_STAMP_RESUMED == AP_Rust::CALL_STAMP_M4_RESUMED, "the M4's stamp bits are the trace's");
 
 // after a pass that hit either limit with frames left: a flooding M4 gets one pass per pause
 static const uint32_t SERVE_BACKOFF_US = 500;
@@ -153,6 +159,10 @@ void AP_RustM4::doorbell_isr(uint8_t group)
     (void)group;
     if (_singleton != nullptr) {
         _singleton->_doorbell_us = AP_HAL::micros();
+        if (_singleton->_probing) {
+            _singleton->_doorbell_probe_us = CallLatencyLog::clock_us();
+            _singleton->_doorbell_probed = true;
+        }
         _singleton->_doorbell.signal_ISR();
     }
 }
@@ -188,6 +198,11 @@ void AP_RustM4::host_thread()
             continue;
         }
         _probing = (uint8_t(_options.get()) & OPTION_CALL_PROBE) != 0 && CallLatencyLog::get().start();
+        if (_probing && !_input_memset_measured) {
+            // the slow worker is idle between the host's passes
+            _input_memset_measured = true;
+            CallLatencyLog::get().set_m7_memset_cycles(_server.input_memset_cycles());
+        }
         const uint32_t cap_wait_us = _duty_cap.wait_us(AP_HAL::micros());
         const bool ring_empty = _channel->prepareSleep();   // sets the asleep flag: the M4 rings from here on
         const RustM4::HostWait wait = RustM4::host_wait_after(cap_wait_us, last == ServeResult::Busy,
@@ -222,6 +237,10 @@ void AP_RustM4::host_thread()
             _pass_us = CallLatencyLog::clock_us();
             _pass_frames = 0;
             _pass_cap_paused = wait == RustM4::HostWait::DutyCap;
+            // the doorbell interrupt that ended this wait, if any
+            _pass_doorbell = _doorbell_probed;
+            _pass_doorbell_us = _doorbell_probe_us;
+            _doorbell_probed = false;
         }
         const uint32_t doorbell_us = _doorbell_us;
         _doorbell_us = 0;
@@ -471,7 +490,7 @@ bool AP_RustM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
     if (_probing) {
         // unrun: no dispatch, lock or adapter stages
         const uint32_t now_us = CallLatencyLog::clock_us();
-        const AP_RustM4_Server::ServeProbe unrun { now_us, now_us, now_us, now_us, 0, 0 };
+        const AP_RustM4_Server::ServeProbe unrun { now_us, now_us, now_us, now_us, 0, 0, 0, 0, 0, 0 };
         probe_served(buf, len, unrun, AP_Rust::CALL_REFUSED);
     }
     return true;
@@ -644,16 +663,32 @@ void AP_RustM4::probe_served(const uint8_t *buf, uint16_t len, const AP_RustM4_S
     }
     CallLatencyLog &log = CallLatencyLog::get();
     log.set_m4_stamp_cycles(trailer.stamp_cycles);
+    log.set_m4_memset(trailer.memset_small_centicycles, trailer.memset_large_centicycles);
     AP_Rust::CallTrace trace;
     // the M4's stamps of its previous probed call, which the M7 holds
-    const AP_Rust::M4Completion previous { trailer.prev_seq, trailer.prev_sent_us, trailer.prev_reply_seen_us,
-                                           trailer.prev_return_us, uint16_t(trailer.prev_flags & PROBE_M4_FLAGS) };
-    if (_probe_pending.complete(previous, trace)) {
+    const AP_Rust::M4Completion previous {
+        trailer.prev_seq, trailer.prev_sent_us, trailer.prev_reply_seen_us, trailer.prev_return_us,
+        uint16_t(trailer.prev_flags & PROBE_M4_FLAGS), uint32_t(trailer.prev_stamps) & AP_Rust::CALL_STAMPS_M4,
+        trailer.prev_packed_us, trailer.prev_posted_us, trailer.prev_forward_returned_us, trailer.prev_reply_isr_us,
+        trailer.prev_reply_wake_us, trailer.prev_signalled_us, trailer.prev_resumed_us
+    };
+    AP_Rust::CallStamps completed;
+    if (_probe_pending.complete(previous, trace, &completed)) {
         log.record(trace);
+        log.record_substages(trace.id, completed);
     }
-    const AP_Rust::CallStamps stamps { trailer.svc_entry_us, trailer.pre_send_us, 0, _pass_us, _frame_received_us,
-                                       served.dispatch, served.lock_wait, served.adapter, served.adapter_done,
-                                       reply_sent_us, 0, 0 };
+    AP_Rust::CallStamps stamps { trailer.svc_entry_us, trailer.pre_send_us, 0, _pass_us, _frame_received_us,
+                                 served.dispatch, served.lock_wait, served.adapter, served.adapter_done,
+                                 reply_sent_us, 0, 0 };
+    stamps.chk_parsed = served.chk_parsed;
+    stamps.chk_quota = served.chk_quota;
+    stamps.chk_copied = served.chk_copied;
+    stamps.taken = served.taken;
+    // the doorbell belongs to the first frame of the pass it woke
+    if (_pass_doorbell && (_frame_flags >> AP_Rust::CALL_POSITION_SHIFT) == 0) {
+        stamps.m7_doorbell = _pass_doorbell_us;
+        stamps.taken |= AP_Rust::CALL_STAMP_M7_DOORBELL;
+    }
     AP_Rust::CallTrace partial {};
     partial.time_us = AP_HAL::micros64();
     partial.seq = call.header.seq;

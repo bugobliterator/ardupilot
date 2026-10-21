@@ -102,6 +102,10 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         _last_posted_outcome = PostedOutcome::Refused;
         return 0;
     }
+    if (probe != nullptr) {
+        probe->chk_parsed = CallLatencyLog::clock_us();
+        probe->taken |= AP_Rust::CALL_STAMP_CHK_PARSED;
+    }
     _quotas.new_session(now_ms);   // full buckets at the first call of the boot
     const uint8_t quota = AP_Rust::M4_BINDING_POLICY[call.id].quota;
     if (quota != 0 && !_quotas.allow(QuotaClass(quota), now_ms)) {
@@ -116,6 +120,10 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         memset(_out, 0, call.out_size);
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, STATUS_OK, _out, call.out_size, 0, 0);
     }
+    if (probe != nullptr) {
+        probe->chk_quota = CallLatencyLog::clock_us();
+        probe->taken |= AP_Rust::CALL_STAMP_CHK_QUOTA;
+    }
     // newlib-nano's memset stores one byte per iteration: clear only what earlier calls touched
     if (_in_dirty > call.in_size) {
         zero_bytes(_in + call.in_size, _in_dirty - call.in_size);
@@ -125,6 +133,10 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
     zero_bytes(_out, _out_dirty);
     // adapters do not all honour out_size; none writes past MAX_FRAME (NoAdapterWritesPastTheFrame)
     _out_dirty = MAX_FRAME;
+    if (probe != nullptr) {
+        probe->chk_copied = CallLatencyLog::clock_us();
+        probe->taken |= AP_Rust::CALL_STAMP_CHK_COPIED;
+    }
     const uint32_t start_us = AP_HAL::micros();
     int32_t status;
     if (probe == nullptr) {
@@ -334,6 +346,17 @@ void AP_RustM4_Server::snapshot_module(uint16_t module)
             set_dirty(slot);
         }
     }
+}
+
+uint32_t AP_RustM4_Server::input_memset_cycles()
+{
+    static const uint8_t ROUNDS = 16;
+    const uint32_t start = AP_Rust::CallLatencyLog::cycles();
+    for (uint8_t i = 0; i < ROUNDS; i++) {
+        memset(_in, 0, sizeof(_in));
+        __asm__ volatile("" : : "r"(_in) : "memory");
+    }
+    return (AP_Rust::CallLatencyLog::cycles() - start) / ROUNDS;
 }
 
 AP_RustM4_Server::AP_RustM4_Server()

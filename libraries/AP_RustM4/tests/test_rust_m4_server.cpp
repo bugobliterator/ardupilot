@@ -410,6 +410,14 @@ AP_GTEST_MAIN()TEST(RustM4Server, ProbeStampsTheDispatchInOrder)
     AP_RustM4_Server::ServeProbe probe {};
     ASSERT_NE(server.serve_binding(frame, len, reply, sizeof(reply), 1000, &probe), 0);
     EXPECT_GE(int32_t(probe.lock_wait - probe.dispatch), 0);
+    // Chk's sub-stages, in order inside it
+    EXPECT_EQ(probe.taken, AP_Rust::CALL_STAMP_CHK_PARSED | AP_Rust::CALL_STAMP_CHK_QUOTA |
+                           AP_Rust::CALL_STAMP_CHK_COPIED);
+    EXPECT_GE(int32_t(probe.chk_parsed - probe.dispatch), 0);
+    EXPECT_GE(int32_t(probe.chk_quota - probe.chk_parsed), 0);
+    EXPECT_GE(int32_t(probe.chk_copied - probe.chk_quota), 0);
+    EXPECT_GE(int32_t(probe.lock_wait - probe.chk_copied), 0);
+    (void)server.input_memset_cycles();   // host clocks may read it as 0
     EXPECT_GE(int32_t(probe.adapter - probe.lock_wait), 0);
     EXPECT_GE(int32_t(probe.adapter_done - probe.adapter), 0);
     EXPECT_EQ(probe.flags & (AP_Rust::CALL_LOCK_TAKEN | AP_Rust::CALL_LOCK_UNKNOWN), 0);
