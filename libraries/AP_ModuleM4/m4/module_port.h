@@ -26,6 +26,8 @@ void module_port_wake();
 // M4). context's ranges, heap, request and reply are set by the caller. Refused while a module
 // thread still runs
 void module_port_start(ModuleContext &context, const LoadLayout &layout, uint32_t entry, uint32_t rw_base);
+// M4 image: regions 6 (stack guard) and 7 (code) off, before the loader writes the module area
+void module_port_unpublish();
 // stop requested: sleep_ms returns STOPPED at once, as do binding_call and text
 void module_port_request_stop(ModuleContext &context);
 // true once start() returned, with its result

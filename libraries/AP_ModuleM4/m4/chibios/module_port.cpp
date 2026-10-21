@@ -443,6 +443,12 @@ void ModuleM4::module_port_start(ModuleContext &context, const LoadLayout &layou
     module_thread = chThdCreateStatic(module_wa, sizeof(module_wa), NORMALPRIO - 1, module_thread_main, nullptr);
 }
 
+void ModuleM4::module_port_unpublish()
+{
+    set_region(7, 0, 0);
+    set_region(6, 0, 0);
+}
+
 void ModuleM4::module_port_request_stop(ModuleContext &context)
 {
     context.stop.store(true);

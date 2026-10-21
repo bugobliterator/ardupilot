@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -24,6 +25,7 @@
 #include <AP_ModuleM4_Layout.h>
 
 #include "../m4_service.h"
+#include "../module_host.h"
 #include "../module_port.h"
 
 using namespace ModuleM4;
@@ -38,6 +40,7 @@ static uint32_t restart_grant_at_start;
 static ModuleLink call_link;   // not `link`: <unistd.h> declares link()
 static M4Service service;
 static pthread_mutex_t service_mutex = PTHREAD_MUTEX_INITIALIZER;   // M4Platform::lock
+static ModuleHost module_host;
 
 static void sleep_ms(long ms)
 {
@@ -143,6 +146,55 @@ static void inject_fault(FaultKind kind)
     }
 }
 
+// the loader's platform: the service's Config and Stats names, the module port's start
+static bool host_config(void *, ConfigReply &reply)
+{
+    if (!service.config_ready()) {
+        return false;
+    }
+    reply = service.config_reply();
+    return true;
+}
+
+static void host_binding_name(void *, uint32_t id, const char *name)
+{
+    service.set_binding_name(id, name);
+}
+
+static bool host_publish(void *, uint8_t *code, uint32_t size)
+{
+    return module_port_code_publish(code, size);
+}
+
+static void host_start(void *, ModuleContext &module, const LoadLayout &layout, uint32_t entry, uint32_t rw_base)
+{
+    module_port_start(module, layout, entry, rw_base);
+}
+
+// the module area below 4 GB (the layout and the entry are uint32_t, as on the M4), its top aligned
+// as the code window needs: at the M4's own address where that is free (MAP_32BIT is not honoured
+// under every x86-64 emulation), else anywhere below 4 GB; null if it cannot be mapped
+static uint8_t *map_module_area()
+{
+#ifdef MAP_FIXED_NOREPLACE
+    void *fixed = mmap(reinterpret_cast<void *>(uintptr_t(AP_MODULE_M4_MODULE_AREA_BASE)), AP_MODULE_M4_MODULE_AREA_SIZE,
+                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (fixed == reinterpret_cast<void *>(uintptr_t(AP_MODULE_M4_MODULE_AREA_BASE))) {
+        return static_cast<uint8_t *>(fixed);
+    }
+    if (fixed != MAP_FAILED) {
+        munmap(fixed, AP_MODULE_M4_MODULE_AREA_SIZE);   // a kernel that ignores the flag
+    }
+#endif
+    uint8_t *mapping = module_port_code_map(AP_MODULE_M4_MODULE_AREA_SIZE + CODE_WINDOW_MAX);
+    if (mapping == nullptr) {
+        return nullptr;
+    }
+    const uintptr_t top = (uintptr_t(mapping) + AP_MODULE_M4_MODULE_AREA_SIZE + CODE_WINDOW_MAX) &
+                          ~uintptr_t(CODE_WINDOW_MAX - 1U);
+    return reinterpret_cast<uint8_t *>(top - AP_MODULE_M4_MODULE_AREA_SIZE);
+}
+
 static void install_handlers()
 {
     // an execv from a handler keeps that handler's mask: start from an empty one
@@ -212,11 +264,25 @@ int main(int argc, char **argv)
                                 lock_service, unlock_service };
     module_port_init(call_link, service, nullptr);
     service.init(channel, window, call_link, platform);
+    uint8_t *const area = map_module_area();
+    // the PR's x86-64 identity and host callback margin (Module.cpp); no area: no module loads
+    const ModuleHostPlatform host_platform {
+        &call_link, area, uint32_t(uintptr_t(area)), AP_MODULE_M4_MODULE_AREA_SIZE,
+        { 62, AP_MODULE_ABI_VERSION, 2, 0, AP_MODULE_API_FINGERPRINT }, 16384, nullptr, host_config,
+        host_binding_name, nullptr, host_publish, host_start
+    };
+    module_host.init(host_platform);
+    if (area == nullptr) {
+        fprintf(stderr, "module_m4: no module area below 4 GB\n");
+    }
     while (true) {
         if (getppid() != parent || block->run_permit.load() != 1) {
             _exit(0);   // not exit(): a module thread may still run on the statics
         }
         service.step();
+        if (area != nullptr) {
+            module_host.step();
+        }
         // POSIX HSEM has no interrupt: poll with a bounded sleep
         if (channel.prepareSleep()) {
             sleep_ms(1);
