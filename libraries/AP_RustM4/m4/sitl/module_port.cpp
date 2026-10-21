@@ -114,7 +114,7 @@ static void port_mirror_refresh(void *, uint16_t module, uint64_t token, const u
 static const HostPlatform host_platform {
     port_call, port_notify, AP_Rust::binding_local_wire, AP_Rust::binding_local_dispatch, nullptr,
     AP_Rust::binding_mirror_role, port_mirror_get, port_mirror_pending, port_mirror_settle, port_mirror_refresh,
-    nullptr
+    AP_Rust::binding_is_posted
 };
 
 static bool own_context(void *context)

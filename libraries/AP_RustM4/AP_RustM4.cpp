@@ -287,9 +287,26 @@ void AP_RustM4::worker_thread()
         case WorkerJob::Mirror:
             send_mirror_changes();
             break;
-        case WorkerJob::Frame:
+        case WorkerJob::Frame: {
+            const bool posted = _server.frame_is_posted(_rx_frame, _worker_len);
             handle_message(_rx_frame, _worker_len);
+            _worker_handback_len = 0;
+            if (posted) {
+                const uint32_t batch_start_us = AP_HAL::micros();
+                _worker_handback_len = RustM4::serve_posted_batch(
+                    _rx_frame,
+                    [this](uint16_t &len) { return _channel->receive(_rx_frame, sizeof(_rx_frame), &len); },
+                    [this](const uint8_t *frame, uint16_t len) {
+                        return _server.frame_is_posted(frame, len) && !_duty_cap.refuses_slow_bindings();
+                    },
+                    [this](uint16_t len) {
+                        _posted_batched++;
+                        handle_message(_rx_frame, len);
+                    },
+                    [batch_start_us]() { return AP_HAL::micros() - batch_start_us; });
+            }
             break;
+        }
         }
         reset = platform_thread_cpu_us(cpu_us);
         _worker_used_us = _worker_cpu_charge.pass_end(cpu_us, reset, AP_HAL::micros());
@@ -407,6 +424,10 @@ bool AP_RustM4::refuse_slow_binding(const uint8_t *buf, uint16_t len)
     if (!RustM4::parse_binding_call(buf, len, call)) {
         return false;
     }
+    if (_server.frame_is_posted(buf, len)) {
+        _post_drops++;   // a posted frame gets no BUSY reply: the M4 already answered OK
+        return true;
+    }
     _requests++;
     _session_calls++;
     _slow_refused++;
@@ -451,10 +472,18 @@ AP_RustM4::ServeResult AP_RustM4::serve()
         _rx_frame,
         [this](uint16_t &len) { return _channel->receive(_rx_frame, sizeof(_rx_frame), &len); },
         [this](uint16_t len) {
-            if (_server.frame_on_fast_lane(_rx_frame, len)) {
-                handle_message(_rx_frame, len);
-            } else if (!_duty_cap.refuses_slow_bindings() || !refuse_slow_binding(_rx_frame, len)) {
-                serve_on_worker(len);
+            // a frame the worker's posted batch handed back is dispatched like any other
+            while (len != 0) {
+                if (_server.frame_on_fast_lane(_rx_frame, len)) {
+                    handle_message(_rx_frame, len);
+                    len = 0;
+                } else if (_duty_cap.refuses_slow_bindings() && refuse_slow_binding(_rx_frame, len)) {
+                    len = 0;
+                } else {
+                    serve_on_worker(len);
+                    len = _worker_handback_len;
+                    _worker_handback_len = 0;
+                }
             }
         },
         [this]() { return AP_HAL::micros() - _woke_us; });
@@ -508,6 +537,27 @@ void AP_RustM4::serve_binding(const uint8_t *buf, uint16_t len)
         // the module reads its own write at once: the values go ahead of the reply, on the same ring
         _server.mark_all_live();
         send_mirror_changes();
+    }
+    switch (_server.last_posted_outcome()) {
+    case AP_RustM4_Server::PostedOutcome::NotPosted:
+        break;
+    case AP_RustM4_Server::PostedOutcome::Served:
+        return;
+    case AP_RustM4_Server::PostedOutcome::Failed:
+        _post_errors++;
+        if (!_post_error_reported) {
+            _post_error_reported = true;
+            const int16_t index = _server.last_call_module();
+            GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Rust: %.16s logger.write failed",
+                          index >= 0 && index < _module_count ? _modules[index].name : "module");
+        }
+        return;
+    case AP_RustM4_Server::PostedOutcome::Dropped:
+        _post_drops++;
+        return;
+    case AP_RustM4_Server::PostedOutcome::Refused:
+        _protocol_errors++;
+        return;
     }
     const int16_t module = _server.last_call_module();
     const bool resync = module >= 0 && _server.take_resync(uint16_t(module));
@@ -920,6 +970,7 @@ bool AP_RustM4::module_ended(uint8_t index)
 
 void AP_RustM4::clear_modules()
 {
+    _post_error_reported = false;
     memset(_module_loaded, 0, sizeof(_module_loaded));
     memset(_module_running, 0, sizeof(_module_running));
     memset(_module_crc, 0, sizeof(_module_crc));

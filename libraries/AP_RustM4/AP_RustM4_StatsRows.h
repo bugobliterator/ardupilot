@@ -14,6 +14,8 @@ namespace RustM4 {
 // the most round-trip time, then m4:other and m4:sysother
 static const uint8_t STATS_REPORTED = 8;
 static const uint8_t STATS_ROWS_PER_WINDOW = STATS_REPORTED + 2;
+// StatsRow::flags, sent in StatsMsg.reserved: the row's binding is posted (round trip = post to ring copy)
+static const uint8_t STATS_ROW_POSTED = 1;
 
 struct StatsRow {
     uint16_t method;
@@ -24,6 +26,7 @@ struct StatsRow {
     uint32_t total_us;
     uint32_t m7_max_us;
     uint32_t lost;
+    uint8_t flags;   // STATS_ROW_*; stats_add() leaves the sum's: a folded row is not marked
 };
 
 // order[0..count) = indexes of totals[0..count), largest total first; equal totals keep their index order

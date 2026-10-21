@@ -910,4 +910,60 @@ TEST(RustM4ServeWait, FastLaneTakesOnlyFastBindingCalls)
     EXPECT_FALSE(frame_on_fast_lane(fast.bytes, uint16_t(fast.len + 1), even_ids_fast));
 }
 
+namespace {
+struct PostedRing {
+    std::vector<bool> posted;   // the queued frames, true for a posted one
+    size_t next;                // an aggregate under gnu++11: brace-initialised to 0
+    uint32_t served;
+};
+}
+
+static uint16_t run_batch(PostedRing &ring, uint32_t elapsed_us = 0)
+{
+    static uint8_t frame[MAX_FRAME];
+    return serve_posted_batch(
+        frame,
+        [&ring](uint16_t &len) {
+            if (ring.next == ring.posted.size()) {
+                return -EAGAIN;
+            }
+            frame[0] = ring.posted[ring.next++] ? 1 : 2;
+            len = 100;
+            return 0;
+        },
+        [](const uint8_t *f, uint16_t) { return f[0] == 1; },
+        [&ring](uint16_t) { ring.served++; },
+        [elapsed_us]() { return elapsed_us; });
+}
+
+TEST(RustM4ServeWait, PostedBurstIsServedInOneHandoff)
+{
+    PostedRing ring { { true, true, true, true, false, true } };   // the worker already served one
+    EXPECT_EQ(run_batch(ring), 100U);   // the first other frame goes back to the host
+    EXPECT_EQ(ring.served, 4U);         // 5 posted frames in one handoff
+    EXPECT_EQ(ring.next, 5U);
+}
+
+TEST(RustM4ServeWait, PostedBatchStopsAtItsLimit)
+{
+    PostedRing ring { std::vector<bool>(20, true) };
+    EXPECT_EQ(run_batch(ring), 0U);
+    EXPECT_EQ(ring.served, uint32_t(POSTED_BATCH_MAX - 1));
+}
+
+TEST(RustM4ServeWait, PostedBatchStopsWhenTheRingEmpties)
+{
+    PostedRing ring { { true, true } };
+    EXPECT_EQ(run_batch(ring), 0U);
+    EXPECT_EQ(ring.served, 2U);
+}
+
+TEST(RustM4ServeWait, PostedBatchStopsOnTime)
+{
+    PostedRing ring { { true, true } };
+    EXPECT_EQ(run_batch(ring, MAX_SERVE_US + 1), 0U);
+    EXPECT_EQ(ring.served, 0U);
+    EXPECT_EQ(ring.next, 0U);
+}
+
 AP_GTEST_MAIN()

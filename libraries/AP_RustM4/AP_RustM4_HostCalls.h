@@ -94,6 +94,17 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     if (a.input_size > MAX_CALL_INPUT || a.output_size > MAX_REPLY_OUTPUT) {
         return STATUS_INVALID;
     }
+    // a posted id (generated policy: output 0, no vehicle command): the module waits only for the
+    // ring copy, then gets OK; the M7 serves it without a reply
+    if (a.output_size == 0 && p.is_posted != nullptr && p.is_posted(a.id)) {
+        const uint16_t length = pack_binding_call(m.request, MAX_FRAME, 0, m.index, CALL_FLAG_NOTIFY, a.id, a.input,
+                                                  uint16_t(a.input_size), 0);
+        if (length == 0) {
+            return STATUS_INVALID;
+        }
+        p.notify(p.platform, m.request, length);
+        return STATUS_OK;
+    }
     const MirrorRole role = p.mirror_role != nullptr ? MirrorRole(p.mirror_role(a.id)) : MirrorRole::None;
     uint64_t token = 0;
     if ((role == MirrorRole::Get || role == MirrorRole::HandleWriter) && a.input_size >= sizeof(token)) {

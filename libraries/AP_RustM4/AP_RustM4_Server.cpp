@@ -35,9 +35,21 @@ bool AP_RustM4_Server::frame_on_fast_lane(const uint8_t *frame, uint16_t len) co
     return RustM4::frame_on_fast_lane(frame, len, binding_on_fast_lane);
 }
 
+static bool binding_posted(uint32_t id)
+{
+    return id < AP_Rust::M4_BINDING_COUNT && (AP_Rust::M4_BINDING_POLICY[id].flags & AP_Rust::M4_FLAG_POSTED) != 0;
+}
+
+bool AP_RustM4_Server::frame_is_posted(const uint8_t *frame, uint16_t len) const
+{
+    BindingCallHeader call;
+    return parse_binding_call(frame, len, call) && (call.flags & CALL_FLAG_NOTIFY) != 0 && binding_posted(call.id);
+}
+
 uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap,
                                          uint32_t now_ms)
 {
+    _last_posted_outcome = PostedOutcome::NotPosted;
     _last_call_wrote_parameters = false;
     _last_call_module = -1;
 #if AP_RUST_M4_TEST_HOOKS
@@ -57,9 +69,18 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         AP_Rust::M4_BINDING_POLICY[call.id].lane == AP_Rust::M4Lane::Local) {
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::UnknownMethod, 0, nullptr, 0, 0, 0);
     }
+    const bool notify = (call.flags & CALL_FLAG_NOTIFY) != 0;
+    if (notify && !binding_posted(call.id)) {
+        _last_posted_outcome = PostedOutcome::Refused;
+        return 0;
+    }
     _quotas.new_session(now_ms);   // full buckets at the first call of the boot
     const uint8_t quota = AP_Rust::M4_BINDING_POLICY[call.id].quota;
     if (quota != 0 && !_quotas.allow(QuotaClass(quota), now_ms)) {
+        if (notify) {
+            _last_posted_outcome = PostedOutcome::Dropped;
+            return 0;
+        }
         // as M4 Lua: a refused call is answered OK and not run; a bool result reads false
         memset(_out, 0, call.out_size);
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, STATUS_OK, _out, call.out_size, 0, 0);
@@ -72,6 +93,10 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
     const uint32_t exec_us = AP_HAL::micros() - start_us;
     _last_call_wrote_parameters = (AP_Rust::M4_BINDING_POLICY[call.id].flags &
                                    (AP_Rust::M4_FLAG_MIRROR_HANDLE_WRITER | AP_Rust::M4_FLAG_MIRROR_NAME_WRITER)) != 0;
+    if (notify) {
+        _last_posted_outcome = status == AP_RUST_STATUS_OK ? PostedOutcome::Served : PostedOutcome::Failed;
+        return 0;
+    }
     return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, status, _out, call.out_size, 0, exec_us);
 }
 

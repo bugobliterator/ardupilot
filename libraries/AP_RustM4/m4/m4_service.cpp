@@ -41,6 +41,7 @@ void M4Service::init(Channel &channel, uint8_t *window, ModuleLink &link, const 
     _mirror.clear();
     _mirror_hits = 0;
     _mirror_misses = 0;
+    _post_drops = 0;
     _ended_modules = 0;
     compute_crc_self_check();
     // a CRC that disagrees with zlib would fail every ring frame: fault before the first beat,
@@ -88,6 +89,7 @@ bool M4Service::forward_posted()
         if (!_call_timed) {
             _call_timed = true;
             _call_posted_ms = _platform.millis();
+            _call_posted_cycles = _platform.cycles();
         }
         forward_call();
     }
@@ -105,10 +107,13 @@ void M4Service::step_locked()
         // the call timeout runs from posting: waiting for Ready or ring space counts too
         _call_timed = true;
         _call_posted_ms = now_ms;
+        _call_posted_cycles = _platform.cycles();
     }
     if ((state == ModuleLink::Posted || state == ModuleLink::Sent) && now_ms - _call_posted_ms > CALL_TIMEOUT_MS) {
         if (state == ModuleLink::Sent) {
             count_lost();   // its reply, if it still comes, is dropped by seq
+        } else if (posted_binding_on_link()) {
+            _post_drops++;   // the module got OK; its frame never reached the ring
         }
         complete(-ETIMEDOUT);
     } else if (_ready && state == ModuleLink::Posted) {
@@ -254,6 +259,10 @@ void M4Service::forward_call()
         return;   // ring full: the M7 is behind, try again on the next step
     }
     if ((flags & CALL_FLAG_NOTIFY) != 0) {
+        if (MsgType(header.type) == MsgType::BindingCall) {
+            // a posted binding: its round trip is the time from posting to the ring copy
+            record_posted(key, (sent_cycles - _call_posted_cycles) / _platform.cycles_per_us);
+        }
         complete(0);   // no reply
         return;
     }
@@ -392,6 +401,25 @@ void M4Service::count_lost()
     }
 }
 
+bool M4Service::posted_binding_on_link() const
+{
+    BindingCallHeader call;
+    return parse_binding_call(_link->request, _link->request_len, call) && (call.flags & CALL_FLAG_NOTIFY) != 0;
+}
+
+void M4Service::record_posted(uint16_t key, uint32_t post_us)
+{
+    MethodStats *stats = stats_for(key);
+    if (stats == nullptr) {
+        _untimed.count++;
+        _untimed.total_us += post_us;
+        return;
+    }
+    stats->posted = true;
+    stats->round_trips.add(post_us);
+    stats->total_us += post_us;
+}
+
 void M4Service::complete(int32_t result)
 {
     _call_timed = false;
@@ -496,6 +524,7 @@ M4Service::MethodStats *M4Service::stats_for(uint16_t key)
     }
     if (free_slot != nullptr) {
         free_slot->used = true;
+        free_slot->posted = false;
         free_slot->key = key;
     }
     return free_slot;   // nullptr: every slot is busy this window, the call is not timed
@@ -512,6 +541,7 @@ StatsRow M4Service::row_of(const MethodStats &slot)
     row.total_us = slot.total_us;
     row.m7_max_us = slot.m7_max_us;
     row.lost = slot.lost;
+    row.flags = slot.posted ? STATS_ROW_POSTED : 0;
     return row;
 }
 
@@ -536,6 +566,7 @@ bool M4Service::send_row(const StatsRow &row)
     stats.total_us = row.total_us;
     stats.m7_max_us = row.m7_max_us;
     stats.lost = row.lost;
+    stats.reserved = row.flags;
     row_name(row.method, stats.name, sizeof(stats.name));
     return _channel->send(&stats, sizeof(stats)) == 0;
 }

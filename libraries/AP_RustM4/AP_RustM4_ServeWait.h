@@ -190,6 +190,32 @@ inline PassEnd serve_pass(const uint8_t *frame, Receive receive, Serve serve, El
 }
 
 /*
+  The slow worker after it served a posted frame: it keeps the ring and serves the posted frames
+  that follow, POSTED_BATCH_MAX in all or until MAX_SERVE_US, so a burst of log records costs one
+  handoff. The host waits for the worker throughout: one consumer at a time. Returns the length of
+  the first other frame, left in frame for the host, or 0 (ring empty, a receive error the host's
+  next receive reports, or a limit reached).
+ */
+static const uint8_t POSTED_BATCH_MAX = 8;
+
+template <typename Receive, typename IsPosted, typename Serve, typename Elapsed>
+inline uint16_t serve_posted_batch(const uint8_t *frame, Receive receive, IsPosted is_posted, Serve serve,
+                                   Elapsed elapsed_us)
+{
+    for (uint8_t served = 1; served < POSTED_BATCH_MAX && elapsed_us() <= MAX_SERVE_US; served++) {
+        uint16_t len = 0;
+        if (receive(len) != 0) {
+            return 0;
+        }
+        if (!is_posted(frame, len)) {
+            return len;
+        }
+        serve(len);
+    }
+    return 0;
+}
+
+/*
   Which thread serves a frame. The host's fast lane, above the I/O threads, takes only what does
   fixed work with no file, storage, SD or bus access: binding calls whose generated M4 lane is Fast
   (binding_fast), the Noop notify, the Stats rows, and the M7 -> M4 types, which only count a
