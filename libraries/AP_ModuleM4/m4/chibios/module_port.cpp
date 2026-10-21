@@ -349,7 +349,14 @@ static void sys_sleep_ms(struct port_extctx *ctx)
         if (ms == 0) {
             chThdYield();
         } else {
-            (void)chBSemWaitTimeout(&stop_wake, TIME_MS2I(ms));
+            // the kernel's tick wait ends up to a tick early or late: it sleeps the whole
+            // milliseconds but the last, then spins to the deadline
+            const uint64_t deadline_us = time_us() + uint64_t(ms) * 1000U;
+            if (ms >= 2) {
+                (void)chBSemWaitTimeout(&stop_wake, TIME_MS2I(ms - 1));
+            }
+            while (!active->stop.load() && time_us() < deadline_us) {
+            }
         }
     }
     ctx->r0 = uint32_t(active->stop.load() ? STATUS_STOPPED : STATUS_OK);
