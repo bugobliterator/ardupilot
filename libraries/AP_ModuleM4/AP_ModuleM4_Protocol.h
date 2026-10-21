@@ -190,7 +190,8 @@ static const uint16_t MAX_REPLY_OUTPUT = MAX_FRAME - sizeof(BindingReplyHeader);
 struct __attribute__((packed)) ConfigRequest { SystemCallHeader call; uint32_t crc_short; uint32_t crc_pattern; };
 struct __attribute__((packed)) ConfigReply {
     SystemReplyHeader reply;
-    int32_t heap_size, code_size, stack_size;   // MOD_HEAP_MAX, MOD_CODE_MAXSIZE (clamped), MOD_STACK_MAX
+    // caps, not sizes: a module's image declares its initial heap and required stack
+    int32_t heap_max, code_maxsize, stack_max;   // MOD_HEAP_MAX, MOD_CODE_MAXSIZE (clamped), MOD_STACK_MAX
     uint8_t max_modules, debug_options, m4_options, reserved;
     // the M7's AP_HAL::millis() and AP_HAL::micros() read together as the reply is packed: the M4
     // calibrates its copy of the M7 clock (AP_ModuleM4_M7Clock.h) from them

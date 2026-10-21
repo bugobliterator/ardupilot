@@ -196,8 +196,8 @@ void ModuleHost::post_module_state(ModuleStateKind kind)
     notify.state = uint8_t(kind);
     notify.rx_size = _image.code_size();
     notify.rw_size = _image.rw_memory_size();
-    notify.heap_size = uint32_t(_config.heap_size);
-    notify.stack_size = uint32_t(_config.stack_size);
+    notify.heap_size = _rx_base != 0 ? _layout.heap_end - _layout.heap_base : 0;
+    notify.stack_size = _rx_base != 0 ? _layout.stack_top - _layout.stack_base : 0;
     notify.crc = _image.checksum();
     notify.rx_base = _rx_base;
     notify.stack_base = _rx_base != 0 ? _layout.stack_base : 0;
@@ -387,16 +387,19 @@ void ModuleHost::read(int32_t result)
     _closing = true;
 }
 
+// the PR's Module::load(): the image's initial heap and required stack, capped by MOD_HEAP_MAX and
+// MOD_STACK_MAX less the host callback margin
 void ModuleHost::parse()
 {
-    if (_config.code_size <= 0 || _config.heap_size <= 0 ||
-        _config.stack_size <= int32_t(_platform.stack_margin)) {
+    if (_config.code_maxsize <= 0 || _config.heap_max < 256 ||
+        _config.stack_max <= int32_t(_platform.stack_margin)) {
         fail_load("invalid memory limits");
         return;
     }
     Image::Compatibility compatibility = _platform.compatibility;
-    compatibility.stack_limit = uint32_t(_config.stack_size) - _platform.stack_margin;
-    if (!_image.parse(pointer(_platform.area_base), _length, uint32_t(_config.code_size), compatibility)) {
+    compatibility.stack_limit = uint32_t(_config.stack_max) - _platform.stack_margin;
+    compatibility.heap_limit = uint32_t(_config.heap_max);
+    if (!_image.parse(pointer(_platform.area_base), _length, uint32_t(_config.code_maxsize), compatibility)) {
         fail_load(_image.parse_error());
         return;
     }
@@ -490,8 +493,8 @@ void ModuleHost::place()
     request.rx_alignment = contiguous ? 4096U : _image.rx_alignment();
     request.rw_memory_size = contiguous ? 0 : _image.rw_memory_size();
     request.rw_alignment = _image.rw_alignment();
-    request.stack_size = uint32_t(_config.stack_size);
-    request.heap_size = uint32_t(_config.heap_size);
+    request.stack_size = _image.required_stack_size() + _platform.stack_margin;
+    request.heap_size = _image.initial_heap_size();
     if (request.heap_size > MODULE_HEAP_MAX ||
         load_layout(_platform.area_base, _platform.area_size, request, _layout) != LoadFit::Ok) {
         fail_load(NO_ROOM);

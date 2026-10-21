@@ -49,7 +49,8 @@ static uint32_t remote_id()
 /*
   An APMOD06 split container for the host's machine (test_rust_image.cpp's SplitContainer:
   4096 B of code, two fixups, RW and BSS), with an import table of two hashes added the way its
-  ImportContainer adds one: a local hash of the M4's catalogue and a remote one.
+  ImportContainer adds one: a local hash of the M4's catalogue and a remote one. It declares
+  heap_size of initial heap and stack_size of required stack.
  */
 struct SplitImportContainer {
     static constexpr uint32_t header_size = 84;
@@ -83,7 +84,8 @@ struct SplitImportContainer {
         put(80, crc32_small(UINT32_MAX, bytes.data(), bytes.size()) ^ UINT32_MAX);
     }
 
-    SplitImportContainer() : bytes(header_size + file_size + fixup_count * 4 + import_count * 16 + sizeof(names))
+    explicit SplitImportContainer(uint32_t heap_size = 32768, uint32_t stack_size = 4096) :
+        bytes(header_size + file_size + fixup_count * 4 + import_count * 16 + sizeof(names))
     {
         memcpy(bytes.data(), "APMOD06", 8);
         put(8, 6);
@@ -98,8 +100,8 @@ struct SplitImportContainer {
         put(40, fixup_count);
         put(44, expected.abi_version);
         put(48, expected.cpu_profile);
-        put(52, 4096);
-        put(56, 32768);
+        put(52, stack_size);
+        put(56, heap_size);
         put(60, import_count);
         memcpy(bytes.data() + 64, expected.fingerprint, sizeof(expected.fingerprint));
         bytes[header_size] = 0xA5;
@@ -148,9 +150,9 @@ struct FakeM7 {
     {
         ids[AP_Module::M4_LOCAL_IMPORTS[0].hash] = AP_Module::M4_LOCAL_IMPORTS[0].id;
         ids[REMOTE_HASH] = remote_id();
-        config.heap_size = 32768;
-        config.code_size = 131072;
-        config.stack_size = 32768;
+        config.heap_max = 32768;
+        config.code_maxsize = 131072;
+        config.stack_max = 32768;
         config.max_modules = 1;
     }
 
@@ -499,7 +501,7 @@ TEST(ModuleM4ModuleHost, TooLargeForTheAreaFails)
     SplitImportContainer container;
     const uint32_t area_size = 12288;   // the code window takes 8 KB: the file cannot be staged below it
     LoaderRig rig(container.bytes, area_size);
-    rig.m7.config.code_size = 8192;
+    rig.m7.config.code_maxsize = 8192;
     rig.run();
     expect_failed(rig, std::string(FILE_NAME) + " load failed: insufficient M4 RAM to load");
     EXPECT_EQ(memcmp(rig.platform.area, container.bytes.data(), container.bytes.size()), 0);
@@ -520,11 +522,68 @@ TEST(ModuleM4ModuleHost, ListedSizeAboveTheAreaFails)
 
 TEST(ModuleM4ModuleHost, HeapAboveTheBitmapsFails)
 {
-    SplitImportContainer container;
+    SplitImportContainer container(MODULE_HEAP_MAX + 16U);
     LoaderRig rig(container.bytes);
-    rig.m7.config.heap_size = int32_t(MODULE_HEAP_MAX + 16U);
+    rig.m7.config.heap_max = int32_t(2U * MODULE_HEAP_MAX);
     rig.run();
     expect_failed(rig, std::string(FILE_NAME) + " load failed: insufficient M4 RAM to load");
+}
+
+// a pr-rust module (APRUST05) is refused as the PR refuses it in process, not loaded with a
+// heap it does not declare
+TEST(ModuleM4ModuleHost, Aprust05ImageIsRefused)
+{
+    SplitImportContainer container;
+    std::vector<uint8_t> old = container.bytes;
+    memcpy(old.data(), "APRUST05", 8);
+    old[8] = 5;
+    LoaderRig rig(old);
+    rig.run();
+    expect_failed(rig, std::string(FILE_NAME) + " load failed: unsupported image format");
+    EXPECT_EQ(rig.steps[rig.steps.size() - 2], ModuleHost::Step::Parse);
+}
+
+// the image's initial heap and required stack are capped by MOD_HEAP_MAX and MOD_STACK_MAX (less
+// the host callback margin), with the PR's reasons
+TEST(ModuleM4ModuleHost, HeapAboveModHeapMaxIsRefused)
+{
+    SplitImportContainer container(32768U + 256U);
+    LoaderRig rig(container.bytes);
+    rig.run();
+    expect_failed(rig, std::string(FILE_NAME) + " load failed: initial heap exceeds MOD_HEAP_MAX");
+    EXPECT_EQ(rig.steps[rig.steps.size() - 2], ModuleHost::Step::Parse);
+}
+
+TEST(ModuleM4ModuleHost, StackAboveModStackMaxIsRefused)
+{
+    SplitImportContainer container(32768U, 32768U - 16384U + 256U);
+    LoaderRig rig(container.bytes);
+    rig.run();
+    expect_failed(rig, std::string(FILE_NAME) + " load failed: stack exceeds MOD_STACK_MAX");
+}
+
+// a module declaring 8 KB of heap and 4 KB of stack gets that heap and that stack plus the host
+// callback margin (the M4's 4096), whatever the caps
+TEST(ModuleM4ModuleHost, DeclaredHeapAndStackSizeTheLayout)
+{
+    SplitImportContainer container(8192U, 4096U);
+    LoaderRig rig(container.bytes);
+    rig.platform.stack_margin = 4096;
+    rig.host.init(rig.platform);
+    rig.m7.config.heap_max = 65536;
+    rig.m7.config.stack_max = 65536;
+    rig.run();
+    ASSERT_TRUE(started(rig)) << rig.host.failure();
+    const LoadLayout &layout = rig.start.layout;
+    EXPECT_EQ(layout.stack_base, rig.platform.area_base + MODULE_STACK_GUARD);
+    EXPECT_EQ(layout.stack_top - layout.stack_base, 8192U);
+    EXPECT_EQ(layout.heap_base, layout.stack_top);
+    EXPECT_EQ(layout.heap_end - layout.heap_base, 8192U);
+    EXPECT_EQ(rig.start.ranges.stack.size, 8192U);
+    EXPECT_EQ(rig.start.ranges.heap.size, 8192U);
+    ASSERT_EQ(rig.m7.states.size(), 2U);
+    EXPECT_EQ(rig.m7.states[0].heap_size, 8192U);
+    EXPECT_EQ(rig.m7.states[0].stack_size, 8192U);
 }
 
 TEST(ModuleM4ModuleHost, NoModuleIsIdle)
