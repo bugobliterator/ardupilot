@@ -12,6 +12,8 @@
 //! 15-17 are ahrs.get_location at 10/s, 200/s, 1000/s; 18 is Location.offset at 200/s on a copy of
 //! the location taken at the profile start. 19-21 are the probe's ping (Context::probe_ping(): the
 //! transport alone, no binding) at 10/s, 200/s, 1000/s. LATP_PROF 0 runs 1 to 21 in turn, all but 14.
+//! 26 (selected only) times 200 sleep_ms(5): its Mean and Max are the overshoot past 5 ms in us, its
+//! Busy count the sleeps that returned early.
 //! Each profile's first call starts at time_us() % 2500 ==
 //! LATP_OFFS % 2500; the achieved phase is in a 'LATPH profile phase' text and the end LATP row (Phs).
 #![no_std]
@@ -26,6 +28,9 @@ const PROFILE_COUNT: u32 = 21;
 const BURST_PROFILE: u32 = 13;
 const CONTROL_PROFILE: u32 = 14;
 const CONTROL_PERIOD_US: u64 = 5013;
+const SLEEP_PROFILE: u32 = 26;
+const SLEEP_MS: u32 = 5;
+const SLEEP_COUNT: u32 = 200;
 // the M7 main loop period (SCHED_LOOP_RATE 400) the start phase is taken against
 const LOOP_US: u64 = 2500;
 const RATES: [u32; 3] = [10, 200, 1000];
@@ -147,6 +152,8 @@ fn rate_of(profile: u32) -> u32 {
         BURST_RATE
     } else if profile == CONTROL_PROFILE {
         (1_000_000 / CONTROL_PERIOD_US) as u32
+    } else if profile == SLEEP_PROFILE {
+        1000 / SLEEP_MS
     } else if profile < BURST_PROFILE {
         RATES[((profile - 1) % 3) as usize]
     } else {
@@ -167,6 +174,8 @@ fn name_of(profile: u32) -> &'static str {
         "burst40"
     } else if profile == CONTROL_PROFILE {
         "mode5013"
+    } else if profile == SLEEP_PROFILE {
+        "sleepprec"
     } else {
         NAMES[binding_of(profile)]
     }
@@ -254,7 +263,40 @@ fn run_profile(probe: &mut Probe<'_, '_>, profile: u32, seconds: u32, offset: u6
             next = c.time_us() + period;   // too far behind: the rate is what the calls allow
         }
     }
-    log_profile(c, profile, 1, &tally, start_phase)?;
+    report_profile(c, profile, &tally, start, start_phase)
+}
+
+// profile 26: each sleep_ms(SLEEP_MS) timed from this side (its two time_us() calls included)
+fn run_sleep_precision(c: &Context<'_>, offset: u64) -> Result {
+    let mut tally = Tally::default();
+    log_profile(c, SLEEP_PROFILE, 0, &tally, 0)?;
+    align_phase(c, offset)?;
+    let start = c.time_us();
+    let start_phase = start % LOOP_US;
+    let asked = u64::from(SLEEP_MS) * 1000;
+    for _ in 0..SLEEP_COUNT {
+        let before = c.time_us();
+        let result = c.sleep_ms(SLEEP_MS);
+        let elapsed = c.time_us().saturating_sub(before);
+        tally.calls += 1;
+        match result {
+            Ok(()) => {}
+            Err(Error::Stopped) => return Err(Error::Stopped),
+            Err(_) => tally.errors += 1,
+        }
+        if elapsed < asked {
+            tally.busy += 1;
+        }
+        let overshoot = elapsed.saturating_sub(asked);
+        tally.total_us += overshoot;
+        tally.max_us = tally.max_us.max(overshoot);
+    }
+    report_profile(c, SLEEP_PROFILE, &tally, start, start_phase)
+}
+
+// the end LATP row, the LAT text and the LATPH text of a profile
+fn report_profile(c: &Context<'_>, profile: u32, tally: &Tally, start: u64, start_phase: u64) -> Result {
+    log_profile(c, profile, 1, tally, start_phase)?;
     let elapsed_ms = (c.time_us() - start) / 1000;
     let per_second = if elapsed_ms != 0 { u64::from(tally.calls) * 1000 / elapsed_ms } else { 0 };
     let mean = if tally.calls != 0 { tally.total_us / u64::from(tally.calls) } else { 0 };
@@ -308,14 +350,18 @@ fn run(c: &Context<'_>) -> Result {
         format_args!("LAT start prof {} {}s time_us {}us offs {}", profile, seconds, clock_cost, offset),
     )?;
     let (first, last) = if profile == 0 { (1, PROFILE_COUNT) } else { (profile, profile) };
-    if first < 1 || last > PROFILE_COUNT {
+    if first < 1 || (last > PROFILE_COUNT && last != SLEEP_PROFILE) {
         return Err(Error::Invalid);
     }
     for selected in first..=last {
         if profile == 0 && selected == CONTROL_PROFILE {
             continue;
         }
-        run_profile(&mut probe, selected, seconds, offset)?;
+        if selected == SLEEP_PROFILE {
+            run_sleep_precision(c, offset)?;
+        } else {
+            run_profile(&mut probe, selected, seconds, offset)?;
+        }
     }
     c.gcs().send_text(MavSeverity::INFO, "LAT done")
 }
