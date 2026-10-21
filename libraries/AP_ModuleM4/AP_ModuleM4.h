@@ -223,7 +223,7 @@ private:
     uint32_t _m4_fault_count;         // M4 fault count already handled
     uint32_t _m4_fault_pc;
     uint32_t _m4_heartbeat;
-    uint32_t _m4_heartbeat_ms;
+    uint32_t _m4_heartbeat_ms;        // platform_timeout_ms() of the last new beat
     // a fault at a fault restart's start: the old session's on its way down, or the new session's
     // own before this M7 read its header; reported if the session never beats (report_start_fault()).
     // Restart requests wait while it is pending

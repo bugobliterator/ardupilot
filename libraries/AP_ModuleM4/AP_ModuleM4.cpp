@@ -1368,7 +1368,7 @@ void AP_ModuleM4::check_started(uint32_t now_ms)
             _m4_fault_count = view.faultCount;
         }
         _m4_heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
-        _m4_heartbeat_ms = now_ms;
+        _m4_heartbeat_ms = platform_timeout_ms();
         // re-handshake: drop whatever either side queued before this start
         _channel->resetAfterRestart();
         _session_calls = 0;
@@ -1427,13 +1427,15 @@ void AP_ModuleM4::check_running(uint32_t now_ms)
             return;
         }
     }
-    // Busy: the M4 is rewriting its header (or died doing so); the heartbeat decides
+    // Busy: the M4 is rewriting its header (or died doing so); the heartbeat decides. The M4 beats
+    // on its own clock: in SITL wall time, which SIM_SPEEDUP does not scale
     const uint32_t heartbeat = PeerHeader::peerHeartbeat(_shared, PeerHeader::Core::M7);
+    const uint32_t beat_check_ms = platform_timeout_ms();
     if (heartbeat != _m4_heartbeat) {
         _m4_heartbeat = heartbeat;
-        _m4_heartbeat_ms = now_ms;
+        _m4_heartbeat_ms = beat_check_ms;
         _start_fault.beat();
-    } else if (now_ms - _m4_heartbeat_ms > ModuleM4::HEARTBEAT_TIMEOUT_MS) {
+    } else if (beat_check_ms - _m4_heartbeat_ms > ModuleM4::HEARTBEAT_TIMEOUT_MS) {
         if (!report_start_fault()) {
             failure("no heartbeat");
         }
