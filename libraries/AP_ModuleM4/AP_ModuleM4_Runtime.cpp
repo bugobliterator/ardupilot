@@ -13,42 +13,42 @@ Runtime *Runtime::_singleton;
 
 const AP_Param::GroupInfo Runtime::var_info[] = {
     // @Param: ENABLE
-    // @DisplayName: Native Rust modules enable
-    // @Description: Enable experimental native Rust modules. On this board they run unprivileged on the Cortex-M4 under its MPU.
+    // @DisplayName: Native modules enable
+    // @Description: Enable experimental native modules. On this board they run unprivileged on the Cortex-M4 under its MPU.
     // @Values: 0:Disabled,1:Enabled
     // @RebootRequired: True
     // @User: Advanced
     AP_GROUPINFO_FLAGS("ENABLE", 1, Runtime, _enable, 0, AP_PARAM_FLAG_ENABLE),
 
-    // @Param: HEAP_SIZE
-    // @DisplayName: Rust module initial heap size
-    // @Description: Initial allocation arena size per module. May expand while armed unless DEBUG_OPTS bit 6 is set, retaining 20 KiB of system memory. Excludes code, stack and allocator metadata.
+    // @Param: HEAP_MAX
+    // @DisplayName: Native module heap capacity limit
+    // @Description: Maximum backing heap arena capacity per module. Initial size comes from the module file. Armed expansion is capped here and retains 20 KiB of system memory unless disabled by DEBUG_OPTS bit 6. Excludes code, stack and allocator metadata. On the M4 the heap does not expand: a module gets its initial size, at most 64 KiB.
     // @Units: B
     // @Range: 256 16777216
     // @RebootRequired: True
     // @User: Advanced
-    AP_GROUPINFO("HEAP_SIZE", 2, Runtime, _heap_size, 32768),
+    AP_GROUPINFO("HEAP_MAX", 2, Runtime, _heap_size, 32768),
 
-    // @Param: CODE_SIZE
-    // @DisplayName: Rust module image limit
+    // @Param: CODE_MAXSIZE
+    // @DisplayName: Native module image limit
     // @Description: Per-module code and data image limit in bytes, rounded up to a multiple of 4096. Only the loaded image is allocated, not this entire limit. Alignment and allocator overhead are additional.
     // @Units: B
     // @Range: 4096 16777216
     // @RebootRequired: True
     // @User: Advanced
-    AP_GROUPINFO("CODE_SIZE", 3, Runtime, _code_size, 131072),
+    AP_GROUPINFO("CODE_MAXSIZE", 3, Runtime, _code_size, 131072),
 
-    // @Param: STACK_SIZE
-    // @DisplayName: Rust module stack limit
-    // @Description: Requested stack per module in bytes, including host callback margin. Rounded up to the platform minimum and alignment. OS and guard overhead are additional.
+    // @Param: STACK_MAX
+    // @DisplayName: Native module stack limit
+    // @Description: Maximum logical worker stack per module, including the declared module requirement plus host callback margin. Only the requested stack is allocated, rounded to platform minimum and alignment. OS and guard overhead are additional.
     // @Units: B
-    // @Range: 8192 16777216
+    // @Range: 256 16777216
     // @RebootRequired: True
     // @User: Advanced
-    AP_GROUPINFO("STACK_SIZE", 4, Runtime, _stack_size, 32768),
+    AP_GROUPINFO("STACK_MAX", 4, Runtime, _stack_size, 32768),
 
     // @Param: MAX_MOD
-    // @DisplayName: Maximum Rust modules
+    // @DisplayName: Maximum Native modules
     // @Description: Maximum unique module filenames loaded across ROMFS and the writable module directory. A ROMFS module overrides a writable module with the same filename. Extra unique files cause a load failure rather than being silently ignored.
     // @Range: 1 8
     // @RebootRequired: True
@@ -56,30 +56,30 @@ const AP_Param::GroupInfo Runtime::var_info[] = {
     AP_GROUPINFO("MAX_MOD", 5, Runtime, _max_modules, 2),
 
     // @Param: RESTART
-    // @DisplayName: Rust restart request counter
-    // @Description: Change this value to request cooperative restart of all Rust modules, including while armed. Non-cooperating workers prevent reload and retain their memory.
+    // @DisplayName: Native module restart request counter
+    // @Description: Change this value to request cooperative restart of all Native modules, including while armed. Non-cooperating workers prevent reload and retain their memory.
     // @Range: 0 32767
     // @User: Advanced
     AP_GROUPINFO("RESTART", 6, Runtime, _restart, 0),
 
     // @Param: LD_CSUM
-    // @DisplayName: Required loaded Rust module checksum
+    // @DisplayName: Required loaded Native module checksum
     // @Description: Required masked XOR of whole-file CRC32 values of loaded modules. Minus one disables this pre-arm requirement.
     // @Range: -1 8388607
     // @User: Advanced
     AP_GROUPINFO("LD_CSUM", 7, Runtime, _loaded_required, -1),
 
     // @Param: RUN_CSUM
-    // @DisplayName: Required running Rust module checksum
+    // @DisplayName: Required running Native module checksum
     // @Description: Required masked XOR of whole-file CRC32 values of running modules. Minus one disables this pre-arm requirement.
     // @Range: -1 8388607
     // @User: Advanced
     AP_GROUPINFO("RUN_CSUM", 8, Runtime, _running_required, -1),
 
     // @Param: DEBUG_OPTS
-    // @DisplayName: Rust module debug options
-    // @Description: Disable Rust pre-arm checks, save current loaded and running checksums, or disable heap expansion. The save bit clears after storing both values. Changes to the heap expansion option take effect on module restart.
-    // @Bitmask: 4:Disable pre-arm checks,5:Save checksums,6:Disable heap expansion
+    // @DisplayName: Native module debug options
+    // @Description: Disable module pre-arm checks or save current loaded and running checksums. The save bit clears after storing both values. On the M4 the heap does not expand and the call latency probe is MOD_M4_OPTS bit 2.
+    // @Bitmask: 4:Disable pre-arm checks,5:Save checksums
     // @User: Advanced
     AP_GROUPINFO("DEBUG_OPTS", 9, Runtime, _debug_options, 0),
     AP_GROUPEND

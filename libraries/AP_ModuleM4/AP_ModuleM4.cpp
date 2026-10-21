@@ -800,16 +800,16 @@ uint16_t AP_ModuleM4::serve_config(const uint8_t *buf, uint16_t len, uint32_t se
     const AP_Module::Runtime *runtime = AP_Module::Runtime::get_singleton();
     if (runtime != nullptr) {
         const AP_Module::Runtime::Config config = runtime->config();
-        reply.heap_max = config.heap_size;
-        reply.stack_max = config.stack_size;
+        reply.heap_max = config.heap_max;
+        reply.stack_max = config.stack_max;
         reply.max_modules = uint8_t(config.max_modules);
         reply.debug_options = uint8_t(config.debug_options);
         // the PR rounds MOD_CODE_MAXSIZE up to whole 4096 B; the staged loader takes at most its cap,
         // at which any module within MOD_STACK_MAX and MOD_HEAP_MAX fits
-        const uint32_t code_size = config.code_size > 0 ? (uint32_t(config.code_size) + 4095U) & ~4095U : 0;
+        const uint32_t code_size = config.code_maxsize > 0 ? (uint32_t(config.code_maxsize) + 4095U) & ~4095U : 0;
         const uint32_t cap = ModuleM4::staged_code_size_cap(AP_MODULE_M4_MODULE_AREA_SIZE,
-                                                          uint32_t(MAX(config.stack_size, int32_t(0))),
-                                                          uint32_t(MAX(config.heap_size, int32_t(0))));
+                                                          uint32_t(MAX(config.stack_max, int32_t(0))),
+                                                          uint32_t(MAX(config.heap_max, int32_t(0))));
         reply.code_maxsize = int32_t(MIN(code_size, cap));
         if (code_size > cap && !_code_size_capped_sent) {
             _code_size_capped_sent = true;
