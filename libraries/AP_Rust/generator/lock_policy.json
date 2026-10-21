@@ -1,0 +1,6 @@
+{
+  "vehicle.get_control_mode_reason": {
+    "lock": "none",
+    "why": "AP_Vehicle::get_control_mode_reason (libraries/AP_Vehicle/AP_Vehicle.h:139) is non-virtual and returns the ModeReason (uint8_t, libraries/AP_Vehicle/ModeReason.h:19) member control_mode_reason (AP_Vehicle.h:567): one byte load through AP_Vehicle::_singleton (AP_Vehicle.h:115), which points at the static vehicle object of every vehicle (ArduPlane/Plane.cpp:1152, ArduCopter/Copter.cpp:968, Rover/Rover.cpp:557, ArduSub/Sub.cpp:487, Blimp/Blimp.cpp:312, AntennaTracker/Tracker.cpp:162). Writers store the byte under the scheduler lock; a lock-free read returns a value that was stored."
+  }
+}

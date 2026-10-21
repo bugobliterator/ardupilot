@@ -114,7 +114,7 @@ def lock_table(methods, count):
     table = {binding_id: 'None' for binding_id in range(count)}
     for method in methods:
         lock = method.get('lock')
-        if lock is None:
+        if lock is None or method.get('lock_override') == 'none':
             continue
         if lock == 'scheduler-semaphore':
             name = 'Scheduler'

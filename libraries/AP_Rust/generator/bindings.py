@@ -96,6 +96,33 @@ def policies():
     return json.loads((ROOT / 'generator/binding_policies.json').read_text())
 
 
+def lock_policies():
+    return json.loads((ROOT / 'generator/lock_policy.json').read_text())
+
+
+def apply_lock_overrides(methods, overrides, require_all=True):
+    '''Mark adapters that read their result without the owner's lock. The public contract keeps
+    the owner's lock: a lock-free read is a valid implementation of a blocking contract.'''
+    by_name = {name: m for m in methods for name in [m.get('api_name')] + m.get('api_aliases', []) if name}
+    for name, override in sorted(overrides.items()):
+        if set(override) != {'lock', 'why'} or override['lock'] != 'none':
+            raise ValueError(f'lock override {name}: needs exactly "lock": "none" and "why"')
+        if not isinstance(override['why'], str) or not override['why'].strip():
+            raise ValueError(f'lock override {name}: "why" must state the safety argument')
+        method = by_name.get(name)
+        if method is None:
+            if require_all:
+                raise ValueError(f'stale lock override: {name}')
+            continue
+        if not method.get('lock'):
+            raise ValueError(f'lock override {name}: its adapter takes no lock')
+        if method['result']['type'] not in singleton_binding.SCALARS:
+            raise ValueError(f'lock override {name}: result {method["result"]["type"]} is not a scalar')
+        if any(a['output'] for a in method['arguments']):
+            raise ValueError(f'lock override {name}: has output arguments')
+        method['lock_override'] = 'none'
+
+
 def method_contract(owner, method):
     lock_fields = [('semaphore', 'semaphore'), ('scheduler-semaphore', 'scheduler_semaphore'),
                    ('semaphore-pointer', 'semaphore_pointer')]
@@ -221,6 +248,7 @@ def select(ir, selection, only=None):
                              if only is None else ([], []))
     methods += values
     coverage += [r for r in value_reports if r['owner'] in value_binding.TYPES]
+    apply_lock_overrides(methods, lock_policies(), require_all=only is None)
     parameter = parameter_binding.select(ir, selection['Parameter'], len(methods) + 1)
     math = math_binding.select(ir, selection, parameter['layout']['id'] + 1)
     libm = libm_binding.specification(max(m['id'] for o in math['types'] for m in o['methods']) + 1)

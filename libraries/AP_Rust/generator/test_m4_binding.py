@@ -172,7 +172,8 @@ def test_local_import_table_lists_hashes_of_local_ids():
 def test_lock_table_names_the_probed_locks():
     methods = [dict(id=1, owner='AP_AHRS', lock='semaphore'), dict(id=2, owner='AP_Vehicle', lock='scheduler-semaphore'),
                dict(id=3, owner='AP_Camera', lock='semaphore'), dict(id=4, owner='AP_OSD_Backend', lock='semaphore-pointer'),
-               dict(id=5, owner='AP_Vehicle', lock=None), dict(id=40, owner='AP_AHRS', lock='semaphore')]
+               dict(id=5, owner='AP_Vehicle', lock=None), dict(id=40, owner='AP_AHRS', lock='semaphore'),
+               dict(id=6, owner='AP_Vehicle', lock='scheduler-semaphore', lock_override='none')]
     locks = m4_binding.lock_table(methods, 9)
     assert locks == {0: 'None', 1: 'Ahrs', 2: 'Scheduler', 3: 'Other', 4: 'Other', 5: 'None', 6: 'None', 7: 'None',
                      8: 'None'}
