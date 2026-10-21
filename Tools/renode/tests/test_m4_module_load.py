@@ -54,13 +54,13 @@ def build_module(name, directory):
 
 
 def install_module(image, module):
-    '''Writes module into the board's SD card image as /APM/rust/<name>, alone in that directory.'''
+    '''Writes module into the board's SD card image as /APM/modules/<name>, alone in that directory.'''
     fat_image._require_pyfatfs()
     with fat_image.PyFatFS(str(image)) as filesystem:
-        filesystem.makedirs('/APM/rust', recreate=True)
-        for name in filesystem.listdir('/APM/rust'):
-            filesystem.remove('/APM/rust/' + name)
-        with filesystem.openbin('/APM/rust/' + module.name, 'w') as stream:
+        filesystem.makedirs('/APM/modules', recreate=True)
+        for name in filesystem.listdir('/APM/modules'):
+            filesystem.remove('/APM/modules/' + name)
+        with filesystem.openbin('/APM/modules/' + module.name, 'w') as stream:
             stream.write(module.read_bytes())
 
 
