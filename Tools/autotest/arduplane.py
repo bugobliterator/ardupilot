@@ -7837,7 +7837,7 @@ return update()
     def rust_binding_module(self, m4, filename, wipe=False):
         '''install one test module alone (MOD_MAX_MOD 1) with the in-process tests' limits and start it'''
         self.context_push()
-        self.install_rust_test_module_context(filename, stack_size=8192)
+        self.install_rust_test_module_context(filename, stack_size=8192, heap_size=4096)
         if wipe:
             self.customise_SITL_commandline([], wipe=True)
         parameters = {'MOD_ENABLE': 1, 'MOD_HEAP_MAX': 4096, 'MOD_STACK_MAX': 65536, 'MOD_MAX_MOD': 1}
