@@ -75,6 +75,9 @@ static volatile bool module_waiting;
 static volatile bool module_doorbell_stamped;
 static volatile uint32_t module_doorbell_us;
 static volatile uint32_t module_doorbell_cycles;   // DWT at the doorbell interrupt's entry
+// set by whoever signals call_done, cleared by the module thread just before it waits on call_done:
+// never false while call_done is signalled
+static volatile bool call_done_signalled;
 
 static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *reply, uint16_t cap)
 {
@@ -108,6 +111,7 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
             uint32_t woke_cycles = 0;
             // the M7 rings once per sleep: armed again before each wait. False: a frame is waiting
             if (service_of->prepare_module_sleep()) {
+                call_done_signalled = false;
                 poll_timeout = chBSemWaitTimeout(&call_done, TIME_MS2I(10)) == MSG_TIMEOUT;
                 woke_cycles = probed ? DWT->CYCCNT : 0;
             }
@@ -138,12 +142,15 @@ static int32_t port_call(void *, const uint8_t *request, uint16_t len, uint8_t *
     link.state.store(ModuleLink::Idle);
     if (waited) {
         // a doorbell between the last drain and the clear came here, not to the service
-        if (chBSemWaitTimeout(&call_done, TIME_IMMEDIATE) == MSG_OK &&
-            service_of->drain_step_for_module(false, false, 0, 0)) {
-            wake_service_of();
+        if (call_done_signalled) {
+            call_done_signalled = false;
+            if (chBSemWaitTimeout(&call_done, TIME_IMMEDIATE) == MSG_OK &&
+                service_of->drain_step_for_module(false, false, 0, 0)) {
+                wake_service_of();
+            }
         }
         // the service still sleeps on the sleep whose doorbell this thread took: armed again
-        // for it, or woken when a frame is already waiting
+        // for it, or woken when a frame is already waiting (the drain stopped at the reply)
         if (!service_of->prepare_module_sleep()) {
             wake_service_of();
         }
@@ -522,6 +529,7 @@ void RustM4::module_port_wake()
 {
     // the module thread completes its own call when it drains the reply
     if (chThdGetSelfX() != module_thread) {
+        call_done_signalled = true;
         chBSemSignal(&call_done);
     }
 }
@@ -536,6 +544,7 @@ bool RustM4::module_port_doorbell_i(bool stamped, uint32_t isr_us, uint32_t isr_
         module_doorbell_cycles = isr_cycles;
         module_doorbell_stamped = true;
     }
+    call_done_signalled = true;
     chBSemSignalI(&call_done);
     return true;
 }
