@@ -46,6 +46,25 @@ bool AP_RustM4_Server::frame_is_posted(const uint8_t *frame, uint16_t len) const
     return parse_binding_call(frame, len, call) && (call.flags & CALL_FLAG_NOTIFY) != 0 && binding_posted(call.id);
 }
 
+// word stores where p is 4-byte aligned, then the tail. volatile keeps GCC from folding the
+// loops back into a memset call
+static void zero_bytes(uint8_t *p, uint32_t n)
+{
+    volatile uint8_t *byte = p;
+    while (n > 0 && (uintptr_t(byte) & 3U) != 0) {
+        *byte++ = 0;
+        n--;
+    }
+    volatile uint32_t *word = static_cast<volatile uint32_t *>(static_cast<volatile void *>(byte));
+    for (; n >= 4; n -= 4) {
+        *word++ = 0;
+    }
+    byte = static_cast<volatile uint8_t *>(static_cast<volatile void *>(word));
+    while (n-- > 0) {
+        *byte++ = 0;
+    }
+}
+
 uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uint8_t *reply, uint16_t cap,
                                          uint32_t now_ms)
 {
@@ -85,9 +104,15 @@ uint16_t AP_RustM4_Server::serve_binding(const uint8_t *frame, uint16_t len, uin
         memset(_out, 0, call.out_size);
         return pack_binding_reply(reply, cap, call.header.seq, ReplyStatus::Ok, STATUS_OK, _out, call.out_size, 0, 0);
     }
-    memset(_in, 0, sizeof(_in));
+    // newlib-nano's memset stores one byte per iteration: clear only what earlier calls touched
+    if (_in_dirty > call.in_size) {
+        zero_bytes(_in + call.in_size, _in_dirty - call.in_size);
+    }
     memcpy(_in, frame + sizeof(call), call.in_size);
-    memset(_out, 0, sizeof(_out));
+    _in_dirty = call.in_size;
+    zero_bytes(_out, _out_dirty);
+    // adapters do not all honour out_size; none writes past MAX_FRAME (NoAdapterWritesPastTheFrame)
+    _out_dirty = MAX_FRAME;
     const uint32_t start_us = AP_HAL::micros();
     const int32_t status = dispatch(call.module, call.id, call.in_size, call.out_size);
     const uint32_t exec_us = AP_HAL::micros() - start_us;
@@ -109,6 +134,13 @@ int32_t AP_RustM4_Server::dispatch(uint16_t module, uint32_t id, uint16_t in_siz
     for (uint16_t i = SERVE_BUFFER_SIZE; i > 0; i--) {
         if (_in[i - 1] != 0) {
             _last_input_end = i;
+            break;
+        }
+    }
+    _last_output_zero = true;
+    for (const uint8_t byte : _out) {
+        if (byte != 0) {
+            _last_output_zero = false;
             break;
         }
     }
@@ -293,6 +325,8 @@ void AP_RustM4_Server::clear_handles()
     memset(_sent_bound_slots, 0, sizeof(_sent_bound_slots));
     memset(_resync_owed, 0, sizeof(_resync_owed));
     _handle_count = 0;
+    _in_dirty = SERVE_BUFFER_SIZE;
+    _out_dirty = SERVE_BUFFER_SIZE;
 }
 
 uint16_t AP_RustM4_Server::handle_home(uint16_t module, uint64_t token)
@@ -488,6 +522,8 @@ bool AP_RustM4_Server::dispatch_guarded(uint32_t id, uint16_t in_size, uint16_t 
     memset(_in + MAX_FRAME, 0xA5, SERVE_BUFFER_SIZE - MAX_FRAME);
     memset(_out + MAX_FRAME, 0xA5, SERVE_BUFFER_SIZE - MAX_FRAME);
     IGNORE_RETURN(dispatch(0, id, in_size, out_size));
+    _in_dirty = SERVE_BUFFER_SIZE;
+    _out_dirty = SERVE_BUFFER_SIZE;
     for (uint16_t i = MAX_FRAME; i < SERVE_BUFFER_SIZE; i++) {
         if (_in[i] != 0xA5 || _out[i] != 0xA5) {
             return false;
@@ -505,6 +541,7 @@ const AP_Param *AP_RustM4_Server::bound_param_for_test(uint16_t module, uint64_t
 void AP_RustM4_Server::fill_input_for_test(uint8_t byte)
 {
     memset(_in, byte, sizeof(_in));
+    _in_dirty = SERVE_BUFFER_SIZE;
 }
 
 bool AP_RustM4_Server::needs_vehicle(uint32_t id)
