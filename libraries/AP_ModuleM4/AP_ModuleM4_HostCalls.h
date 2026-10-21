@@ -142,8 +142,9 @@ inline int32_t host_binding_call(ModuleContext &m, const BindingCallArgs &a, con
     }
     const bool settle = role == MirrorRole::HandleWriter && a.input_size >= sizeof(token) &&
                         p.mirror_pending != nullptr && p.mirror_settle != nullptr;
-    // probed when the trailer fits the frame; word-aligned for pack_binding_call()'s word copy
-    alignas(4) CallProbeTrailer trailer {};
+    // probed when the trailer fits the frame; word-aligned for pack_binding_call()'s word copy. Read only
+    // after begin_probed_call() set it: not zeroed on every call
+    alignas(4) CallProbeTrailer trailer;
     uint32_t begin_cycles = 0, begun_cycles = 0;
     if (probe != nullptr && a.input_size + sizeof(trailer) <= MAX_CALL_INPUT) {
         begin_cycles = probe_cycles_now(*probe);
