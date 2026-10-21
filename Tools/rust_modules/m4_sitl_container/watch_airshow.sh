@@ -69,7 +69,12 @@ while len(sent) < loader.count():
     link.mav.send(loader.wp(m.seq))
     sent.add(m.seq)
 print('mission upload:', link.recv_match(type='MISSION_ACK', blocking=True, timeout=10), flush=True)
-link.set_mode('AUTO')
+deadline = time.time() + 30
+while link.flightmode != 'AUTO':
+    if time.time() > deadline:
+        raise SystemExit('watch_airshow: AUTO not accepted')
+    link.set_mode('AUTO')
+    link.recv_match(type='HEARTBEAT', blocking=True, timeout=2)
 print('watch_airshow: mission loaded, AUTO selected; arm from the GCS', flush=True)
 link.close()
 PY
