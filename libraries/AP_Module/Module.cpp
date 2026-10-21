@@ -361,6 +361,9 @@ int32_t Module::binding_call(void *context, uint32_t id, const uint8_t *input, u
     if (module._stop.load()) {
         return AP_MODULE_STATUS_STOPPED;
     }
+    if (id == PROBE_PING_ID) {
+        return AP_MODULE_STATUS_OK;
+    }
     if (module._bindings.call == nullptr) {
         return AP_MODULE_STATUS_UNAVAILABLE;
     }

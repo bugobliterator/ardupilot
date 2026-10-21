@@ -32,6 +32,9 @@ static const uint8_t M4_CALL_POSTED = 1U;
 static const uint8_t M4_CALL_ROLE_SHIFT = 1U;
 static const uint8_t M4_CALL_ROLE_MASK = 3U;
 static const uint8_t M4_CALL_WIRE_SHIFT = 3U;
+// not a BindingId: the call latency probe's ping (the SDK's Context::probe_ping()), no input or output.
+// In process it returns OK at once; the M4 forwards it to the M7 as a Ping system call
+static const uint32_t PROBE_PING_ID = 0xFFF0;
 struct LocalImport {
     uint64_t hash;
     uint32_t id;
