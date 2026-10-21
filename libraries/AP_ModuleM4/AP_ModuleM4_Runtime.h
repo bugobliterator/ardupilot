@@ -28,9 +28,10 @@ public:
 #endif
     struct Config {
         int8_t enable;
-        int32_t heap_size;
-        int32_t code_size;
-        int32_t stack_size;
+        // caps (MOD_HEAP_MAX, MOD_CODE_MAXSIZE, MOD_STACK_MAX): each module's image declares its sizes
+        int32_t heap_max;
+        int32_t code_maxsize;
+        int32_t stack_max;
         int8_t max_modules;
         int16_t restart;
         int32_t loaded_required;
