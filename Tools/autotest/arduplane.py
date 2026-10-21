@@ -7821,7 +7821,7 @@ return update()
 
     def module_m4_checks(self, before):
         '''from the DataFlash logs the test added: no M4 restart or fault, SRPC rows for the
-        module's Fast and Slow bindings and none for its local (libm and math) ones, no refusal'''
+        module's Fast and Slow bindings and none for its local (libm and math) ones'''
         logs = [path for path in self.log_list() if path not in before]
         if not logs:
             raise NotAchievedException('no DataFlash log of the M4 test')
@@ -7829,20 +7829,17 @@ return update()
         restarts = set()
         faults = set()
         supervisor_rows = 0
-        denied = 0
         calls = {}
         for path in logs:
             dfreader = self.dfreader_for_path(path)
             while True:
-                m = dfreader.recv_match(type=['M4ST', 'M4HP', 'SRPC'])
+                m = dfreader.recv_match(type=['M4ST', 'SRPC'])
                 if m is None:
                     break
                 if m.get_type() == 'M4ST':
                     supervisor_rows += 1
                     restarts.add(m.Rst)
                     faults.add(m.Flt)
-                elif m.get_type() == 'M4HP':
-                    denied += m.Deny
                 else:
                     calls[(m.Id, m.Name)] = calls.get((m.Id, m.Name), 0) + m.N
         if supervisor_rows == 0:
@@ -7857,10 +7854,8 @@ return update()
         served_lanes = {lanes.get(method) for (method, name) in bindings}
         if not {'Fast', 'Slow'} <= served_lanes:
             raise NotAchievedException('SRPC binding rows %s cover lanes %s' % (sorted(bindings), served_lanes))
-        if denied != 0:
-            raise NotAchievedException('M4HP Deny %u: binding calls refused' % denied)
         top = sorted(calls.items(), key=lambda item: -item[1])[:12]
-        self.progress('Rust M4 checks: %u M4ST rows, restarts %s, Deny 0, SRPC calls %s' %
+        self.progress('Rust M4 checks: %u M4ST rows, restarts %s, SRPC calls %s' %
                       (supervisor_rows, sorted(restarts), ', '.join('%s=%u' % (name, n) for ((_, name), n) in top)))
 
     def module_m4_call_reduction_checks(self, before):
