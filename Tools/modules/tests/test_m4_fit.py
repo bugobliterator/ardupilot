@@ -49,3 +49,16 @@ def test_heap_that_reaches_rw_does_not_fit():
     fit = m4_fit.layout(file_size=60000, rx_size=50000, rx_alignment=8, rw_memory_size=2000, rw_alignment=8,
                         stack_size=65536, heap_size=120000)
     assert fit['result'] == 'no-room-to-run'
+
+
+def test_module_sizes_follow_the_image_within_the_caps():
+    assert m4_fit.module_sizes(4096, 8192, stack_max=32768, heap_max=32768) == dict(stack_size=8192, heap_size=8192)
+    assert m4_fit.module_sizes(28672, 32768, stack_max=32768, heap_max=32768) == dict(stack_size=32768,
+                                                                                      heap_size=32768)
+
+
+def test_module_sizes_refuse_as_the_loader_does():
+    assert m4_fit.module_sizes(28673, 4096, 32768, 32768) == dict(refused='stack exceeds MOD_STACK_MAX')
+    assert m4_fit.module_sizes(4096, 32769, 32768, 32768) == dict(refused='initial heap exceeds MOD_HEAP_MAX')
+    assert m4_fit.module_sizes(4096, 65552, 32768, 131072) == dict(refused='insufficient M4 RAM to load')
+    assert m4_fit.module_sizes(256, 256, 4096, 32768) == dict(refused='invalid memory limits')
