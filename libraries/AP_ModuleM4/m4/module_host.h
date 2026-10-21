@@ -22,8 +22,8 @@
 
 namespace ModuleM4 {
 
-// the largest MOD_HEAP_MAX the loader keeps allocator bitmaps for (privileged RAM: 2 bits per
-// 16 B granule); a larger heap fails the load as insufficient M4 RAM
+// the largest initial heap the loader keeps allocator bitmaps for (privileged RAM: 2 bits per
+// 16 B granule); a larger heap fails the load as insufficient M4 RAM. The heap does not expand
 static const uint32_t MODULE_HEAP_MAX = 64U * 1024U;
 
 struct ModuleHostPlatform {
@@ -33,7 +33,8 @@ struct ModuleHostPlatform {
     uint8_t *area;
     uint32_t area_base;
     uint32_t area_size;
-    // this platform's parse identity; stack_limit is MOD_STACK_MAX less stack_margin
+    // this platform's parse identity; stack_limit is MOD_STACK_MAX less stack_margin, heap_limit
+    // MOD_HEAP_MAX; the module's stack is its required stack plus stack_margin
     AP_Module::Image::Compatibility compatibility;
     uint32_t stack_margin;
     void *context;

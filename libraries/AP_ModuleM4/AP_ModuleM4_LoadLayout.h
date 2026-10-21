@@ -20,8 +20,8 @@ struct LoadRequest {
     uint32_t rx_alignment;
     uint32_t rw_memory_size;   // RW and BSS
     uint32_t rw_alignment;
-    uint32_t stack_size;       // MOD_STACK_MAX
-    uint32_t heap_size;        // MOD_HEAP_MAX
+    uint32_t stack_size;       // the image's required stack plus the host callback margin
+    uint32_t heap_size;        // the image's initial heap
 };
 
 enum class LoadFit : uint8_t { Ok, CodeTooLarge, NoRoomToStage, NoRoomToRun };
@@ -80,9 +80,10 @@ inline LoadFit load_layout(uint32_t area_base, uint32_t area_size, const LoadReq
 }
 
 // the largest MOD_CODE_MAXSIZE (a module's RX and RW, a multiple of 4096) the staged loader can
-// place in an area of area_size at stack_size and heap_size (m4_fit.py): the file, at least as
-// large as the image, is staged below it, so the image is at most half the area; and it shares the
-// area with the guard, the stack and the heap. 0 when the stack and heap alone fill the area
+// place in an area of area_size with any module within the MOD_STACK_MAX and MOD_HEAP_MAX caps
+// stack_size and heap_size (m4_fit.py): the file, at least as large as the image, is staged below
+// it, so the image is at most half the area; and it shares the area with the guard, the stack and
+// the heap. 0 when the stack and heap alone fill the area
 inline uint32_t staged_code_size_cap(uint32_t area_size, uint32_t stack_size, uint32_t heap_size)
 {
     if (stack_size > area_size || heap_size > area_size) {

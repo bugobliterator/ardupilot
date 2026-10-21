@@ -178,9 +178,9 @@ void m7_config_reply(uint32_t seq, uint32_t m7_millis_value, uint8_t m4_options 
     fill_header(reply.reply.header, MsgType::SystemReply, sizeof(reply), seq);
     reply.reply.method = uint16_t(SystemMethod::Config);
     reply.reply.transport = uint8_t(ReplyStatus::Ok);
-    reply.heap_size = 32768;
-    reply.code_size = 114688;
-    reply.stack_size = 16384;
+    reply.heap_max = 32768;
+    reply.code_maxsize = 114688;
+    reply.stack_max = 16384;
     reply.max_modules = 2;
     reply.m4_options = m4_options;
     reply.m7_millis = m7_millis_value;
@@ -498,8 +498,8 @@ TEST(ModuleM4Service, ConfigIsSentOncePerSessionAndCached)
     m7_config_reply(request.call.header.seq, 5000);
     service.drain_step();
     ASSERT_TRUE(service.config_ready());
-    EXPECT_EQ(service.config_reply().code_size, 114688);
-    EXPECT_EQ(service.config_reply().stack_size, 16384);
+    EXPECT_EQ(service.config_reply().code_maxsize, 114688);
+    EXPECT_EQ(service.config_reply().stack_max, 16384);
     EXPECT_EQ(service.config_reply().m4_options, 2);
     EXPECT_EQ(m7_millis_calls.load(), 1U);
     EXPECT_EQ(m7_millis_given.load(), 5000U);
