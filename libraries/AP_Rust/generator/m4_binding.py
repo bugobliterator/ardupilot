@@ -23,6 +23,12 @@ MIRROR_ROLES = {'get': FLAG_MIRROR_GET, 'handle_writer': FLAG_MIRROR_HANDLE_WRIT
                 'name_writer': FLAG_MIRROR_NAME_WRITER}
 # binding_mirror_role() values on the M4 (AP_RustM4_HostCalls.h MirrorRole)
 ROLE_VALUES = ((FLAG_MIRROR_GET, 1), (FLAG_MIRROR_HANDLE_WRITER, 2), (FLAG_MIRROR_NAME_WRITER, 3))
+# M4_CALL_POLICY bytes (AP_Rust/Bindings.h M4_CALL_*): posted, the mirror role, and for a local id
+# 1 + the index of its [input, output] sizes in M4_LOCAL_WIRES
+CALL_POSTED = 1
+CALL_ROLE_SHIFT = 1
+CALL_WIRE_SHIFT = 3
+CALL_WIRE_MAX = 0xFF >> CALL_WIRE_SHIFT
 
 
 def read_policy():
@@ -135,7 +141,7 @@ def catalogue_hash(entries, local, table=None):
     return state
 
 
-def policy_header(table, local_hash, locks=None):
+def policy_header(table, local_hash, locks=None, policy=None):
     locks = locks if locks is not None else {}
     lines = ['#pragma once', '#include <stdint.h>', '', 'namespace AP_Rust', '{',
              'enum class M4Lane : uint8_t { Unknown = 0, Fast = 1, Slow = 2, Local = 3 };',
@@ -151,7 +157,9 @@ def policy_header(table, local_hash, locks=None):
     lines += ['};', '// the lock the generated adapter of each id takes',
               'static const M4Lock M4_BINDING_LOCK[M4_BINDING_COUNT] = {']
     lines += [f'    M4Lock::{locks.get(binding_id, "None")}, // {binding_id}' for binding_id in sorted(table)]
-    lines += ['};', f'static const uint32_t M4_LOCAL_CATALOGUE_HASH = 0x{local_hash:08X}U;', '}', '']
+    lines += ['};', f'static const uint32_t M4_LOCAL_CATALOGUE_HASH = 0x{local_hash:08X}U;']
+    lines += call_policy_declarations(*policy) if policy is not None else []
+    lines += ['}', '']
     return '\n'.join(lines)
 
 
@@ -161,18 +169,10 @@ def local_dispatch(libm, sizes, entries):
     lines = ['#include <math.h>', '#include <string.h>', '#include <AP_Rust/Bindings.h>', '#include <AP_Rust/HostApi.h>',
              '', 'namespace AP_Rust', '{', 'static float read_float(const uint8_t *p)', '{',
              '    float value;', '    memcpy(&value, p, sizeof(value));', '    return value;', '}', '',
-             'bool binding_is_local(uint32_t id)', '{', '    switch (id) {']
-    lines += [f'    case {binding_id}:' for binding_id in sorted(sizes)]
-    lines += ['        return true;', '    default:', '        return false;', '    }', '}', '',
-              'bool binding_local_wire(uint32_t id, uint32_t &input_size, uint32_t &output_size)', '{',
-              '    switch (id) {']
-    lines += [f'    case {binding_id}: input_size = {ni}U; output_size = {no}U; return true;'
-              for binding_id, (ni, no) in sorted(sizes.items())]
-    lines += ['    default:', '        return false;', '    }', '}', '',
-              'int32_t binding_local_dispatch(uint32_t id, const uint8_t *input, uint32_t input_size,',
-              '                               uint8_t *output, uint32_t output_size)', '{',
-              '    // exact sizes before any read or write: the adapters read and write fixed sizes',
-              '    switch (id) {']
+             'int32_t binding_local_dispatch(uint32_t id, const uint8_t *input, uint32_t input_size,',
+             '                               uint8_t *output, uint32_t output_size)', '{',
+             '    // exact sizes before any read or write: the adapters read and write fixed sizes',
+             '    switch (id) {']
     for binding_id, (ni, no) in sorted(sizes.items()):
         lines += [f'    case {binding_id}: {{', f'        if (input_size != {ni}U || output_size != {no}U) {{',
                   '            return AP_RUST_STATUS_INVALID;', '        }']
@@ -192,18 +192,54 @@ def local_dispatch(libm, sizes, entries):
     return '\n'.join(lines)
 
 
-def policy_functions(table):
-    posted = sorted(i for i, (_, _, flags) in table.items() if flags & FLAG_POSTED)
-    lines = ['namespace AP_Rust', '{', 'bool binding_is_posted(uint32_t id)', '{', '    switch (id) {']
-    lines += [f'    case {binding_id}:' for binding_id in posted]
-    lines += ['        return true;'] if posted else []
-    lines += ['    default:', '        return false;', '    }', '}', '',
-              'uint8_t binding_mirror_role(uint32_t id)', '{', '    switch (id) {']
-    for binding_id, (_, _, flags) in sorted(table.items()):
+def call_policy(table, sizes):
+    '''(first id, [policy byte per id from first], [(input, output) per distinct local wire]): the ids
+    the M4 does not forward as plain calls, from the lowest to the highest'''
+    wires = sorted(set(sizes.values()))
+    if len(wires) > CALL_WIRE_MAX or any(size > 0xFF for wire in wires for size in wire):
+        raise ValueError(f'{len(wires)} local wires do not fit the M4 call policy byte')
+    policy = {}
+    for binding_id, (_, _, flags) in table.items():
         role = next((value for flag, value in ROLE_VALUES if flags & flag), 0)
-        if role:
-            lines.append(f'    case {binding_id}: return {role}U;')
-    lines += ['    default:', '        return 0U;', '    }', '}', '}', '']
+        wire = wires.index(sizes[binding_id]) + 1 if binding_id in sizes else 0
+        value = (CALL_POSTED if flags & FLAG_POSTED else 0) | role << CALL_ROLE_SHIFT | wire << CALL_WIRE_SHIFT
+        if value:
+            policy[binding_id] = value
+    if not policy:
+        return 0, [0], [(0, 0)]
+    first = min(policy)
+    return first, [policy.get(i, 0) for i in range(first, max(policy) + 1)], wires or [(0, 0)]
+
+
+def call_policy_declarations(first, values, wires):
+    return ['// one call policy byte per id from M4_CALL_POLICY_FIRST (Bindings.h M4_CALL_*)',
+            f'static const uint32_t M4_CALL_POLICY_FIRST = {first}U;',
+            f'static const uint32_t M4_CALL_POLICY_COUNT = {len(values)}U;',
+            f'static const uint32_t M4_LOCAL_WIRE_COUNT = {len(wires)}U;',
+            'extern const uint8_t M4_CALL_POLICY[M4_CALL_POLICY_COUNT];',
+            'extern const uint8_t M4_LOCAL_WIRES[M4_LOCAL_WIRE_COUNT][2];']
+
+
+def policy_functions(table, sizes):
+    first, values, wires = call_policy(table, sizes)
+    lines = ['#include <AP_Rust/BindingM4Policy_generated.h>', '', 'namespace AP_Rust', '{',
+             'const uint8_t M4_CALL_POLICY[M4_CALL_POLICY_COUNT] = {']
+    lines += [f'    {value}U, // {first + offset}' for offset, value in enumerate(values)]
+    lines += ['};', '', '// [input bytes, output bytes]', 'const uint8_t M4_LOCAL_WIRES[M4_LOCAL_WIRE_COUNT][2] = {']
+    lines += [f'    {{ {ni}U, {no}U }},' for ni, no in wires]
+    lines += ['};', '',
+              'static uint8_t call_policy(uint32_t id)', '{',
+              '    const uint32_t slot = id - M4_CALL_POLICY_FIRST;',
+              '    return slot < M4_CALL_POLICY_COUNT ? M4_CALL_POLICY[slot] : 0U;', '}', '',
+              'bool binding_is_local(uint32_t id)', '{', '    return (call_policy(id) >> M4_CALL_WIRE_SHIFT) != 0;', '}',
+              '',
+              'bool binding_local_wire(uint32_t id, uint32_t &input_size, uint32_t &output_size)', '{',
+              '    const uint8_t wire = call_policy(id) >> M4_CALL_WIRE_SHIFT;', '    if (wire == 0) {',
+              '        return false;', '    }', '    input_size = M4_LOCAL_WIRES[wire - 1][0];',
+              '    output_size = M4_LOCAL_WIRES[wire - 1][1];', '    return true;', '}', '',
+              'bool binding_is_posted(uint32_t id)', '{', '    return (call_policy(id) & M4_CALL_POSTED) != 0;', '}', '',
+              'uint8_t binding_mirror_role(uint32_t id)', '{',
+              '    return (call_policy(id) >> M4_CALL_ROLE_SHIFT) & M4_CALL_ROLE_MASK;', '}', '}', '']
     return '\n'.join(lines)
 
 
@@ -212,6 +248,7 @@ def emit(contract, entries):
     local = set(sizes)
     table = policy_table(entries, read_policy(), local)
     locks = lock_table(contract['methods'], len(table))
-    return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local, table), locks),
+    return {'BindingM4Policy_generated.h': policy_header(table, catalogue_hash(entries, local, table), locks,
+                                                         call_policy(table, sizes)),
             'BindingLocal_generated.cpp': local_dispatch(contract['libm'], sizes, entries) + '\n' +
-            policy_functions(table)}
+            policy_functions(table, sizes)}
