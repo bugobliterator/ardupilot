@@ -304,76 +304,91 @@ inline bool pass_after_wake(ServeDutyCap &cap, uint32_t woke_us, ChargeWake char
 // RESUME_US of credit, see ServeDutyCap)
 static const uint32_t RESET_ALLOWANCE_US = uint32_t(ServeDutyCap::RESUME_US);
 
-// CPU time to charge for the interval between two readings of the thread's CPU clock. When the
-// clock was reset in between (statistics cleared), or went backwards, the end reading is the CPU
-// used since the reset: that plus RESET_ALLOWANCE_US is charged, at most the interval's wall time.
-// Charging the wall time instead would charge a whole 10 ms sleep for a GCS @SYS/threads.txt read
-// and empty the duty cap's burst. A reset from the GCS under-charges by at most what ran before
-// it beyond the allowance
-inline uint32_t interval_cpu_us(uint64_t start_us, uint64_t end_us, bool reset, uint32_t wall_us)
+// CPU time to charge for the interval between two readings of the thread's CPU clock, in ticks
+// (ticks_per_us of them a microsecond) taken modulo 2^32; carry holds the ticks short of a whole
+// microsecond for the next interval. When the clock was reset in between (statistics cleared), or
+// went backwards, the end reading is the CPU used since the reset: that plus RESET_ALLOWANCE_US is
+// charged, at most the interval's wall time. Charging the wall time instead would charge a whole
+// 10 ms sleep for a GCS @SYS/threads.txt read and empty the duty cap's burst. A reset from the GCS
+// under-charges by at most what ran before it beyond the allowance. An interval reads forward
+// while it is under 2^31 ticks of CPU (5.3 s at 400 MHz); the host reads at least every
+// platform_wait_us() while it runs
+inline uint32_t interval_cpu_us(uint32_t start, uint32_t end, bool reset, uint32_t wall_us,
+                                uint32_t ticks_per_us, uint32_t &carry)
 {
-    if (reset || end_us < start_us) {
-        const uint64_t bound = end_us + RESET_ALLOWANCE_US;
-        return bound < wall_us ? uint32_t(bound) : wall_us;
+    if (reset || int32_t(end - start) < 0) {
+        carry = 0;
+        const uint32_t since_us = end / ticks_per_us;
+        if (since_us >= wall_us) {
+            return wall_us;
+        }
+        return wall_us - since_us > RESET_ALLOWANCE_US ? since_us + RESET_ALLOWANCE_US : wall_us;
     }
-    const uint64_t used = end_us - start_us;
-    return used > UINT32_MAX ? UINT32_MAX : uint32_t(used);
+    const uint32_t used = (end - start) + carry;
+    const uint32_t used_us = used / ticks_per_us;
+    carry = used - used_us * ticks_per_us;
+    return used_us;
 }
 
 /*
   The M7 thread-statistics clock (ChibiOS CH_DBG_STATISTICS) as the host thread reads it about
-  itself: cumulative cycles of its finished slices, the cycle its running slice started on, and
-  best. ChibiOS only ever lowers best to a slice's length, so the host keeps it at 0; a reset
-  (chTMObjectInit() from another thread, or Util::thread_info() on this one) sets it to all ones.
+  itself: the low word of the cumulative cycles of its finished slices, the cycle its running slice
+  started on, and best. ChibiOS only ever lowers best to a slice's length, so the host keeps it at
+  0; a reset (chTMObjectInit() from another thread, or Util::thread_info() on this one) sets it to
+  all ones.
  */
 struct ThreadStatsClock {
-    uint64_t cumulative;
+    uint32_t cumulative;
     uint32_t last;
     uint32_t best;
 };
 
-// one reading, in cycles; reset tells whether the clock was reset since the previous reading.
-// It clears best again: the caller writes the clock back
-inline uint64_t read_thread_cycles(ThreadStatsClock &clock, uint32_t now, bool &reset)
+// one reading, in cycles modulo 2^32; reset tells whether the clock was reset since the previous
+// reading. It clears best again: the caller writes the clock back
+inline uint32_t read_thread_cycles(ThreadStatsClock &clock, uint32_t now, bool &reset)
 {
     reset = clock.best != 0;
     clock.best = 0;
-    return clock.cumulative + uint32_t(now - clock.last);
+    return clock.cumulative + (now - clock.last);
 }
 
 /*
-  What the duty cap charges for the host's CPU, from readings of its CPU clock at the start and
-  the end of each pass. charges_waits (ChibiOS, where waits sleep): all CPU since the previous
-  reading, so the wake, the switch and the bookkeeping around a pass are charged too. Otherwise
-  (SITL, whose waits spin on the simulated clock): each pass only. An interval with a reset is
-  charged as interval_cpu_us() says; the first reading only starts the clock.
+  What the duty cap charges for the host's CPU, from readings of its CPU clock (ticks_per_us ticks
+  a microsecond, modulo 2^32) at the start and the end of each pass. charges_waits (ChibiOS, where
+  waits sleep): all CPU since the previous reading, so the wake, the switch and the bookkeeping
+  around a pass are charged too. Otherwise (SITL, whose waits spin on the simulated clock): each
+  pass only. An interval with a reset is charged as interval_cpu_us() says; the first reading only
+  starts the clock.
  */
 class HostCpuCharge {
 public:
-    explicit HostCpuCharge(bool charges_waits) : _charges_waits(charges_waits) {}
+    HostCpuCharge(bool charges_waits, uint32_t ticks_per_us) :
+        _charges_waits(charges_waits),
+        _ticks_per_us(ticks_per_us)
+    {}
 
-    uint32_t pass_start(uint64_t cpu_us, bool reset, uint32_t wall_us)
+    uint32_t pass_start(uint32_t cpu, bool reset, uint32_t wall_us)
     {
         if (!_started) {
             _started = true;
-            latch(cpu_us, wall_us);
+            latch(cpu, wall_us);
             return 0;
         }
         uint32_t used_us = 0;
         if (_charges_waits) {
-            used_us = interval(cpu_us, reset, wall_us);
-        } else if (reset || cpu_us < _cpu_us) {
+            used_us = interval(cpu, reset, wall_us);
+        } else if (reset || int32_t(cpu - _cpu) < 0) {
             _resets++;
         }
-        latch(cpu_us, wall_us);
+        latch(cpu, wall_us);
         return used_us;
     }
 
-    uint32_t pass_end(uint64_t cpu_us, bool reset, uint32_t wall_us)
+    uint32_t pass_end(uint32_t cpu, bool reset, uint32_t wall_us)
     {
-        const uint32_t used_us = _started ? interval(cpu_us, reset, wall_us) : 0;
+        const uint32_t used_us = _started ? interval(cpu, reset, wall_us) : 0;
         _started = true;
-        latch(cpu_us, wall_us);
+        latch(cpu, wall_us);
         return used_us;
     }
 
@@ -386,24 +401,26 @@ public:
     }
 
 private:
-    uint32_t interval(uint64_t cpu_us, bool reset, uint32_t wall_us)
+    uint32_t interval(uint32_t cpu, bool reset, uint32_t wall_us)
     {
-        if (reset || cpu_us < _cpu_us) {
+        if (reset || int32_t(cpu - _cpu) < 0) {
             _resets++;
         }
-        return interval_cpu_us(_cpu_us, cpu_us, reset, wall_us - _wall_us);
+        return interval_cpu_us(_cpu, cpu, reset, wall_us - _wall_us, _ticks_per_us, _carry);
     }
 
-    void latch(uint64_t cpu_us, uint32_t wall_us)
+    void latch(uint32_t cpu, uint32_t wall_us)
     {
-        _cpu_us = cpu_us;
+        _cpu = cpu;
         _wall_us = wall_us;
     }
 
     const bool _charges_waits;
+    const uint32_t _ticks_per_us;
     bool _started = false;
-    uint64_t _cpu_us = 0;
+    uint32_t _cpu = 0;
     uint32_t _wall_us = 0;
+    uint32_t _carry = 0;
     uint16_t _resets = 0;
 };
 

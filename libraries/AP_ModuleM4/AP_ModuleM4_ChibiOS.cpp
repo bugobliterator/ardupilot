@@ -146,20 +146,39 @@ uint32_t AP_ModuleM4::platform_wait_us() const
 #error "the M4 host duty cap charges ChibiOS thread statistics: define HAL_ENABLE_THREAD_STATISTICS"
 #endif
 
-bool AP_ModuleM4::platform_thread_cpu_us(uint64_t &cpu_us)
+bool AP_ModuleM4::platform_thread_cpu(uint32_t &cpu)
 {
     // a reset of this thread's statistics sets best to all ones: chTMObjectInit() from a thread
     // reading @SYS/threads.txt, or Util::thread_info() on this thread. The M4 cannot reach that
     // file (module_path_allowed()); an interval with a reset is charged the CPU since it plus
     // RESET_ALLOWANCE_US (interval_cpu_us())
-    chSysLock();
-    thread_t *self = chThdGetSelfX();
-    ModuleM4::ThreadStatsClock clock { self->stats.cumulative, self->stats.last, self->stats.best };
+    time_measurement_t &stats = chThdGetSelfX()->stats;
+    volatile rtcnt_t &last = stats.last;
+    // the low word of cumulative (little endian), one 32-bit load
+    volatile uint32_t &cumulative = *reinterpret_cast<volatile uint32_t *>(&stats.cumulative);
+    volatile rtcnt_t &best = stats.best;
+    // only this thread's switches change its statistics, and a reset happens only while it is
+    // switched out: a switch-in rewrites last, so a reading with last unchanged around it is whole
+    // without the kernel lock
+    rtcnt_t started, now;
+    uint32_t finished;
     bool reset;
-    const uint64_t cycles = ModuleM4::read_thread_cycles(clock, chSysGetRealtimeCounterX(), reset);
-    self->stats.best = clock.best;
+    do {
+        started = last;
+        finished = cumulative;
+        reset = best != 0;
+        now = chSysGetRealtimeCounterX();
+    } while (last != started);
+    if (!reset) {
+        cpu = finished + (now - started);
+        return false;
+    }
+    // reset: best is cleared under the lock, so a reset after the check is not lost
+    chSysLock();
+    ModuleM4::ThreadStatsClock clock { uint32_t(stats.cumulative), stats.last, stats.best };
+    cpu = ModuleM4::read_thread_cycles(clock, chSysGetRealtimeCounterX(), reset);
+    stats.best = clock.best;
     chSysUnlock();
-    cpu_us = cycles / (HAL_EXPECTED_SYSCLOCK / 1000000U);
     return reset;
 }
 
