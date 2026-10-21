@@ -16,6 +16,11 @@
 
 namespace RustM4 {
 
+// a CallProbeTrailer::prev_flags bit beside PROBE_M4_SLEPT (bit 11 is free in AP_Rust::CallTrace
+// flags): the module thread's poll took the reply, it never slept. The M7 keeps only the bits in
+// its PROBE_M4_FLAGS mask
+static const uint16_t PROBE_M4_POLLED = 1U << 11;
+
 // the M4's stamps of one probed call; seq 0 until the service sent it
 struct M4CallStamps {
     uint32_t seq;
