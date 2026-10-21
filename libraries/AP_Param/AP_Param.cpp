@@ -119,6 +119,19 @@ uint16_t AP_Param::num_read_only;
 bool AP_Param::eeprom_full;
 
 ObjectBuffer_TS<AP_Param::param_save> AP_Param::save_queue{30};
+
+#if AP_PARAM_CHANGE_OBSERVER_ENABLED
+AP_Param::ChangeObserver AP_Param::_change_observer;
+
+bool AP_Param::set_change_observer(ChangeObserver observer)
+{
+    if (observer != nullptr && _change_observer != nullptr) {
+        return false;
+    }
+    _change_observer = observer;
+    return true;
+}
+#endif
 HAL_Semaphore AP_Param::save_sem;
 bool AP_Param::registered_save_handler;
 
@@ -1160,6 +1173,11 @@ bool AP_Param::get_param_by_index(void *obj_ptr, uint32_t idx, ap_var_type old_p
 
 // notify GCS of current value of parameter
 void AP_Param::notify() const {
+#if AP_PARAM_CHANGE_OBSERVER_ENABLED
+    if (_change_observer != nullptr) {
+        _change_observer(this);
+    }
+#endif
     uint32_t group_element = 0;
     const struct GroupInfo *ginfo;
     struct GroupNesting group_nesting {};
@@ -1190,6 +1208,11 @@ void AP_Param::notify() const {
 */
 void AP_Param::save_sync(bool force_save, bool send_to_gcs)
 {
+#if AP_PARAM_CHANGE_OBSERVER_ENABLED
+    if (_change_observer != nullptr) {
+        _change_observer(this);
+    }
+#endif
     uint32_t group_element = 0;
     const struct GroupInfo *ginfo;
     struct GroupNesting group_nesting {};
@@ -1301,6 +1324,11 @@ void AP_Param::save_sync(bool force_save, bool send_to_gcs)
 */
 void AP_Param::save(bool force_save)
 {
+#if AP_PARAM_CHANGE_OBSERVER_ENABLED
+    if (_change_observer != nullptr) {
+        _change_observer(this);
+    }
+#endif
     struct param_save p, p2;
     p.param = this;
     p.force_save = force_save;

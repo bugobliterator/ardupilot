@@ -426,6 +426,14 @@ public:
     ///
     void save(bool force_save=false);
 
+#if AP_PARAM_CHANGE_OBSERVER_ENABLED
+    // called with the parameter on the caller's thread at the start of save(), save_sync() and notify();
+    // it must return at once: no blocking, locks, allocation, AP_Param calls or GCS output
+    typedef void (*ChangeObserver)(const AP_Param *param);
+    // one observer, nullptr clears it; false (and no change) if another is already set
+    static bool set_change_observer(ChangeObserver observer);
+#endif
+
     /// Load the variable from EEPROM.
     ///
     /// @return                True if the variable was loaded successfully.
@@ -647,6 +655,9 @@ protected:
 
 private:
     static AP_Param *_singleton;
+#if AP_PARAM_CHANGE_OBSERVER_ENABLED
+    static ChangeObserver _change_observer;
+#endif
 
     /// EEPROM header
     ///
