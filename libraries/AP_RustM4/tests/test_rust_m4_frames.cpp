@@ -228,4 +228,28 @@ TEST(RustM4Frames, CopyFrameBytesCopiesExactlyTheSize)
     }
 }
 
+TEST(RustM4Frames, CopyFrameBytesMatchesMemcpyAtAnyAlignment)
+{
+    alignas(4) uint8_t src[96], dst[96], expected[96];
+    for (uint32_t i = 0; i < sizeof(src); i++) {
+        src[i] = uint8_t(0x11 + 7 * i);
+    }
+    const uint32_t sizes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 72 + 3 };
+    uint32_t cases = 0;
+    for (uint32_t dst_offset = 0; dst_offset < 4; dst_offset++) {
+        for (uint32_t src_offset = 0; src_offset < 4; src_offset++) {
+            for (uint32_t size : sizes) {
+                memset(dst, 0xEE, sizeof(dst));
+                memset(expected, 0xEE, sizeof(expected));
+                copy_frame_bytes(dst + dst_offset, src + src_offset, size);
+                memcpy(expected + dst_offset, src + src_offset, size);
+                ASSERT_EQ(memcmp(dst, expected, sizeof(dst)), 0)
+                    << "dst +" << dst_offset << " src +" << src_offset << " size " << size;
+                cases++;
+            }
+        }
+    }
+    EXPECT_EQ(cases, 4U * 4U * 9U);
+}
+
 AP_GTEST_MAIN()
