@@ -30,8 +30,10 @@ using ModuleM4::MsgType;
 using AP_Module::CallLatencyLog;
 
 static_assert(ModuleM4::PROBE_M4_SLEPT == AP_Module::CALL_M4_SLEPT && ModuleM4::PROBE_M4_POLL_WAKE == AP_Module::CALL_M4_POLL_WAKE &&
-              ModuleM4::PROBE_M4_SENT_BY_STEP == AP_Module::CALL_M4_SENT_BY_STEP, "the M4's probe flags are the log's");
-static const uint16_t PROBE_M4_FLAGS = ModuleM4::PROBE_M4_SLEPT | ModuleM4::PROBE_M4_POLL_WAKE | ModuleM4::PROBE_M4_SENT_BY_STEP;
+              ModuleM4::PROBE_M4_SENT_BY_STEP == AP_Module::CALL_M4_SENT_BY_STEP &&
+              ModuleM4::PROBE_M4_POLLED == AP_Module::CALL_M4_POLLED, "the M4's probe flags are the log's");
+static const uint16_t PROBE_M4_FLAGS = ModuleM4::PROBE_M4_SLEPT | ModuleM4::PROBE_M4_POLL_WAKE |
+                                       ModuleM4::PROBE_M4_SENT_BY_STEP | ModuleM4::PROBE_M4_POLLED;
 #define M4_CYCLE_PART_MATCHES(part) (uint8_t(ModuleM4::M4CyclePart::part) == uint8_t(AP_Module::M4CyclePart::part))
 static_assert(ModuleM4::M4_CYCLE_PARTS == AP_Module::M4_CYCLE_PARTS && M4_CYCLE_PART_MATCHES(SvcEntry) &&
               M4_CYCLE_PART_MATCHES(Checks) && M4_CYCLE_PART_MATCHES(BeginProbe) && M4_CYCLE_PART_MATCHES(Pack) &&
