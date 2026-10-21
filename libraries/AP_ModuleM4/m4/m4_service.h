@@ -32,6 +32,8 @@ struct M4Platform {
     // one mutex around the service state and the TX ring (priority inheritance on the M4)
     void (*lock)();
     void (*unlock)();
+    // a Control(CONTROL_STOP) of this session for that module; may be null
+    void (*stop_module)(uint16_t module);
 };
 
 class M4Service {
@@ -99,6 +101,7 @@ private:
     void drain();
     void handle(const uint8_t *buf, uint16_t len);
     void handle_fault_inject(const uint8_t *buf);
+    void handle_control(const uint8_t *buf, const MsgHeader &header);
     void forward_call();
     void complete(int32_t result);
     void corrupt_tx_ring();

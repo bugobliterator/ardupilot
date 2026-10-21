@@ -163,7 +163,8 @@ void M4Service::handle(const uint8_t *buf, uint16_t len)
         handle_fault_inject(buf);
         return;
     case MsgType::Control:
-        return;   // not acted on by this service yet
+        handle_control(buf, header);
+        return;
     case MsgType::BindingReply:
     case MsgType::SystemReply:
         handle_reply(buf, len, header);
@@ -254,6 +255,20 @@ void M4Service::forward_call()
     _call_reply_type = reply_type;
     _call_sent_cycles = sent_cycles;
     _link->state.store(ModuleLink::Sent);
+}
+
+// the M7 asks a module to stop; seq carries its session, so a stop of an older one is dropped
+void M4Service::handle_control(const uint8_t *buf, const MsgHeader &header)
+{
+    ControlMsg control;
+    memcpy(&control, buf, sizeof(control));   // parse_header() checked the length
+    if (!_have_session || header.seq != _session || control.action != CONTROL_STOP) {
+        _protocol_errors++;
+        return;
+    }
+    if (_platform.stop_module != nullptr) {
+        _platform.stop_module(control.module);
+    }
 }
 
 void M4Service::handle_ready(const MsgHeader &header)

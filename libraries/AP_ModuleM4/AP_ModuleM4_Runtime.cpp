@@ -3,6 +3,7 @@
 #if AP_MODULE_ENABLED && AP_MODULE_M4_ENABLED
 
 #include <AP_Module/Runtime.h>
+#include <GCS_MAVLink/GCS.h>
 #include "AP_ModuleM4.h"
 
 namespace AP_Module
@@ -107,15 +108,25 @@ void Runtime::init()
 void Runtime::update()
 {
     AP_ModuleM4 *m4 = AP_ModuleM4::get_singleton();
-    if (m4 != nullptr) {
-        m4->update(config());
+    if (m4 == nullptr) {
+        return;
+    }
+    m4->update(config());
+    // MOD_DEBUG_OPTS bit 5, as the PR: the M7's checksums saved as the required ones, then cleared
+    if (_enable != 0 && (uint8_t(_debug_options.get()) & (1U << 5)) != 0) {
+        uint32_t loaded, running;
+        m4->checksums(loaded, running);
+        _loaded_required.set_and_save(loaded);
+        _running_required.set_and_save(running);
+        _debug_options.set_and_save(uint8_t(_debug_options.get()) & ~(1U << 5));
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Module: saved checksums");
     }
 }
 
 bool Runtime::arming_checks(size_t length, char *message) const
 {
     const AP_ModuleM4 *m4 = AP_ModuleM4::get_singleton();
-    return m4 == nullptr || m4->arming_checks(length, message);
+    return m4 == nullptr || m4->arming_checks(length, message, config());
 }
 
 #if AP_MISSION_ENABLED
