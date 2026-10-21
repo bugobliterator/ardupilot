@@ -16,7 +16,7 @@
 #include "AP_ModuleM4_ServeWait.h"
 
 #if !defined(STM32H757xx)
-#error "Rust on the M4 needs a dual-core STM32H757"
+#error "Modules on the M4 need a dual-core STM32H757"
 #endif
 
 // the M4 reads this core's AP_HAL::micros() as TIM5's count (AP_ModuleM4_M7Clock.h): the
