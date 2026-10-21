@@ -294,21 +294,43 @@ TEST(RustCallLatency, SubstageTotalsMeanAndMax)
     EXPECT_EQ(totals.mean_us(2), 0);
 }
 
-TEST(RustCallLatency, M4PreCycleTotalsMeanAndMax)
+TEST(RustCallLatency, CycleTotalsCountEachPartItTook)
 {
-    M4PreCycleTotals totals {};
-    EXPECT_EQ(totals.mean(0), 0U);
-    const uint16_t first[M4_PRE_PARTS] = { 100, 400, 50, 0xFFFF };
-    const uint16_t second[M4_PRE_PARTS] = { 101, 200, 50, 1 };
-    totals.add(first);
-    totals.add(second);
-    EXPECT_EQ(totals.count, 2U);
-    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::SvcEntry)), 101U);   // 100.5 rounds up
-    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::Checks)), 300U);
-    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::BeginProbe)), 50U);
-    EXPECT_EQ(totals.mean(uint8_t(M4PrePart::Pack)), 32768U);
-    EXPECT_EQ(totals.max[uint8_t(M4PrePart::Checks)], 400);
-    EXPECT_EQ(totals.max[uint8_t(M4PrePart::Pack)], 0xFFFF);
+    CycleTotals<M4_CYCLE_PARTS> totals {};
+    EXPECT_EQ(totals.mean(uint8_t(M4CyclePart::Checks)), 0U);
+    uint32_t first[M4_CYCLE_PARTS] {};
+    first[uint8_t(M4CyclePart::SvcEntry)] = 100;
+    first[uint8_t(M4CyclePart::Checks)] = 400;
+    first[uint8_t(M4CyclePart::Pack)] = 0xFFFF;
+    first[uint8_t(M4CyclePart::FwdBell)] = 7;   // not taken: not counted
+    totals.add(first, (1U << uint8_t(M4CyclePart::SvcEntry)) | (1U << uint8_t(M4CyclePart::Checks)) |
+                      (1U << uint8_t(M4CyclePart::Pack)));
+    uint32_t second[M4_CYCLE_PARTS] {};
+    second[uint8_t(M4CyclePart::SvcEntry)] = 101;
+    second[uint8_t(M4CyclePart::Checks)] = 200;
+    second[uint8_t(M4CyclePart::Pack)] = 1;
+    second[uint8_t(M4CyclePart::FwdRing)] = 0;   // taken at 0: counted
+    totals.add(second, (1U << uint8_t(M4CyclePart::SvcEntry)) | (1U << uint8_t(M4CyclePart::Checks)) |
+                       (1U << uint8_t(M4CyclePart::Pack)) | (1U << uint8_t(M4CyclePart::FwdRing)));
+    EXPECT_EQ(totals.count[uint8_t(M4CyclePart::SvcEntry)], 2U);
+    EXPECT_EQ(totals.mean(uint8_t(M4CyclePart::SvcEntry)), 101U);   // 100.5 rounds up
+    EXPECT_EQ(totals.mean(uint8_t(M4CyclePart::Checks)), 300U);
+    EXPECT_EQ(totals.mean(uint8_t(M4CyclePart::Pack)), 32768U);
+    EXPECT_EQ(totals.max[uint8_t(M4CyclePart::Checks)], 400U);
+    EXPECT_EQ(totals.max[uint8_t(M4CyclePart::Pack)], 0xFFFFU);
+    EXPECT_EQ(totals.count[uint8_t(M4CyclePart::FwdBell)], 0U);
+    EXPECT_EQ(totals.count[uint8_t(M4CyclePart::FwdRing)], 1U);
+    EXPECT_EQ(totals.max[uint8_t(M4CyclePart::FwdRing)], 0U);
+    // one M7 part at a time; a max above 16 bits is kept; parts past the end are ignored
+    CycleTotals<M7_CYCLE_PARTS> m7 {};
+    m7.add(uint8_t(M7CyclePart::PassEnd), 400000);
+    m7.add(uint8_t(M7CyclePart::PassEnd), 2);
+    m7.add(M7_CYCLE_PARTS, 5);
+    EXPECT_EQ(m7.count[uint8_t(M7CyclePart::PassEnd)], 2U);
+    EXPECT_EQ(m7.max[uint8_t(M7CyclePart::PassEnd)], 400000U);
+    EXPECT_EQ(m7.mean(uint8_t(M7CyclePart::PassEnd)), 200001U);
+    EXPECT_STREQ(M4_CYCLE_PART_NAMES[uint8_t(M4CyclePart::SvcReturn)], "SvcReturn");
+    EXPECT_STREQ(M7_CYCLE_PART_NAMES[uint8_t(M7CyclePart::PassEnd)], "PassEnd");
 }
 
 TEST(RustCallLatency, CompletionCarriesTheM4SubstageStamps)
