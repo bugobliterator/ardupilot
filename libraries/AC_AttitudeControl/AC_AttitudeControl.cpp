@@ -843,6 +843,10 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& t
     // calculate the attitude target euler angles
     _attitude_target.to_euler(_euler_angle_target_rad);
 
+    // When the thrust turns with the heading the whole vehicle rotates about the vertical: the tilt correction supplies
+    // the roll and pitch components of that rotation, leaving cos(roll)*cos(pitch) of the heading rate for the yaw axis.
+    heading_rate_rads *= cosf(_euler_angle_target_rad.x) * cosf(_euler_angle_target_rad.y);
+
     // Convert thrust vector to an attitude quaternion (zero yaw; yaw is commanded separately).
     Quaternion thrust_vec_quat = attitude_from_thrust_vector(thrust_vector, 0.0f);
 
