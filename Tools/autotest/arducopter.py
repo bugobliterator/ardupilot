@@ -4405,6 +4405,324 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 raise NotAchievedException("Alt should be limited by EKF optical flow limits")
         self.reboot_sitl(force=True)
 
+    def LoiterHighRollHeadingHold(self):
+        '''Loiter at speed with full roll stick: heading follows only the yaw stick'''
+        # The freestyle frame in LOITER at full roll stick, past the LOITER
+        # speed limit and through the stop that follows. With the yaw stick
+        # centred the heading must hold; with yaw stick held it must turn
+        # steadily and hold again once centred. The attitude must stay
+        # bounded throughout.
+        self.customise_SITL_commandline(
+            [],
+            model="X:@ROMFS/models/freestyle.json",
+            defaults_filepath=self.model_defaults_filepath('freestyle'),
+            wipe=True,
+        )
+        self.set_parameters({
+            "RC4_DZ": 0,
+            "PILOT_Y_EXPO": 0,
+            # the cases fly over a kilometre from home at 30 m
+            "SIM_TERRAIN": 0,
+        })
+        self.wait_ready_to_arm()
+        self.takeoff(30, mode='LOITER')
+        self.set_rc(3, 1500)
+
+        # stick edges reach the vehicle late (RC overrides go out on
+        # wall-clock time), so every phase is timed from the RC_CHANNELS the
+        # vehicle reports; the yaw stick is in use until this long after a
+        # blip
+        blip_settle = 0.6
+
+        def roll_and_stop(ang_max, loiter_speed, params={}, yaw_pwm=1500, yaw_time=0, event=None):
+            '''full roll stick for 15 s, with yaw_pwm on the yaw stick for
+            the first yaw_time, or an event: ("blip", t) a 0.5 s yaw stick
+            blip or ("azimuth", t) the stick swung from full roll to full
+            pitch; then centred for the stop; checks the attitude bounds and
+            returns the phase times (release, yaw_end, blip start and end)
+            and (time, unwrapped yaw, roll, pitch, body yaw rate,
+            groundspeed, RC 1, 2, 4) samples in seconds, degrees, m/s and
+            PWM, from full roll stick on'''
+            hold_time = 15
+            # at speed LOITER leans up to ATC_ANGLE_MAX against drag, so
+            # limit both; LOIT_ANG_MAX takes effect on LOITER entry
+            params = dict(params, LOIT_ANG_MAX=ang_max, ATC_ANGLE_MAX=ang_max, LOIT_SPEED_MS=loiter_speed)
+            old_params = {name: self.get_parameter(name) for name in params}
+            self.set_parameters(params)
+            yaw_rate_max = self.get_parameter("ATC_RATE_WPY_MAX")
+            body_yaw_rate_max = self.get_parameter("ATC_RATE_Y_MAX")
+            commanded_yaw_rate = self.get_parameter("PILOT_Y_RATE") * abs(yaw_pwm - 1500) / 500.0
+            self.change_mode('ALT_HOLD')
+            self.change_mode('LOITER')
+            self.delay_sim_time(5, reason="settle in LOITER")
+            self.context_push()
+            self.context_set_message_rate_hz('ATTITUDE', 50)
+            self.context_set_message_rate_hz('RC_CHANNELS', 50)
+            samples = []
+
+            def collect(duration):
+                tstart = self.get_sim_time()
+                while self.get_sim_time_cached() - tstart < duration:
+                    m = self.assert_receive_message('ATTITUDE')
+                    rc = self.mav.messages['RC_CHANNELS']
+                    yaw = math.degrees(m.yaw)
+                    if samples:
+                        yaw = samples[-1][1] + (yaw - samples[-1][1] + 180) % 360 - 180
+                    samples.append((m.time_boot_ms * 0.001, yaw, math.degrees(m.roll),
+                                    math.degrees(m.pitch), math.degrees(m.yawspeed),
+                                    self.mav.messages['VFR_HUD'].groundspeed,
+                                    rc.chan1_raw, rc.chan2_raw, rc.chan4_raw))
+
+            # no confirmation waits: they stretch the stick inputs and drop
+            # the samples taken meanwhile
+            self.set_rc_from_map({1: 1000, 4: yaw_pwm}, timeout=None)
+            collect(yaw_time)
+            self.set_rc(4, 1500, timeout=None)
+            if event is not None:
+                (kind, event_time) = event
+                collect(event_time - yaw_time)
+                if kind == "blip":
+                    self.set_rc(4, 1540, timeout=None)
+                    collect(0.5)
+                    self.set_rc(4, 1500, timeout=None)
+                    event_time += 0.5
+                else:
+                    self.set_rc_from_map({1: 1500, 2: 1000}, timeout=None)
+                yaw_time = event_time
+            collect(hold_time - yaw_time)
+            self.set_rc_from_map({1: 1500, 2: 1500, 4: 1500}, timeout=None)
+            collect(12)
+            self.context_pop()
+            self.wait_groundspeed(0, 2)
+            self.set_parameters(old_params)
+
+            def stick_times(channel, pwm):
+                return [s[0] for s in samples if s[channel] == pwm]
+
+            roll_start = stick_times(6, 1000)[0]
+            samples = [s for s in samples if s[0] >= roll_start]
+            release = max(stick_times(6, 1000) + stick_times(7, 1000))
+            yaw_end = max(stick_times(8, yaw_pwm)) if yaw_pwm != 1500 else 0
+            blip = stick_times(8, 1540)
+            blip_window = (blip[0], blip[-1] + blip_settle) if blip else (0, 0)
+            pitch_stick = stick_times(7, 1000)
+            pitch_stick_from = pitch_stick[0] if pitch_stick else None
+
+            pitch_flips = 0
+            last_pitch_sign = 0
+            pinned_since = None
+            # braking at the speed limit pitches the vehicle by about
+            # atan(LOIT_ACC_MAX_M / g); after the yaw stick is centred the
+            # heading is recaptured and yaw rate may exceed its hold bound
+            # briefly
+            over_hold_since = None
+            pitch_over_since = None
+            swing_over_60 = 0
+            roll_in_over = 0
+            roll_in_peak = 0
+            centred_yaw = max([s for s in samples if s[0] <= yaw_end], default=samples[0])[1]
+            for (t, yaw, roll, pitch, rate, speed, *_) in samples:
+                hold = t <= release
+                # with the stick at full pitch the pitch is commanded, not a swing
+                roll_hold = hold and (pitch_stick_from is None or t < pitch_stick_from)
+                recapture = yaw_end > 0 and yaw_end < t <= yaw_end + 2
+                phase = "%s %.1f s after full roll stick" % ("in the roll" if hold else "in the stop", t - samples[0][0])
+                tilt = math.degrees(math.acos(math.cos(math.radians(roll)) * math.cos(math.radians(pitch))))
+                if tilt > ang_max + 10:
+                    raise NotAchievedException("Tilted %.1f deg (> %u) %s" % (tilt, ang_max + 10, phase))
+                swing = pitch_stick_from is not None and pitch_stick_from <= t <= pitch_stick_from + 2
+                if t <= samples[0][0] + 0.5 and t <= yaw_end:
+                    # rolling in with the yaw stick held, holding the heading
+                    # rate takes body yaw of up to commanded / cos(bank) until
+                    # the pitch rate builds up
+                    max_rate = 1.25 * commanded_yaw_rate / math.cos(math.radians(ang_max))
+                    if abs(rate) > 1.5 * commanded_yaw_rate:
+                        roll_in_over += 1
+                    roll_in_peak = max(roll_in_peak, abs(rate))
+                elif t <= yaw_end:
+                    max_rate = 1.5 * commanded_yaw_rate
+                elif swing:
+                    # the thrust swing itself needs body yaw, which the
+                    # shaper limits to ATC_RATE_Y_MAX
+                    max_rate = 1.25 * body_yaw_rate_max
+                    if abs(rate) > 60:
+                        swing_over_60 += 1
+                elif recapture:
+                    max_rate = 1.2 * yaw_rate_max
+                elif hold and not blip_window[0] <= t <= blip_window[1]:
+                    max_rate = 60
+                else:
+                    max_rate = 150
+                # at a roll hold pitch comes from a heading error (the swing)
+                # or from the velocity loop braking; report which
+                heading_error = abs(yaw - (centred_yaw if recapture else samples[0][1]))
+                if (roll_hold and abs(pitch) > 55) or (not hold and abs(pitch) > 75):
+                    raise NotAchievedException("Pitched %.1f deg %s, heading %.1f deg off" % (pitch, phase, heading_error))
+                if roll_hold and abs(pitch) > (50 if recapture else 45):
+                    if pitch_over_since is None:
+                        pitch_over_since = t
+                    if t - pitch_over_since > 0.5:
+                        if heading_error > 5:
+                            raise NotAchievedException("Pitched over %u deg for over 0.5 s %s, heading %.1f deg off" %
+                                                       (50 if recapture else 45, phase, heading_error))
+                        self.progress("Pitched over %u deg for over 0.5 s %s with the heading held: velocity loop" %
+                                      (50 if recapture else 45, phase))
+                        pitch_over_since = None
+                else:
+                    pitch_over_since = None
+                if abs(rate) > max_rate:
+                    raise NotAchievedException("Body yaw rate %.1f deg/s %s" % (rate, phase))
+                if recapture and abs(rate) > 60:
+                    if over_hold_since is None:
+                        over_hold_since = t
+                    if t - over_hold_since > 0.5:
+                        raise NotAchievedException("Body yaw rate over 60 deg/s for over 0.5 s %s" % phase)
+                else:
+                    over_hold_since = None
+                if roll_hold and abs(pitch) > 5:
+                    sign = 1 if pitch > 0 else -1
+                    if last_pitch_sign and sign != last_pitch_sign:
+                        pitch_flips += 1
+                    last_pitch_sign = sign
+                if abs(rate) < 0.95 * yaw_rate_max:
+                    pinned_since = None
+                    continue
+                if pinned_since is None:
+                    pinned_since = t
+                if t - pinned_since > 0.5:
+                    raise NotAchievedException("Body yaw rate held at ATC_RATE_WPY_MAX (%.0f deg/s)" % yaw_rate_max)
+            if pitch_flips > 3 * hold_time:
+                raise NotAchievedException("Pitch oscillating: %u sign flips in %.0f s" % (pitch_flips, hold_time))
+            sample_period = (samples[-1][0] - samples[0][0]) / (len(samples) - 1)
+            if pitch_stick_from is not None:
+                self.progress("body yaw rate over 60 deg/s for %.2f s in the swing" % (swing_over_60 * sample_period))
+            if yaw_end > 0:
+                self.progress("rolling in with the yaw stick held: body yaw rate up to %.1f deg/s, over %.0f deg/s "
+                              "for %.2f s" % (roll_in_peak, 1.5 * commanded_yaw_rate, roll_in_over * sample_period))
+            max_roll = max([abs(s[2]) for s in samples if s[0] <= release])
+            if max_roll < ang_max - 10:
+                raise NotAchievedException("Only banked %.1f deg (< %u)" % (max_roll, ang_max - 10))
+            if yaw_pwm == 1500:
+                # the heading problem starts once the vehicle reaches the
+                # LOITER speed limit, so the hold must run on well past it
+                at_speed = [s[0] for s in samples if s[0] <= release and s[5] >= 0.95 * loiter_speed]
+                if not at_speed or release - at_speed[0] < 3:
+                    raise NotAchievedException("Not held at LOIT_SPEED_MS for 3 s")
+                self.progress("at LOIT_SPEED_MS %.1f s after full roll stick, held %.1f s" %
+                              (at_speed[0] - samples[0][0], release - at_speed[0]))
+            return {"release": release, "yaw_end": yaw_end, "blip": blip, "swing": pitch_stick_from}, samples
+
+        def heading_change(samples, tmin, tmax, yaw0):
+            return max([abs(s[1] - yaw0) for s in samples if tmin <= s[0] <= tmax])
+
+        # yaw stick centred: (name, bank, LOIT_SPEED_MS, parameters, event,
+        # runs, heading limit in the roll and in the stop). The yaw stick
+        # blip seeds a marginal heading hold at full bank and speed, and is
+        # flown three times as such a hold does not diverge every run.
+        for (name, ang_max, loiter_speed, params, event, runs, roll_limit, stop_limit) in [
+                ("45 deg bank", 45, 15, {}, None, 1, 5, 5),
+                ("70 deg bank, yaw stick blip", 70, 30, {}, ("blip", 5), 3, 15, 20),
+                ("70 deg bank, half yaw acceleration", 70, 30,
+                 {"ATC_ACC_Y_MAX": 600, "ATC_RATE_WPY_MAX": 60}, None, 1, 15, 20),
+                ("70 deg bank, stick swung to full pitch", 70, 30, {"ATC_RATE_Y_MAX": 200}, ("azimuth", 8), 1, 15, 20),
+        ]:
+            for run in range(runs):
+                phases, samples = roll_and_stop(ang_max, loiter_speed, params, event=event)
+                release = phases["release"]
+                yaw0 = samples[0][1]
+                roll_end = release
+                if phases["blip"]:
+                    # while the vehicle sees the blip the heading turns at the
+                    # commanded rate (its edges are not timed precisely
+                    # enough to check the total turn); the hold is checked
+                    # before it and, from the settled heading, after it
+                    blip = phases["blip"]
+                    roll_end = blip[0]
+                    commanded_blip_rate = self.get_parameter("PILOT_Y_RATE") * 40 / 500.0
+                    mid = [s for s in samples if blip[0] + 0.1 <= s[0] <= blip[-1] - 0.1]
+                    blip_rate = (mid[-1][1] - mid[0][1]) / (mid[-1][0] - mid[0][0])
+                    start = max([s for s in samples if s[0] < blip[0]])
+                    settled = min([s for s in samples if s[0] >= blip[-1] + blip_settle])
+                    recapture_heading_change = heading_change(samples, settled[0], release, settled[1])
+                    self.progress("%s: heading turned at %.1f deg/s (commanded %.1f) during the blip, %.1f deg in all, "
+                                  "then held within %.1f deg" %
+                                  (name, blip_rate, commanded_blip_rate, settled[1] - start[1], recapture_heading_change))
+                    if abs(blip_rate - commanded_blip_rate) > 0.1 * commanded_blip_rate:
+                        raise NotAchievedException("%s: heading rate %.1f deg/s during the blip not within 10%% of %.1f" %
+                                                   (name, blip_rate, commanded_blip_rate))
+                    if recapture_heading_change > 2:
+                        raise NotAchievedException("%s: heading moved %.1f deg (> 2) after the yaw stick blip" %
+                                                   (name, recapture_heading_change))
+                    yaw0 = settled[1]
+                if phases["swing"] is not None:
+                    # a 90 deg thrust azimuth swing at full bank lets the
+                    # heading go while the tilt lands, then recaptures it
+                    roll_end = phases["swing"]
+                    yaw0 = max([s for s in samples if s[0] < roll_end])[1]
+                    swing_peak = heading_change(samples, roll_end, release, yaw0)
+                    swing_after = heading_change(samples, roll_end + 2, release, yaw0)
+                    heading_back = max([s[0] for s in samples if roll_end <= s[0] <= release and
+                                        abs(s[1] - yaw0) > 5], default=roll_end) - roll_end
+                    self.progress("%s: max heading change %.1f deg in the swing, back within 5 deg %.2f s after it, "
+                                  "%.1f deg from 2 s after it" % (name, swing_peak, heading_back, swing_after))
+                    if swing_peak > 30:
+                        raise NotAchievedException("%s: heading moved %.1f deg (> 30) in the swing" % (name, swing_peak))
+                    if swing_after > 5:
+                        raise NotAchievedException("%s: heading not back within 5 deg (%.1f) 2 s after the swing" %
+                                                   (name, swing_after))
+                max_heading_change = heading_change(samples, 0, roll_end, samples[0][1])
+                stop_heading_change = heading_change(samples, release, samples[-1][0], yaw0)
+                peak = max([s for s in samples if s[0] <= release], key=lambda s: abs(s[3]))
+                self.progress("%s: max heading change %.1f deg in the roll, %.1f deg in the stop; "
+                              "max pitch %.1f deg with the heading %.1f deg off" %
+                              (name, max_heading_change, stop_heading_change, peak[3], abs(peak[1] - yaw0)))
+                if max_heading_change > roll_limit:
+                    raise NotAchievedException("%s: heading moved %.1f deg (> %u) with the yaw stick centred" %
+                                               (name, max_heading_change, roll_limit))
+                if stop_heading_change > stop_limit:
+                    raise NotAchievedException("%s: heading moved %.1f deg (> %u) in the stop" %
+                                               (name, stop_heading_change, stop_limit))
+                level = min([s[0] for s in samples if s[0] > release and abs(s[2]) < 20])
+                if heading_change(samples, level + 1, samples[-1][0], yaw0) > 5:
+                    raise NotAchievedException("%s: heading not back within 5 deg 1 s after rolling level" % name)
+
+        # 70 degrees of bank with yaw stick held, then centred while still
+        # banked: the heading turns at the commanded rate, then holds again
+        yaw_pwm = 1580
+        commanded_rate = self.get_parameter("PILOT_Y_RATE") * (yaw_pwm - 1500) / 500.0
+        target_yaws = []
+
+        def record_target_yaw(mav, m):
+            if m.get_type() == 'ATTITUDE_TARGET':
+                target_yaws.append((m.time_boot_ms * 0.001, math.degrees(quaternion.Quaternion(m.q).euler[2])))
+
+        self.context_push()
+        self.context_set_message_rate_hz('ATTITUDE_TARGET', 50)
+        self.install_message_hook_context(record_target_yaw)
+        phases, samples = roll_and_stop(70, 30, yaw_pwm=yaw_pwm, yaw_time=4)
+        self.context_pop()
+        (release, yaw_end) = (phases["release"], phases["yaw_end"])
+        steady = [s for s in samples if yaw_end - 2 <= s[0] <= yaw_end]
+        achieved_rate = (steady[-1][1] - steady[0][1]) / (steady[-1][0] - steady[0][0])
+        self.progress("yaw stick: commanded %.1f deg/s, achieved %.1f deg/s" % (commanded_rate, achieved_rate))
+        if abs(achieved_rate - commanded_rate) > 0.1 * commanded_rate:
+            raise NotAchievedException("Heading rate %.1f deg/s not within 10%% of commanded %.1f deg/s" %
+                                       (achieved_rate, commanded_rate))
+        # the target heading is captured once the yaw stick is centred; any
+        # step in it beyond its smooth slow-down is reported
+        target = [y for (t, y) in target_yaws if yaw_end <= t <= yaw_end + 2]
+        moves = [(b - a + 180) % 360 - 180 for (a, b) in zip(target, target[1:])]
+        target_step = max([abs(b - a) for (a, b) in zip(moves, moves[1:])])
+        transient = heading_change(samples, yaw_end, yaw_end + 1, steady[-1][1])
+        recovered = heading_change(samples, yaw_end + 2, release, steady[-1][1])
+        self.progress("yaw stick centred at 70 deg bank: target heading step %.1f deg, heading within %.1f deg in 1 s, "
+                      "%.1f deg after 2 s" % (target_step, transient, recovered))
+        if transient > 20:
+            raise NotAchievedException("Heading moved %.1f deg (> 20) in 1 s after centring the yaw stick" % transient)
+        if recovered > 5:
+            raise NotAchievedException("Heading not back within 5 deg (%.1f) 2 s after centring the yaw stick" % recovered)
+        self.do_RTL()
+
     def LoiterNoCompassYaw(self):
         '''Loiter indoors with optical flow and no GPS, compass not an EK3 yaw source'''
         # Indoor case: position from optical flow + rangefinder, no GPS. The
@@ -19535,6 +19853,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.SetpointGlobalVel,
             self.SetpointBadVel,
             self.ModeLoiter,
+            Test(self.LoiterHighRollHeadingHold, speedup=8),  # 50 Hz attitude and RC in sim time
             self.CompassHealthArming,
             self.OpticalFlowLocation,
             self.OpticalFlowCalibration,
