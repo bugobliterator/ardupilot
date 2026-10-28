@@ -175,8 +175,12 @@ void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, f
 {
     const float dt_s = _attitude_control.get_dt_s();
 
+    // resolve the stick at the target heading; without input shaping the target heading jumps with the tilt, so use
+    // the vehicle heading
+    const float stick_yaw_rad = _attitude_control.get_bf_feedforward() ? _attitude_control.get_att_target_euler_rad().z : _ahrs.yaw;
+
     // convert our desired attitude to an acceleration vector assuming we are not accelerating vertically
-    const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, _ahrs.yaw};
+    const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, stick_yaw_rad};
     _desired_accel_ne_mss = _pos_control.lean_angles_rad_to_accel_NED_mss(desired_euler_rad).xy();
 
     // Reset brake timer if there is pilot input
@@ -194,7 +198,7 @@ void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, f
     _predicted_euler_angle_rad += _predicted_euler_rate * dt_s;
 
     // Convert predicted angles into an acceleration vector for braking/shaping
-    const Vector3f predicted_euler_rad {_predicted_euler_angle_rad.x, _predicted_euler_angle_rad.y, _ahrs.yaw};
+    const Vector3f predicted_euler_rad {_predicted_euler_angle_rad.x, _predicted_euler_angle_rad.y, stick_yaw_rad};
     const Vector3f predicted_accel_ned_mss = _pos_control.lean_angles_rad_to_accel_NED_mss(predicted_euler_rad);
 
     _predicted_accel_ne_mss = predicted_accel_ned_mss.xy();
