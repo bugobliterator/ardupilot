@@ -4405,6 +4405,238 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 raise NotAchievedException("Alt should be limited by EKF optical flow limits")
         self.reboot_sitl(force=True)
 
+    def LoiterHighRollTrackHold(self):
+        '''Loiter at speed with full roll stick: the ground track follows the stick'''
+        # The freestyle frame in LOITER at full stick, past the LOITER speed
+        # limit and through the stop that follows, with input shaping on and
+        # off. The ground track must follow the direction the stick commands,
+        # turned only by the yaw stick, whatever the nose does.
+        self.customise_SITL_commandline(
+            [],
+            model="X:@ROMFS/models/freestyle.json",
+            defaults_filepath=self.model_defaults_filepath('freestyle'),
+            wipe=True,
+        )
+        self.set_parameters({
+            "RC4_DZ": 0,
+            "PILOT_Y_EXPO": 0,
+            # the cases fly over a kilometre from home at 30 m
+            "SIM_TERRAIN": 0,
+        })
+        self.wait_ready_to_arm()
+        self.takeoff(30, mode='LOITER')
+        self.set_rc(3, 1500)
+        pilot_yaw_rate = self.get_parameter("PILOT_Y_RATE")
+        hold_time = 15
+
+        def wrap_180(angle):
+            return (angle + 180) % 360 - 180
+
+        def fly(ang_max, loiter_speed, params, steps, mode='LOITER'):
+            '''apply each ({channel: PWM}, duration) of steps in turn in mode;
+            returns (time, north, east, north speed, east speed, yaw, RC 1,
+            2, 4, roll, pitch) samples in s, m, m/s, degrees and PWM'''
+            # at speed LOITER leans up to ATC_ANGLE_MAX against drag, so
+            # limit both; LOIT_ANG_MAX takes effect on LOITER entry
+            params = dict(params, LOIT_ANG_MAX=ang_max, ATC_ANGLE_MAX=ang_max, LOIT_SPEED_MS=loiter_speed)
+            old_params = {name: self.get_parameter(name) for name in params}
+            self.set_parameters(params)
+            self.change_mode('ALT_HOLD')
+            self.change_mode(mode)
+            self.delay_sim_time(5, reason="settle in %s" % mode)
+            self.context_push()
+            for name in 'LOCAL_POSITION_NED', 'ATTITUDE', 'RC_CHANNELS':
+                self.context_set_message_rate_hz(name, 50)
+            samples = []
+
+            def collect(duration):
+                tstart = self.get_sim_time()
+                while self.get_sim_time_cached() - tstart < duration:
+                    m = self.assert_receive_message('LOCAL_POSITION_NED')
+                    rc = self.mav.messages['RC_CHANNELS']
+                    attitude = self.mav.messages['ATTITUDE']
+                    samples.append((m.time_boot_ms * 0.001, m.x, m.y, m.vx, m.vy, math.degrees(attitude.yaw),
+                                    rc.chan1_raw, rc.chan2_raw, rc.chan4_raw,
+                                    math.degrees(attitude.roll), math.degrees(attitude.pitch)))
+
+            # stick edges reach the vehicle late (RC overrides go out on
+            # wall-clock time), so phases are timed from the RC_CHANNELS the
+            # vehicle reports; no confirmation waits, which stretch the inputs
+            collect(1)
+            for (rc_map, duration) in steps:
+                self.set_rc_from_map(rc_map, timeout=None)
+                collect(duration)
+            self.context_pop()
+            self.set_parameters(old_params)
+            # back over home for the next case
+            self.change_mode('RTL')
+            self.wait_distance_to_home(0, 50, timeout=300)
+            return samples
+
+        def check_limits(name, results, limits):
+            for (metric, limit) in limits.items():
+                if results[metric] > limit:
+                    raise NotAchievedException("%s: %s %.1f (> %s)" % (name, metric, results[metric], limit))
+
+        def check(name, ang_max, loiter_speed, params, sticks, limits, yaw_pwm=1500, yaw_time=0, mode='LOITER'):
+            samples = fly(ang_max, loiter_speed, params, [
+                ({**sticks, 4: yaw_pwm}, yaw_time),
+                ({4: 1500}, hold_time - yaw_time),
+                ({1: 1500, 2: 1500, 4: 1500}, 20),
+            ], mode=mode)
+            stick_pwm = (sticks.get(1, 1500), sticks.get(2, 1500))
+            held = [s[0] for s in samples if (s[6], s[7]) == stick_pwm]
+            (stick_on, release) = (held[0], held[-1])
+            yawing = [s[0] for s in samples if s[8] == yaw_pwm] if yaw_pwm != 1500 else []
+            yaw_end = max(yawing, default=stick_on)
+            heading = max([s for s in samples if s[0] < stick_on])[5]
+            # the commanded track: the stick direction at the heading before
+            # the stick, turned by the pilot's yaw rate
+            stick_angle = math.degrees(math.atan2(stick_pwm[0] - 1500, 1500 - stick_pwm[1]))
+            commanded = []
+            yaw_stick_turn = 0
+            for (s, s_next) in zip(samples, samples[1:]):
+                if stick_on <= s[0] <= release:
+                    yaw_stick_turn += pilot_yaw_rate * (s[8] - 1500) / 500.0 * (s_next[0] - s[0])
+                commanded.append(heading + stick_angle + yaw_stick_turn)
+            commanded.append(commanded[-1])
+
+            def speed(s):
+                return math.hypot(s[3], s[4])
+
+            def track(s):
+                return math.degrees(math.atan2(s[4], s[3]))
+
+            def track_error(t0, t1):
+                return max([abs(wrap_180(track(s) - c)) for (s, c) in zip(samples, commanded)
+                            if t0 <= s[0] <= t1 and stick_on <= s[0] <= release and speed(s) >= 0.5 * loiter_speed],
+                           default=0)
+
+            nose = max([abs(wrap_180(s[5] - c + stick_angle)) for (s, c) in zip(samples, commanded)
+                        if stick_on <= s[0] <= release])
+            results = {}
+            if yaw_pwm != 1500:
+                results["track error while yawing"] = track_error(stick_on, yaw_end)
+                results["track error from 2 s after centring the yaw stick"] = track_error(yaw_end + 2, release)
+            else:
+                results["track error"] = track_error(stick_on, release)
+                # a track that keeps turning may never reach the speed
+                # limit; its drift then counts from half of it
+                at_speed = [s for s in samples if stick_on <= s[0] <= release and speed(s) >= 0.95 * loiter_speed]
+                drifting = at_speed or [s for s in samples if stick_on <= s[0] <= release and
+                                        speed(s) >= 0.5 * loiter_speed]
+                results["track drift at speed"] = max([abs(wrap_180(track(s) - track(drifting[0]))) for s in drifting])
+                origin = max([s for s in samples if s[0] <= stick_on])
+                direction = math.radians(heading + stick_angle)
+                hold = [s for s in samples if stick_on <= s[0] <= release]
+                flown = sum([math.hypot(b[1] - a[1], b[2] - a[2]) for (a, b) in zip(hold, hold[1:])])
+                cross_track = max([abs((s[2] - origin[2]) * math.cos(direction) - (s[1] - origin[1]) * math.sin(direction))
+                                   for s in hold])
+                results["cross-track distance in % of the distance flown"] = 100 * cross_track / flown
+            # the stop: the brake until below 2 m/s (below that position
+            # hold creeps in), the distance until below 0.5 m/s and its
+            # direction against the velocity at release
+            at_release = max([s for s in samples if s[0] <= release])
+            stopped = [s for s in samples if s[0] > release and speed(s) < 0.5]
+            if not stopped:
+                raise NotAchievedException("%s: not stopped %.0f s after centring the sticks" %
+                                           (name, samples[-1][0] - release))
+            results["stop time to 2 m/s"] = min([s[0] for s in samples if s[0] > release and speed(s) < 2]) - release
+            results["stop distance"] = math.hypot(stopped[0][1] - at_release[1], stopped[0][2] - at_release[2])
+            stop_direction = math.degrees(math.atan2(stopped[0][2] - at_release[2], stopped[0][1] - at_release[1]))
+            results["stop direction off the release velocity"] = abs(wrap_180(stop_direction - track(at_release)))
+            self.progress("%s: %s; nose off the stick heading by up to %.1f deg (not checked)" %
+                          (name, ", ".join("%s %.1f" % (k, v) for (k, v) in results.items()), nose))
+            check_limits(name, results, limits)
+            if yaw_pwm == 1500 and (not at_speed or release - at_speed[0][0] < 3):
+                raise NotAchievedException("%s: not held at LOIT_SPEED_MS for 3 s" % name)
+
+        left = {1: 1000}
+        diagonal = {1: 1000, 2: 1000}
+        # limits in degrees and percent; the stop time and distance are
+        # reported only
+        hold_limits = {
+            "track error": 10,
+            "track drift at speed": 5,
+            "cross-track distance in % of the distance flown": 2,
+            "stop direction off the release velocity": 15,
+        }
+        for shaping in 1, 0:
+            params = {"ATC_RATE_FF_ENAB": shaping}
+            label = "input shaping %s" % ("on" if shaping else "off")
+            for (name, ang_max, loiter_speed, sticks) in [
+                    ("45 deg bank", 45, 15, left),
+                    ("70 deg bank", 70, 30, left),
+                    ("70 deg bank, diagonal", 70, 30, diagonal),
+            ]:
+                check("%s, %s" % (name, label), ang_max, loiter_speed, params, sticks, hold_limits)
+            # yaw stick held at full roll stick, then centred while still
+            # banked: the track turns with the pilot's yaw rate, as far as the
+            # lean allows, then holds
+            check("70 deg bank, yaw stick then centred, %s" % label, 70, 30, params, left, {
+                "track error while yawing": 60,
+                "track error from 2 s after centring the yaw stick": 15,
+                "stop direction off the release velocity": 15,
+            }, yaw_pwm=1580, yaw_time=4)
+            # ZigZag flies like LOITER until its points are recorded
+            check("ZigZag, 70 deg bank, %s" % label, 70, 30, params, left, hold_limits, mode='ZIGZAG')
+
+        # LOIT_OPTIONS 1 (coordinated turn): at speed, the stick centred and
+        # the yaw stick held turn LOITER's desired velocity at the yaw
+        # stick's rate while the vehicle slows; the brake is held off to slow
+        # it less. The desired velocity shrinks faster than the vehicle can
+        # slow, so the position loop turns the actual track faster; that is
+        # reported only.
+        ang_max = 45
+        loiter_speed = 15
+        turn_rate = pilot_yaw_rate * 80 / 500.0
+        for shaping in 1, 0:
+            name = "coordinated turn, %u deg bank, input shaping %s" % (ang_max, "on" if shaping else "off")
+            samples = fly(ang_max, loiter_speed, {
+                "ATC_RATE_FF_ENAB": shaping,
+                "LOIT_OPTIONS": 1,
+                "LOIT_BRK_DELAY": 2,
+            }, [
+                ({2: 1000}, 10),
+                ({2: 1500, 4: 1580}, 4),
+                ({4: 1500}, 15),
+            ])
+            tilt = max([math.degrees(math.acos(math.cos(math.radians(s[9])) * math.cos(math.radians(s[10]))))
+                        for s in samples])
+            # the track direction means little at low speed
+            yawing = [s for s in samples if s[8] == 1580 and math.hypot(s[3], s[4]) >= 0.5 * loiter_speed]
+            turn = 0
+            for (a, b) in zip(yawing, yawing[1:]):
+                turn += wrap_180(math.degrees(math.atan2(b[4], b[3]) - math.atan2(a[4], a[3])))
+            (t0, t1) = (yawing[0][0], yawing[-1][0])
+            track_rate = turn / (t1 - t0)
+            # the desired velocity from the onboard log, over the same window
+            dfreader = self.dfreader_for_current_onboard_log()
+            north = {}
+            desired = []
+            while True:
+                m = dfreader.recv_match(type=['PSCN', 'PSCE'])
+                if m is None:
+                    break
+                if not t0 <= m.TimeUS * 1e-6 <= t1:
+                    continue
+                if m.get_type() == 'PSCN':
+                    north[m.TimeUS] = m.DVN
+                elif m.TimeUS in north:
+                    desired.append((m.TimeUS * 1e-6, math.degrees(math.atan2(m.DVE, north[m.TimeUS]))))
+            desired_turn = sum([wrap_180(b[1] - a[1]) for (a, b) in zip(desired, desired[1:])])
+            desired_rate = desired_turn / (desired[-1][0] - desired[0][0])
+            self.progress("%s: desired velocity turned at %.1f deg/s, track at %.1f deg/s (commanded %.1f) over %.2f s "
+                          "from %.1f m/s down to %.1f m/s; max tilt %.1f deg" %
+                          (name, desired_rate, track_rate, turn_rate, t1 - t0, math.hypot(yawing[0][3], yawing[0][4]),
+                           math.hypot(yawing[-1][3], yawing[-1][4]), tilt))
+            if not 0.8 * turn_rate <= desired_rate <= 1.2 * turn_rate:
+                raise NotAchievedException("%s: desired velocity turned at %.1f deg/s, not within %.0f to %.0f" %
+                                           (name, desired_rate, 0.8 * turn_rate, 1.2 * turn_rate))
+            if tilt > ang_max + 10:
+                raise NotAchievedException("%s: tilted %.1f deg (> %u)" % (name, tilt, ang_max + 10))
+        self.do_RTL()
+
     def LoiterNoCompassYaw(self):
         '''Loiter indoors with optical flow and no GPS, compass not an EK3 yaw source'''
         # Indoor case: position from optical flow + rangefinder, no GPS. The
@@ -19535,6 +19767,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.SetpointGlobalVel,
             self.SetpointBadVel,
             self.ModeLoiter,
+            Test(self.LoiterHighRollTrackHold, speedup=8),  # 50 Hz position and RC in sim time
             self.CompassHealthArming,
             self.OpticalFlowLocation,
             self.OpticalFlowCalibration,
