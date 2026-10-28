@@ -23,6 +23,7 @@ extern const AP_HAL::HAL& hal;
 #define LOITER_POS_CORRECTION_MAX_M         2.0     // Maximum horizontal position error allowed before correction (m).
 #define LOITER_ACTIVE_TIMEOUT_MS            200     // Loiter is considered active if updated within the past 200 ms.
 #define LOITER_DEFAULT_OPTIONS              0       // Coordinated Turns disabled by default.
+#define LOITER_STICK_HEADING_TC_S           0.4     // Time constant (in seconds) of the stick heading's return to the vehicle heading while the stick is centred.
 
 const AP_Param::GroupInfo AC_Loiter::var_info[] = {
 
@@ -126,6 +127,7 @@ void AC_Loiter::init_target_m(const Vector2p& position_ne_m)
     _desired_accel_ne_mss.zero();
     _predicted_euler_angle_rad.zero();
     _brake_accel_mss = 0.0f;
+    reset_stick_heading();
 
     // Set position target for stationary loiter
     _pos_control.set_pos_desired_NE_m(position_ne_m);
@@ -151,6 +153,7 @@ void AC_Loiter::init_target()
     _predicted_euler_rate.zero();
     _predicted_euler_accel.zero();
     _brake_accel_mss = 0.0f;
+    reset_stick_heading();
 }
 
 // Reduces loiter responsiveness for smoother descent during landing.
@@ -173,10 +176,25 @@ void AC_Loiter::set_pilot_desired_acceleration_cd(float euler_roll_angle_cd, flo
 // - Applies internal shaping using the current attitude controller dt.
 void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad)
 {
-    const float dt_s = _attitude_control.get_dt_s();
+    reset_stick_heading();
+    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, _attitude_control.get_dt_s());
+}
 
+// Sets pilot desired acceleration using Euler angles in radians, with the stick resolved at a stick heading that turns
+// only at pilot_heading_rate_rads while the roll/pitch stick is deflected and returns to the vehicle heading while it is
+// centred.
+void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad, float pilot_heading_rate_rads)
+{
+    const float dt_s = _attitude_control.get_dt_s();
+    update_stick_heading(!is_zero(euler_roll_angle_rad) || !is_zero(euler_pitch_angle_rad), pilot_heading_rate_rads, dt_s);
+    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, dt_s);
+}
+
+// Computes the desired and predicted accelerations from the pilot's lean angles resolved at the stick heading.
+void AC_Loiter::calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float dt_s)
+{
     // convert our desired attitude to an acceleration vector assuming we are not accelerating vertically
-    const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, _ahrs.yaw};
+    const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, _stick_heading_rad};
     _desired_accel_ne_mss = _pos_control.lean_angles_rad_to_accel_NED_mss(desired_euler_rad).xy();
 
     // Reset brake timer if there is pilot input
@@ -194,7 +212,7 @@ void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, f
     _predicted_euler_angle_rad += _predicted_euler_rate * dt_s;
 
     // Convert predicted angles into an acceleration vector for braking/shaping
-    const Vector3f predicted_euler_rad {_predicted_euler_angle_rad.x, _predicted_euler_angle_rad.y, _ahrs.yaw};
+    const Vector3f predicted_euler_rad {_predicted_euler_angle_rad.x, _predicted_euler_angle_rad.y, _stick_heading_rad};
     const Vector3f predicted_accel_ned_mss = _pos_control.lean_angles_rad_to_accel_NED_mss(predicted_euler_rad);
 
     _predicted_accel_ne_mss = predicted_accel_ned_mss.xy();
@@ -206,6 +224,37 @@ void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, f
         _desired_accel_ne_mss += turn_accel_ne_mss;
         _predicted_accel_ne_mss += turn_accel_ne_mss;
     }
+}
+
+// Updates the heading the roll/pitch stick is resolved at: while the stick is deflected it turns only at the pilot's
+// heading rate, while it is centred it returns to the vehicle heading.
+void AC_Loiter::update_stick_heading(bool stick_deflected, float pilot_heading_rate_rads, float dt_s)
+{
+    // keep the frame's earth direction through an EKF yaw reset
+    const uint16_t yaw_reset_count = AP::ahrs().get_yaw_reset_count();
+    if (yaw_reset_count != _stick_heading_yaw_reset_count) {
+        _stick_heading_rad += _ahrs.yaw - _stick_heading_last_ahrs_yaw_rad;
+        _stick_heading_yaw_reset_count = yaw_reset_count;
+    }
+    _stick_heading_last_ahrs_yaw_rad = _ahrs.yaw;
+
+    if (stick_deflected) {
+        // only the pilot turns the stick frame: following the vehicle heading would let the nose motion at high bank
+        // rotate the lean direction and bend the track
+        _stick_heading_rad += pilot_heading_rate_rads * dt_s;
+    } else {
+        // return gradually so a stick briefly crossing centre does not kink the lean direction
+        _stick_heading_rad += wrap_PI(_ahrs.yaw - _stick_heading_rad) * dt_s / (LOITER_STICK_HEADING_TC_S + dt_s);
+    }
+    _stick_heading_rad = wrap_PI(_stick_heading_rad);
+}
+
+// Sets the stick heading to the vehicle heading.
+void AC_Loiter::reset_stick_heading()
+{
+    _stick_heading_rad = _ahrs.yaw;
+    _stick_heading_last_ahrs_yaw_rad = _ahrs.yaw;
+    _stick_heading_yaw_reset_count = AP::ahrs().get_yaw_reset_count();
 }
 
 // Calculates the expected stopping point based on current velocity and position in the NE frame.
