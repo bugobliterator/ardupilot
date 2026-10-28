@@ -177,7 +177,7 @@ void AC_Loiter::set_pilot_desired_acceleration_cd(float euler_roll_angle_cd, flo
 void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad)
 {
     reset_stick_heading();
-    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, _attitude_control.get_dt_s());
+    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, _attitude_control.get_attitude_target_ang_vel().z, _attitude_control.get_dt_s());
 }
 
 // Sets pilot desired acceleration using Euler angles in radians, with the stick resolved at a stick heading that turns
@@ -187,11 +187,13 @@ void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, f
 {
     const float dt_s = _attitude_control.get_dt_s();
     update_stick_heading(!is_zero(euler_roll_angle_rad) || !is_zero(euler_pitch_angle_rad), pilot_heading_rate_rads, dt_s);
-    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, dt_s);
+    // the coordinated turn follows the pilot's commanded heading rate, independent of the attitude controller
+    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, pilot_heading_rate_rads, dt_s);
 }
 
-// Computes the desired and predicted accelerations from the pilot's lean angles resolved at the stick heading.
-void AC_Loiter::calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float dt_s)
+// Computes the desired and predicted accelerations from the pilot's lean angles resolved at the stick heading,
+// turning the path at turn_rate_rads when the coordinated turn option is set.
+void AC_Loiter::calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float turn_rate_rads, float dt_s)
 {
     // convert our desired attitude to an acceleration vector assuming we are not accelerating vertically
     const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, _stick_heading_rad};
@@ -218,9 +220,8 @@ void AC_Loiter::calc_pilot_desired_acceleration(float euler_roll_angle_rad, floa
     _predicted_accel_ne_mss = predicted_accel_ned_mss.xy();
 
     if (loiter_option_is_set(LoiterOption::COORDINATED_TURN_ENABLED)) {
-        Vector3f target_ang_vel_rads = _attitude_control.get_attitude_target_ang_vel();
         Vector3f desired_velocity_ms = _pos_control.get_vel_desired_NED_ms();
-        Vector2f turn_accel_ne_mss = Vector2f(-desired_velocity_ms.y * target_ang_vel_rads.z, desired_velocity_ms.x * target_ang_vel_rads.z);
+        Vector2f turn_accel_ne_mss = Vector2f(-desired_velocity_ms.y * turn_rate_rads, desired_velocity_ms.x * turn_rate_rads);
         _desired_accel_ne_mss += turn_accel_ne_mss;
         _predicted_accel_ne_mss += turn_accel_ne_mss;
     }

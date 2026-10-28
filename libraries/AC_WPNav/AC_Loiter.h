@@ -118,8 +118,9 @@ protected:
     // Sets the stick heading to the vehicle heading.
     void reset_stick_heading();
 
-    // Computes the desired and predicted accelerations from the pilot's lean angles resolved at the stick heading.
-    void calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float dt_s);
+    // Computes the desired and predicted accelerations from the pilot's lean angles resolved at the stick heading,
+    // turning the path at turn_rate_rads when the coordinated turn option is set.
+    void calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float turn_rate_rads, float dt_s);
 
     // references and pointers to external libraries
     const AP_AHRS_View&     _ahrs;
