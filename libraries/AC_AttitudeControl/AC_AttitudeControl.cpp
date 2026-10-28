@@ -857,10 +857,12 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& t
         // Shape roll/pitch attitude error into body-frame angular velocity/acceleration targets,
         // applying configured rate/acceleration limits and input time constant.
         attitude_command_model(attitude_error.x, 0.0, _ang_vel_target_rads.x, _ang_accel_target_rads.x, radians(_ang_vel_roll_max_degs), get_accel_roll_max_radss(), _input_tc, _dt_s);
-        attitude_command_model(attitude_error.y, 0.0, _ang_vel_target_rads.y, _ang_accel_target_rads.y, radians(_ang_vel_pitch_max_degs), get_accel_pitch_max_radss(), _input_tc, _dt_s);
+        float pitch_rate_max_rads, pitch_accel_max_radss;
+        thrust_vector_pitch_limits(pitch_rate_max_rads, pitch_accel_max_radss);
+        attitude_command_model(attitude_error.y, 0.0, _ang_vel_target_rads.y, _ang_accel_target_rads.y, pitch_rate_max_rads, pitch_accel_max_radss, _input_tc, _dt_s);
 
-        // Shape yaw rate input into yaw angular velocity/acceleration targets, applying yaw limits and time constant.
-        attitude_command_model(0.0, heading_rate_rads, _ang_vel_target_rads.z, _ang_accel_target_rads.z, yaw_rate_max_rads, get_accel_yaw_max_radss(), _rate_y_tc, _dt_s);
+        // Shape yaw rate input as the euler (compass) yaw rate, applying yaw limits and time constant.
+        euler_yaw_rate_to_body_z(heading_rate_rads, 0.0f, yaw_rate_max_rads);
     } else {
         // No shaping/feedforward: directly update the attitude target using the thrust-vector correction and yaw increment.
         if (is_positive(yaw_rate_max_rads)) {
@@ -909,8 +911,11 @@ void AC_AttitudeControl::input_thrust_vector_heading_rad(const Vector3f& thrust_
         // Shape attitude error and heading rate into body-frame angular velocity/acceleration targets,
         // applying configured rate/acceleration limits and time constants (roll/pitch use _input_tc, yaw uses _rate_y_tc).
         attitude_command_model(attitude_error.x, 0.0, _ang_vel_target_rads.x, _ang_accel_target_rads.x, radians(_ang_vel_roll_max_degs), get_accel_roll_max_radss(), _input_tc, _dt_s);
-        attitude_command_model(attitude_error.y, 0.0, _ang_vel_target_rads.y, _ang_accel_target_rads.y, radians(_ang_vel_pitch_max_degs), get_accel_pitch_max_radss(), _input_tc, _dt_s);
-        attitude_command_model(attitude_error.z, heading_rate_rads, _ang_vel_target_rads.z, _ang_accel_target_rads.z, get_slew_yaw_max_rads(), get_accel_yaw_max_radss(), _rate_y_tc, _dt_s);
+        float pitch_rate_max_rads, pitch_accel_max_radss;
+        thrust_vector_pitch_limits(pitch_rate_max_rads, pitch_accel_max_radss);
+        attitude_command_model(attitude_error.y, 0.0, _ang_vel_target_rads.y, _ang_accel_target_rads.y, pitch_rate_max_rads, pitch_accel_max_radss, _input_tc, _dt_s);
+        const float heading_correction_rads = sqrt_controller(wrap_PI(heading_angle_rad - _euler_angle_target_rad.z), 1.0f / MAX(_input_tc, _dt_s), get_accel_yaw_max_radss(), _dt_s);
+        euler_yaw_rate_to_body_z(heading_rate_rads, heading_correction_rads, get_slew_yaw_max_rads());
     } else {
         // No shaping/feedforward: directly set the attitude target to the desired attitude.
         _attitude_target = desired_attitude_quat;
@@ -926,6 +931,49 @@ void AC_AttitudeControl::input_thrust_vector_heading_rad(const Vector3f& thrust_
 
     // Call quaternion attitude controller
     attitude_controller_run_quat();
+}
+
+// Holding the euler yaw turns body pitch rate into body yaw rate in proportion to tan(roll): limits the pitch axis to
+// what the yaw axis can follow at the target roll
+void AC_AttitudeControl::thrust_vector_pitch_limits(float& pitch_rate_max_rads, float& pitch_accel_max_radss) const
+{
+    const float tan_roll = fabsf(sinf(_euler_angle_target_rad.x)) / MAX(cosf(_euler_angle_target_rad.x), 0.1f);
+    pitch_accel_max_radss = get_accel_pitch_max_radss();
+    if (is_positive(get_accel_yaw_max_radss()) && is_positive(tan_roll)) {
+        const float yaw_limited_radss = get_accel_yaw_max_radss() / tan_roll;
+        pitch_accel_max_radss = is_positive(pitch_accel_max_radss) ? MIN(pitch_accel_max_radss, yaw_limited_radss) : yaw_limited_radss;
+    }
+    pitch_rate_max_rads = radians(_ang_vel_pitch_max_degs);
+    if (is_positive(_ang_vel_yaw_max_degs) && is_positive(tan_roll)) {
+        const float yaw_limited_rads = radians(_ang_vel_yaw_max_degs) / tan_roll;
+        pitch_rate_max_rads = is_positive(pitch_rate_max_rads) ? MIN(pitch_rate_max_rads, yaw_limited_rads) : yaw_limited_rads;
+    }
+}
+
+// Shapes heading_rate_rads as the euler (compass) yaw rate, adds heading_correction_rads and limits the sum to
+// yaw_rate_max_rads (0 disables), then sets the body z rate target that gives this euler yaw rate with the shaped
+// pitch rate, so the tilt does not move the heading.
+void AC_AttitudeControl::euler_yaw_rate_to_body_z(float heading_rate_rads, float heading_correction_rads, float yaw_rate_max_rads)
+{
+    // The shaper keeps its own acceleration state because the body z acceleration carries the kinematic term's steps.
+    // Its limits are the euler yaw limits the body limits allow at this attitude, as in the euler angle input.
+    const float euler_yaw_accel_max_radss = body_to_euler_limit(_attitude_target, Vector3f{get_accel_roll_max_radss(), get_accel_pitch_max_radss(), get_accel_yaw_max_radss()}).z;
+    const float euler_yaw_rate_max_rads = body_to_euler_limit(_attitude_target, Vector3f{radians(_ang_vel_roll_max_degs), radians(_ang_vel_pitch_max_degs), radians(_ang_vel_yaw_max_degs)}).z;
+    float euler_yaw_rate_rads = _euler_rate_target_rads.z;
+    attitude_command_model(0.0, heading_rate_rads, euler_yaw_rate_rads, _euler_yaw_accel_target_radss, fabsf(euler_yaw_rate_max_rads), euler_yaw_accel_max_radss, _rate_y_tc, _dt_s);
+    euler_yaw_rate_rads += heading_correction_rads;
+    if (is_positive(yaw_rate_max_rads)) {
+        euler_yaw_rate_rads = constrain_float(euler_yaw_rate_rads, -yaw_rate_max_rads, yaw_rate_max_rads);
+    }
+
+    // Body z rate that gives this euler yaw rate with the shaped pitch rate (kinematics, not shaped or slew limited)
+    const float cos_roll = MAX(cosf(_euler_angle_target_rad.x), 0.1f);   // beyond 84 deg roll the heading slips, the tilt is unaffected
+    const float ang_vel_z_last_rads = _ang_vel_target_rads.z;
+    const float yaw_rate_term_rads = euler_yaw_rate_rads * cosf(_euler_angle_target_rad.y) / cos_roll;
+    const float kinematic_term_rads = -sinf(_euler_angle_target_rad.x) * _ang_vel_target_rads.y / cos_roll;
+    _ang_vel_target_rads.z = yaw_rate_term_rads + kinematic_term_rads;
+    ang_vel_limit(_ang_vel_target_rads, radians(_ang_vel_roll_max_degs), radians(_ang_vel_pitch_max_degs), radians(_ang_vel_yaw_max_degs));
+    _ang_accel_target_rads.z = (_ang_vel_target_rads.z - ang_vel_z_last_rads) / _dt_s;
 }
 
 // Command a thrust vector and heading rate
@@ -1259,6 +1307,7 @@ void AC_AttitudeControl::reset_target_and_rate(bool reset_rate)
         _ang_vel_target_rads.zero();
         _ang_accel_target_rads.zero();
         _euler_rate_target_rads.zero();
+        _euler_yaw_accel_target_radss = 0.0f;
     }
 }
 
@@ -1276,6 +1325,7 @@ void AC_AttitudeControl::reset_yaw_target_and_rate(bool reset_rate)
         // set yaw rate to zero
         _euler_rate_target_rads.z = 0.0f;
         _ang_accel_target_rads.z = 0.0;
+        _euler_yaw_accel_target_radss = 0.0f;
 
         // Convert euler angle derivative of desired attitude into a body-frame angular velocity vector for feedforward
         euler_derivative_to_body(_attitude_target, _euler_rate_target_rads, _ang_vel_target_rads);

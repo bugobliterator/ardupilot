@@ -393,7 +393,7 @@ public:
     void bf_feedforward_save(bool enable_or_disable) { _rate_bf_ff_enabled.set_and_save(enable_or_disable); }
 
     // Return body-frame feed forward setting
-    bool get_bf_feedforward() { return _rate_bf_ff_enabled; }
+    bool get_bf_feedforward() const { return _rate_bf_ff_enabled; }
 
     // Enable or disable body-frame feed forward
     void accel_limiting(bool enable_or_disable);
@@ -557,6 +557,13 @@ protected:
     // Ensures minimum latency when rate control is run before or after attitude control.
     const Vector3f get_latest_gyro() const;
 
+    // Pitch rate (rad/s) and acceleration (rad/s/s) limits of the thrust vector inputs: the yaw axis must follow the
+    // body pitch rate in proportion to tan(roll) to hold the euler yaw
+    void thrust_vector_pitch_limits(float& pitch_rate_max_rads, float& pitch_accel_max_radss) const;
+
+    // Shapes the heading rate as the euler (compass) yaw rate and sets the body z rate target that holds it
+    void euler_yaw_rate_to_body_z(float heading_rate_rads, float heading_correction_rads, float yaw_rate_max_rads);
+
     // Maximum rate the yaw target can be updated in Loiter, RTL, Auto flight modes
     AP_Float            _rate_wp_yaw_max_degs;
 
@@ -626,6 +633,9 @@ protected:
     // the target attitude frame.
     Vector3f            _ang_vel_target_rads;
     Vector3f            _ang_accel_target_rads;
+
+    // euler yaw acceleration of the thrust vector heading shaper in radians/s/s
+    float               _euler_yaw_accel_target_radss;
 
     // This represents the angular velocity in radians per second in the body frame, used in the angular
     // velocity controller and most importantly the rate controller.
