@@ -86,11 +86,16 @@ void ModeLoiter::run()
     // convert pilot input to lean angles
     get_pilot_desired_lean_angles_rad(target_roll_rad, target_pitch_rad, loiter_nav->get_angle_max_rad(), attitude_control->get_althold_lean_angle_max_rad());
 
-    // process pilot's roll and pitch input
-    loiter_nav->set_pilot_desired_acceleration_rad(target_roll_rad, target_pitch_rad);
-
     // get pilot's desired yaw rate
     target_yaw_rate_rads = get_pilot_desired_yaw_rate_rads();
+
+    // process pilot's roll and pitch input, and above the stick heading's lean limit the yaw input
+    const bool use_stick_heading = loiter_nav->use_stick_heading();
+    if (use_stick_heading) {
+        loiter_nav->set_pilot_desired_acceleration_rad(target_roll_rad, target_pitch_rad, target_yaw_rate_rads);
+    } else {
+        loiter_nav->set_pilot_desired_acceleration_rad(target_roll_rad, target_pitch_rad);
+    }
 
     // get pilot desired climb rate
     target_climb_rate_ms = get_pilot_desired_climb_rate_ms();
@@ -175,7 +180,11 @@ void ModeLoiter::run()
     }
 
     // call attitude controller
-    attitude_control->input_thrust_vector_rate_heading_rads(loiter_nav->get_thrust_vector(), target_yaw_rate_rads, false);
+    if (use_stick_heading) {
+        attitude_control->input_thrust_vector_heading_rad(loiter_nav->get_thrust_vector(), loiter_nav->get_stick_heading_rad(), loiter_nav->get_stick_heading_rate_rads(), false);
+    } else {
+        attitude_control->input_thrust_vector_rate_heading_rads(loiter_nav->get_thrust_vector(), target_yaw_rate_rads, false);
+    }
     // run the vertical position controller and set output throttle
     pos_control->D_update_controller();
 }
