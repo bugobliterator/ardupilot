@@ -38,6 +38,18 @@ public:
     // - Applies internal shaping using the current attitude controller dt.
     void set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad);
 
+    // Sets pilot desired acceleration with the stick resolved at a stick heading turned by pilot_heading_rate_rads.
+    void set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad, float pilot_heading_rate_rads);
+
+    // Returns true if the lean limit is high enough to use the stick heading.
+    bool use_stick_heading() const;
+
+    // Returns the heading in radians the pilot's roll/pitch stick is resolved at.
+    float get_stick_heading_rad() const { return _stick_heading_rad; }
+
+    // Returns the rate in radians/s the stick heading turned at in the last update.
+    float get_stick_heading_rate_rads() const { return _stick_heading_rate_rads; }
+
     // Returns pilot-requested horizontal acceleration in the NE frame in m/s².
     // This is the internally computed and smoothed acceleration vector applied by the loiter controller.
     const Vector2f& get_pilot_desired_acceleration_NE_mss() const { return _desired_accel_ne_mss; }
@@ -107,6 +119,12 @@ protected:
     // - Resulting velocity and acceleration are sent to the position controller.
     void calc_desired_velocity(bool avoidance_on = true);
 
+    // Sets the desired and predicted accelerations, with the coordinated turn turning turn_vel_ne_ms at turn_rate_rads.
+    void calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float turn_rate_rads, const Vector2f &turn_vel_ne_ms);
+
+    // Sets the stick heading to the vehicle heading.
+    void reset_stick_heading();
+
     // references and pointers to external libraries
     const AP_AHRS_View&     _ahrs;
     AC_PosControl&          _pos_control;
@@ -135,4 +153,8 @@ protected:
     Vector2f    _predicted_euler_accel;     // Predicted roll/pitch angular rates (in rad/s) for pilot acceleration shaping.
     uint32_t    _brake_timer_ms;            // Timestamp (in ms) when braking logic was last triggered (sticks released).
     float       _brake_accel_mss;           // Current braking acceleration in m/s², updated using jerk limits over time.
+    float       _stick_heading_rad = 0.0f;  // Heading in radians the pilot's roll/pitch stick is resolved at.
+    float       _stick_heading_rate_rads = 0.0f;          // Rate in radians/s the stick heading turned at in the last update.
+    float       _stick_heading_last_ahrs_yaw_rad = 0.0f;  // Vehicle heading in radians at the last update, to measure EKF yaw resets.
+    uint16_t    _stick_heading_yaw_reset_count = 0;       // AHRS yaw reset count at the last update.
 };

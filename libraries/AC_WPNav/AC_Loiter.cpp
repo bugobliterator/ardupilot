@@ -23,6 +23,10 @@ extern const AP_HAL::HAL& hal;
 #define LOITER_POS_CORRECTION_MAX_M         2.0     // Maximum horizontal position error allowed before correction (m).
 #define LOITER_ACTIVE_TIMEOUT_MS            200     // Loiter is considered active if updated within the past 200 ms.
 #define LOITER_DEFAULT_OPTIONS              0       // Coordinated Turns disabled by default.
+#define LOITER_TURN_SPEED_MIN_MS            2.0     // Speed (in m/s) the coordinated turn rate limit uses at and below this speed.
+#define LOITER_TURN_LIMIT_LEAN_MIN_DEG      35.0    // Lean limit (in degrees) at and below which the coordinated turn rate is not limited.
+#define LOITER_TURN_LIMIT_LEAN_MAX_DEG      55.0    // Lean limit (in degrees) at and above which the coordinated turn rate is fully limited.
+#define LOITER_STICK_HEADING_LEAN_MIN_DEG   45.0    // Lean limit (in degrees) above which the stick heading is used.
 
 const AP_Param::GroupInfo AC_Loiter::var_info[] = {
 
@@ -126,6 +130,7 @@ void AC_Loiter::init_target_m(const Vector2p& position_ne_m)
     _desired_accel_ne_mss.zero();
     _predicted_euler_angle_rad.zero();
     _brake_accel_mss = 0.0f;
+    reset_stick_heading();
 
     // Set position target for stationary loiter
     _pos_control.set_pos_desired_NE_m(position_ne_m);
@@ -151,6 +156,7 @@ void AC_Loiter::init_target()
     _predicted_euler_rate.zero();
     _predicted_euler_accel.zero();
     _brake_accel_mss = 0.0f;
+    reset_stick_heading();
 }
 
 // Reduces loiter responsiveness for smoother descent during landing.
@@ -173,10 +179,54 @@ void AC_Loiter::set_pilot_desired_acceleration_cd(float euler_roll_angle_cd, flo
 // - Applies internal shaping using the current attitude controller dt.
 void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad)
 {
+    reset_stick_heading();
+    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, _attitude_control.get_attitude_target_ang_vel().z, _pos_control.get_vel_desired_NED_ms().xy());
+}
+
+// Sets pilot desired acceleration with the stick resolved at a stick heading that only the pilot turns, so nose motion
+// at high bank does not rotate the lean direction.
+void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad, float pilot_heading_rate_rads)
+{
+    // keep the stick heading's earth direction through an EKF yaw reset
+    const uint16_t yaw_reset_count = AP::ahrs().get_yaw_reset_count();
+    if (yaw_reset_count != _stick_heading_yaw_reset_count) {
+        _stick_heading_rad += _ahrs.yaw - _stick_heading_last_ahrs_yaw_rad;
+        _stick_heading_yaw_reset_count = yaw_reset_count;
+    }
+    _stick_heading_last_ahrs_yaw_rad = _ahrs.yaw;
+
+    float turn_rate_rads = pilot_heading_rate_rads;
+    const float yaw_rate_max_rads = _attitude_control.get_ang_vel_yaw_max_rads();
+    if (is_positive(yaw_rate_max_rads)) {
+        turn_rate_rads = constrain_float(turn_rate_rads, -yaw_rate_max_rads, yaw_rate_max_rads);
+    }
+    if (loiter_option_is_set(LoiterOption::COORDINATED_TURN_ENABLED)) {
+        // blend in the turn rate the lean limit can hold at this speed, from none at a 35 deg lean limit to all at 55 deg
+        const float lean_limit_blend = linear_interpolate(0.0f, 1.0f, degrees(get_angle_max_rad()), LOITER_TURN_LIMIT_LEAN_MIN_DEG, LOITER_TURN_LIMIT_LEAN_MAX_DEG);
+        const float speed_ms = MAX(_pos_control.get_vel_estimate_NED_ms().xy().length(), LOITER_TURN_SPEED_MIN_MS);
+        const float turn_rate_max_rads = angle_rad_to_accel_mss(get_angle_max_rad()) / speed_ms;
+        turn_rate_rads += lean_limit_blend * (constrain_float(turn_rate_rads, -turn_rate_max_rads, turn_rate_max_rads) - turn_rate_rads);
+    }
+    const float dt_s = _attitude_control.get_dt_s();
+    const float yaw_accel_max_radss = _attitude_control.get_accel_yaw_max_radss();
+    if (is_positive(yaw_accel_max_radss)) {
+        turn_rate_rads = constrain_float(turn_rate_rads, _stick_heading_rate_rads - yaw_accel_max_radss * dt_s, _stick_heading_rate_rads + yaw_accel_max_radss * dt_s);
+    }
+    _stick_heading_rate_rads = turn_rate_rads;
+    _stick_heading_rad = wrap_PI(_stick_heading_rad + _stick_heading_rate_rads * dt_s);
+
+    // turn the measured velocity, so a desired velocity the vehicle has not reached does not swing the lean
+    calc_pilot_desired_acceleration(euler_roll_angle_rad, euler_pitch_angle_rad, _stick_heading_rate_rads, _pos_control.get_vel_estimate_NED_ms().xy());
+}
+
+// Sets the desired and predicted accelerations from lean angles resolved at the stick heading, with the coordinated
+// turn turning turn_vel_ne_ms at turn_rate_rads.
+void AC_Loiter::calc_pilot_desired_acceleration(float euler_roll_angle_rad, float euler_pitch_angle_rad, float turn_rate_rads, const Vector2f &turn_vel_ne_ms)
+{
     const float dt_s = _attitude_control.get_dt_s();
 
     // convert our desired attitude to an acceleration vector assuming we are not accelerating vertically
-    const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, _ahrs.yaw};
+    const Vector3f desired_euler_rad {euler_roll_angle_rad, euler_pitch_angle_rad, _stick_heading_rad};
     _desired_accel_ne_mss = _pos_control.lean_angles_rad_to_accel_NED_mss(desired_euler_rad).xy();
 
     // Reset brake timer if there is pilot input
@@ -194,18 +244,25 @@ void AC_Loiter::set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, f
     _predicted_euler_angle_rad += _predicted_euler_rate * dt_s;
 
     // Convert predicted angles into an acceleration vector for braking/shaping
-    const Vector3f predicted_euler_rad {_predicted_euler_angle_rad.x, _predicted_euler_angle_rad.y, _ahrs.yaw};
+    const Vector3f predicted_euler_rad {_predicted_euler_angle_rad.x, _predicted_euler_angle_rad.y, _stick_heading_rad};
     const Vector3f predicted_accel_ned_mss = _pos_control.lean_angles_rad_to_accel_NED_mss(predicted_euler_rad);
 
     _predicted_accel_ne_mss = predicted_accel_ned_mss.xy();
 
     if (loiter_option_is_set(LoiterOption::COORDINATED_TURN_ENABLED)) {
-        Vector3f target_ang_vel_rads = _attitude_control.get_attitude_target_ang_vel();
-        Vector3f desired_velocity_ms = _pos_control.get_vel_desired_NED_ms();
-        Vector2f turn_accel_ne_mss = Vector2f(-desired_velocity_ms.y * target_ang_vel_rads.z, desired_velocity_ms.x * target_ang_vel_rads.z);
+        Vector2f turn_accel_ne_mss = Vector2f(-turn_vel_ne_ms.y * turn_rate_rads, turn_vel_ne_ms.x * turn_rate_rads);
         _desired_accel_ne_mss += turn_accel_ne_mss;
         _predicted_accel_ne_mss += turn_accel_ne_mss;
     }
+}
+
+// Sets the stick heading to the vehicle heading.
+void AC_Loiter::reset_stick_heading()
+{
+    _stick_heading_rad = _ahrs.yaw;
+    _stick_heading_rate_rads = 0.0f;
+    _stick_heading_last_ahrs_yaw_rad = _ahrs.yaw;
+    _stick_heading_yaw_reset_count = AP::ahrs().get_yaw_reset_count();
 }
 
 // Calculates the expected stopping point based on current velocity and position in the NE frame.
@@ -307,6 +364,11 @@ void AC_Loiter::sanity_check_params()
 
     // Clamp horizontal accel to lean-angle-limited max
     _accel_max_ne_mss.set(MIN(_accel_max_ne_mss, GRAVITY_MSS * tanf(_attitude_control.lean_angle_max_rad())));
+}
+
+bool AC_Loiter::use_stick_heading() const
+{
+    return get_angle_max_rad() > radians(LOITER_STICK_HEADING_LEAN_MIN_DEG);
 }
 
 bool AC_Loiter::loiter_option_is_set(LoiterOption option) const {
