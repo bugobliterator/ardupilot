@@ -547,10 +547,10 @@ void AC_AttitudeControl_Heli::input_thrust_vector_rate_heading_rads(const Vector
 // Sets desired thrust vector and heading (in radians) with heading rate (in radians/s).
 // Used for advanced attitude control where thrust direction is separated from yaw orientation.
 // Heading slew is constrained based on configured limits.
-void AC_AttitudeControl_Heli::input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads)
+void AC_AttitudeControl_Heli::input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads, bool slew_yaw)
 {
     if (!_inverted_flight) {
-        AC_AttitudeControl::input_thrust_vector_heading_rad(thrust_vector, heading_angle_rad, heading_rate_rads);
+        AC_AttitudeControl::input_thrust_vector_heading_rad(thrust_vector, heading_angle_rad, heading_rate_rads, slew_yaw);
         return;
     }
     // convert thrust vector to a roll and pitch angles
@@ -558,5 +558,5 @@ void AC_AttitudeControl_Heli::input_thrust_vector_heading_rad(const Vector3f& th
     Vector3f angle_target = attitude_from_thrust_vector(thrust_vector, _ahrs.yaw).to_vector312();
 
     angle_target.x = wrap_PI(angle_target.x + M_PI);
-    AC_AttitudeControl::input_euler_angle_roll_pitch_yaw_rad(angle_target.x, angle_target.y, heading_angle_rad, true);
+    AC_AttitudeControl::input_euler_angle_roll_pitch_yaw_rad(angle_target.x, angle_target.y, heading_angle_rad, slew_yaw);
 }

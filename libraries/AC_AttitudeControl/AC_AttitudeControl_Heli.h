@@ -85,7 +85,7 @@ public:
     // Sets desired thrust vector and heading (in radians) with heading rate (in radians/s).
     // Used for advanced attitude control where thrust direction is separated from yaw orientation.
     // Heading slew is constrained based on configured limits.
-    void input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads) override;
+    void input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads, bool slew_yaw = true) override;
 
     // enable/disable inverted flight
     void set_inverted_flight(bool inverted) override { _inverted_flight = inverted; }

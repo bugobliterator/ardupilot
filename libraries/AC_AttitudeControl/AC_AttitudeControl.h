@@ -285,8 +285,9 @@ public:
 
     // Sets the desired thrust vector, heading angle (radians), and heading rate input (radians/s).
     // Used when thrust direction (tilt) is commanded independently from yaw/heading.
-    // Heading rate is constrained using the configured yaw slew rate limit (0 disables limiting).
-    virtual void input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads);
+    // Heading rate is constrained using the configured yaw slew rate limit, or the yaw rate limit if slew_yaw is false
+    // (0 disables limiting).
+    virtual void input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads, bool slew_yaw = true);
 
     // Sets the desired thrust vector and heading (in centidegrees), with zero heading rate.
     // See input_thrust_vector_heading_rad() for full details.

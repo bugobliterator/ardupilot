@@ -887,7 +887,7 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& t
 // Sets the desired thrust vector, heading angle (radians), and heading rate input (radians/s).
 // Used when thrust direction (tilt) is commanded independently from yaw/heading.
 // Heading rate is constrained using the configured yaw slew rate limit (0 disables limiting).
-void AC_AttitudeControl::input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads)
+void AC_AttitudeControl::input_thrust_vector_heading_rad(const Vector3f& thrust_vector, float heading_angle_rad, float heading_rate_rads, bool slew_yaw)
 {
     // update attitude target
     update_attitude_target();
@@ -910,7 +910,8 @@ void AC_AttitudeControl::input_thrust_vector_heading_rad(const Vector3f& thrust_
         // applying configured rate/acceleration limits and time constants (roll/pitch use _input_tc, yaw uses _rate_y_tc).
         attitude_command_model(attitude_error.x, 0.0, _ang_vel_target_rads.x, _ang_accel_target_rads.x, radians(_ang_vel_roll_max_degs), get_accel_roll_max_radss(), _input_tc, _dt_s);
         attitude_command_model(attitude_error.y, 0.0, _ang_vel_target_rads.y, _ang_accel_target_rads.y, radians(_ang_vel_pitch_max_degs), get_accel_pitch_max_radss(), _input_tc, _dt_s);
-        attitude_command_model(attitude_error.z, heading_rate_rads, _ang_vel_target_rads.z, _ang_accel_target_rads.z, get_slew_yaw_max_rads(), get_accel_yaw_max_radss(), _rate_y_tc, _dt_s);
+        const float yaw_rate_max_rads = slew_yaw ? get_slew_yaw_max_rads() : radians(_ang_vel_yaw_max_degs);
+        attitude_command_model(attitude_error.z, heading_rate_rads, _ang_vel_target_rads.z, _ang_accel_target_rads.z, yaw_rate_max_rads, get_accel_yaw_max_radss(), _rate_y_tc, _dt_s);
     } else {
         // No shaping/feedforward: directly set the attitude target to the desired attitude.
         _attitude_target = desired_attitude_quat;
