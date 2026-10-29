@@ -343,6 +343,17 @@ void AC_Loiter::calc_desired_velocity(bool avoidance_on)
     // update the desired velocity using our predicted acceleration
     desired_vel_ne_ms += _predicted_accel_ne_mss * dt_s;
 
+    // keep the desired velocity within the error that saturates the velocity controller at the lean limit, so the
+    // desired velocity cannot wind up ahead of a vehicle that cannot follow it
+    const float vel_kp = _pos_control.NE_get_vel_pid().kP();
+    if (is_positive(vel_kp)) {
+        const Vector2f vel_actual_ne_ms = _pos_control.get_vel_estimate_NED_ms().xy();
+        Vector2f vel_error_ne_ms = desired_vel_ne_ms - vel_actual_ne_ms;
+        if (vel_error_ne_ms.limit_length(angle_rad_to_accel_mss(get_angle_max_rad()) / vel_kp)) {
+            desired_vel_ne_ms = vel_actual_ne_ms + vel_error_ne_ms;
+        }
+    }
+
     Vector2f loiter_accel_brake_mss;
     float desired_speed_ms = desired_vel_ne_ms.length();
     if (!is_zero(desired_speed_ms)) {
