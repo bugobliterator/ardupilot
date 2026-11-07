@@ -14,7 +14,7 @@ bool ModeLoiter::init(bool ignore_checks)
     get_pilot_desired_lean_angles_rad(target_roll_rad, target_pitch_rad, loiter_nav->get_angle_max_rad(), attitude_control->get_althold_lean_angle_max_rad());
 
     // process pilot's roll and pitch input
-    loiter_nav->set_pilot_desired_acceleration_rad(target_roll_rad, target_pitch_rad);
+    loiter_nav->set_pilot_desired_acceleration_and_level_yaw_rad(target_roll_rad, target_pitch_rad);
 
     loiter_nav->init_target();
 
@@ -87,7 +87,7 @@ void ModeLoiter::run()
     get_pilot_desired_lean_angles_rad(target_roll_rad, target_pitch_rad, loiter_nav->get_angle_max_rad(), attitude_control->get_althold_lean_angle_max_rad());
 
     // process pilot's roll and pitch input
-    loiter_nav->set_pilot_desired_acceleration_rad(target_roll_rad, target_pitch_rad);
+    loiter_nav->set_pilot_desired_acceleration_and_level_yaw_rad(target_roll_rad, target_pitch_rad);
 
     // get pilot's desired yaw rate
     target_yaw_rate_rads = get_pilot_desired_yaw_rate_rads();
@@ -175,7 +175,7 @@ void ModeLoiter::run()
     }
 
     // call attitude controller
-    attitude_control->input_thrust_vector_rate_heading_rads(loiter_nav->get_thrust_vector(), target_yaw_rate_rads, false);
+    attitude_control->input_thrust_vector_rate_heading_rads(loiter_nav->get_thrust_vector(), target_yaw_rate_rads, false, loiter_nav->cancel_tilt_heading_drift_enabled());
     // run the vertical position controller and set output throttle
     pos_control->D_update_controller();
 }
