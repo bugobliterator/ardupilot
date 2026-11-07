@@ -38,6 +38,14 @@ public:
     // - Applies internal shaping using the current attitude controller dt.
     void set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad);
 
+    // Sets pilot desired acceleration using Euler angles in radians, with the lean resolved at the attitude target's level
+    // yaw if the LOIT_OPTIONS bit to cancel tilt-induced heading drift is set, otherwise at the vehicle heading.
+    // For modes that fly get_thrust_vector() through input_thrust_vector_rate_heading_rads(), which holds level yaw.
+    void set_pilot_desired_acceleration_and_level_yaw_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad);
+
+    // Returns true if the LOIT_OPTIONS bit to cancel tilt-induced heading drift is set.
+    bool cancel_tilt_heading_drift_enabled() const { return loiter_option_is_set(LoiterOption::CANCEL_TILT_HEADING_DRIFT); }
+
     // Returns pilot-requested horizontal acceleration in the NE frame in m/s².
     // This is the internally computed and smoothed acceleration vector applied by the loiter controller.
     const Vector2f& get_pilot_desired_acceleration_NE_mss() const { return _desired_accel_ne_mss; }
@@ -124,8 +132,12 @@ protected:
     // Bitfields of LOITER_OPTIONS
     enum class LoiterOption {
         COORDINATED_TURN_ENABLED    = (1U << 0),    // Enable Coordinated Turn
+        CANCEL_TILT_HEADING_DRIFT   = (1U << 1),    // Cancel tilt-induced heading drift
     };
     bool loiter_option_is_set(LoiterOption option) const;
+
+    // Sets pilot desired acceleration using Euler angles in radians, with the lean resolved at heading_rad.
+    void set_pilot_desired_acceleration_rad(float euler_roll_angle_rad, float euler_pitch_angle_rad, float heading_rad);
 
     // loiter controller internal variables
     Vector2f    _desired_accel_ne_mss;      // Pilot-requested horizontal acceleration in m/s² (after smoothing), in the NE (horizontal) frame.
