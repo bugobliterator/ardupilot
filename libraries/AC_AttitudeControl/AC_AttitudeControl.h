@@ -281,7 +281,9 @@ public:
     // Used for tilt-based navigation with independent yaw control.
     // The thrust vector determines the desired tilt (attitude) while the heading rate commands yaw.
     // Optional yaw slew limiting constrains the heading rate input.
-    virtual void input_thrust_vector_rate_heading_rads(const Vector3f& thrust_vector, float heading_rate_rads, bool slew_yaw = true);
+    // If cancel_tilt_heading_drift is true, yaw also cancels the change in the target's level yaw caused by tilting,
+    // so that level yaw only moves at the heading rate.
+    virtual void input_thrust_vector_rate_heading_rads(const Vector3f& thrust_vector, float heading_rate_rads, bool slew_yaw = true, bool cancel_tilt_heading_drift = false);
 
     // Sets the desired thrust vector, heading angle (radians), and heading rate input (radians/s).
     // Used when thrust direction (tilt) is commanded independently from yaw/heading.
@@ -333,6 +335,9 @@ public:
     // Returns the target attitude quaternion used by the attitude controller.
     // This represents the desired orientation in NED earth frame.
     Quaternion get_attitude_target_quat() const { return _attitude_target; }
+
+    // Returns the attitude target's level yaw in radians: the heading of attitude_from_thrust_vector() that gives it.
+    float get_attitude_target_level_yaw_rad() const { return level_yaw_rad(_attitude_target); }
 
     // Return the angular velocity of the target (setpoint) [rad/s] in the target attitude frame
     const Vector3f& get_attitude_target_ang_vel() const { return _ang_vel_target_rads;}
@@ -620,6 +625,14 @@ protected:
     // This represents a quaternion rotation in NED frame to the target (setpoint)
     // attitude used in the attitude controller.
     Quaternion          _attitude_target;
+
+    // Returns the level yaw in radians of an attitude: the heading after removing tilt by the shortest arc, as in
+    // attitude_from_thrust_vector(). Also known as fused yaw.
+    static float level_yaw_rad(const Quaternion& attitude) { return wrap_PI(2.0f * atan2f(attitude.q4, attitude.q1)); }
+
+    // Rotates the attitude target about its body z axis to cancel the change in its level yaw since
+    // level_yaw_before_rad, other than level_yaw_change_rad.
+    void cancel_target_heading_drift(float level_yaw_before_rad, float level_yaw_change_rad);
 
     // This represents the angular velocity of the target (setpoint) attitude used in
     // the attitude controller as an angular velocity vector, in radians per second in

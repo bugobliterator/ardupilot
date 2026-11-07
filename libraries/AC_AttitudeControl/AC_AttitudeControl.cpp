@@ -829,7 +829,7 @@ void AC_AttitudeControl::input_rate_step_bf_roll_pitch_yaw_rads(float roll_rate_
 // Used for tilt-based navigation with independent yaw control.
 // The thrust vector determines the desired tilt (attitude) while the heading rate commands yaw.
 // Optional yaw slew limiting constrains the heading rate input.
-void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& thrust_vector, float heading_rate_rads, bool slew_yaw)
+void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& thrust_vector, float heading_rate_rads, bool slew_yaw, bool cancel_tilt_heading_drift)
 {
     float yaw_rate_max_rads = radians(_ang_vel_yaw_max_degs);
     if (slew_yaw) {
@@ -838,7 +838,12 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& t
     }
 
     // update attitude target
+    const float level_yaw_before_rad = level_yaw_rad(_attitude_target);
     update_attitude_target();
+    if (cancel_tilt_heading_drift && _rate_bf_ff_enabled) {
+        // level yaw moves only by the yaw rate target integrated with the tilt rates
+        cancel_target_heading_drift(level_yaw_before_rad, _ang_vel_target_rads.z * _dt_s);
+    }
 
     // calculate the attitude target euler angles
     _attitude_target.to_euler(_euler_angle_target_rad);
@@ -870,6 +875,10 @@ void AC_AttitudeControl::input_thrust_vector_rate_heading_rads(const Vector3f& t
         yaw_quat.from_axis_angle(Vector3f{0.0f, 0.0f, heading_rate_rads * _dt_s});
         _attitude_target = _attitude_target * thrust_vec_correction_quat * yaw_quat;
         _attitude_target.normalize();
+        if (cancel_tilt_heading_drift) {
+            // level yaw moves only by the yaw increment
+            cancel_target_heading_drift(level_yaw_before_rad, heading_rate_rads * _dt_s);
+        }
 
         // Zero rate and acceleration feedforward targets
         _euler_rate_target_rads.zero();
@@ -973,6 +982,17 @@ Quaternion AC_AttitudeControl::attitude_from_thrust_vector(Vector3f thrust_vecto
     Quaternion yaw_quat;
     yaw_quat.from_axis_angle(Vector3f{0.0f, 0.0f, 1.0f}, heading_angle_rad);
     return thrust_vec_quat*yaw_quat;
+}
+
+// Rotates the attitude target about its body z axis to cancel the change in its level yaw since
+// level_yaw_before_rad, other than level_yaw_change_rad. The tilt is unchanged.
+void AC_AttitudeControl::cancel_target_heading_drift(float level_yaw_before_rad, float level_yaw_change_rad)
+{
+    const float drift_rad = wrap_PI(level_yaw_rad(_attitude_target) - level_yaw_before_rad - level_yaw_change_rad);
+    Quaternion drift_cancel_quat;
+    drift_cancel_quat.from_axis_angle(Vector3f{0.0f, 0.0f, -drift_rad});
+    _attitude_target *= drift_cancel_quat;
+    _attitude_target.normalize();
 }
 
 // Calculates the body frame angular velocities to follow the target attitude
