@@ -1,0 +1,152 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:#eef1f2;--panel:#fbfcfc;--fg:#17242c;--muted:#5b6c76;--rule:#cdd6da;--ground:#dfe5e7;
+--nose:#c8362b;--stick:#0b7f79;--lean:#a86a00;--axis:#7a3fb5;--frame:#2a3540;--metal:#7d8a96;--propf:#e08a2c;--propr:#6c7b88;--shadow:#9aa6b0;--accent:#a86a00;--cancel:#0f7c78}
+body{margin:0;background:var(--bg)} canvas{display:block;width:760px;height:560px}
+</style></head><body><canvas id="cv"></canvas><script>
+// Quad renderer and maths from the "Why Pitch Holds Straight" page; the scene below is for PR 35061.
+const D=Math.PI/180;
+const qm=(a,b)=>[a[0]*b[0]-a[1]*b[1]-a[2]*b[2]-a[3]*b[3],a[0]*b[1]+a[1]*b[0]+a[2]*b[3]-a[3]*b[2],a[0]*b[2]-a[1]*b[3]+a[2]*b[0]+a[3]*b[1],a[0]*b[3]+a[1]*b[2]-a[2]*b[1]+a[3]*b[0]];
+const qc=a=>[a[0],-a[1],-a[2],-a[3]];
+const qn=a=>{const n=Math.hypot(...a);return a.map(v=>v/n)};
+const aa=(ax,ang)=>{const n=Math.hypot(...ax);if(n<1e-12||ang===0)return[1,0,0,0];const s=Math.sin(ang/2)/n;return[Math.cos(ang/2),ax[0]*s,ax[1]*s,ax[2]*s]};
+const rot=(q,v)=>qm(qm(q,[0,...v]),qc(q)).slice(1);
+const tf=q=>2*Math.atan2(q[3],q[0]);
+const eY=q=>Math.atan2(2*(q[0]*q[3]+q[1]*q[2]),1-2*(q[2]*q[2]+q[3]*q[3]));
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const wrap=a=>{a=(a+Math.PI)%(2*Math.PI);if(a<0)a+=2*Math.PI;return a-Math.PI};
+const GROUND=1.55;
+function View(cv,opt){
+  this.cv=cv;this.ctx=cv.getContext('2d');this.az=opt&&opt.az!=null?opt.az:205*D;this.el=26*D;this.spin=0;
+}
+View.prototype.cam=function(){
+  const c=[Math.cos(this.el)*Math.cos(this.az),Math.cos(this.el)*Math.sin(this.az),-Math.sin(this.el)];
+  const f=[-c[0],-c[1],-c[2]],up=[0,0,-1];const k=up[0]*f[0]+up[1]*f[1]+up[2]*f[2];
+  let u=[up[0]-k*f[0],up[1]-k*f[1],up[2]-k*f[2]];const un=Math.hypot(...u);u=u.map(v=>v/un);
+  const r=[f[1]*u[2]-f[2]*u[1],f[2]*u[0]-f[0]*u[2],f[0]*u[1]-f[1]*u[0]];
+  return{c,u,r};
+};
+View.prototype.begin=function(){
+  const cv=this.cv,dpr=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+  if(cv.width!==Math.round(w*dpr)||cv.height!==Math.round(h*dpr)){cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr)}
+  const x=this.ctx;x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,w,h);x.fillStyle=P.bg;x.fillRect(0,0,w,h);
+  this.w=w;this.h=h;this.C=this.cam();this.F=h*1.2;this.Dc=7.5;this.cx=w*0.56;this.cy=h*0.44;this.prims=[];this.cmp=[];
+};
+View.prototype.P=function(p){const C=this.C;const z=p[0]*C.c[0]+p[1]*C.c[1]+p[2]*C.c[2];const k=this.F/(this.Dc-z);
+  return[this.cx+k*(p[0]*C.r[0]+p[1]*C.r[1]+p[2]*C.r[2]),this.cy-k*(p[0]*C.u[0]+p[1]*C.u[1]+p[2]*C.u[2]),z,k]};
+View.prototype.add=function(pr){const ps=pr.pts.map(p=>this.P(p));pr.sp=ps;pr.z=pr.z!=null?pr.z:ps.reduce((s,p)=>s+p[2],0)/ps.length+(pr.bias||0);this.prims.push(pr)};
+View.prototype.flush=function(){const x=this.ctx;this.prims.sort((a,b)=>a.z-b.z);
+  for(const p of this.prims){x.save();x.globalAlpha=p.alpha==null?1:p.alpha;x.setLineDash(p.dash||[]);x.lineJoin='round';x.lineCap='round';
+    if(p.text!=null){x.fillStyle=p.color;x.font=p.font||'500 11px JetBrains Mono, monospace';x.textAlign='center';x.fillText(p.text,p.sp[0][0],p.sp[0][1]);x.restore();continue}
+    x.beginPath();p.sp.forEach((s,i)=>i?x.lineTo(s[0],s[1]):x.moveTo(s[0],s[1]));if(p.close)x.closePath();
+    if(p.fill){x.fillStyle=p.fill;x.globalAlpha=(p.alpha==null?1:p.alpha)*(p.fillAlpha==null?1:p.fillAlpha);x.fill();x.globalAlpha=p.alpha==null?1:p.alpha}
+    if(p.stroke){x.strokeStyle=p.stroke;x.lineWidth=(p.w||1.5)*(p.scaleW?p.sp[0][3]/(this.F/this.Dc):1);x.stroke()}
+    x.restore()}
+  this.compass();
+};
+View.prototype.ground=function(){
+  const g=GROUND,R=2.3,ring=[];for(let i=0;i<=64;i++){const a=i/64*2*Math.PI;ring.push([R*Math.cos(a),R*Math.sin(a),g])}
+  this.add({pts:ring,fill:P.ground,stroke:P.rule,w:1,z:-99,close:true});
+  for(let i=0;i<12;i++){const a=i*30*D;this.add({pts:[[R*0.93*Math.cos(a),R*0.93*Math.sin(a),g],[R*Math.cos(a),R*Math.sin(a),g]],stroke:P.muted,w:1,z:-98})}
+  this.add({pts:[[R*1.12,0,g]],text:'N',color:P.muted,z:-97});
+};
+View.prototype.gArrow=function(a,col,dash,lab,R){this.cmp.push({k:'a',a,col,dash,lab,R:(R||2.05)/2.05})};
+View.prototype.gArc=function(a0,a1,col,R,lab){this.cmp.push({k:'c',a0,a1,col,lab,R:R/2.05})};
+// top-down compass (north up, east right) drawn flat in the lower-left corner
+View.prototype.compass=function(){const x=this.ctx,S=Math.min(this.w,this.h)*0.36,r=S/2-16,cx=8+S/2,cy=this.h-8-S/2;
+  x.save();x.fillStyle=P.panel;x.strokeStyle=P.rule;x.globalAlpha=.94;x.beginPath();x.arc(cx,cy,S/2,0,7);x.fill();x.globalAlpha=1;x.stroke();
+  x.font='500 9.5px JetBrains Mono, monospace';x.textAlign='center';x.textBaseline='middle';x.fillStyle=P.muted;
+  [['N',0],['E',90],['S',180],['W',270]].forEach(([t,a])=>x.fillText(t,cx+(S/2-7)*Math.sin(a*D),cy-(S/2-7)*Math.cos(a*D)));
+  const pt=(a,R)=>[cx+R*Math.sin(a),cy-R*Math.cos(a)];
+  for(const c of this.cmp){x.setLineDash(c.dash||[]);x.strokeStyle=x.fillStyle=c.col;x.lineWidth=2.4;
+    if(c.k==='a'){const R=r*c.R,t=pt(c.a,R);x.beginPath();x.moveTo(cx,cy);x.lineTo(t[0],t[1]);x.stroke();x.setLineDash([]);
+      const b=pt(c.a,R-9),pp=[Math.cos(c.a)*4,Math.sin(c.a)*4];x.beginPath();x.moveTo(t[0],t[1]);x.lineTo(b[0]+pp[0],b[1]+pp[1]);x.lineTo(b[0]-pp[0],b[1]-pp[1]);x.fill();
+      if(c.lab){const l=pt(c.a,R+(R<r?10:-2)+6);x.fillText(c.lab,l[0],l[1])}}
+    else{const R=r*c.R;x.lineWidth=3;x.beginPath();const n=Math.max(4,Math.ceil(Math.abs(c.a1-c.a0)/(3*D)));for(let i=0;i<=n;i++){const q=pt(c.a0+(c.a1-c.a0)*i/n,R);i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1])}x.stroke();
+      if(c.lab){const l=pt((c.a0+c.a1)/2,R*0.55);x.font='600 10px JetBrains Mono, monospace';x.fillText(c.lab,l[0],l[1])}}}
+  x.restore()};
+// quad: q body->earth (x fwd, y right, z down); st {ghost, tint, thrust}
+View.prototype.quad=function(q,st){st=st||{};const T=v=>rot(q,v),gh=!!st.ghost,al=gh?0.5:1,dash=gh?[5,4]:null;
+  const M=[[0.72,0.72],[0.72,-0.72],[-0.72,-0.72],[-0.72,0.72]];
+  if(!gh){M.forEach(m=>{const a=T([0,0,0]),b=T([m[0],m[1],0]);this.add({pts:[[a[0],a[1],GROUND],[b[0],b[1],GROUND]],stroke:P.shadow,w:6,alpha:.35,z:-94})});}
+  M.forEach(m=>this.add({pts:[T([0,0,0]),T([m[0],m[1],0])],stroke:st.tint||P.frame,w:gh?2:7,scaleW:!gh,alpha:al,dash}));
+  if(!gh){
+    this.add({pts:[[0.34,0.2,0],[0.34,-0.2,0],[-0.34,-0.2,0],[-0.34,0.2,0]].map(T),fill:P.frame,close:true,bias:-0.01});
+    this.box(q,[-0.26,0.18],[-0.13,0.13],[-0.3,-0.04],P.metal);
+    this.box(q,[0.3,0.46],[-0.07,0.07],[-0.16,-0.02],'#1b1f24');
+    const lens=[];for(let i=0;i<12;i++){const a=i/12*2*Math.PI;lens.push(T([0.465,0.045*Math.cos(a),-0.09+0.045*Math.sin(a)]))}
+    this.add({pts:lens,fill:P.cancel,close:true,bias:0.02});
+  }
+  M.forEach((m,i)=>{const front=m[0]>0,pc=front?P.propf:P.propr;
+    if(!gh){this.add({pts:[T([m[0],m[1],0]),T([m[0],m[1],-0.13])],stroke:P.metal,w:11,scaleW:true});}
+    const disc=[];for(let k=0;k<28;k++){const a=k/28*2*Math.PI;disc.push(T([m[0]+0.44*Math.cos(a),m[1]+0.44*Math.sin(a),-0.15]))}
+    this.add({pts:disc,fill:gh?null:pc,fillAlpha:.16,stroke:pc,w:gh?1.2:1.4,alpha:gh?0.5:0.85,close:true,dash});
+    if(!gh){const sgn=(i%2?1:-1),a=this.spin*sgn+i;for(const o of [0,Math.PI]){this.add({pts:[T([m[0],m[1],-0.15]),T([m[0]+0.42*Math.cos(a+o),m[1]+0.42*Math.sin(a+o),-0.15])],stroke:pc,w:3.5,scaleW:true})}}
+  });
+  const nc=gh?(st.tint||P.muted):P.fg;
+  this.add({pts:[T([0.5,0,-0.05]),T([1.25,0,-0.05])],stroke:nc,w:gh?1.5:3,alpha:al,dash});
+  this.add({pts:[T([1.42,0,-0.05]),T([1.2,0.1,-0.05]),T([1.2,-0.1,-0.05])],fill:nc,close:true,alpha:al});
+  if(st.thrust!==false&&!gh){this.add({pts:[T([0,0,-0.32]),T([0,0,-1.25])],stroke:P.accent,w:2.5});this.add({pts:[T([0,0,-1.42]),T([0.08,0,-1.2]),T([-0.08,0,-1.2])],fill:P.accent,close:true})}
+};
+View.prototype.box=function(q,X,Y,Z,col){const T=v=>rot(q,v);const C=this.C;
+  const faces=[[[X[0],Y[0],Z[0]],[X[1],Y[0],Z[0]],[X[1],Y[1],Z[0]],[X[0],Y[1],Z[0]],[0,0,-1]],[[X[0],Y[0],Z[1]],[X[1],Y[0],Z[1]],[X[1],Y[1],Z[1]],[X[0],Y[1],Z[1]],[0,0,1]],
+    [[X[1],Y[0],Z[0]],[X[1],Y[1],Z[0]],[X[1],Y[1],Z[1]],[X[1],Y[0],Z[1]],[1,0,0]],[[X[0],Y[0],Z[0]],[X[0],Y[1],Z[0]],[X[0],Y[1],Z[1]],[X[0],Y[0],Z[1]],[-1,0,0]],
+    [[X[0],Y[1],Z[0]],[X[1],Y[1],Z[0]],[X[1],Y[1],Z[1]],[X[0],Y[1],Z[1]],[0,1,0]],[[X[0],Y[0],Z[0]],[X[1],Y[0],Z[0]],[X[1],Y[0],Z[1]],[X[0],Y[0],Z[1]],[0,-1,0]]];
+  for(const f of faces){const n=T(f[4]);const vis=n[0]*C.c[0]+n[1]*C.c[1]+n[2]*C.c[2];if(vis<=0)continue;
+    const shade=0.55+0.45*Math.max(0,-n[2]);this.add({pts:f.slice(0,4).map(T),fill:col,close:true,fillAlpha:shade,stroke:P.frame,w:0.6})}
+};
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let P={};for(const k of['fg','muted','rule','ground','nose','stick','lean','axis','frame','panel','bg','metal','propf','propr','shadow','accent','cancel'])P[k]=css('--'+k);
+// A copter at THETA lean whose lean direction turns TURN clockwise with no body yaw rate: integrate the attitude.
+const THETA=70*D,TURN=90*D,FRAMES=90,HOLD=24;
+const thrust=q=>rot(q,[0,0,-1]);
+const azim=v=>Math.atan2(v[1],v[0]);
+const STATES=[];{
+  let q=aa([1,0,0],THETA);const a0=azim(thrust(q));let turned=0,next=0;const dt=2e-4;
+  while(turned<=TURN+1e-9){
+    if(turned>=next-1e-12){STATES.push(q.slice());next+=TURN/FRAMES}
+    const z=thrust(q),W=[0,0,1];  // NED down axis: turns the thrust axis clockwise seen from above
+    const cz=[W[1]*z[2]-W[2]*z[1],W[2]*z[0]-W[0]*z[2],W[0]*z[1]-W[1]*z[0]];
+    const we=[z[1]*cz[2]-z[2]*cz[1],z[2]*cz[0]-z[0]*cz[2],z[0]*cz[1]-z[1]*cz[0]];
+    const wb=rot(qc(q),we);wb[2]=0;
+    const dq=qm(q,[0,...wb]);q=qn(q.map((v,i)=>v+0.5*dq[i]*dt));
+    turned=wrap(azim(thrust(q))-a0);if(turned<-1)turned+=2*Math.PI;
+  }
+  for(let i=0;i<HOLD;i++)STATES.push(STATES[STATES.length-1]);
+}
+const A0=azim(thrust(STATES[0])),PSI0=tf(STATES[0]);
+const QS=new URLSearchParams(location.search);const v=new View($('cv'),{az:(+QS.get('az')||135)*D});v.el=(+QS.get('el')||40)*D;
+function draw(i){const q=STATES[i];v.spin=i*0.55;v.begin();v.F=v.h*1.55;v.cx=v.w*0.58;v.cy=v.h*0.40;v.ground();
+  const R=2.3;[['E',90],['S',180],['W',270]].forEach(([t,a])=>v.add({pts:[[R*1.12*Math.cos(a*D),R*1.12*Math.sin(a*D),GROUND]],text:t,color:P.muted,z:-97}));
+  const og=(a,r)=>[r*Math.cos(a),r*Math.sin(a),GROUND];
+  const arrow=(a,r,col,w,dash,z)=>{v.add({pts:[[0,0,GROUND],og(a,r-.12)],stroke:col,w,dash,z});
+    const n=.09,b=og(a,r-.2);v.add({pts:[og(a,r),[b[0]-n*Math.sin(a),b[1]+n*Math.cos(a),GROUND],[b[0]+n*Math.sin(a),b[1]-n*Math.cos(a),GROUND]],fill:col,close:true,z})};
+  const arc=(a0,a1,r,col,z)=>{const n=Math.max(2,Math.ceil(Math.abs(a1-a0)/(3*D))),pts=[];for(let k=0;k<=n;k++)pts.push(og(a0+(a1-a0)*k/n,r));v.add({pts,stroke:col,w:4,z})};
+  const alpha=A0+wrap(azim(thrust(q))-A0+0)+(wrap(azim(thrust(q))-A0)<-1?2*Math.PI:0);
+  const psi=PSI0+wrap(tf(q)-PSI0);
+  arrow(0,2.1,P.muted,1.5,[3,4],-95);
+  arrow(alpha,2.0,P.lean,2.5,[8,5],-93);arrow(psi,1.75,P.nose,3,null,-92);
+  arc(0,alpha,1.55,P.lean,-91);arc(0,psi,1.05,P.nose,-90);
+  v.add({pts:[og(alpha/2,1.78)],text:'α',color:P.lean,font:'700 22px JetBrains Mono, monospace',z:-89});
+  v.add({pts:[og(Math.max(psi,14*D)/2,0.78)],text:'ψ',color:P.nose,font:'700 22px JetBrains Mono, monospace',z:-89});
+  v.quad(q);
+  // theta: vertical and an arc from it to the thrust axis
+  const up=[0,0,-1],th=thrust(q);
+  v.add({pts:[[0,0,0],[0,0,-1.5]],stroke:P.muted,w:1.5,dash:[3,4],z:8});
+  const pts=[];for(let k=0;k<=24;k++){const t=k/24,p=up.map((u,j)=>(1-t)*u+t*th[j]),n=Math.hypot(...p);pts.push(p.map(x=>0.95*x/n))}
+  v.add({pts,stroke:P.axis,w:3,z:9});
+  const m=pts[12].map(x=>x*1.22);v.add({pts:[m],text:'θ',color:P.axis,font:'700 22px JetBrains Mono, monospace',z:10});
+  v.gArrow(0,P.muted,[2,3]);v.gArc(0,alpha,P.lean,1.75,'α');v.gArc(0,psi,P.nose,1.15,'ψ');v.gArrow(alpha,P.lean,[6,4],null,1.9);v.gArrow(psi,P.nose,null,null,1.3);
+  v.flush();
+  const x=v.ctx,da=(alpha-A0)/D,dp=(psi-PSI0)/D;
+  x.save();x.fillStyle=P.fg;x.textAlign='left';x.font='600 17px JetBrains Mono, monospace';
+  x.fillText('θ = 70° lean, no yaw stick, no body yaw rate',16,28);
+  x.font='500 16px JetBrains Mono, monospace';
+  x.fillStyle=P.lean;x.fillText(`Δα = ${da.toFixed(1).padStart(5)}°  lean direction`,16,56);
+  x.fillStyle=P.nose;x.fillText(`Δψ = ${dp.toFixed(1).padStart(5)}°  heading (level yaw)`,16,80);
+  x.fillStyle=P.fg;x.fillText(`(1 − cos θ)·Δα = ${(0.658*da).toFixed(1).padStart(5)}°`,16,104);
+  x.fillStyle=P.muted;x.font='400 13px JetBrains Mono, monospace';x.textAlign='right';
+  x.fillText('orange props: front · arrow: nose · amber: thrust',v.w-12,v.h-12);x.restore();
+}
+window.FRAME_COUNT=STATES.length;draw(0);
+</script></body></html>
