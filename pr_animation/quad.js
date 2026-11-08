@@ -124,5 +124,10 @@ function sceneHelpers(v){
       v.add({pts:[[0,0,0],[0,0,-1.5]],stroke:P.muted,w:1.5,dash:[3,4],z:8});
       v.add({pts:[[0,0,0],hz.map(c=>1.6*c)],stroke:P.muted,w:1.5,dash:[3,4],z:8});
       const pts=[];for(let k=0;k<=24;k++){const t=k/24,p=up.map((u,j)=>(1-t)*u+t*th[j]),n=Math.hypot(...p);pts.push(p.map(x=>0.95*x/n))}
-      v.add({pts,stroke:P.axis,w:3,z:9});v.add({pts:[pts[12].map(x=>x*1.25)],text:'θ',color:P.axis,font:'700 22px JetBrains Mono, monospace',z:10})},
+      v.add({pts,stroke:P.fg,w:3,z:9});v.add({pts:[pts[12].map(x=>x*1.25)],text:'θ',color:P.fg,font:'700 22px JetBrains Mono, monospace',z:10})},
   }}
+
+// The axis the copter turns about while its lean direction turns about the vertical with no body yaw rate (earth frame, unit)
+function turnAxis(q){const z=thrust(q),W=[0,0,1];
+  const cz=[W[1]*z[2]-W[2]*z[1],W[2]*z[0]-W[0]*z[2],W[0]*z[1]-W[1]*z[0]];
+  const w=[z[1]*cz[2]-z[2]*cz[1],z[2]*cz[0]-z[0]*cz[2],z[0]*cz[1]-z[1]*cz[0]],n=Math.hypot(...w);return w.map(c=>c/n)}
