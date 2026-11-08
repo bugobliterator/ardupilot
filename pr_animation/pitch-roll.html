@@ -22,8 +22,6 @@ function drawCase(c,i){const v=c.v,q=c.states[Math.min(i,c.states.length-1)],h=s
   h.arrow(nose,1.3,P.fg,3.5,null,-91);if(Math.abs(nose-c.n0)>0.3*D)h.arc(c.n0,nose,1.0,P.fg,-90);
   const ax=turnAxis(q),ba=rot(q,c.body),off=Math.acos(Math.min(1,Math.abs(ax[0]*ba[0]+ax[1]*ba[1]+ax[2]*ba[2])))/D,fromVert=Math.acos(Math.min(1,Math.abs(ax[2])))/D;
   v.quad(q);h.theta(q);
-  v.add({pts:[ax.map(a=>-1.6*a),ax.map(a=>1.6*a)],stroke:P.axis,w:3,dash:[7,5],z:9});void 0;
-  const e=ax[2]>0?ax.map(a=>2.15*a):ax.map(a=>-2.15*a);v.add({pts:[e],text:'turning axis',color:P.axis,font:'700 14px JetBrains Mono, monospace',z:10});
   v.flush();
   const x=v.ctx,moved=(alpha-c.a0)/D,turned=(nose-c.n0)/D;
   x.save();x.textAlign='left';x.fillStyle=P.fg;x.font='600 17px JetBrains Mono, monospace';x.fillText(c.title,14,28);
@@ -36,6 +34,6 @@ function drawCase(c,i){const v=c.v,q=c.states[Math.min(i,c.states.length-1)],h=s
   x.restore()}
 function draw(i){for(const c of CASES)drawCase(c,i);
   const x=CASES[1].v.ctx;x.save();x.fillStyle=P.muted;x.font='400 12px JetBrains Mono, monospace';x.textAlign='right';
-  x.fillText('amber: lean · black: nose on the ground · teal: stick asks to lean · purple: turning axis',CASES[1].v.w-10,CASES[1].v.h-10);x.restore()}
+  x.fillText('amber: lean · black: nose on the ground · teal: stick asks to lean',CASES[1].v.w-10,CASES[1].v.h-10);x.restore()}
 window.FRAME_COUNT=Math.max(...CASES.map(c=>c.states.length));draw(0);
 </script></body></html>
