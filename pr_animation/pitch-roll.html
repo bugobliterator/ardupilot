@@ -9,27 +9,33 @@ canvas{width:560px;height:520px}
 const THETA=70*D,TURN=30*D,LEAD=14;
 const QS=new URLSearchParams(location.search);
 const CASES=[
-  {id:'cv-p',title:'Pitch stick: leaning ahead',stick:0,q0:aa([0,1,0],-THETA),az:+QS.get('azp')||110},
-  {id:'cv-r',title:'Roll stick: leaning right',stick:90*D,q0:aa([1,0,0],THETA),az:+QS.get('azr')||200}];
+  {id:'cv-p',title:'Pitch stick: leaning ahead',stick:0,body:[1,0,0],axisName:'roll axis (nose line)',q0:aa([0,1,0],-THETA),az:+QS.get('azp')||60},
+  {id:'cv-r',title:'Roll stick: leaning right',stick:90*D,body:[0,1,0],axisName:'pitch axis',q0:aa([1,0,0],THETA),az:+QS.get('azr')||150}];
 for(const c of CASES){const s=coneStates(c.q0,TURN+1e-3,60,30);c.states=Array(LEAD).fill(s[0]).concat(s);
   c.a0=azim(thrust(c.states[0]));c.n0=eulerYaw(c.states[0]);c.v=new View($(c.id),{az:c.az*D});c.v.compass=()=>{};c.v.el=(+QS.get('el')||14)*D}
 function drawCase(c,i){const v=c.v,q=c.states[Math.min(i,c.states.length-1)],h=sceneHelpers(v);
-  v.spin=i*0.55;v.begin();v.F=v.h*1.5;v.cx=v.w*0.5;v.cy=v.h*0.42;v.ground();h.compassLabels();
+  v.spin=i*0.55;v.begin();v.F=v.h*1.35;v.cx=v.w*0.55;v.cy=v.h*0.56;v.ground();h.compassLabels();
   const alpha=unwrapFrom(c.a0,azim(thrust(q))),nose=unwrapFrom(c.n0,eulerYaw(q)),ask=nose+c.stick;
   h.arrow(0,2.1,P.muted,1.5,[3,4],-95);
   h.arrow(c.a0,2.05,P.lean,1.5,[2,4],-94);h.arrow(alpha,2.05,P.lean,2.5,[8,5],-93);h.arc(c.a0,alpha,1.85,P.lean,-91);
   h.arrow(ask,1.6,P.stick,3,[6,4],-92);
   h.arrow(nose,1.3,P.fg,3.5,null,-91);if(Math.abs(nose-c.n0)>0.3*D)h.arc(c.n0,nose,1.0,P.fg,-90);
-  v.quad(q);h.theta(q);v.flush();
+  const ax=turnAxis(q),ba=rot(q,c.body),off=Math.acos(Math.min(1,Math.abs(ax[0]*ba[0]+ax[1]*ba[1]+ax[2]*ba[2])))/D,fromVert=Math.acos(Math.min(1,Math.abs(ax[2])))/D;
+  v.quad(q);h.theta(q);
+  v.add({pts:[ax.map(a=>-1.6*a),ax.map(a=>1.6*a)],stroke:P.axis,w:3,dash:[7,5],z:9});void 0;
+  const e=ax[2]>0?ax.map(a=>2.15*a):ax.map(a=>-2.15*a);v.add({pts:[e],text:'turning axis',color:P.axis,font:'700 14px JetBrains Mono, monospace',z:10});
+  v.flush();
   const x=v.ctx,moved=(alpha-c.a0)/D,turned=(nose-c.n0)/D;
   x.save();x.textAlign='left';x.fillStyle=P.fg;x.font='600 17px JetBrains Mono, monospace';x.fillText(c.title,14,28);
   x.font='500 15px JetBrains Mono, monospace';
   x.fillStyle=P.lean;x.fillText(`lean direction moved   ${moved.toFixed(1).padStart(5)}°`,14,54);
   x.fillStyle=P.fg;x.fillText(`nose on the ground moved ${turned.toFixed(1).padStart(5)}°`,14,76);
   x.fillStyle=P.stick;x.fillText(`stick pulls lean back by ${(moved-turned).toFixed(1).padStart(5)}°`,14,98);
+  x.fillStyle=P.axis;x.fillText(`turning about the ${c.axisName}`,14,124);
+  x.fillText(`  off it by ${off.toFixed(1)}°, ${fromVert.toFixed(0)}° from vertical`,14,146);
   x.restore()}
 function draw(i){for(const c of CASES)drawCase(c,i);
   const x=CASES[1].v.ctx;x.save();x.fillStyle=P.muted;x.font='400 12px JetBrains Mono, monospace';x.textAlign='right';
-  x.fillText('amber: lean · black: nose on the ground · teal: where the stick asks to lean',CASES[1].v.w-10,CASES[1].v.h-10);x.restore()}
+  x.fillText('amber: lean · black: nose on the ground · teal: stick asks to lean · purple: turning axis',CASES[1].v.w-10,CASES[1].v.h-10);x.restore()}
 window.FRAME_COUNT=Math.max(...CASES.map(c=>c.states.length));draw(0);
 </script></body></html>
