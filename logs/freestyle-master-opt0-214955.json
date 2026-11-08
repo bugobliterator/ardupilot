@@ -1,0 +1,54 @@
+{
+ "params": {
+  "LOIT_ANG_MAX": 70.0,
+  "ATC_ANGLE_MAX": 70.0,
+  "PSC_ANGLE_MAX": 0.0,
+  "PILOT_Y_RATE": 80.0,
+  "PILOT_Y_EXPO": 0.0,
+  "ATC_RATE_WPY_MAX": 240.0,
+  "ATC_RATE_Y_MAX": 0.0,
+  "ATC_ACC_Y_MAX": 300.0,
+  "LOIT_SPEED_MS": 40.0,
+  "LOIT_OPTIONS": 0.0,
+  "MOT_SPIN_MIN": 0.009999999776482582,
+  "MOT_PWM_MIN": 1000.0,
+  "MOT_PWM_MAX": 2000.0,
+  "FRAME_CLASS": 1.0,
+  "FRAME_TYPE": 1.0
+ },
+ "yaw40_pwm": 1760,
+ "windows": {
+  "roll_hold": {
+   "marks": [
+    [
+     "roll",
+     68.067
+    ],
+    [
+     "release",
+     83.067
+    ],
+    [
+     "end",
+     95.067
+    ]
+   ]
+  },
+  "pitch_hold": {
+   "marks": [
+    [
+     "roll",
+     99.067
+    ],
+    [
+     "release",
+     114.067
+    ],
+    [
+     "end",
+     126.067
+    ]
+   ]
+  }
+ }
+}
