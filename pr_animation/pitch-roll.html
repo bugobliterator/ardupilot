@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:#eef1f2;--panel:#fbfcfc;--fg:#17242c;--muted:#5b6c76;--rule:#cdd6da;--ground:#dfe5e7;
+--nose:#c8362b;--stick:#0b7f79;--lean:#a86a00;--axis:#7a3fb5;--frame:#2a3540;--metal:#7d8a96;--propf:#e08a2c;--propr:#6c7b88;--shadow:#9aa6b0;--accent:#a86a00;--cancel:#0f7c78}
+body{margin:0;background:var(--bg)} #stage{display:flex;gap:0;width:max-content} canvas{display:block}
+canvas{width:560px;height:520px}
+</style></head><body><div id="stage"><canvas id="cv-p"></canvas><canvas id="cv-r"></canvas></div><script src="quad.js"></script><script>
+// PR 35061: the same 30 deg turn of the lean direction at 70 deg, leaning ahead (pitch stick) and leaning right (roll stick).
+// LOITER measures the stick from the nose's direction on the ground (Euler yaw), so that is where the next stick input points.
+const THETA=70*D,TURN=30*D,LEAD=14;
+const QS=new URLSearchParams(location.search);
+const CASES=[
+  {id:'cv-p',title:'Pitch stick: leaning ahead',stick:0,q0:aa([0,1,0],-THETA),az:+QS.get('azp')||110},
+  {id:'cv-r',title:'Roll stick: leaning right',stick:90*D,q0:aa([1,0,0],THETA),az:+QS.get('azr')||200}];
+for(const c of CASES){const s=coneStates(c.q0,TURN+1e-3,60,30);c.states=Array(LEAD).fill(s[0]).concat(s);
+  c.a0=azim(thrust(c.states[0]));c.n0=eulerYaw(c.states[0]);c.v=new View($(c.id),{az:c.az*D});c.v.compass=()=>{};c.v.el=(+QS.get('el')||14)*D}
+function drawCase(c,i){const v=c.v,q=c.states[Math.min(i,c.states.length-1)],h=sceneHelpers(v);
+  v.spin=i*0.55;v.begin();v.F=v.h*1.5;v.cx=v.w*0.5;v.cy=v.h*0.42;v.ground();h.compassLabels();
+  const alpha=unwrapFrom(c.a0,azim(thrust(q))),nose=unwrapFrom(c.n0,eulerYaw(q)),ask=nose+c.stick;
+  h.arrow(0,2.1,P.muted,1.5,[3,4],-95);
+  h.arrow(c.a0,2.05,P.lean,1.5,[2,4],-94);h.arrow(alpha,2.05,P.lean,2.5,[8,5],-93);h.arc(c.a0,alpha,1.85,P.lean,-91);
+  h.arrow(ask,1.6,P.stick,3,[6,4],-92);
+  h.arrow(nose,1.3,P.fg,3.5,null,-91);if(Math.abs(nose-c.n0)>0.3*D)h.arc(c.n0,nose,1.0,P.fg,-90);
+  v.quad(q);h.theta(q);v.flush();
+  const x=v.ctx,moved=(alpha-c.a0)/D,turned=(nose-c.n0)/D;
+  x.save();x.textAlign='left';x.fillStyle=P.fg;x.font='600 17px JetBrains Mono, monospace';x.fillText(c.title,14,28);
+  x.font='500 15px JetBrains Mono, monospace';
+  x.fillStyle=P.lean;x.fillText(`lean direction moved   ${moved.toFixed(1).padStart(5)}°`,14,54);
+  x.fillStyle=P.fg;x.fillText(`nose on the ground moved ${turned.toFixed(1).padStart(5)}°`,14,76);
+  x.fillStyle=P.stick;x.fillText(`stick pulls lean back by ${(moved-turned).toFixed(1).padStart(5)}°`,14,98);
+  x.restore()}
+function draw(i){for(const c of CASES)drawCase(c,i);
+  const x=CASES[1].v.ctx;x.save();x.fillStyle=P.muted;x.font='400 12px JetBrains Mono, monospace';x.textAlign='right';
+  x.fillText('amber: lean · black: nose on the ground · teal: where the stick asks to lean',CASES[1].v.w-10,CASES[1].v.h-10);x.restore()}
+window.FRAME_COUNT=Math.max(...CASES.map(c=>c.states.length));draw(0);
+</script></body></html>
