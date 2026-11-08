@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:#eef1f2;--panel:#fbfcfc;--fg:#17242c;--muted:#5b6c76;--rule:#cdd6da;--ground:#dfe5e7;
+--nose:#c8362b;--stick:#0b7f79;--lean:#a86a00;--axis:#7a3fb5;--frame:#2a3540;--metal:#7d8a96;--propf:#e08a2c;--propr:#6c7b88;--shadow:#9aa6b0;--accent:#a86a00;--cancel:#0f7c78}
+body{margin:0;background:var(--bg)} #stage{display:flex;gap:0;width:max-content} canvas{display:block}
+canvas{width:760px;height:560px}
+</style></head><body><div id="stage"><canvas id="cv"></canvas></div><script src="quad.js"></script><script>
+// PR 35061: a copter at 70 deg lean whose lean direction turns 90 deg with no body yaw rate; its level yaw follows by 1 - cos(theta).
+const THETA=70*D,STATES=coneStates(aa([1,0,0],THETA),90*D,90,24);
+const A0=azim(thrust(STATES[0])),PSI0=tf(STATES[0]);
+const QS=new URLSearchParams(location.search);const v=new View($('cv'),{az:(+QS.get('az')||215)*D});v.el=(+QS.get('el')||14)*D;
+function draw(i){const q=STATES[i],h=sceneHelpers(v);v.spin=i*0.55;v.begin();v.F=v.h*1.55;v.cx=v.w*0.58;v.cy=v.h*0.40;v.ground();h.compassLabels();
+  const alpha=unwrapFrom(A0,azim(thrust(q))),psi=unwrapFrom(PSI0,tf(q));
+  h.arrow(0,2.1,P.muted,1.5,[3,4],-95);h.arrow(alpha,2.0,P.lean,2.5,[8,5],-93);h.arrow(psi,1.75,P.nose,3,null,-92);
+  h.arc(0,alpha,1.55,P.lean,-91);h.arc(0,psi,1.05,P.nose,-90);
+  h.label(h.og(alpha/2,1.78),'α',P.lean);h.label(h.og(Math.max(psi,14*D)/2,0.78),'ψ',P.nose);
+  v.quad(q);h.theta(q);
+  v.gArrow(0,P.muted,[2,3]);v.gArc(0,alpha,P.lean,1.75,'α');v.gArc(0,psi,P.nose,1.15,'ψ');v.gArrow(alpha,P.lean,[6,4],null,1.9);v.gArrow(psi,P.nose,null,null,1.3);
+  v.flush();
+  const x=v.ctx,da=(alpha-A0)/D,dp=(psi-PSI0)/D;
+  x.save();x.fillStyle=P.fg;x.textAlign='left';x.font='600 17px JetBrains Mono, monospace';
+  x.fillText('θ = 70° lean, no yaw stick, no body yaw rate',16,28);
+  x.font='500 16px JetBrains Mono, monospace';
+  x.fillStyle=P.lean;x.fillText(`Δα = ${da.toFixed(1).padStart(5)}°  lean direction`,16,56);
+  x.fillStyle=P.nose;x.fillText(`Δψ = ${dp.toFixed(1).padStart(5)}°  heading (level yaw)`,16,80);
+  x.fillStyle=P.fg;x.fillText(`(1 − cos θ)·Δα = ${(0.658*da).toFixed(1).padStart(5)}°`,16,104);
+  x.fillStyle=P.muted;x.font='400 13px JetBrains Mono, monospace';x.textAlign='right';
+  x.fillText('orange props: front · black arrow: nose · amber: thrust · dotted: vertical and horizontal',v.w-12,v.h-12);x.restore();
+}
+window.FRAME_COUNT=STATES.length;draw(0);
+</script></body></html>
